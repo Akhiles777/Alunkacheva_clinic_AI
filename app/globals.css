@@ -1,26 +1,101 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/*
+ * «Пульт» — см. DESIGN.md.
+ *
+ * Экран = передняя панель прибора: плоскость, точность, гравировка.
+ * Врезка передаётся ТОЛЬКО разницей светлоты (панель → вставка) и волосяной
+ * линией паза. Ни фасок, ни градиентов, ни внутренних теней, ни текстур.
+ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-panel: #dfdbd2;
+  --color-panel-sunk: #d2cec4;
+  /* Третья ступень светлоты — только для пропорциональных полос, где
+     соседние сегменты обязаны различаться без цвета. */
+  --color-panel-deep: #bfb9ac;
+  --color-inset: #f5f3ee;
+  --color-groove: #a8a296;
+  --color-engrave: #22231e;
+  --color-label: #575249;
+  /* Сигнальный: только заливки, засечки, кромка активного состояния. */
+  --color-signal: #c24e12;
+  /* Тот же тон на 6,9:1 — весь текст про окна и потери. */
+  --color-signal-ink: #7b2e05;
+
+  --font-display: var(--font-manrope);
+  --font-sans: var(--font-golos);
+  --font-mono: var(--font-jetbrains);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background: var(--color-panel);
+  color: var(--color-engrave);
+  -webkit-font-smoothing: antialiased;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* Гравированная подпись: мелкий капс с разрядкой. */
+.legend {
+  font-family: var(--font-display);
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-label);
+}
+
+/* Показания прибора: разряды не прыгают при смене периода. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+/*
+ * Заливка открытого паза. Не градиент: одна плоская краска низкой
+ * плотности, поверх — засечка сигнального цвета по верхней кромке.
+ */
+.groove-open {
+  background-color: color-mix(in srgb, var(--color-signal) 7%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Скелетон загрузки: гравировка на месте, вставки пусты. */
+@keyframes panel-idle {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.idle {
+  animation: panel-idle 1.6s ease-in-out infinite;
 }
