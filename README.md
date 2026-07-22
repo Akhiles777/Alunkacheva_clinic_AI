@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Clinic CRM
 
-## Getting Started
+Надстройка над YCLIENTS для клиники интегративной медицины: инбокс, AI-агент,
+push-уведомления и дашборд метрик. YCLIENTS остаётся источником истины по
+расписанию и деньгам, у нас — локальная проекция и аналитика.
 
-First, run the development server:
+Постоянный контекст проекта — в [CLAUDE.md](CLAUDE.md). Этап 1: схема данных и
+дашборд.
+
+## Запуск
 
 ```bash
+cp .env.example .env          # заполнить DATABASE_URL
+npm install
+npx prisma migrate dev        # схема + миграции
+npx prisma db seed            # источники, кабинеты, расписание, прайс-заглушка
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Дашборд открывается на `/`, период переключается в URL: `/?period=week|month|quarter`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Скрипты
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Команда | Что делает |
+|---|---|
+| `npm run dev` | Next.js в режиме разработки |
+| `npm run build` | продакшен-сборка |
+| `npm test` | vitest: метрики, курсы, телефоны |
+| `npm run lint` | eslint |
+| `npm run db:migrate` | `prisma migrate dev` |
+| `npm run db:seed` | `prisma db seed` |
 
-## Learn More
+## Где что лежит
 
-To learn more about Next.js, take a look at the following resources:
+```
+prisma/schema.prisma    модель данных: проекция YCLIENTS + наши сущности
+prisma/seed.ts          справочники (источники, кабинеты, рабочие часы)
+lib/metrics/            чистые функции расчёта метрик + тесты
+lib/mock-metrics.ts     мок дашборда в форме будущего ответа API
+lib/phone.ts            нормализация телефона в E.164
+app/(dashboard)/        экран метрик и его компоненты
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Данные дашборда пока мокаются, но форма объекта — та же, что вернёт
+`GET /api/metrics`: замена мока на чтение роллапов затронет одну функцию
+`getDashboardMetrics`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Что важно знать про расчёты
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Выручка курсов признаётся по визиту**, а не по продаже: сумма курса делится
+  на сеансы, остаток от неровного деления идёт на последний сеанс, поэтому курс
+  сходится с кассой до копейки.
+- **Повторный визит внутри курса и возврат пациента — разные вещи** и считаются
+  раздельно.
+- **Загрузка кабинета** — объединение интервалов, а не сумма длительностей:
+  наложения не удваиваются.
+- **Обращение** открывается, если предыдущее сообщение пациента было ≥ 24 ч
+  назад; граница считается только по сообщениям пациента.
+# Alunkacheva_clinic_AI
