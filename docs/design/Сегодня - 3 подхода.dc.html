@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  a { color: #3A34A0; text-decoration: none; }
+  a:hover { color: #15161B; }
+  input::placeholder { color: #A7ADB7; }
+</style>
+</helmet>
+
+<div style="min-height: 100vh; background: #E9EBEE; font-family: 'Onest', sans-serif; color: #15161B; -webkit-font-smoothing: antialiased;">
+  <section>
+    <div style="display: flex; gap: 48px; align-items: flex-start; padding: 48px; flex-wrap: wrap;">
+
+      <!-- ============ OPTION 1a · Поток статусов ============ -->
+      <div id="1a" style="width: 1060px; flex: 0 0 1060px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: {{ accentText }}; background: {{ accentTint }}; border: 1px solid {{ accentBorder }}; border-radius: 6px; padding: 2px 8px;">1a</span>
+          <span style="font-size: 16px; font-weight: 600; color: #15161B;">Поток статусов «сейчас»</span>
+        </div>
+        <div style="font-size: 12.5px; color: #565B66; margin-top: 6px; max-width: 760px; line-height: 1.5;">День как состояние, а не время. Пациенты разложены по колонкам статуса; колонка «Свободно» справа крупно отвечает на телефонный вопрос без чтения расписания.</div>
+
+        <div style="margin-top: 14px; border: 1px solid #DEE0E4; border-radius: 14px; overflow: hidden; background: #FBFBFC;">
+          <!-- header -->
+          <div style="padding: 18px 22px; border-bottom: 1px solid #E6E8EC; background: #FFFFFF;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <div style="font-size: 19px; font-weight: 600; letter-spacing: -0.015em;">Сегодня</div>
+                <div style="font-size: 12px; color: #868C97; margin-top: 1px;">среда, 23 июля · смена Ирины</div>
+              </div>
+              <button style="font-family: 'Onest', sans-serif; font-size: 12.5px; font-weight: 500; color: #FFFFFF; background: {{ accent }}; border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer;" style-hover="background: {{ accentText }};">+ Запись</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 14px; margin-top: 13px; font-size: 12px; color: #868C97;">
+              <span>Выручка <b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B; white-space: nowrap;">184 200 ₽</b></span>
+              <span style="color: #D3D7DD;">·</span>
+              <span>средний чек <b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B; white-space: nowrap;">6 140 ₽</b></span>
+              <span style="color: #D3D7DD;">·</span>
+              <span><b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">27</b> записей</span>
+              <span style="color: #D3D7DD;">·</span>
+              <span><b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">4</b> первичных</span>
+              <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">13:20</span>
+            </div>
+          </div>
+
+          <!-- body: 4 status columns -->
+          <div style="padding: 20px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: start;">
+
+            <!-- col: На процедуре -->
+            <div>
+              <div style="display: flex; align-items: baseline; gap: 7px; margin-bottom: 10px;">
+                <span style="font-size: 12.5px; font-weight: 600; color: #15161B;">На процедуре</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #A7ADB7;">3</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <sc-for list="{{ cabinets }}" as="c" hint-placeholder-count="3">
+                  <div style="background: #FFFFFF; border: 1px solid #E6E8EC; border-radius: 10px; padding: 12px 13px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #565B66; background: #EFF0F3; border-radius: 5px; padding: 2px 6px;">{{ c.id }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #868C97;">до {{ c.until }}</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px; margin-top: 9px;">
+                      <sc-if value="{{ c.first }}"><span style="width: 6px; height: 6px; border-radius: 2px; background: {{ accent }}; flex: 0 0 auto;"></span></sc-if>
+                      <span style="font-size: 13.5px; font-weight: 600;">{{ c.proc }}</span>
+                    </div>
+                    <div style="font-size: 12px; color: #565B66; margin-top: 2px;">{{ c.patient }}</div>
+                    <div style="height: 3px; border-radius: 3px; background: #ECEEF1; margin-top: 10px; overflow: hidden;">
+                      <div style="height: 100%; width: {{ c.progW }}; background: #565B66; border-radius: 3px;"></div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+            <!-- col: Ждут -->
+            <div>
+              <div style="display: flex; align-items: baseline; gap: 7px; margin-bottom: 10px;">
+                <span style="font-size: 12.5px; font-weight: 600; color: #15161B;">Ждут в холле</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #A7ADB7;">2</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <sc-for list="{{ waiting }}" as="w" hint-placeholder-count="2">
+                  <div style="background: #FFFFFF; border: 1px solid #E6E8EC; border-radius: 10px; padding: 12px 13px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                      <span style="font-size: 13.5px; font-weight: 600;">{{ w.name }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #868C97;">к {{ w.at }}</span>
+                    </div>
+                    <div style="font-size: 12px; color: #565B66; margin-top: 4px;">{{ w.proc }}</div>
+                    <div style="margin-top: 8px;"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #565B66; background: #EFF0F3; border-radius: 5px; padding: 2px 6px;">{{ w.cab }}</span></div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+            <!-- col: Записаны далее -->
+            <div>
+              <div style="display: flex; align-items: baseline; gap: 7px; margin-bottom: 10px;">
+                <span style="font-size: 12.5px; font-weight: 600; color: #15161B;">Записаны далее</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #A7ADB7;">12</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <sc-for list="{{ nextUp }}" as="n" hint-placeholder-count="4">
+                  <div style="background: #FFFFFF; border: 1px solid #E6E8EC; border-radius: 10px; padding: 11px 13px; display: flex; gap: 11px; align-items: baseline;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 500; color: #15161B;">{{ n.time }}</span>
+                    <div style="min-width: 0;">
+                      <div style="display: flex; align-items: center; gap: 6px;">
+                        <sc-if value="{{ n.first }}"><span style="width: 6px; height: 6px; border-radius: 2px; background: {{ accent }}; flex: 0 0 auto;"></span></sc-if>
+                        <span style="font-size: 13px; font-weight: 600;">{{ n.proc }}</span>
+                      </div>
+                      <div style="font-size: 12px; color: #565B66; margin-top: 2px;">{{ n.patient }} · {{ n.cab }}</div>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+            <!-- col: Свободно -->
+            <div>
+              <div style="display: flex; align-items: baseline; gap: 7px; margin-bottom: 10px;">
+                <span style="font-size: 12.5px; font-weight: 600; color: {{ accentText }};">Свободно</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ accentBorder }};">3</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <sc-for list="{{ cabinets }}" as="c" hint-placeholder-count="3">
+                  <div style="background: {{ c.fbg }}; border: 1px solid {{ c.fbd }}; border-radius: 10px; padding: 13px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                      <span style="font-size: 11.5px; font-weight: 500; color: {{ c.fc }};">{{ c.id }}</span>
+                      <span style="font-size: 11px; color: {{ c.fc2 }};">{{ c.dirShort }}</span>
+                    </div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 30px; font-weight: 500; color: {{ c.fc }}; letter-spacing: -0.02em; margin-top: 8px; line-height: 1;">{{ c.freeTime }}</div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: {{ c.fc2 }}; margin-top: 5px;">окно {{ c.freeDur }}</div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ OPTION 1b · Три карточки + окна списком ============ -->
+      <div id="1b" style="width: 1060px; flex: 0 0 1060px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: {{ accentText }}; background: {{ accentTint }}; border: 1px solid {{ accentBorder }}; border-radius: 6px; padding: 2px 8px;">1b</span>
+          <span style="font-size: 16px; font-weight: 600; color: #15161B;">Три карточки кабинетов + окна списком</span>
+        </div>
+        <div style="font-size: 12.5px; color: #565B66; margin-top: 6px; max-width: 760px; line-height: 1.5;">Кабинет = крупная карточка со следующим окном большим числом. Ниже — единый список окон по всем кабинетам, отсортированный по времени: «когда свободно на IV» читается одним движением вниз.</div>
+
+        <div style="margin-top: 14px; border: 1px solid #DEE0E4; border-radius: 14px; overflow: hidden; background: #FBFBFC;">
+          <div style="padding: 18px 22px; border-bottom: 1px solid #E6E8EC; background: #FFFFFF;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <div style="font-size: 19px; font-weight: 600; letter-spacing: -0.015em;">Сегодня</div>
+                <div style="font-size: 12px; color: #868C97; margin-top: 1px;">среда, 23 июля · смена Ирины</div>
+              </div>
+              <button style="font-family: 'Onest', sans-serif; font-size: 12.5px; font-weight: 500; color: #FFFFFF; background: {{ accent }}; border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer;" style-hover="background: {{ accentText }};">+ Запись</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 14px; margin-top: 13px; font-size: 12px; color: #868C97;">
+              <span>Выручка <b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B; white-space: nowrap;">184 200 ₽</b></span>
+              <span style="color: #D3D7DD;">·</span>
+              <span>средний чек <b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B; white-space: nowrap;">6 140 ₽</b></span>
+              <span style="color: #D3D7DD;">·</span>
+              <span><b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">27</b> записей</span>
+              <span style="color: #D3D7DD;">·</span>
+              <span><b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">4</b> первичных</span>
+              <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">13:20</span>
+            </div>
+          </div>
+
+          <div style="padding: 20px;">
+            <!-- 3 cabinet cards -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;">
+              <sc-for list="{{ cabinets }}" as="c" hint-placeholder-count="3">
+                <div style="background: #FFFFFF; border: 1px solid #E6E8EC; border-radius: 12px; padding: 16px 17px;">
+                  <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+                    <div>
+                      <div style="font-size: 15px; font-weight: 600;">{{ c.dir }}</div>
+                      <div style="font-size: 12px; color: #868C97; margin-top: 2px;">принимает {{ c.doctor }}</div>
+                    </div>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #565B66; background: #EFF0F3; border-radius: 5px; padding: 2px 6px;">{{ c.id }}</span>
+                  </div>
+                  <div style="border-top: 1px solid #EFF1F4; margin: 14px 0;"></div>
+                  <div style="font-size: 11px; color: #A7ADB7; text-transform: none;">сейчас</div>
+                  <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
+                    <sc-if value="{{ c.first }}"><span style="width: 6px; height: 6px; border-radius: 2px; background: {{ accent }}; flex: 0 0 auto;"></span></sc-if>
+                    <span style="font-size: 13.5px; font-weight: 600;">{{ c.proc }}</span>
+                    <span style="font-size: 12.5px; color: #565B66;">· {{ c.patient }}</span>
+                  </div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #868C97; margin-top: 3px;">занят до {{ c.until }}</div>
+                  <div style="margin-top: 16px; background: {{ c.fbg }}; border: 1px solid {{ c.fbd }}; border-radius: 10px; padding: 13px 14px;">
+                    <div style="font-size: 11.5px; font-weight: 500; color: {{ c.fc2 }};">следующее окно</div>
+                    <div style="display: flex; align-items: baseline; gap: 10px; margin-top: 6px;">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 32px; font-weight: 500; color: {{ c.fc }}; letter-spacing: -0.02em; line-height: 1;">{{ c.freeTime }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: {{ c.fc }};">{{ c.freeDur }}</span>
+                    </div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+
+            <!-- ближайшие окна списком -->
+            <div style="margin-top: 22px;">
+              <div style="display: flex; align-items: baseline; gap: 9px; margin-bottom: 12px;">
+                <span style="font-size: 14px; font-weight: 600;">Ближайшие свободные окна</span>
+                <span style="font-size: 12px; color: #868C97;">по всем кабинетам, до конца дня</span>
+              </div>
+              <div style="border: 1px solid #E6E8EC; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; gap: 1px; background: #ECEEF1;">
+                <sc-for list="{{ freeWindows }}" as="w" hint-placeholder-count="6">
+                  <div style="background: {{ w.rowBg }}; padding: 12px 16px; display: flex; align-items: center; gap: 18px;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 500; color: {{ w.timeColor }}; letter-spacing: -0.02em; width: 78px; flex: 0 0 auto;">{{ w.time }}</span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 13.5px; font-weight: 600; color: {{ w.mainColor }};">{{ w.cab }}</div>
+                      <div style="font-size: 12px; color: {{ w.subColor }}; margin-top: 1px;">{{ w.dir }}</div>
+                    </div>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 500; color: {{ w.fc }}; background: {{ w.fbg }}; border: 1px solid {{ w.fbd }}; border-radius: 20px; padding: 4px 11px; white-space: nowrap;">{{ w.dur }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ OPTION 1c · Лента событий (agenda) ============ -->
+      <div id="1c" style="width: 580px; flex: 0 0 580px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: {{ accentText }}; background: {{ accentTint }}; border: 1px solid {{ accentBorder }}; border-radius: 6px; padding: 2px 8px;">1c</span>
+          <span style="font-size: 16px; font-weight: 600; color: #15161B;">Лента ближайших событий</span>
+        </div>
+        <div style="font-size: 12.5px; color: #565B66; margin-top: 6px; max-width: 540px; line-height: 1.5;">Один вертикальный список дня по всем кабинетам. Прошлое приглушено, «сейчас» — якорь, впереди — приёмы и вставленные окна. Читается как список дел, без осей.</div>
+
+        <div style="margin-top: 14px; border: 1px solid #DEE0E4; border-radius: 14px; overflow: hidden; background: #FBFBFC;">
+          <div style="padding: 18px 22px; border-bottom: 1px solid #E6E8EC; background: #FFFFFF;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <div style="font-size: 19px; font-weight: 600; letter-spacing: -0.015em;">Сегодня</div>
+                <div style="font-size: 12px; color: #868C97; margin-top: 1px;">среда, 23 июля</div>
+              </div>
+              <button style="font-family: 'Onest', sans-serif; font-size: 12.5px; font-weight: 500; color: #FFFFFF; background: {{ accent }}; border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer;" style-hover="background: {{ accentText }};">+ Запись</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px; margin-top: 13px; font-size: 12px; color: #868C97;">
+              <span>Выручка <b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B; white-space: nowrap;">184 200 ₽</b></span>
+              <span style="color: #D3D7DD;">·</span>
+              <span><b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">27</b> записей</span>
+              <span style="color: #D3D7DD;">·</span>
+              <span><b style="font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">4</b> первичных</span>
+              <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #15161B;">13:20</span>
+            </div>
+          </div>
+
+          <div style="padding: 8px 20px 18px;">
+            <!-- past -->
+            <sc-for list="{{ agendaPast }}" as="e" hint-placeholder-count="2">
+              <div style="display: flex; gap: 16px; padding: 9px 2px; opacity: 0.42;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #15161B; width: 46px; flex: 0 0 auto;">{{ e.time }}</span>
+                <div style="flex: 1; display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 13px; font-weight: 500;">{{ e.proc }}</span>
+                  <span style="font-size: 12px; color: #565B66;">· {{ e.patient }}</span>
+                  <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #565B66; background: #EFF0F3; border-radius: 5px; padding: 1px 6px;">{{ e.cab }}</span>
+                </div>
+              </div>
+            </sc-for>
+
+            <!-- ongoing -->
+            <sc-for list="{{ agendaNow }}" as="e" hint-placeholder-count="3">
+              <div style="display: flex; gap: 16px; padding: 11px 12px; margin: 3px 0; background: #F4F5F8; border-radius: 9px;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500; color: #15161B; width: 46px; flex: 0 0 auto;">{{ e.time }}</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="display: flex; align-items: center; gap: 7px;">
+                    <sc-if value="{{ e.first }}"><span style="width: 6px; height: 6px; border-radius: 2px; background: {{ accent }}; flex: 0 0 auto;"></span></sc-if>
+                    <span style="font-size: 13.5px; font-weight: 600;">{{ e.proc }}</span>
+                    <span style="font-size: 12.5px; color: #565B66;">· {{ e.patient }}</span>
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #565B66; background: #E7E8EC; border-radius: 5px; padding: 1px 6px;">{{ e.cab }}</span>
+                  </div>
+                  <div style="font-size: 11.5px; color: #868C97; margin-top: 3px;">идёт · до {{ e.until }}</div>
+                </div>
+              </div>
+            </sc-for>
+
+            <!-- NOW divider -->
+            <div style="display: flex; align-items: center; gap: 10px; padding: 12px 2px 6px;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: #15161B;">13:20</span>
+              <span style="font-size: 11px; color: #868C97;">сейчас</span>
+              <span style="flex: 1; height: 1px; background: #D3D7DD;"></span>
+            </div>
+
+            <!-- future -->
+            <sc-for list="{{ agendaFuture }}" as="e" hint-placeholder-count="9">
+              <sc-if value="{{ e.free }}">
+                <div style="display: flex; gap: 16px; padding: 11px 12px; margin: 3px 0; background: {{ e.fbg }}; border: 1px solid {{ e.fbd }}; border-radius: 9px; align-items: center;">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500; color: {{ e.fc }}; width: 46px; flex: 0 0 auto;">{{ e.time }}</span>
+                  <div style="flex: 1; display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 13.5px; font-weight: 600; color: {{ e.fc }};">Свободно</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: {{ e.fc2 }};">{{ e.dur }}</span>
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ e.fc }};">{{ e.cab }}</span>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ e.booked }}">
+                <div style="display: flex; gap: 16px; padding: 9px 12px;">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #15161B; width: 46px; flex: 0 0 auto;">{{ e.time }}</span>
+                  <div style="flex: 1; display: flex; align-items: center; gap: 7px; min-width: 0;">
+                    <sc-if value="{{ e.first }}"><span style="width: 6px; height: 6px; border-radius: 2px; background: {{ accent }}; flex: 0 0 auto;"></span></sc-if>
+                    <span style="font-size: 13px; font-weight: 500;">{{ e.proc }}</span>
+                    <span style="font-size: 12px; color: #565B66;">· {{ e.patient }}</span>
+                    <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #565B66; background: #EFF0F3; border-radius: 5px; padding: 1px 6px;">{{ e.cab }}</span>
+                  </div>
+                </div>
+              </sc-if>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 1400, &quot;height&quot;: 900 },
+  &quot;accent&quot;: { &quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;#4B44C7&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;options&quot;: [&quot;#4B44C7&quot;, &quot;#2A5CD6&quot;, &quot;#9A2C5B&quot;, &quot;#B0532A&quot;], &quot;section&quot;: &quot;Тема&quot; },
+  &quot;highlightSoonest&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Свободные окна&quot; }
+}">
+class Component extends DCLogic {
+  renderVals() {
+    const hx = h => { h = h.replace('#', ''); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+    const toHex = a => '#' + a.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
+    const mixWhite = (hex, r) => { const c = hx(hex); return toHex(c.map(v => v + (255 - v) * r)); };
+    const darken = (hex, r) => { const c = hx(hex); return toHex(c.map(v => v * (1 - r))); };
+
+    const accent = this.props.accent || '#4B44C7';
+    const accentTint = mixWhite(accent, 0.90);
+    const accentBorder = mixWhite(accent, 0.66);
+    const accentText = darken(accent, 0.16);
+    const hot = this.props.highlightSoonest !== false;
+
+    // free-window styling: soonest (hot) rendered solid, rest as tint
+    const fstyle = soon => (soon && hot)
+      ? { fbg: accent, fbd: accent, fc: '#FFFFFF', fc2: 'rgba(255,255,255,0.72)' }
+      : { fbg: accentTint, fbd: accentBorder, fc: accentText, fc2: accentText };
+    // for the unified list rows: whole row tinted when soonest
+    const rowStyle = soon => (soon && hot)
+      ? { rowBg: accentTint, timeColor: accentText, mainColor: accentText, subColor: accentText }
+      : { rowBg: '#FFFFFF', timeColor: '#15161B', mainColor: '#15161B', subColor: '#868C97' };
+
+    const cabinets = [
+      { id: 'Кабинет 1', dir: 'Остеопатия', dirShort: 'Остеопатия', doctor: 'Левин А.', proc: 'Массаж', patient: 'Седова Р.', first: false, until: '13:55', progW: '12%', freeTime: '15:00', freeDur: '1 ч', freeSoon: false },
+      { id: 'Кабинет 2', dir: 'IV-терапия', dirShort: 'IV-терапия', doctor: 'Соколова Е.', proc: 'IV-терапия', patient: 'Артур Ким', first: true, until: '14:10', progW: '44%', freeTime: '16:00', freeDur: '1 ч', freeSoon: false },
+      { id: 'Кабинет 3', dir: 'БОС · нейромедитация', dirShort: 'БОС', doctor: 'Мороз Д.', proc: 'БОС-терапия', patient: 'Рыков Е.', first: false, until: '13:30', progW: '78%', freeTime: '13:30', freeDur: '1 ч 30 мин', freeSoon: true }
+    ].map(c => ({ ...c, ...fstyle(c.freeSoon) }));
+
+    const waiting = [
+      { name: 'Гущин П.', proc: 'Остеопатия', cab: 'Кабинет 1', at: '14:00' },
+      { name: 'Дорн С.', proc: 'IV-терапия', cab: 'Кабинет 2', at: '14:30' }
+    ];
+
+    const nextUp = [
+      { time: '14:00', proc: 'Остеопатия', patient: 'Гущин П.', cab: 'Каб 1', first: false },
+      { time: '14:30', proc: 'IV-терапия', patient: 'Дорн С.', cab: 'Каб 2', first: false },
+      { time: '15:00', proc: 'Нейромедитация', patient: 'Лея М.', cab: 'Каб 3', first: true },
+      { time: '16:00', proc: 'Остеопатия', patient: 'Лаврова Н.', cab: 'Каб 1', first: false }
+    ];
+
+    const freeWindows = [
+      { time: '13:30', cab: 'Кабинет 3', dir: 'БОС · нейромедитация', dur: '1 ч 30 мин', soon: true },
+      { time: '15:00', cab: 'Кабинет 1', dir: 'Остеопатия', dur: '1 ч', soon: false },
+      { time: '16:00', cab: 'Кабинет 2', dir: 'IV-терапия', dur: '1 ч', soon: false },
+      { time: '16:45', cab: 'Кабинет 3', dir: 'Нейромедитация', dur: '1 ч 15 мин', soon: false },
+      { time: '18:30', cab: 'Кабинет 1', dir: 'Остеопатия', dur: '2 ч 30 мин', soon: false },
+      { time: '18:30', cab: 'Кабинет 2', dir: 'IV-терапия', dur: '2 ч 30 мин', soon: false }
+    ].map(w => ({ ...w, ...fstyle(w.soon), ...rowStyle(w.soon) }));
+
+    const agendaPast = [
+      { time: '12:15', cab: 'Каб 1', proc: 'Массаж', patient: 'Ронин Т.' },
+      { time: '12:30', cab: 'Каб 3', proc: 'Анализы', patient: 'сестра' }
+    ];
+    const agendaNow = [
+      { time: '12:40', cab: 'Каб 2', proc: 'IV-терапия', patient: 'Артур Ким', until: '14:10', first: true },
+      { time: '12:45', cab: 'Каб 3', proc: 'БОС-терапия', patient: 'Рыков Е.', until: '13:30', first: false },
+      { time: '13:15', cab: 'Каб 1', proc: 'Массаж', patient: 'Седова Р.', until: '13:55', first: false }
+    ];
+    const agendaFuture = [
+      { time: '13:30', cab: 'Каб 3', free: true, dur: '1 ч 30 мин', soon: true },
+      { time: '14:00', cab: 'Каб 1', proc: 'Остеопатия', patient: 'Гущин П.' },
+      { time: '14:30', cab: 'Каб 2', proc: 'IV-терапия', patient: 'Дорн С.' },
+      { time: '15:00', cab: 'Каб 1', free: true, dur: '1 ч', soon: false },
+      { time: '15:00', cab: 'Каб 3', proc: 'Нейромедитация', patient: 'Лея М.', first: true },
+      { time: '16:00', cab: 'Каб 2', free: true, dur: '1 ч', soon: false },
+      { time: '16:00', cab: 'Каб 1', proc: 'Остеопатия', patient: 'Лаврова Н.' },
+      { time: '16:45', cab: 'Каб 3', free: true, dur: '1 ч 15 мин', soon: false },
+      { time: '17:00', cab: 'Каб 2', proc: 'IV-терапия', patient: 'Мила О.' }
+    ].map(e => ({ ...e, booked: !e.free, ...(e.free ? fstyle(e.soon) : {}) }));
+
+    return { accent, accentTint, accentBorder, accentText, cabinets, waiting, nextUp, freeWindows, agendaPast, agendaNow, agendaFuture };
+  }
+}
+</script>
+</body>
+</html>

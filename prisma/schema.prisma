@@ -26,6 +26,9 @@ enum Channel {
   INSTAGRAM
   WHATSAPP
   TELEGRAM
+  /// Звонок, занесённый вручную. Обращение наравне с сообщением (§8).
+  /// На Conversation/Message не используется — только на Inquiry.
+  PHONE
 }
 
 enum ConversationStatus {
@@ -224,6 +227,21 @@ model Company {
   funnelRollups       DailyFunnelRollup[]
   revenueRollups      DailyRevenueRollup[]
   roomLoadRollups     DailyRoomLoadRollup[]
+  serviceLoadRollups  DailyServiceLoadRollup[]
+  patientPhones       PatientPhone[]
+  patientRelations    PatientRelation[]
+  patientNotes        PatientNote[]
+  callLogs            CallLog[]
+  messageTemplates    MessageTemplate[]
+  knowledgeEntries    KnowledgeEntry[]
+  settings            Setting[]
+  credentials         Credential[]
+  clinicSchedules     ClinicSchedule[]
+  clinicExceptions    ClinicScheduleException[]
+  serviceRooms        ServiceRoom[]
+  consentDocuments    ConsentDocument[]
+  patientConsents     PatientConsent[]
+  rolePermissions     RolePermission[]
 
   @@map("companies")
 }
@@ -234,24 +252,15 @@ model Patient {
   id         String    @id @default(cuid())
   companyId  String
   yclientsId Int?
-  /// E.164, нормализуется на входе. Индекс БЕЗ unique: один номер
-  /// встречается у семьи — дети записаны на телефон родителя.
-  phone      String
-  /// Как номер пришёл от источника — для разбора спорных случаев.
-  phoneRaw   String?
   name       String?
   birthDate  DateTime? @db.Date
 
   /// Первое появление в базе с учётом импортированной истории YCLIENTS.
-  /// Метрика «новые пациенты» считается по нему.
+  /// Метрика «новые пациенты» считается по первому появлению любого номера.
   firstSeenAt  DateTime  @db.Timestamptz(3)
   firstVisitAt DateTime? @db.Timestamptz(3)
   lastVisitAt  DateTime? @db.Timestamptz(3)
   sourceId     String?
-
-  /// Согласие на обработку ПДн: факт и версия политики (152-ФЗ).
-  consentGivenAt       DateTime? @db.Timestamptz(3)
-  consentPolicyVersion String?
 
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
@@ -261,11 +270,20 @@ model Patient {
   source        Source?        @relation(fields: [sourceId], references: [id], onDelete: SetNull)
   conversations Conversation[]
   inquiries     Inquiry[]
-  appointments  Appointment[]
+  appointments  Appointment[] @relation("AppointmentPatient")
+  bookedAppointments Appointment[] @relation("AppointmentBookedByPatient")
   courses       Course[]
+  // Телефон вынесен в отдельную таблицу: у пациента несколько номеров,
+  // WhatsApp и звонки бывают на разных. Поиск идёт по всем.
+  phones        PatientPhone[]
+  // Родство: pair (patientId → relatedPatientId). Две стороны отношения.
+  relationsOut  PatientRelation[] @relation("RelationOwner")
+  relationsIn   PatientRelation[] @relation("RelationTarget")
+  notes         PatientNote[]
+  callLogs      CallLog[]
+  consents      PatientConsent[]
 
   @@unique([companyId, yclientsId])
-  @@index([companyId, phone])
   @@index([companyId, firstSeenAt])
   @@index([companyId, lastVisitAt])
   @@index([companyId, deletedAt])
@@ -363,10 +381,13 @@ model Message {
 model Inquiry {
   id             String         @id @default(cuid())
   companyId      String
-  conversationId String
+  /// Необязателен: обращение из звонка (channel = PHONE) переписки не имеет.
+  conversationId String?
   patientId      String?
   sourceId       String
   channel        Channel
+  /// Звонок как обращение (§3.4): ссылка на занесённый CallLog.
+  callLogId      String?        @unique
   startedAt      DateTime       @db.Timestamptz(3)
   lastMessageAt  DateTime       @db.Timestamptz(3)
   messageCount   Int            @default(1)
@@ -380,18 +401,20 @@ model Inquiry {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  patient      Patient?     @relation(fields: [patientId], references: [id], onDelete: SetNull)
-  source       Source       @relation(fields: [sourceId], references: [id], onDelete: Restrict)
-  firstMessage Message?     @relation("InquiryFirstMessage", fields: [firstMessageId], references: [id], onDelete: SetNull)
-  appointment  Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  patient      Patient?      @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  source       Source        @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  callLog      CallLog?      @relation(fields: [callLogId], references: [id], onDelete: SetNull)
+  firstMessage Message?      @relation("InquiryFirstMessage", fields: [firstMessageId], references: [id], onDelete: SetNull)
+  appointment  Appointment?  @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
   escalations  Escalation[]
 
-  /// Повторная материализация того же окна не создаёт дубль.
+  /// Повторная материализация того же окна не создаёт дубль (для переписки).
   @@unique([conversationId, startedAt])
   @@index([companyId, startedAt])
   @@index([companyId, sourceId, startedAt])
+  @@index([companyId, channel, startedAt])
   @@index([companyId, outcome])
   @@map("inquiries")
 }
@@ -439,6 +462,13 @@ model Appointment {
   courseId         String?
   sourceId         String?
   conversationId   String?
+  /// Основная услуга визита — основной разрез метрик (загрузка по услугам, §8).
+  /// Полный перечень услуг визита остаётся в AppointmentService.
+  primaryServiceId String?
+  /// Кто оформил визит за другого посетителя (§3.2). Родственник — bookedBy
+  /// Patient; сотрудник-оформитель — bookedBy StaffUser. Оба необязательны.
+  bookedByPatientId   String?
+  bookedByStaffUserId String?
 
   startAt     DateTime @db.Timestamptz(3)
   /// Материализован: загрузка кабинета считается пересечением интервалов,
@@ -476,15 +506,19 @@ model Appointment {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  patient      Patient              @relation(fields: [patientId], references: [id], onDelete: Restrict)
-  staff        Staff                @relation(fields: [staffId], references: [id], onDelete: Restrict)
-  room         Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
-  course       Course?              @relation(fields: [courseId], references: [id], onDelete: SetNull)
-  source       Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
-  conversation Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  services     AppointmentService[]
-  inquiries    Inquiry[]
+  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient        Patient              @relation("AppointmentPatient", fields: [patientId], references: [id], onDelete: Restrict)
+  staff          Staff                @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  room           Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  course         Course?              @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  source         Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  conversation   Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  primaryService Service?             @relation("AppointmentPrimaryService", fields: [primaryServiceId], references: [id], onDelete: SetNull)
+  bookedByPatient   Patient?          @relation("AppointmentBookedByPatient", fields: [bookedByPatientId], references: [id], onDelete: SetNull)
+  bookedByStaffUser StaffUser?        @relation("AppointmentBookedByStaff", fields: [bookedByStaffUserId], references: [id], onDelete: SetNull)
+  services       AppointmentService[]
+  inquiries      Inquiry[]
+  callLogs       CallLog[]            @relation("CallResultedInAppointment")
 
   @@unique([companyId, yclientsRecordId])
   @@index([companyId, startAt])
@@ -493,6 +527,7 @@ model Appointment {
   @@index([companyId, patientId, startAt])
   @@index([companyId, status, createdAtYclients])
   @@index([companyId, courseId])
+  @@index([companyId, primaryServiceId, startAt])
   @@map("appointments")
 }
 
@@ -530,6 +565,8 @@ model Service {
   /// Продаётся курсом (IV-терапия, БОС-терапия).
   isCourse          Boolean     @default(false)
   defaultSessions   Int?
+  /// Порог выпадения из графика в днях — свой для каждой услуги (§4.3).
+  stalledAfterDays  Int?
   isActive          Boolean     @default(true)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
@@ -538,6 +575,11 @@ model Service {
   company             Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
   appointmentServices AppointmentService[]
   courses             Course[]
+  // Кабинеты, где услуга может проводиться — знаменатель загрузки по услугам.
+  rooms               ServiceRoom[]
+  primaryForAppointments Appointment[]     @relation("AppointmentPrimaryService")
+  knowledgeEntries    KnowledgeEntry[]
+  callInterests       CallLog[]            @relation("CallServiceInterest")
 
   @@unique([companyId, yclientsServiceId])
   @@index([companyId, kind, isActive])
@@ -553,6 +595,10 @@ model Course {
   companyId           String
   patientId           String
   serviceId           String
+  /// YCLIENTS — курс читается абонементом (БОС). MANUAL — курса в YCLIENTS нет
+  /// (IV-капельницы заведены отдельными услугами), ведём у себя: сеансы и сумму
+  /// администратор задаёт при первом визите (§3.5).
+  origin              CourseOrigin @default(YCLIENTS)
   yclientsAbonementId Int?
   sessionsTotal       Int
   sessionsUsed        Int          @default(0)
@@ -613,6 +659,11 @@ model Room {
   /// В YCLIENTS кабинеты ведутся как ресурсы; может отсутствовать.
   yclientsResourceId Int?
   name               String
+  /// Направление кабинета: «IV-терапия», «БОС-терапия», «Остеопатия».
+  direction          String?
+  /// Наследовать часы работы от клиники (ClinicSchedule) или иметь своё
+  /// (RoomSchedule). §3.9, §4.2.
+  inheritsClinicSchedule Boolean @default(true)
   isActive           Boolean @default(true)
   sortOrder          Int     @default(0)
 
@@ -624,6 +675,7 @@ model Room {
   exceptions      RoomScheduleException[]
   appointments    Appointment[]
   defaultForStaff Staff[]                 @relation("StaffDefaultRoom")
+  services        ServiceRoom[]
 
   @@unique([companyId, yclientsResourceId])
   @@index([companyId, isActive])
@@ -702,6 +754,12 @@ model StaffUser {
   acknowledgedEscalations Escalation[]       @relation("EscalationAcknowledgedBy")
   resolvedEscalations     Escalation[]       @relation("EscalationResolvedBy")
   auditLogs               AuditLog[]
+  bookedAppointments      Appointment[]      @relation("AppointmentBookedByStaff")
+  createdNotes            PatientNote[]
+  createdCallLogs         CallLog[]
+  knowledgeEdits          KnowledgeEntry[]
+  settingEdits            Setting[]
+  consentDocuments        ConsentDocument[]
 
   @@unique([companyId, email])
   @@index([companyId, role, isActive])
@@ -748,6 +806,7 @@ model Source {
   conversations Conversation[]
   inquiries     Inquiry[]
   appointments  Appointment[]
+  callLogs      CallLog[]
   funnelRollups DailyFunnelRollup[]
 
   @@unique([companyId, code])
@@ -892,4 +951,380 @@ model DailyRoomLoadRollup {
   @@unique([companyId, date, roomId])
   @@index([companyId, date])
   @@map("daily_room_load_rollups")
+}
+
+/// Основной разрез загрузки — по услугам (§8): занятые минуты по услуге /
+/// доступные минуты кабинетов, где услуга может проводиться (ServiceRoom).
+/// serviceId — скаляр без relation, как staffId/roomId в других роллапах.
+model DailyServiceLoadRollup {
+  id        String   @id @default(cuid())
+  companyId String
+  date      DateTime @db.Date
+  serviceId String
+
+  busyMinutes      Int @default(0)
+  availableMinutes Int @default(0)
+  appointments     Int @default(0)
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, date, serviceId])
+  @@index([companyId, date])
+  @@map("daily_service_load_rollups")
+}
+
+// ══════════════════════════════ Волна 1: новые сущности ══════════════════
+
+enum PatientRelationKind {
+  PARENT
+  GUARDIAN
+  SPOUSE
+  OTHER
+}
+
+enum PatientNoteKind {
+  NO_CONSENT
+  INCOMPLETE_PASSPORT
+  ATTENTION
+  CUSTOM
+}
+
+enum CallDirection {
+  IN
+  OUT
+}
+
+enum CourseOrigin {
+  YCLIENTS
+  MANUAL
+}
+
+enum MessageTemplateStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+enum CredentialStatus {
+  UNKNOWN
+  OK
+  FAILED
+}
+
+/// Права, ограничиваемые ролью. Проверка на сервере в каждом запросе (§9),
+/// матрица редактируется в настройках.
+enum Permission {
+  VIEW_OTHER_PATIENTS
+  VIEW_REVENUE
+  EDIT_SETTINGS
+  MESSAGE_PATIENTS
+  VIEW_AUDIT
+}
+
+// ─────────────────────────────────────────────────────────── пациент: контакты
+
+/// Телефоны пациента. Один пациент — несколько номеров: WhatsApp и звонки
+/// бывают на разных. Поиск идёт по всем. Ровно один isPrimary на пациента —
+/// частичным уникальным индексом в миграции.
+model PatientPhone {
+  id              String  @id @default(cuid())
+  companyId       String
+  patientId       String
+  /// E.164, нормализуется на входе.
+  phone           String
+  label           String?
+  isPrimary       Boolean @default(false)
+  usedForWhatsapp Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, phone])
+  @@index([patientId])
+  @@map("patient_phones")
+}
+
+model PatientRelation {
+  id               String              @id @default(cuid())
+  companyId        String
+  patientId        String
+  relatedPatientId String
+  kind             PatientRelationKind
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient Patient @relation("RelationOwner", fields: [patientId], references: [id], onDelete: Cascade)
+  related Patient @relation("RelationTarget", fields: [relatedPatientId], references: [id], onDelete: Cascade)
+
+  @@unique([patientId, relatedPatientId, kind])
+  @@index([companyId, relatedPatientId])
+  @@map("patient_relations")
+}
+
+/// Служебная отметка о пациенте. Видна только сотрудникам, никогда не уходит
+/// в переписку и в тексты ассистента (§3.3, §6.3).
+model PatientNote {
+  id          String          @id @default(cuid())
+  companyId   String
+  patientId   String
+  kind        PatientNoteKind
+  text        String
+  createdById String?
+  resolvedAt  DateTime?       @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient   Patient    @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  createdBy StaffUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, patientId])
+  @@index([companyId, resolvedAt])
+  @@map("patient_notes")
+}
+
+/// Журнал звонков — телефонии нет, заносится вручную одной формой (§3.4).
+/// Звонок — обращение наравне с сообщением, связывается с Inquiry (channel=PHONE).
+model CallLog {
+  id                      String        @id @default(cuid())
+  companyId               String
+  patientId               String?
+  /// E.164.
+  phone                   String
+  direction               CallDirection
+  serviceInterestId       String?
+  sourceId                String?
+  note                    String?
+  createdById             String?
+  resultedInAppointmentId String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company               Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient               Patient?     @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  serviceInterest       Service?     @relation("CallServiceInterest", fields: [serviceInterestId], references: [id], onDelete: SetNull)
+  source                Source?      @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  createdBy             StaffUser?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  resultedInAppointment Appointment? @relation("CallResultedInAppointment", fields: [resultedInAppointmentId], references: [id], onDelete: SetNull)
+  inquiry               Inquiry?
+
+  @@index([companyId, createdAt])
+  @@index([companyId, patientId])
+  @@map("call_logs")
+}
+
+/// Курсы IV: origin=MANUAL (см. Course.origin). БОС — origin=YCLIENTS.
+
+// ─────────────────────────────────────────────────────────── ассистент и связь
+
+/// Шаблоны WhatsApp: вне 24-часового окна пациенту можно писать только
+/// заранее утверждённым шаблоном (§3.6). providerTemplateId — идентификатор у
+/// провайдера. Отправка различает: окно открыто — свободный текст; закрыто —
+/// только APPROVED.
+model MessageTemplate {
+  id                 String                @id @default(cuid())
+  companyId          String
+  channel            Channel
+  code               String
+  title              String
+  bodyTemplate       String
+  variables          Json?
+  providerTemplateId String?
+  status             MessageTemplateStatus @default(DRAFT)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, code])
+  @@index([companyId, channel, status])
+  @@map("message_templates")
+}
+
+/// База знаний ассистента. Ассистент отвечает ТОЛЬКО текстами отсюда, не
+/// сочиняет (§3.7, §6.3). Часть тем — медицинские, формулирует их клиника.
+model KnowledgeEntry {
+  id          String  @id @default(cuid())
+  companyId   String
+  topic       String
+  question    String
+  answer      String
+  serviceId   String?
+  isActive    Boolean @default(true)
+  updatedById String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  service   Service?   @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  updatedBy StaffUser? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, isActive])
+  @@index([companyId, serviceId])
+  @@map("knowledge_entries")
+}
+
+// ─────────────────────────────────────────────────────────── настройки
+
+/// Ключ-значение настроек клиники. Всё, что было в env/сиде/константах.
+model Setting {
+  companyId   String
+  key         String
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  updatedBy StaffUser? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@id([companyId, key])
+  @@map("settings")
+}
+
+/// Секреты интеграций. Шифруются AES-256-GCM, мастер-ключ из env. В интерфейсе
+/// только маска, никогда полностью (§3.8, §9). status — результат проверки связи.
+model Credential {
+  id             String           @id @default(cuid())
+  companyId      String
+  provider       String
+  keyName        String
+  valueEncrypted String
+  lastCheckedAt  DateTime?        @db.Timestamptz(3)
+  status         CredentialStatus @default(UNKNOWN)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, provider, keyName])
+  @@map("credentials")
+}
+
+/// Общие часы работы клиники по дням недели. Кабинет наследует их
+/// (Room.inheritsClinicSchedule) или имеет своё RoomSchedule.
+model ClinicSchedule {
+  id          String    @id @default(cuid())
+  companyId   String
+  /// 1 = понедельник … 7 = воскресенье (ISO-8601).
+  weekday     Int
+  startMinute Int
+  endMinute   Int
+  validFrom   DateTime  @db.Date
+  validTo     DateTime? @db.Date
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, weekday, validFrom])
+  @@index([companyId, weekday])
+  @@map("clinic_schedules")
+}
+
+/// Исключения из общих часов: праздник, санитарный день, короткий день.
+model ClinicScheduleException {
+  id          String   @id @default(cuid())
+  companyId   String
+  date        DateTime @db.Date
+  isClosed    Boolean  @default(true)
+  startMinute Int?
+  endMinute   Int?
+  label       String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, date])
+  @@index([companyId, date])
+  @@map("clinic_schedule_exceptions")
+}
+
+/// Где услуга может проводиться. Знаменатель загрузки по услугам: доступные
+/// минуты кабинетов, где услуга разрешена (§8, §4.3).
+model ServiceRoom {
+  id        String @id @default(cuid())
+  companyId String
+  serviceId String
+  roomId    String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  room    Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, roomId])
+  @@index([companyId, roomId])
+  @@map("service_rooms")
+}
+
+// ─────────────────────────────────────────────────────────── согласие, права
+
+/// Версия текста согласия на обработку ПДн. Смена версии → согласие
+/// запрашивается заново (§4.10).
+model ConsentDocument {
+  id          String  @id @default(cuid())
+  companyId   String
+  version     String
+  text        String
+  policyUrl   String?
+  isActive    Boolean @default(true)
+  createdById String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy StaffUser?       @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  consents  PatientConsent[]
+
+  @@unique([companyId, version])
+  @@map("consent_documents")
+}
+
+/// Факт согласия пациента на конкретную версию текста.
+model PatientConsent {
+  id                 String   @id @default(cuid())
+  companyId          String
+  patientId          String
+  documentId         String
+  grantedAt          DateTime @db.Timestamptz(3)
+  channel            Channel?
+  /// Ссылка на сообщение-доказательство (скаляр, без relation).
+  evidenceMessageId  String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient  Patient         @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  document ConsentDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@unique([patientId, documentId])
+  @@index([companyId, patientId])
+  @@map("patient_consents")
+}
+
+/// Матрица прав по ролям. Редактируется в настройках; проверка прав на
+/// сервере читает эти строки (§4.4, §9).
+model RolePermission {
+  id         String     @id @default(cuid())
+  companyId  String
+  role       StaffRole
+  permission Permission
+  allowed    Boolean    @default(false)
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, role, permission])
+  @@map("role_permissions")
 }

@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Значок dev-режима перекрывает профиль в сайдбаре и мешает скриншотам.
+  devIndicators: false,
 };
 
 export default nextConfig;

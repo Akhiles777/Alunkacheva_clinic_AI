@@ -1,77 +1,124 @@
 @import "tailwindcss";
+@import "../tokens.css";
 
 /*
- * «Пульт» — см. DESIGN.md.
- *
- * Экран = передняя панель прибора: плоскость, точность, гравировка.
- * Врезка передаётся ТОЛЬКО разницей светлоты (панель → вставка) и волосяной
- * линией паза. Ни фасок, ни градиентов, ни внутренних теней, ни текстур.
+ * Визуальный язык — см. DESIGN.md, значения — в tokens.css.
+ * Здесь только мост: токены → утилиты Tailwind, плюс базовые помощники.
  */
 @theme inline {
-  --color-panel: #dfdbd2;
-  --color-panel-sunk: #d2cec4;
-  /* Третья ступень светлоты — только для пропорциональных полос, где
-     соседние сегменты обязаны различаться без цвета. */
-  --color-panel-deep: #bfb9ac;
-  --color-inset: #f5f3ee;
-  --color-groove: #a8a296;
-  --color-engrave: #22231e;
-  --color-label: #575249;
-  /* Сигнальный: только заливки, засечки, кромка активного состояния. */
-  --color-signal: #c24e12;
-  /* Тот же тон на 6,9:1 — весь текст про окна и потери. */
-  --color-signal-ink: #7b2e05;
+  /* поверхности и текст */
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-hover: var(--hover);
+  --color-nav-active: var(--nav-active);
+  --color-raise: var(--raise);
+  --color-list-gap: var(--list-gap);
+  --color-chip: var(--chip);
+  --color-chip-strong: var(--chip-strong);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-input: var(--border-input);
+  --color-border-soft: var(--border-soft);
+  --color-sep: var(--sep);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-subtle: var(--text-subtle);
+  --color-ink-avatar: var(--ink-avatar);
 
-  --font-display: var(--font-manrope);
-  --font-sans: var(--font-golos);
+  /* акцент */
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-text: var(--accent-text);
+  --color-accent-tint: var(--accent-tint);
+  --color-accent-border: var(--accent-border);
+  --color-accent-contrast: var(--accent-contrast);
+
+  /* радиусы */
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+  --radius-2xl: var(--r-2xl);
+  --radius-pill: var(--r-pill);
+
+  /* типографическая шкала (переопределяет дефолт Tailwind осознанно) */
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-data: 21px;
+  --text-2xl: 30px;
+
+  /* шрифты */
+  --font-sans: var(--font-onest);
   --font-mono: var(--font-jetbrains);
 }
 
 html {
-  background: var(--color-panel);
-  color: var(--color-engrave);
+  background: var(--bg);
+  color: var(--text);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--fs-base);
+  line-height: 1.45;
+  font-synthesis-weight: none;
 }
 
-/* Гравированная подпись: мелкий капс с разрядкой. */
-.legend {
-  font-family: var(--font-display);
-  font-size: 10px;
-  line-height: 14px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--color-label);
-}
-
-/* Показания прибора: разряды не прыгают при смене периода. */
+/* Числа и время — моноширинный, только они. Разряды не прыгают. */
 .num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
-}
-
-.display {
-  font-family: var(--font-display);
   letter-spacing: -0.01em;
 }
 
-/*
- * Заливка открытого паза. Не градиент: одна плоская краска низкой
- * плотности, поверх — засечка сигнального цвета по верхней кромке.
- */
-.groove-open {
-  background-color: color-mix(in srgb, var(--color-signal) 7%, transparent);
+/* Декоративная точка-разделитель: не текстовый узел, к контрасту не относится. */
+.sep-dot {
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  border-radius: var(--r-round);
+  background: var(--sep);
+  vertical-align: middle;
+  flex: 0 0 auto;
 }
 
 :focus-visible {
-  outline: 2px solid var(--color-signal);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+::selection {
+  background: var(--accent-tint);
+}
+
+/* Скелетон: спокойное дыхание серого, без бегущих бликов. */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+.skeleton {
+  background: var(--list-gap);
+  animation: breathe 1.7s ease-in-out infinite;
+}
+
+/* Оверлей панели (карточка пациента / запись) поверх экрана. */
+.overlay-scrim {
+  background: color-mix(in srgb, var(--text) 32%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -83,19 +130,4 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-}
-
-/* Скелетон загрузки: гравировка на месте, вставки пусты. */
-@keyframes panel-idle {
-  0%,
-  100% {
-    opacity: 0.55;
-  }
-  50% {
-    opacity: 0.8;
-  }
-}
-
-.idle {
-  animation: panel-idle 1.6s ease-in-out infinite;
 }

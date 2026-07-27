@@ -1,11 +1,10 @@
 "use client";
 
 /**
- * Ошибка чтения метрик. Панель не подменяется целиком: на месте секции
- * появляется вставка с текстом ошибки и кнопкой повтора (DESIGN.md §6).
- * Текст об ошибке набран signal-ink — сигнальный тон на 6,9:1, а не заливкой.
+ * Ошибка: объясняем, что не прочиталось и что делать. Без извинений, без
+ * подмены всего экрана — заголовок остаётся.
  */
-export default function DashboardError({
+export default function TodayError({
   error,
   reset,
 }: {
@@ -13,32 +12,27 @@ export default function DashboardError({
   reset: () => void;
 }) {
   return (
-    <section>
-      <header className="border-groove border-b px-4 py-2">
-        <h2 className="legend">Метрики клиники</h2>
-      </header>
-      <div className="px-4 py-4">
-        <div className="bg-inset border-groove border px-4 py-3">
-          <p className="text-signal-ink text-[13px] font-medium">
-            Показания не прочитаны: роллапы недоступны.
-          </p>
-          <p className="text-label mt-1 text-[12px]">
-            Дашборд читает локальную проекцию YCLIENTS. Если ошибка повторяется —
-            проверьте воркер пересчёта и подключение к базе.
-          </p>
-          {error.digest ? (
-            <p className="num text-label mt-2 text-[11px]">код {error.digest}</p>
-          ) : null}
-          <button
-            type="button"
-            onClick={reset}
-            className="legend border-groove bg-panel-sunk hover:bg-inset relative mt-3 border px-3 py-1.5"
-          >
-            Повторить
-            <span aria-hidden className="bg-signal absolute inset-x-0 bottom-0 h-0.5" />
-          </button>
-        </div>
+    <div className="px-7 py-8 max-md:px-5">
+      <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Сегодня</h1>
+
+      <div className="border-border bg-surface mt-7 max-w-[560px] rounded-xl border p-5">
+        <p className="text-md font-medium">Данные смены не загрузились</p>
+        <p className="text-text-muted mt-2 text-sm leading-relaxed">
+          Экран читает локальную проекцию YCLIENTS. Записи и деньги в самом
+          YCLIENTS не пострадали. Если повтор не помогает — проверьте воркер
+          синхронизации и подключение к базе.
+        </p>
+        {error.digest ? (
+          <p className="num text-text-subtle mt-3 text-xs">код ошибки {error.digest}</p>
+        ) : null}
+        <button
+          type="button"
+          onClick={reset}
+          className="bg-accent text-accent-contrast hover:bg-accent-hover mt-5 rounded-md px-4 py-2 text-sm font-medium"
+        >
+          Загрузить снова
+        </button>
       </div>
-    </section>
+    </div>
   );
 }

@@ -1,163 +1,158 @@
-import { FunnelBlock } from "../_components/funnel-block";
-import { Section } from "../_components/panel";
-import { Readings } from "../_components/readings";
-import { RoomDayBoard } from "../_components/room-day";
-import { SourceBars } from "../_components/source-bars";
-import { StaffTable } from "../_components/staff-table";
-import { VisitMixBar } from "../_components/visit-mix-bar";
-import { buildFunnel } from "@/lib/metrics/funnel";
-import { withSourceShares, withStaffShares } from "@/lib/metrics/summary";
-import type { PeriodInfo, RoomDay } from "@/lib/metrics/types";
+import { CabinetCard } from "../_components/cabinet-card";
+import { FreeWindows } from "../_components/free-windows";
+import { AttentionList, InquiryList } from "../_components/today-lists";
+import { getToday, type CabinetNow, type FreeWindowRow } from "@/app/_data/today";
 
 /**
- * Витрина граничных состояний — служебный экран для визуальной проверки.
- * Фикстуры лежат здесь, а не в `lib/`: это визуальный слой, метрики и моки
- * он не трогает.
+ * Витрина граничных состояний — служебный экран визуальной проверки.
+ * Фикстуры здесь: это визуальный слой, `lib/metrics` и моки он не трогает.
  */
+export const metadata = { title: "Состояния — Мера" };
 
-export const metadata = { title: "Состояния — Клиника" };
+const base = getToday();
 
-const PERIOD: PeriodInfo = {
-  key: "month",
-  label: "Месяц",
-  from: "2026-07-01T00:00:00.000Z",
-  to: "2026-08-01T00:00:00.000Z",
-  workingDays: 27,
+const EMPTY_CABINETS: CabinetNow[] = base.cabinets.map((c) => ({
+  ...c,
+  current: null,
+  nextFree: { time: "09:00", duration: "весь день", soon: c.id === "room-1" },
+}));
+
+const BIG_SUMMARY = {
+  revenue: 1486000,
+  avgCheck: 6140,
+  scheduled: 1248,
+  firstVisits: 372,
+  now: "13:20",
 };
 
-const EMPTY_ROOM: RoomDay = {
-  roomId: "room-empty",
-  roomName: "Кабинет 3 · БОС и нейромедитация",
-  date: "2026-07-22T00:00:00.000Z",
-  openMinute: 540,
-  closeMinute: 1260,
-  intervals: [],
-  gaps: [{ startMinute: 540, endMinute: 1260, durationMin: 720 }],
-  busyMinutes: 0,
-  workingMinutes: 720,
-  occupancy: 0,
-  periodOccupancy: 0,
-};
-
-const BUSY_ROOM: RoomDay = {
-  roomId: "room-busy",
-  roomName: "Кабинет 2 · IV-терапия и забор анализов",
-  date: "2026-07-22T00:00:00.000Z",
-  openMinute: 540,
-  closeMinute: 1260,
-  intervals: [
-    {
-      appointmentId: "b1",
-      startMinute: 540,
-      endMinute: 555,
-      serviceTitle: "Забор анализов",
-      serviceKind: "LAB",
-      staffName: "Литвинова О. А.",
-      patientLabel: "А. К.",
-      isCourseSession: false,
-    },
-    {
-      appointmentId: "b2",
-      startMinute: 555,
-      endMinute: 660,
-      serviceTitle: "IV-терапия, капельница расширенная",
-      serviceKind: "IV_THERAPY",
-      staffName: "Константинопольская-Ржевская А. В.",
-      patientLabel: "Г. И.",
-      isCourseSession: true,
-    },
-    {
-      appointmentId: "b3",
-      startMinute: 780,
-      endMinute: 870,
-      serviceTitle: "IV-терапия, капельница",
-      serviceKind: "IV_THERAPY",
-      staffName: "Ковалёва М. С.",
-      patientLabel: "Д. Ф.",
-      isCourseSession: true,
-    },
-  ],
-  gaps: [
-    { startMinute: 660, endMinute: 780, durationMin: 120 },
-    { startMinute: 870, endMinute: 1260, durationMin: 390 },
-  ],
-  busyMinutes: 210,
-  workingMinutes: 720,
-  occupancy: 210 / 720,
-  periodOccupancy: 0.31,
-};
-
-const STAFF = withStaffShares([
-  {
-    staffId: "s1",
-    name: "Константинопольская-Ржевская Анастасия Владимировна",
-    specialty: "Врач интегративной медицины, IV-терапия",
-    appointments: 1284,
-    revenue: 8340500,
+const LONG_CABINET: CabinetNow = {
+  id: "room-long",
+  name: "Кабинет 2 (процедурный)",
+  direction: "IV-терапия, забор анализов и инъекции",
+  doctor: "Константинопольская-Ржевская А. В.",
+  current: {
+    proc: "IV-терапия",
+    patient: "Константинопольская-Ржевская Аполлинария Владиславовна",
+    isFirstVisit: true,
+    until: "14:10",
+    courseProgress: { index: 9, total: 10 },
   },
-  { staffId: "s2", name: "Ковалёва М. С.", specialty: "Врач IV-терапии", appointments: 94, revenue: 611000 },
-  {
-    staffId: "s3",
-    name: "Дорохова Е. В.",
-    specialty: "Нейропсихолог, стажировка",
-    appointments: 7,
-    revenue: 0,
-  },
-]);
+  nextFree: { time: "14:10", duration: "1 ч 30 мин", soon: true },
+};
+
+const LONG_WINDOWS: FreeWindowRow[] = [
+  { id: "lw1", time: "14:10", startMinute: 850, cabName: "Кабинет 2 (процедурный)", direction: "IV-терапия, забор анализов и инъекции", duration: "1 ч 30 мин", soon: true },
+  { id: "lw2", time: "16:00", startMinute: 960, cabName: "Кабинет 1", direction: "Остеопатия", duration: "1 ч", soon: false },
+];
+
+function Case({
+  title,
+  note,
+  children,
+}: {
+  title: string;
+  note: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="border-border border-t pt-6 pb-10">
+      <div className="mb-5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h2 className="text-md font-medium">{title}</h2>
+        <p className="text-text-subtle text-xs">{note}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
 
 export default function StatesPage() {
   return (
-    <>
-      <div className="border-groove border-b px-4 py-2.5">
-        <h1 className="display text-[15px] leading-tight font-semibold">Граничные состояния</h1>
-        <p className="text-label mt-0.5 text-[11px]">
-          служебный экран: пустой период, свободный канал, нулевая выручка, длинные имена,
-          четырёхзначные приёмы
+    <div className="flex-1 overflow-auto px-7 py-8 max-md:px-5">
+      <header className="mb-9">
+        <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Состояния</h1>
+        <p className="text-text-muted mt-2 max-w-[70ch] text-sm leading-relaxed">
+          Служебный экран: граничные случаи проверяются здесь, а не на живых
+          данных.
         </p>
-      </div>
+      </header>
 
-      <Section title="Канал без записей" hint="кабинет свободен весь день">
-        <RoomDayBoard rooms={[EMPTY_ROOM, BUSY_ROOM]} />
-      </Section>
-
-      <div className="border-groove grid grid-cols-1 border-t lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
-        <Section title="Пустой период · воронка">
-          <FunnelBlock steps={buildFunnel({ inquiries: 0, booked: 0, arrived: 0 })} />
-        </Section>
-        <div className="border-groove border-t lg:border-t-0 lg:border-l">
-          <Section title="Пустой период · показания">
-            <Readings
-              money={{
-                revenue: 0,
-                courseRevenue: 0,
-                avgCheck: 0,
-                newPatients: 0,
-                coursesSold: 0,
-                coursesAmount: 0,
-              }}
-              period={PERIOD}
-            />
-            <p className="legend mt-4 mb-2">Первичные и повторные</p>
-            <VisitMixBar mix={{ first: 0, courseSession: 0, returned: 0, total: 0 }} />
-          </Section>
+      <Case title="Пустой день" note="кабинеты свободны с открытия">
+        <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
+          {EMPTY_CABINETS.map((c) => (
+            <CabinetCard key={c.id} cabinet={c} />
+          ))}
         </div>
-      </div>
+      </Case>
 
-      <div className="border-groove grid grid-cols-1 border-t lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.3fr)]">
-        <Section title="Источники · один канал молчит">
-          <SourceBars
-            sources={withSourceShares([
-              { code: "instagram", title: "Instagram", inquiries: 1218, booked: 588 },
-              { code: "offline", title: "Пришёл сам", inquiries: 0, booked: 0 },
-            ])}
-          />
-        </Section>
-        <div className="border-groove border-t lg:border-t-0 lg:border-l">
-          <Section title="Специалисты · длинные имена и нулевая выручка">
-            <StaffTable staff={STAFF} />
-          </Section>
+      <Case title="Пустые очереди" note="ни эскалаций, ни новых обращений">
+        <div className="grid grid-cols-2 gap-x-8 gap-y-6 max-lg:grid-cols-1">
+          <AttentionList items={[]} />
+          <InquiryList items={[]} />
         </div>
-      </div>
-    </>
+      </Case>
+
+      <Case title="Все кабинеты заняты" note="свободных окон нет — это тоже ответ">
+        <FreeWindows windows={[]} />
+      </Case>
+
+      <Case title="Четырёхзначные числа" note="квартальные значения в дневной шапке">
+        <div className="text-text-muted flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+          <span>
+            Выручка{" "}
+            <b className="num text-text font-medium">
+              {BIG_SUMMARY.revenue.toLocaleString("ru-RU")} ₽
+            </b>
+          </span>
+          <span aria-hidden className="sep-dot" />
+          <span>
+            <b className="num text-text font-medium">{BIG_SUMMARY.scheduled.toLocaleString("ru-RU")}</b>{" "}
+            записей
+          </span>
+          <span aria-hidden className="sep-dot" />
+          <span>
+            <b className="num text-text font-medium">{BIG_SUMMARY.firstVisits}</b> первичных
+          </span>
+        </div>
+      </Case>
+
+      <Case title="Длинные фамилии" note="двойная с отчеством в карточке и окнах">
+        <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
+          <CabinetCard cabinet={LONG_CABINET} />
+          <div className="col-span-2 max-lg:col-span-1">
+            <FreeWindows windows={LONG_WINDOWS} />
+          </div>
+        </div>
+      </Case>
+
+      <Case title="Загрузка" note="каркас на месте, дышит серым">
+        <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="border-border bg-surface rounded-xl border p-[18px]">
+              <div className="skeleton h-4 w-28 rounded-sm" />
+              <div className="skeleton mt-2 h-3 w-24 rounded-sm" />
+              <div className="border-border-soft my-[15px] border-t" />
+              <div className="skeleton h-4 w-40 rounded-sm" />
+              <div className="skeleton mt-4 h-[70px] w-full rounded-lg" />
+            </div>
+          ))}
+        </div>
+      </Case>
+
+      <Case title="Ошибка" note="что не прочиталось и что делать">
+        <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+          <p className="text-md font-medium">Данные смены не загрузились</p>
+          <p className="text-text-muted mt-2 text-sm leading-relaxed">
+            Экран читает локальную проекцию YCLIENTS. Записи и деньги в самом
+            YCLIENTS не пострадали.
+          </p>
+          <button
+            type="button"
+            className="bg-accent text-accent-contrast hover:bg-accent-hover mt-5 rounded-md px-4 py-2 text-sm font-medium"
+          >
+            Загрузить снова
+          </button>
+        </div>
+      </Case>
+    </div>
   );
 }

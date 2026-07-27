@@ -1,105 +1,40 @@
 /**
- * Состояние загрузки: гравировка остаётся на месте — шкала времени, деления,
- * подписи колонок. Пусты только вставки. Серых пульсирующих полосок нет:
- * панель прибора не «мерцает», она ждёт показаний (DESIGN.md §6).
+ * Загрузка «Сегодня»: каркас экрана на месте — шапка, три карточки кабинетов,
+ * список. Дышит серым, без бегущих полосок.
  */
-function ScaleSkeleton() {
-  const hours = Array.from({ length: 13 }, (_, index) => 9 + index);
-
+export default function TodayLoading() {
   return (
-    <div className="-mx-4 overflow-x-auto px-4">
-      <div className="min-w-[540px]">
-        <div className="grid grid-cols-[92px_minmax(0,1fr)_58px] gap-x-3 md:grid-cols-[176px_minmax(0,1fr)_96px] md:gap-x-4">
-          <span className="legend self-end pb-1">канал</span>
-          <div className="relative h-6">
-            <span aria-hidden className="bg-groove absolute inset-x-0 bottom-0 h-px" />
-            {hours.map((hour, index) => (
-              <span
-                key={hour}
-                className="num text-label absolute bottom-2.5 text-[10px] leading-none"
-                style={{
-                  left: `${(index / (hours.length - 1)) * 100}%`,
-                  transform:
-                    index === 0
-                      ? undefined
-                      : index === hours.length - 1
-                        ? "translateX(-100%)"
-                        : "translateX(-50%)",
-                }}
-              >
-                {String(hour).padStart(2, "0")}
-              </span>
-            ))}
-            {hours.map((hour, index) => (
-              <span
-                key={`tick-${hour}`}
-                aria-hidden
-                className="bg-groove absolute bottom-0 h-2 w-px"
-                style={{ left: `${(index / (hours.length - 1)) * 100}%` }}
-              />
-            ))}
+    <div aria-busy="true" aria-label="Загружаем смену">
+      <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Сегодня</h1>
+            <div className="skeleton mt-2 h-3 w-40 rounded-sm" />
           </div>
-          <span className="legend self-end pb-1 text-right">занято</span>
+          <div className="skeleton h-9 w-28 rounded-md" />
         </div>
+        <div className="mt-3.5 flex gap-4">
+          <div className="skeleton h-3 w-28 rounded-sm" />
+          <div className="skeleton h-3 w-28 rounded-sm" />
+          <div className="skeleton h-3 w-20 rounded-sm" />
+        </div>
+      </header>
 
-        <ul>
-          {[0, 1, 2].map((row) => (
-            <li
-              key={row}
-              className="border-groove grid grid-cols-[92px_minmax(0,1fr)_58px] items-center gap-x-3 border-t py-2.5 md:grid-cols-[176px_minmax(0,1fr)_96px] md:gap-x-4 md:py-3"
-            >
-              <span className="bg-panel-sunk idle block h-3 w-full" />
-              <span className="border-groove bg-panel-sunk idle block h-14 border md:h-[60px]" />
-              <span className="bg-panel-sunk idle ml-auto block h-3 w-10" />
-            </li>
+      <div className="flex-1 px-7 pt-6 max-md:px-5">
+        <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="border-border bg-surface rounded-xl border p-[18px]">
+              <div className="skeleton h-4 w-28 rounded-sm" />
+              <div className="skeleton mt-2 h-3 w-24 rounded-sm" />
+              <div className="border-border-soft my-[15px] border-t" />
+              <div className="skeleton h-4 w-40 rounded-sm" />
+              <div className="skeleton mt-4 h-[70px] w-full rounded-lg" />
+            </div>
           ))}
-        </ul>
+        </div>
+        <div className="skeleton mt-[26px] h-4 w-52 rounded-sm" />
+        <div className="skeleton mt-3 h-[260px] w-full rounded-xl" />
       </div>
     </div>
-  );
-}
-
-export default function DashboardLoading() {
-  return (
-    <>
-      <div className="border-groove flex items-end justify-between gap-3 border-b px-4 py-2.5">
-        <div>
-          <h1 className="display text-[15px] leading-tight font-semibold">Метрики клиники</h1>
-          <p className="legend mt-1">чтение показаний…</p>
-        </div>
-        <span className="border-groove bg-panel-sunk idle h-[30px] w-[196px] border" />
-      </div>
-
-      <section>
-        <header className="border-groove flex items-baseline justify-between gap-3 border-b px-4 py-2">
-          <h2 className="legend">Каналы · рабочий день</h2>
-        </header>
-        <div className="px-4 py-3.5">
-          <ScaleSkeleton />
-        </div>
-      </section>
-
-      <div className="border-groove grid grid-cols-1 border-t lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
-        {["Воронка", "Показания"].map((title, index) => (
-          <section
-            key={title}
-            className={index === 1 ? "border-groove border-t lg:border-t-0 lg:border-l" : undefined}
-          >
-            <header className="border-groove border-b px-4 py-2">
-              <h2 className="legend">{title}</h2>
-            </header>
-            <div className="space-y-2 px-4 py-3.5">
-              {[0, 1, 2].map((row) => (
-                <span
-                  key={row}
-                  className="border-groove bg-panel-sunk idle block h-6 border"
-                  style={{ width: `${100 - row * 14}%` }}
-                />
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
-    </>
   );
 }

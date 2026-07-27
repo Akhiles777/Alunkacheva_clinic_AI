@@ -1,136 +1,103 @@
-import { FunnelBlock } from "./_components/funnel-block";
-import { Section } from "./_components/panel";
-import { PeriodSwitcher } from "./_components/period-switcher";
-import { Readings } from "./_components/readings";
-import { RoomDayBoard } from "./_components/room-day";
-import { SourceBars } from "./_components/source-bars";
-import { StaffTable } from "./_components/staff-table";
-import { VisitMixBar } from "./_components/visit-mix-bar";
-import { formatDateRange, formatDayLabel, formatDuration } from "@/lib/format";
-import { getDashboardMetrics, isPeriodKey, longestFreeWindow } from "@/lib/mock-metrics";
+import { CabinetCard } from "./_components/cabinet-card";
+import { FreeWindows } from "./_components/free-windows";
+import { AttentionList, InquiryList } from "./_components/today-lists";
+import { SearchTrigger } from "./_components/command-palette";
+import { BookingButton } from "./_components/booking-panel";
+import { getToday } from "@/app/_data/today";
+import { ROOM_SOURCE_LABEL } from "@/lib/rooms";
+import { formatMoney, formatNumber } from "@/lib/format";
 
-export const metadata = {
-  title: "Метрики — Клиника",
-};
+export const metadata = { title: "Сегодня — Мера" };
 
-export default async function DashboardPage({
-  searchParams,
-}: {
-  // В Next 16 searchParams — промис, синхронный доступ убран.
-  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}) {
-  const params = await searchParams;
-  const requested = Array.isArray(params.period) ? params.period[0] : params.period;
-  const period = isPeriodKey(requested) ? requested : "month";
+const WEEKDAY = new Intl.DateTimeFormat("ru-RU", {
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+});
 
-  const metrics = await getDashboardMetrics(period);
-  const stripDay = metrics.rooms[0]?.date;
-  const bestWindow = Math.max(0, ...metrics.rooms.map(longestFreeWindow));
+export default function TodayPage() {
+  const data = getToday();
+  const date = WEEKDAY.format(new Date(`${data.date}T09:00:00Z`));
 
   return (
     <>
-      <div className="border-groove flex flex-wrap items-end justify-between gap-3 border-b px-4 py-2.5">
-        <div>
-          <h1 className="display text-[15px] leading-tight font-semibold">Метрики клиники</h1>
-          <p className="num text-label mt-0.5 text-[11px]">
-            {formatDateRange(metrics.period.from, metrics.period.to)} ·{" "}
-            {metrics.period.workingDays} рабочих дней
-          </p>
+      {/* Шапка экрана */}
+      <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Сегодня</h1>
+            <p className="text-text-muted mt-1 text-xs">{date} · смена Ирины</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <SearchTrigger className="w-[260px] max-md:hidden" />
+            <BookingButton />
+          </div>
         </div>
-        <PeriodSwitcher active={metrics.period.key} />
+        <div className="text-text-muted mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+          <span>
+            Выручка{" "}
+            <b className="num text-text font-medium whitespace-nowrap">
+              {formatMoney(data.summary.revenue)}
+            </b>
+          </span>
+          <span aria-hidden className="sep-dot" />
+          <span>
+            средний чек{" "}
+            <b className="num text-text font-medium whitespace-nowrap">
+              {formatMoney(data.summary.avgCheck)}
+            </b>
+          </span>
+          <span aria-hidden className="sep-dot" />
+          <span>
+            <b className="num text-text font-medium">{formatNumber(data.summary.scheduled)}</b>{" "}
+            записей
+          </span>
+          <span aria-hidden className="sep-dot" />
+          <span>
+            <b className="num text-text font-medium">{formatNumber(data.summary.firstVisits)}</b>{" "}
+            первичных
+          </span>
+          <span className="num text-text ml-auto font-medium">{data.summary.now}</span>
+        </div>
+      </header>
+
+      {/* Прокручиваемая рабочая область */}
+      <div className="flex-1 overflow-auto px-7 pt-6 pb-11 max-md:px-5">
+        <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
+          {data.cabinets.map((cabinet) => (
+            <CabinetCard key={cabinet.id} cabinet={cabinet} />
+          ))}
+        </div>
+
+        <section className="mt-[26px]">
+          <div className="mb-[13px] flex items-baseline gap-2.5">
+            <h2 className="text-base font-medium">Ближайшие свободные окна</h2>
+            <span className="text-text-subtle text-xs">по всем кабинетам, до конца дня</span>
+          </div>
+          <FreeWindows windows={data.freeWindows} />
+        </section>
+
+        <div className="mt-8 grid grid-cols-2 gap-x-8 gap-y-6 max-lg:grid-cols-1">
+          <section>
+            <div className="mb-3.5 flex items-baseline justify-between">
+              <h2 className="text-base font-medium">Требует внимания</h2>
+              <span className="num text-text-subtle text-xs">{data.attention.length}</span>
+            </div>
+            <AttentionList items={data.attention} />
+          </section>
+          <section>
+            <div className="mb-3.5 flex items-baseline justify-between">
+              <h2 className="text-base font-medium">Новые обращения</h2>
+              <span className="num text-text-subtle text-xs">{data.inquiries.length}</span>
+            </div>
+            <InquiryList items={data.inquiries} />
+          </section>
+        </div>
+
+        <p className="text-text-subtle mt-8 text-2xs">
+          Проекция YCLIENTS · кабинет визита берётся через {ROOM_SOURCE_LABEL[data.roomSource]}
+        </p>
       </div>
-
-      {/* Signature: гравированные шкалы каналов. Единственное место риска. */}
-      <Section
-        title="Каналы · рабочий день"
-        hint={
-          stripDay
-            ? `${formatDayLabel(stripDay)} · длиннейшее окно ${formatDuration(bestWindow)}`
-            : undefined
-        }
-      >
-        <RoomDayBoard rooms={metrics.rooms} />
-      </Section>
-
-      <div className="border-groove grid grid-cols-1 border-t lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
-        <div>
-          <Section title="Воронка" hint="обращение → запись → визит">
-            <FunnelBlock steps={metrics.funnelSteps} />
-          </Section>
-          <Section
-            title="Первичные и повторные"
-            hint="по состоявшимся визитам"
-            className="border-groove border-t"
-          >
-            <VisitMixBar mix={metrics.visitMix} />
-
-            <dl className="border-groove mt-3.5 grid grid-cols-1 gap-y-1.5 border-t pt-3">
-              {[
-                {
-                  label: "Приёмов в рабочий день",
-                  value:
-                    metrics.period.workingDays > 0
-                      ? (metrics.funnel.arrived / metrics.period.workingDays).toFixed(1).replace(".", ",")
-                      : "—",
-                },
-                {
-                  label: "Обращений на один визит",
-                  value:
-                    metrics.funnel.arrived > 0
-                      ? (metrics.funnel.inquiries / metrics.funnel.arrived).toFixed(1).replace(".", ",")
-                      : "—",
-                },
-                {
-                  label: "Визитов на проданный курс",
-                  value:
-                    metrics.money.coursesSold > 0
-                      ? (metrics.visitMix.courseSession / metrics.money.coursesSold)
-                          .toFixed(1)
-                          .replace(".", ",")
-                      : "—",
-                },
-              ].map((row) => (
-                <div key={row.label} className="flex items-baseline justify-between gap-3">
-                  <dt className="legend">{row.label}</dt>
-                  <dd className="num text-[13px]">{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </Section>
-        </div>
-
-        <div className="border-groove border-t lg:border-t-0 lg:border-l">
-          <Section title="Показания" hint="за период">
-            <Readings money={metrics.money} period={metrics.period} />
-          </Section>
-          <Section
-            title="Специалисты"
-            hint="приёмы и выручка — независимо"
-            className="border-groove border-t"
-          >
-            <StaffTable staff={metrics.staff} />
-          </Section>
-        </div>
-      </div>
-
-      <Section
-        title="Обращения по источникам"
-        hint="всего · записались · конверсия"
-        className="border-groove border-t"
-      >
-        <SourceBars sources={metrics.sources} />
-      </Section>
-
-      <p className="border-groove text-label num border-t px-4 py-2 text-[10px]">
-        Проекция YCLIENTS · роллапы пересчитаны{" "}
-        {new Date(metrics.updatedAt).toLocaleString("ru-RU", {
-          day: "numeric",
-          month: "long",
-          hour: "2-digit",
-          minute: "2-digit",
-          timeZone: "Europe/Moscow",
-        })}
-      </p>
     </>
   );
 }

@@ -5,7 +5,24 @@
  */
 import { chromium } from "playwright";
 
-const pages = ["http://localhost:3000/?period=month", "http://localhost:3000/states"];
+const pages = [
+  "http://localhost:3000/",
+  "http://localhost:3000/states",
+  "http://localhost:3000/inbox",
+  "http://localhost:3000/patients",
+  "http://localhost:3000/patients/p-grinberg",
+  "http://localhost:3000/settings/clinic",
+  "http://localhost:3000/settings/rooms",
+  "http://localhost:3000/settings/services",
+  "http://localhost:3000/settings/staff",
+  "http://localhost:3000/settings/sources",
+  "http://localhost:3000/settings/integrations",
+  "http://localhost:3000/settings/assistant",
+  "http://localhost:3000/settings/templates",
+  "http://localhost:3000/settings/notifications",
+  "http://localhost:3000/settings/consent",
+  "http://localhost:3000/settings/audit",
+];
 
 const browser = await chromium.launch();
 let failures = 0;
