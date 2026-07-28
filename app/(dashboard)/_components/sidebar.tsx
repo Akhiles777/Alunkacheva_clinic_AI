@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { CallButton } from "./call-form";
 
 /**
  * Боковая навигация (232px). Активный пункт — подложка nav-active + акцентный
@@ -58,6 +59,10 @@ export function Sidebar() {
       </nav>
 
       <div className="flex-1" />
+
+      <div className="mb-2">
+        <CallButton className="w-full" />
+      </div>
 
       <Link
         href="/settings"

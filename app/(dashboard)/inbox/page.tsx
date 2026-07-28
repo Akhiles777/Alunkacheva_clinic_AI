@@ -6,12 +6,33 @@ import {
   CHANNEL_LABEL,
   DIALOG_FILTERS,
   DIALOG_STATUS_LABEL,
-  DIALOGS,
   dialogMatchesFilter,
-  type Dialog,
 } from "@/app/_data/inbox";
-import { findPatient } from "@/app/_data/patients";
+import {
+  activeNotes,
+  findPatient,
+  markDialogRead,
+  searchPatients,
+  sendMessage,
+  startDialog,
+  useDb,
+  type Dialog,
+} from "@/app/_data/store";
+import { settingsStore } from "@/app/_data/settings";
 import { PatientCardBody } from "../_components/patient-card";
+
+const NOTE_SHORT: Record<string, string> = {
+  NO_CONSENT: "нет согласия",
+  INCOMPLETE_PASSPORT: "нет паспорта",
+  ATTENTION: "внимание",
+  CUSTOM: "заметка",
+};
+
+const QUICK_REPLIES = [
+  "Здравствуйте! Чем можем помочь?",
+  "Подскажите ваш телефон для записи.",
+  "Спасибо за обращение, хорошего дня!",
+];
 
 function DialogRow({
   dialog,
@@ -22,6 +43,9 @@ function DialogRow({
   active: boolean;
   onClick: () => void;
 }) {
+  const patient = dialog.patientId ? findPatient(dialog.patientId) : undefined;
+  const notes = patient ? activeNotes(patient) : [];
+
   return (
     <button
       type="button"
@@ -37,6 +61,16 @@ function DialogRow({
         <span className="truncate text-sm font-medium">{dialog.name}</span>
         <span className="num text-text-subtle ml-auto flex-none text-2xs">{dialog.at}</span>
       </div>
+      {/* Служебные отметки пациента видны сразу у имени (§5.3). */}
+      {notes.length > 0 ? (
+        <div className="mt-1 flex flex-wrap gap-1">
+          {notes.slice(0, 2).map((n) => (
+            <span key={n.id} className="text-accent-text bg-accent-tint rounded-sm px-1.5 py-px text-2xs font-medium">
+              {NOTE_SHORT[n.kind]}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <p className="text-text-muted mt-1 truncate text-xs">{dialog.preview}</p>
       <div className="mt-1.5 flex items-center gap-1.5">
         <span className="text-text-subtle text-2xs">{CHANNEL_LABEL[dialog.channel]}</span>
@@ -52,30 +86,66 @@ function DialogRow({
   );
 }
 
+function WindowBadge({ dialog }: { dialog: Dialog }) {
+  if (!dialog.windowOpen) {
+    return (
+      <span className="border-accent-border bg-accent-tint text-accent-text flex-none rounded-sm border px-2 py-1 text-2xs font-medium">
+        окно закрыто · только шаблон
+      </span>
+    );
+  }
+  if (dialog.windowMinutesLeft !== null) {
+    const h = Math.floor(dialog.windowMinutesLeft / 60);
+    const m = dialog.windowMinutesLeft % 60;
+    const label = h > 0 ? `${h} ч ${m} мин` : `${m} мин`;
+    return (
+      <span className="text-text-muted flex-none text-2xs">
+        окно ответа: <span className="num">{label}</span>
+      </span>
+    );
+  }
+  return null;
+}
+
 function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
-  const [draftSent, setDraftSent] = useState(false);
+  const [text, setText] = useState("");
+  const approvedTemplates = settingsStore.templates.filter((t) => t.status === "approved");
+
+  function submit() {
+    if (dialog.windowOpen && text.trim()) {
+      sendMessage(dialog.id, text);
+      setText("");
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
       <div className="border-border flex flex-none items-center gap-3 border-b px-5 py-3.5">
-        <button
-          type="button"
-          onClick={onBack}
-          className="text-text-muted hover:text-text text-sm md:hidden"
-        >
+        <button type="button" onClick={onBack} className="text-text-muted hover:text-text text-sm md:hidden">
           ← Диалоги
         </button>
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{dialog.name}</div>
+          <div className="truncate text-sm font-medium">
+            {dialog.patientId ? (
+              <Link href={`/patients/${dialog.patientId}`} className="hover:underline">
+                {dialog.name}
+              </Link>
+            ) : (
+              dialog.name
+            )}
+          </div>
           <div className="text-text-subtle text-2xs">
             {CHANNEL_LABEL[dialog.channel]} · {DIALOG_STATUS_LABEL[dialog.status]}
           </div>
         </div>
-        {dialog.status === "escalated" ? (
-          <span className="border-accent-border bg-accent-tint text-accent-text ml-auto flex-none rounded-sm border px-2 py-1 text-2xs font-medium max-md:hidden">
-            эскалация: {dialog.escalationReason}
-          </span>
-        ) : null}
+        <div className="ml-auto flex items-center gap-2.5">
+          {dialog.status === "escalated" ? (
+            <span className="text-accent-text flex-none text-2xs font-medium max-md:hidden">
+              эскалация: {dialog.escalationReason}
+            </span>
+          ) : null}
+          <WindowBadge dialog={dialog} />
+        </div>
       </div>
 
       <div className="flex-1 overflow-auto px-5 py-4">
@@ -85,20 +155,14 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                 <div className="max-w-[78%]">
-                  {/* Акцент зарезервирован под действия и окна — исходящие
-                      сообщения нейтральные, роль подписана снизу. */}
                   <div
                     className={`rounded-xl px-3.5 py-2 text-sm leading-snug ${
-                      m.from === "patient"
-                        ? "bg-surface border-border border"
-                        : "bg-raise text-text"
+                      m.from === "patient" ? "bg-surface border-border border" : "bg-raise text-text"
                     }`}
                   >
                     {m.text}
                   </div>
-                  <div
-                    className={`num text-text-subtle mt-1 text-2xs ${mine ? "text-right" : ""}`}
-                  >
+                  <div className={`num text-text-subtle mt-1 text-2xs ${mine ? "text-right" : ""}`}>
                     {m.from === "bot" ? "агент · " : m.from === "staff" ? "вы · " : ""}
                     {m.at}
                   </div>
@@ -109,8 +173,7 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
         </div>
       </div>
 
-      {/* Черновик агента — suggest-режим: администратор отправляет или правит. */}
-      {dialog.agentDraft && !draftSent ? (
+      {dialog.agentDraft ? (
         <div className="border-border bg-accent-tint flex-none border-t px-5 py-3">
           <div className="text-accent-text mb-1.5 text-2xs font-medium">
             Черновик агента — проверьте перед отправкой
@@ -119,13 +182,14 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => setDraftSent(true)}
+              onClick={() => sendMessage(dialog.id, dialog.agentDraft!)}
               className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3 py-1.5 text-sm font-medium"
             >
               Отправить
             </button>
             <button
               type="button"
+              onClick={() => setText(dialog.agentDraft!)}
               className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-1.5 text-sm"
             >
               Изменить
@@ -134,40 +198,216 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
         </div>
       ) : null}
 
-      <div className="border-border flex flex-none items-center gap-2 border-t px-5 py-3">
-        <input
-          placeholder="Ответить вручную…"
-          className="border-border-input bg-surface placeholder:text-text-subtle flex-1 rounded-md border px-3 py-2 text-sm outline-none"
-        />
-        <button
-          type="button"
-          className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium"
-        >
-          Отправить
-        </button>
+      {/* Композер: окно открыто — свободный текст; закрыто — только шаблоны. */}
+      {dialog.windowOpen ? (
+        <div className="border-border flex-none border-t px-5 py-3">
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {QUICK_REPLIES.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => setText(q)}
+                className="border-border text-text-muted hover:bg-hover truncate rounded-md border px-2 py-1 text-2xs"
+              >
+                {q.length > 34 ? q.slice(0, 32) + "…" : q}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
+              placeholder="Ответить вручную…"
+              className="border-border-input bg-surface placeholder:text-text-subtle flex-1 rounded-md border px-3 py-2 text-sm outline-none"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!text.trim()}
+              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
+            >
+              Отправить
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="border-border flex-none border-t px-5 py-3">
+          <p className="text-text-muted mb-2 text-xs">
+            24-часовое окно закрыто. Написать первым можно только утверждённым
+            шаблоном.
+          </p>
+          {approvedTemplates.length === 0 ? (
+            <p className="text-text-subtle text-sm">
+              Нет утверждённых шаблонов.{" "}
+              <Link href="/settings/templates" className="text-accent-text hover:underline">
+                Добавить
+              </Link>
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {approvedTemplates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => sendMessage(dialog.id, t.body)}
+                  className="border-accent-border bg-accent-tint text-accent-text hover:bg-accent hover:text-accent-contrast rounded-md border px-3 py-1.5 text-sm font-medium"
+                >
+                  {t.title}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ComposeForm({ onClose }: { onClose: () => void }) {
+  const db = useDb();
+  const [channel, setChannel] = useState<"instagram" | "whatsapp">("whatsapp");
+  const [pquery, setPquery] = useState("");
+  const [patientId, setPatientId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+
+  const matches = pquery.trim() ? searchPatients(pquery, db.patients).slice(0, 4) : [];
+  const chosen = patientId ? findPatient(patientId) : null;
+
+  return (
+    <div className="overlay-scrim fixed inset-0 z-40 flex justify-end" onMouseDown={onClose} role="presentation">
+      <div
+        className="bg-surface flex h-full w-full max-w-[400px] flex-col"
+        onMouseDown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Начать диалог"
+      >
+        <div className="border-border flex items-center justify-between border-b px-5 py-4">
+          <div className="text-md font-medium">Начать диалог</div>
+          <button type="button" onClick={onClose} className="text-text-subtle hover:text-text px-1 text-lg leading-none">
+            ×
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto px-5 py-4">
+          <div className="text-text-subtle mb-2 text-2xs">Канал</div>
+          <div className="border-border inline-flex overflow-hidden rounded-md border">
+            {(["whatsapp", "instagram"] as const).map((c, i) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setChannel(c)}
+                className={`px-3 py-1.5 text-sm ${i > 0 ? "border-border border-l" : ""} ${
+                  channel === c ? "bg-accent-tint text-accent-text font-medium" : "text-text-muted hover:bg-hover"
+                }`}
+              >
+                {CHANNEL_LABEL[c]}
+              </button>
+            ))}
+          </div>
+
+          <div className="text-text-subtle mt-5 mb-2 text-2xs">Пациент</div>
+          {chosen ? (
+            <div className="border-border flex items-center gap-2 rounded-md border px-3 py-2">
+              <span className="flex-1 truncate text-sm">{chosen.name}</span>
+              <button type="button" onClick={() => setPatientId(null)} className="text-text-subtle hover:text-text text-sm">
+                ×
+              </button>
+            </div>
+          ) : (
+            <>
+              <input
+                value={pquery}
+                onChange={(e) => setPquery(e.target.value)}
+                placeholder="Имя или телефон"
+                className="border-border-input bg-surface w-full rounded-md border px-3 py-2 text-sm outline-none"
+              />
+              {matches.length > 0 ? (
+                <ul className="border-border mt-1 overflow-hidden rounded-md border">
+                  {matches.map((p) => (
+                    <li key={p.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPatientId(p.id);
+                          setPquery("");
+                        }}
+                        className="hover:bg-hover w-full px-3 py-2 text-left text-sm"
+                      >
+                        {p.name}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          )}
+
+          <div className="text-text-subtle mt-5 mb-2 text-2xs">Сообщение</div>
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            rows={3}
+            placeholder="Текст первого сообщения"
+            className="border-border-input bg-surface w-full resize-y rounded-md border px-3 py-2 text-sm outline-none"
+          />
+        </div>
+        <div className="border-border border-t px-5 py-4">
+          <button
+            type="button"
+            disabled={!chosen || message.trim().length === 0}
+            onClick={() => {
+              if (chosen) {
+                startDialog({ channel, name: chosen.name, patientId: chosen.id, message });
+                onClose();
+              }
+            }}
+            className="bg-accent text-accent-contrast hover:bg-accent-hover w-full rounded-md py-2.5 text-sm font-medium disabled:opacity-45"
+          >
+            Отправить
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 export default function InboxPage() {
+  const db = useDb();
   const [filter, setFilter] = useState("need");
   const [selectedId, setSelectedId] = useState<string | null>("d-grinberg");
+  const [composing, setComposing] = useState(false);
 
-  const list = useMemo(() => DIALOGS.filter((d) => dialogMatchesFilter(d, filter)), [filter]);
-  const selected = DIALOGS.find((d) => d.id === selectedId) ?? null;
+  const list = useMemo(
+    () => db.dialogs.filter((d) => dialogMatchesFilter(d, filter)),
+    [db.dialogs, filter],
+  );
+  const selected = db.dialogs.find((d) => d.id === selectedId) ?? null;
   const patient = selected?.patientId ? findPatient(selected.patientId) : undefined;
+
+  function open(id: string) {
+    setSelectedId(id);
+    markDialogRead(id);
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-1">
-      {/* Левая колонка — список */}
       <div
-        className={`border-border flex w-[300px] flex-none flex-col border-r max-md:w-full ${
-          selected ? "max-md:hidden" : ""
-        }`}
+        className={`border-border flex w-[300px] flex-none flex-col border-r max-md:w-full ${selected ? "max-md:hidden" : ""}`}
       >
         <div className="border-border flex-none border-b px-4 py-3.5">
-          <h1 className="text-md font-medium">Диалоги</h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-md font-medium">Диалоги</h1>
+            <button
+              type="button"
+              onClick={() => setComposing(true)}
+              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-2.5 py-1 text-xs font-medium"
+            >
+              + Написать
+            </button>
+          </div>
           <div className="mt-2.5 flex flex-wrap gap-1">
             {DIALOG_FILTERS.map((f) => (
               <button
@@ -175,9 +415,7 @@ export default function InboxPage() {
                 type="button"
                 onClick={() => setFilter(f.id)}
                 className={`rounded-md px-2 py-1 text-2xs ${
-                  filter === f.id
-                    ? "bg-nav-active text-accent-text font-medium"
-                    : "text-text-muted hover:bg-hover"
+                  filter === f.id ? "bg-nav-active text-accent-text font-medium" : "text-text-muted hover:bg-hover"
                 }`}
               >
                 {f.label}
@@ -190,18 +428,12 @@ export default function InboxPage() {
             <p className="text-text-muted px-4 py-6 text-sm">В этом фильтре пусто.</p>
           ) : (
             list.map((d) => (
-              <DialogRow
-                key={d.id}
-                dialog={d}
-                active={d.id === selectedId}
-                onClick={() => setSelectedId(d.id)}
-              />
+              <DialogRow key={d.id} dialog={d} active={d.id === selectedId} onClick={() => open(d.id)} />
             ))
           )}
         </div>
       </div>
 
-      {/* Центр — переписка */}
       <div className={`min-w-0 flex-1 ${selected ? "" : "max-md:hidden"}`}>
         {selected ? (
           <Thread dialog={selected} onBack={() => setSelectedId(null)} />
@@ -212,10 +444,9 @@ export default function InboxPage() {
         )}
       </div>
 
-      {/* Правая колонка — карточка пациента, 320px */}
       <div className="border-border w-[320px] flex-none overflow-auto border-l px-5 py-5 max-xl:hidden">
         {patient ? (
-          <PatientCardBody patient={patient} />
+          <PatientCardBody patientId={patient.id} />
         ) : selected ? (
           <div>
             <div className="text-md font-medium">Пациент не опознан</div>
@@ -223,15 +454,14 @@ export default function InboxPage() {
               Номер не найден в базе. Один номер бывает у семьи — свяжите диалог
               с карточкой вручную, чтобы не приклеить чужую историю.
             </p>
-            <Link
-              href="/patients"
-              className="text-accent-text mt-3 inline-block text-sm hover:underline"
-            >
+            <Link href="/patients" className="text-accent-text mt-3 inline-block text-sm hover:underline">
               Найти пациента
             </Link>
           </div>
         ) : null}
       </div>
+
+      {composing ? <ComposeForm onClose={() => setComposing(false)} /> : null}
     </div>
   );
 }

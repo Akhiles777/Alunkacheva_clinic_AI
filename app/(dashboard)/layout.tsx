@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Sidebar } from "./_components/sidebar";
 import { CommandPalette } from "./_components/command-palette";
 import { BookingPanel } from "./_components/booking-panel";
+import { CallForm } from "./_components/call-form";
 
 /**
  * Оболочка приложения: боковая навигация + рабочая область. Глобальный поиск
@@ -14,6 +15,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <main className="flex min-w-0 flex-1 flex-col">{children}</main>
       <CommandPalette />
       <BookingPanel />
+      <CallForm />
     </div>
   );
 }

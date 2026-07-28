@@ -1,7 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { PATIENTS, searchPatients, type Patient } from "@/app/_data/patients";
+import {
+  addPatient,
+  patientTags,
+  primaryPhone,
+  searchPatients,
+  useDb,
+  type Patient,
+} from "@/app/_data/store";
 import { PatientOverlay } from "../_components/patient-overlay";
 
 const FILTERS = [
@@ -9,38 +16,98 @@ const FILTERS = [
   { id: "new", label: "Новые" },
   { id: "course", label: "На курсе" },
   { id: "stalled", label: "Выпали из курса" },
+  { id: "noconsent", label: "Без согласия" },
 ];
 
 function matchesFilter(p: Patient, filter: string): boolean {
+  const tags = patientTags(p);
   if (filter === "all") return true;
-  if (filter === "new") return p.firstSeen === "сегодня" || p.tags.includes("первичный");
-  if (filter === "course") return p.courses.some((c) => c.status === "active");
-  if (filter === "stalled") return p.courses.some((c) => c.status === "stalled");
+  if (filter === "new") return tags.includes("первичный");
+  if (filter === "course") return tags.includes("на курсе");
+  if (filter === "stalled") return tags.includes("выпал из курса");
+  if (filter === "noconsent") return tags.includes("без согласия");
   return true;
 }
 
 export default function PatientsPage() {
+  const db = useDb();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [selected, setSelected] = useState<Patient | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: "", phone: "" });
 
   const rows = useMemo(
-    () => searchPatients(query).filter((p) => matchesFilter(p, filter)),
-    [query, filter],
+    () => searchPatients(query, db.patients).filter((p) => matchesFilter(p, filter)),
+    [query, filter, db.patients],
   );
+
+  function submitAdd() {
+    if (form.name.trim().length < 2) return;
+    const created = addPatient({ name: form.name, phone: form.phone });
+    setForm({ name: "", phone: "" });
+    setAdding(false);
+    setSelected(created.id);
+  }
 
   return (
     <>
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
         <div className="flex items-center justify-between gap-4">
           <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Пациенты</h1>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Имя или телефон"
-            className="border-border-input bg-surface placeholder:text-text-subtle w-[260px] rounded-md border px-3 py-2 text-sm outline-none max-md:w-40"
-          />
+          <div className="flex items-center gap-3">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Имя или телефон"
+              className="border-border-input bg-surface placeholder:text-text-subtle w-[240px] rounded-md border px-3 py-2 text-sm outline-none max-md:w-36"
+            />
+            <button
+              type="button"
+              onClick={() => setAdding((v) => !v)}
+              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3.5 py-2 text-sm font-medium whitespace-nowrap"
+            >
+              + Пациент
+            </button>
+          </div>
         </div>
+        {adding ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitAdd();
+            }}
+            className="border-border bg-surface mt-3 flex flex-wrap items-center gap-2 rounded-lg border p-3"
+          >
+            <input
+              autoFocus
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="Имя пациента"
+              className="border-border-input bg-surface w-[260px] rounded-md border px-3 py-2 text-sm outline-none"
+            />
+            <input
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              placeholder="+7 900 000-00-00"
+              className="border-border-input bg-surface num w-[200px] rounded-md border px-3 py-2 text-sm outline-none"
+            />
+            <button
+              type="submit"
+              disabled={form.name.trim().length < 2}
+              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3.5 py-2 text-sm font-medium disabled:opacity-45"
+            >
+              Создать
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdding(false)}
+              className="text-text-muted hover:text-text px-2 text-sm"
+            >
+              Отмена
+            </button>
+          </form>
+        ) : null}
         <div className="mt-3.5 flex flex-wrap gap-1.5">
           {FILTERS.map((f) => (
             <button
@@ -48,16 +115,14 @@ export default function PatientsPage() {
               type="button"
               onClick={() => setFilter(f.id)}
               className={`rounded-md px-2.5 py-1 text-xs ${
-                filter === f.id
-                  ? "bg-nav-active text-accent-text font-medium"
-                  : "text-text-muted hover:bg-hover"
+                filter === f.id ? "bg-nav-active text-accent-text font-medium" : "text-text-muted hover:bg-hover"
               }`}
             >
               {f.label}
             </button>
           ))}
           <span className="num text-text-subtle ml-auto self-center text-xs">
-            {rows.length} из {PATIENTS.length}
+            {rows.length} из {db.patients.length}
           </span>
         </div>
       </header>
@@ -65,7 +130,7 @@ export default function PatientsPage() {
       <div className="flex-1 overflow-auto px-7 py-5 max-md:px-5">
         {rows.length === 0 ? (
           <p className="text-text-muted text-sm">
-            Никого не нашли. Проверьте номер или имя, либо смените фильтр.
+            Никого не нашли. Проверьте номер или имя, смените фильтр — или добавьте пациента.
           </p>
         ) : (
           <div className="border-border overflow-hidden rounded-xl border">
@@ -73,52 +138,61 @@ export default function PatientsPage() {
               <thead>
                 <tr className="border-border bg-surface border-b text-left">
                   <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Пациент</th>
-                  <th className="text-text-subtle w-[26%] px-4 py-2.5 text-2xs font-normal max-md:hidden">
-                    Статус
+                  <th className="text-text-subtle w-[30%] px-4 py-2.5 text-2xs font-normal max-md:hidden">
+                    Метки
                   </th>
-                  <th className="text-text-subtle w-[22%] px-4 py-2.5 text-2xs font-normal max-md:hidden">
+                  <th className="text-text-subtle w-[20%] px-4 py-2.5 text-2xs font-normal max-md:hidden">
                     Источник
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((p) => (
-                  <tr
-                    key={p.id}
-                    onClick={() => setSelected(p)}
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") setSelected(p);
-                    }}
-                    className="border-border-soft hover:bg-hover cursor-pointer border-b last:border-b-0"
-                  >
-                    <td className="px-4 py-3 align-middle">
-                      <div className="truncate text-sm font-medium" title={p.name}>
-                        {p.name}
-                      </div>
-                      <div className="num text-text-subtle text-xs">{p.phonePretty}</div>
-                    </td>
-                    <td className="px-4 py-3 align-middle max-md:hidden">
-                      {p.tags[0] ? (
-                        <span className="text-text-muted bg-chip rounded-sm px-2 py-0.5 text-2xs">
-                          {p.tags[0]}
-                        </span>
-                      ) : (
-                        <span className="text-text-subtle text-xs">—</span>
-                      )}
-                    </td>
-                    <td className="text-text-muted px-4 py-3 align-middle text-sm max-md:hidden">
-                      {p.source}
-                    </td>
-                  </tr>
-                ))}
+                {rows.map((p) => {
+                  const tags = patientTags(p);
+                  return (
+                    <tr
+                      key={p.id}
+                      onClick={() => setSelected(p.id)}
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") setSelected(p.id);
+                      }}
+                      className="border-border-soft hover:bg-hover cursor-pointer border-b last:border-b-0"
+                    >
+                      <td className="px-4 py-3 align-middle">
+                        <div className="truncate text-sm font-medium" title={p.name}>
+                          {p.name}
+                        </div>
+                        <div className="num text-text-subtle text-xs">
+                          {primaryPhone(p)?.pretty ?? "нет номера"}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 align-middle max-md:hidden">
+                        <div className="flex flex-wrap gap-1">
+                          {tags.length === 0 ? (
+                            <span className="text-text-subtle text-xs">—</span>
+                          ) : (
+                            tags.map((t) => (
+                              <span key={t} className="text-text-muted bg-chip rounded-sm px-2 py-0.5 text-2xs">
+                                {t}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                      </td>
+                      <td className="text-text-muted px-4 py-3 align-middle text-sm max-md:hidden">
+                        {p.source}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {selected ? <PatientOverlay patient={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? <PatientOverlay patientId={selected} onClose={() => setSelected(null)} /> : null}
     </>
   );
 }

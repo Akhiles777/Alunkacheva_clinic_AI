@@ -2,25 +2,24 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { PATIENTS, type Patient } from "@/app/_data/patients";
+import {
+  patientTags,
+  primaryPhone,
+  searchPatients,
+  useDb,
+  type Patient,
+} from "@/app/_data/store";
 
 /**
  * Глобальный поиск ⌘K — несущая конструкция по IA: пациент достаётся из любой
  * точки. Открывается по ⌘K / Ctrl+K и по событию `open-command` из поля-триггера
- * в шапке. Принимает имя и цифры телефона.
+ * в шапке. Ищет по имени и всем номерам, включая только что добавленных.
  *
  * Внутренняя форма перемонтируется на каждое открытие (key), поэтому состояние
  * сбрасывается без setState-в-эффекте.
  */
-function search(query: string): Patient[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return PATIENTS.slice(0, 5);
-  const digits = q.replace(/\D/g, "");
-  return PATIENTS.filter((p) => {
-    const nameHit = p.name.toLowerCase().includes(q);
-    const phoneHit = digits.length >= 2 && p.phone.replace(/\D/g, "").includes(digits);
-    return nameHit || phoneHit;
-  });
+function search(query: string, patients: Patient[]): Patient[] {
+  return query.trim() ? searchPatients(query, patients) : patients.slice(0, 5);
 }
 
 export function CommandPalette() {
@@ -57,8 +56,9 @@ function PaletteInner({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const db = useDb();
 
-  const results = useMemo(() => search(query), [query]);
+  const results = useMemo(() => search(query, db.patients), [query, db.patients]);
 
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 20);
@@ -136,12 +136,12 @@ function PaletteInner({ onClose }: { onClose: () => void }) {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{patient.name}</span>
                     <span className="num text-text-subtle block text-xs">
-                      {patient.phonePretty}
+                      {primaryPhone(patient)?.pretty ?? "нет номера"}
                     </span>
                   </span>
-                  {patient.tags[0] ? (
+                  {patientTags(patient)[0] ? (
                     <span className="text-text-subtle bg-chip rounded-sm px-2 py-0.5 text-2xs">
-                      {patient.tags[0]}
+                      {patientTags(patient)[0]}
                     </span>
                   ) : null}
                 </button>

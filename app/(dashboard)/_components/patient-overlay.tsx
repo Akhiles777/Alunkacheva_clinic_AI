@@ -1,20 +1,20 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { PatientCardBody } from "./patient-card";
-import type { Patient } from "@/app/_data/patients";
+import { findPatient, removePatient } from "@/app/_data/store";
 
 /**
  * Карточка пациента как узкая панель-оверлей справа. Тот же PatientCardBody,
- * что и в колонке «Диалогов» и на странице /patients/[id] — меняется только
- * обёртка.
+ * что в колонке «Диалогов» и на странице /patients/[id]; в оверлее — с
+ * редактированием.
  */
 export function PatientOverlay({
-  patient,
+  patientId,
   onClose,
 }: {
-  patient: Patient;
+  patientId: string;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -24,6 +24,9 @@ export function PatientOverlay({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const patient = findPatient(patientId);
 
   return (
     <div
@@ -36,13 +39,10 @@ export function PatientOverlay({
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label={`Карточка: ${patient.name}`}
+        aria-label={`Карточка: ${patient?.name ?? ""}`}
       >
         <div className="border-border flex flex-none items-center justify-between border-b px-5 py-3.5">
-          <Link
-            href={`/patients/${patient.id}`}
-            className="text-accent-text text-xs hover:underline"
-          >
+          <Link href={`/patients/${patientId}`} className="text-accent-text text-xs hover:underline">
             Открыть страницу
           </Link>
           <button
@@ -55,7 +55,39 @@ export function PatientOverlay({
           </button>
         </div>
         <div className="flex-1 overflow-auto px-5 py-5">
-          <PatientCardBody patient={patient} />
+          <PatientCardBody patientId={patientId} editable />
+        </div>
+        <div className="border-border flex flex-none items-center justify-end gap-3 border-t px-5 py-3">
+          {confirmDelete ? (
+            <>
+              <span className="text-text-muted mr-auto text-xs">Удалить пациента без возможности вернуть?</span>
+              <button
+                type="button"
+                onClick={() => {
+                  removePatient(patientId);
+                  onClose();
+                }}
+                className="text-accent-text text-sm font-medium hover:underline"
+              >
+                Да, удалить
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                className="text-text-muted hover:text-text text-sm"
+              >
+                Отмена
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              className="text-text-subtle hover:text-text text-sm"
+            >
+              Удалить пациента
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -33,11 +33,21 @@ export default function RoomsSettingsPage() {
                 />
               </Field>
               <Field label="Направление" htmlFor={`${room.id}-dir`}>
-                <TextInput
+           <div>
+            <option>
+              <select id={`${room.id}-dir`} value={room.direction} onChange={(e) => patchRoom(room.id, { direction: e.target.value })}>
+                   
+               </select>
+               
+            </option>
+
+              <TextInput
                   id={`${room.id}-dir`}
                   value={room.direction}
                   onChange={(e) => patchRoom(room.id, { direction: e.target.value })}
                 />
+              
+           </div>
               </Field>
               <Field label="Активен">
                 <Toggle
