@@ -42,7 +42,30 @@
   --radius-2xl: var(--r-2xl);
   --radius-pill: var(--r-pill);
 
-  /* типографическая шкала (переопределяет дефолт Tailwind осознанно) */
+  /* шрифты */
+  --font-sans: var(--font-onest);
+  --font-mono: var(--font-jetbrains);
+}
+
+/*
+ * Типографическая шкала — НЕ inline: утилиты text-* ссылаются на var(), поэтому
+ * размер можно переопределить в поддереве. Базовая шкала +1px к исходной
+ * (EDIT.md: «текст немного крупнее»). Главная (Сегодня) возвращает исходные
+ * значения через .text-scale-compact — там плотность важнее.
+ */
+@theme {
+  --text-2xs: 12px;
+  --text-xs: 13px;
+  --text-sm: 14px;
+  --text-base: 15px;
+  --text-md: 16px;
+  --text-lg: 19px;
+  --text-xl: 21px;
+  --text-data: 22px;
+  --text-2xl: 31px;
+}
+
+.text-scale-compact {
   --text-2xs: 11px;
   --text-xs: 12px;
   --text-sm: 13px;
@@ -52,10 +75,6 @@
   --text-xl: 20px;
   --text-data: 21px;
   --text-2xl: 30px;
-
-  /* шрифты */
-  --font-sans: var(--font-onest);
-  --font-mono: var(--font-jetbrains);
 }
 
 html {

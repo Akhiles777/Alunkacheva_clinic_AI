@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getDb, logCall } from "@/app/_data/store";
-import { settingsStore } from "@/app/_data/settings";
 import { normalizePhone } from "@/lib/phone";
+import { getCallOptions, type CallOptions } from "./call-actions";
+import { recordCall } from "./call-record-action";
 
 /**
  * Занести звонок — глобальная форма, открывается в один клик из любого экрана
@@ -54,22 +55,45 @@ type Stage =
 
 function CallInner({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  const services = settingsStore.services;
-  const sources = settingsStore.sources.filter((s) => s.isActive);
+  const [options, setOptions] = useState<CallOptions>({ services: [], sources: [] });
+  const services = options.services;
+  const sources = options.sources;
 
   const [direction, setDirection] = useState<"in" | "out">("in");
   const [phone, setPhone] = useState("");
   const [service, setService] = useState("");
-  const [source, setSource] = useState(sources[0]?.title ?? "");
+  const [source, setSource] = useState("");
   const [note, setNote] = useState("");
   const [name, setName] = useState("");
   const [stage, setStage] = useState<Stage>({ kind: "form" });
 
+  // Услуги и источники — из БД (разделы «Услуги» и «Источники»).
+  useEffect(() => {
+    let alive = true;
+    getCallOptions().then((opts) => {
+      if (!alive) return;
+      setOptions(opts);
+      setSource((cur) => cur || opts.sources[0]?.title || "");
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // service — id услуги; для стора нужен заголовок, для БД — id.
+  const serviceTitle = services.find((s) => s.id === service)?.title ?? null;
   const base = {
     phone,
     direction,
-    serviceInterest: service || null,
+    serviceInterest: serviceTitle,
     source: source || null,
+    note,
+  };
+  const recordInput = {
+    phone,
+    direction,
+    serviceId: service || null,
+    sourceTitle: source || null,
     note,
   };
 
@@ -78,6 +102,7 @@ function CallInner({ onClose }: { onClose: () => void }) {
     const match = getDb().patients.find((p) => p.phones.some((ph) => ph.e164 === e164));
     if (match) {
       const { patientId } = logCall({ ...base, patientId: match.id });
+      void recordCall(recordInput).catch(() => {});
       setStage({ kind: "done", patientId });
     } else {
       setStage({ kind: "unmatched", phone });
@@ -87,9 +112,9 @@ function CallInner({ onClose }: { onClose: () => void }) {
   const ready = phone.trim().length >= 5;
 
   return (
-    <div className="overlay-scrim fixed inset-0 z-40 flex justify-end" onMouseDown={onClose} role="presentation">
+    <div className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 py-[6vh] max-md:p-0" onMouseDown={onClose} role="presentation">
       <div
-        className="bg-surface flex h-full w-full max-w-[400px] flex-col"
+        className="bg-surface border-border flex max-h-[88vh] w-full max-w-[440px] flex-col rounded-2xl border max-md:h-full max-md:max-h-none max-md:rounded-none"
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -156,6 +181,7 @@ function CallInner({ onClose }: { onClose: () => void }) {
                 disabled={name.trim().length < 2}
                 onClick={() => {
                   const { patientId } = logCall({ ...base, createNamed: name });
+                  void recordCall({ ...recordInput, createNamed: name }).catch(() => {});
                   setStage({ kind: "done", patientId });
                 }}
                 className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3.5 py-2 text-sm font-medium disabled:opacity-45"
@@ -166,6 +192,7 @@ function CallInner({ onClose }: { onClose: () => void }) {
                 type="button"
                 onClick={() => {
                   const { patientId } = logCall(base);
+                  void recordCall(recordInput).catch(() => {});
                   setStage({ kind: "done", patientId });
                 }}
                 className="border-border text-text-muted hover:bg-hover rounded-md border px-3.5 py-2 text-sm"
@@ -210,7 +237,7 @@ function CallInner({ onClose }: { onClose: () => void }) {
               >
                 <option value="">не указана</option>
                 {services.map((s) => (
-                  <option key={s.id} value={s.title}>
+                  <option key={s.id} value={s.id}>
                     {s.title}
                   </option>
                 ))}
@@ -223,7 +250,7 @@ function CallInner({ onClose }: { onClose: () => void }) {
                 className="border-border-input bg-surface w-full rounded-md border px-3 py-2 text-sm outline-none"
               >
                 {sources.map((s) => (
-                  <option key={s.id} value={s.title}>
+                  <option key={s.title} value={s.title}>
                     {s.title}
                   </option>
                 ))}

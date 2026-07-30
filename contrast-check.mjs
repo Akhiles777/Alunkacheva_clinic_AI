@@ -22,6 +22,10 @@ const pages = [
   "http://localhost:3000/settings/notifications",
   "http://localhost:3000/settings/consent",
   "http://localhost:3000/settings/audit",
+  "http://localhost:3000/courses",
+  "http://localhost:3000/schedule",
+  "http://localhost:3000/analytics?tab=services",
+  "http://localhost:3000/analytics?tab=staff",
 ];
 
 const browser = await chromium.launch();

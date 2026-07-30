@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { PatientCardBody } from "../../_components/patient-card";
+import { PatientAnalyticsPanel } from "../patient-analytics-panel";
 import { findPatient, useDb } from "@/app/_data/store";
 
 export default function PatientPage() {
@@ -23,8 +24,11 @@ export default function PatientPage() {
 
       <div className="flex-1 overflow-auto px-7 py-7 max-md:px-5">
         {patient ? (
-          <div className="border-border bg-surface max-w-[560px] rounded-xl border p-6">
-            <PatientCardBody patientId={id} editable />
+          <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+            <div className="border-border bg-surface rounded-xl border p-6">
+              <PatientCardBody patientId={id} editable />
+            </div>
+            <PatientAnalyticsPanel patientId={id} />
           </div>
         ) : (
           <p className="text-text-muted text-sm">

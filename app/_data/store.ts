@@ -12,6 +12,30 @@
  */
 import { useSyncExternalStore } from "react";
 import { normalizePhone, formatPhone } from "@/lib/phone";
+import {
+  addNoteDb,
+  addPhoneDb,
+  addRelationDb,
+  createPatient,
+  removePhoneDb,
+  removeRelationDb,
+  resolveNoteDb,
+  setPrimaryPhoneDb,
+  softDeletePatient,
+  toggleWhatsappDb,
+  updatePatientDb,
+  type PatientRecord,
+} from "@/app/(dashboard)/patients/actions";
+import {
+  sendMessageDb,
+  startDialogDb,
+  type DialogRecord,
+} from "@/app/(dashboard)/inbox/actions";
+import {
+  createAppointmentDb,
+  rescheduleApptDb,
+  setApptStatusDb,
+} from "@/app/(dashboard)/schedule/actions";
 
 export type Channel = "instagram" | "whatsapp" | "phone" | "offline";
 export type NoteKind = "NO_CONSENT" | "INCOMPLETE_PASSPORT" | "ATTENTION" | "CUSTOM";
@@ -125,6 +149,7 @@ export interface DB {
   patients: Patient[];
   calls: CallRecord[];
   dialogs: Dialog[];
+  appointments: Appt[];
 }
 
 // ─────────────────────────────────────────────── seed
@@ -320,6 +345,17 @@ const INITIAL: DB = {
       ],
     },
   ],
+  appointments: [
+    { id: "a1", roomId: "room-3", roomName: "Кабинет 3 · остеопат", doctor: "Левин А.", service: "Остеопатия, приём", patientId: "p-belov", patientName: "Белов Л. К.", startMinute: 11 * 60, durationMin: 60, status: "arrived", isFirstVisit: true },
+    { id: "a2", roomId: "room-3", roomName: "Кабинет 3 · остеопат", doctor: "Левин А.", service: "Остеопатия, коррекция", patientId: "p-sedyh", patientName: "Седых Д. П.", startMinute: 12 * 60 + 15, durationMin: 45, status: "confirmed", isFirstVisit: false },
+    { id: "a3", roomId: "room-3", roomName: "Кабинет 3 · остеопат", doctor: "Левин А.", service: "Остеопатия, приём", patientId: "p-konst", patientName: "Константинопольская-Ржевская А. В.", startMinute: 15 * 60 + 15, durationMin: 60, status: "planned", isFirstVisit: true },
+    { id: "a4", roomId: "room-1", roomName: "Кабинет 1 · процедурный", doctor: "Соколова Е.", service: "IV-терапия, капельница", patientId: "p-grinberg", patientName: "Гринберг И. Л.", startMinute: 11 * 60, durationMin: 90, status: "arrived", isFirstVisit: false },
+    { id: "a5", roomId: "room-1", roomName: "Кабинет 1 · процедурный", doctor: "Литвинова О. А.", service: "Забор анализов", patientId: null, patientName: "Асташов К. И.", startMinute: 9 * 60, durationMin: 15, status: "arrived", isFirstVisit: false },
+    { id: "a6", roomId: "room-1", roomName: "Кабинет 1 · процедурный", doctor: "Соколова Е.", service: "IV-терапия, экспресс", patientId: null, patientName: "Зимина Х. Ц.", startMinute: 13 * 60, durationMin: 60, status: "confirmed", isFirstVisit: false },
+    { id: "a7", roomId: "room-2", roomName: "Кабинет 2 · БОС", doctor: "Мороз Д.", service: "БОС-терапия, сеанс", patientId: "p-chern", patientName: "Чернышёва Ж. З.", startMinute: 10 * 60, durationMin: 40, status: "arrived", isFirstVisit: false },
+    { id: "a8", roomId: "room-2", roomName: "Кабинет 2 · БОС", doctor: "Мороз Д.", service: "Нейромедитация", patientId: null, patientName: "Шаповалова З. И.", startMinute: 13 * 60, durationMin: 30, status: "no_show", isFirstVisit: false },
+    { id: "a9", roomId: "room-2", roomName: "Кабинет 2 · БОС", doctor: "Мороз Д.", service: "БОС-терапия, сеанс", patientId: null, patientName: "Эрдман К. Л.", startMinute: 17 * 60, durationMin: 40, status: "planned", isFirstVisit: true },
+  ],
 };
 
 // ─────────────────────────────────────────────── реактивность
@@ -340,15 +376,108 @@ function subscribe(l: () => void) {
 function getSnapshot(): DB {
   return db;
 }
+/**
+ * Серверный снимок — всегда исходный INITIAL (стабильная ссылка). SSR и первый
+ * клиентский рендер видят одинаковые данные, поэтому гидрация не расходится;
+ * затем стор обновляется данными из БД уже после гидрации.
+ */
+function getServerSnapshot(): DB {
+  return INITIAL;
+}
 
 /** Реактивное чтение стора в клиентских компонентах. */
 export function useDb(): DB {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
 /** Разовое чтение без подписки. */
 export function getDb(): DB {
   return db;
+}
+
+/**
+ * Гидрация пациентов из БД (§4 — единый источник правды). Идентичность,
+ * телефоны, заметки и связи берём из БД; курсы/визиты/переписку сохраняем из
+ * текущего стора (мигрируют со своими подсистемами). Пациенты, которых в БД нет
+ * (мягко удалённые), из стора уходят.
+ */
+export function hydratePatients(records: PatientRecord[]) {
+  const byId = new Map(db.patients.map((p) => [p.id, p]));
+  const patients: Patient[] = records.map((r) => {
+    const existing = byId.get(r.id);
+    const phones: Phone[] = r.phones.map((ph) => ({
+      id: ph.id,
+      e164: ph.e164,
+      pretty: formatPhone(ph.e164),
+      label: ph.label,
+      isPrimary: ph.isPrimary,
+      whatsapp: ph.whatsapp,
+    }));
+    const notes: Note[] = r.notes.map((n) => ({
+      id: n.id,
+      kind: n.kind,
+      text: n.text,
+      createdAt: existing?.notes.find((x) => x.id === n.id)?.createdAt ?? "сегодня",
+      resolved: n.resolved,
+    }));
+    const relations: Relation[] = r.relations.map((rl) => ({
+      id: rl.id,
+      relatedPatientId: rl.relatedPatientId,
+      kind: rl.kind,
+    }));
+    if (existing) {
+      return { ...existing, name: r.name || existing.name, source: r.source ?? existing.source, phones, notes, relations };
+    }
+    return {
+      id: r.id,
+      name: r.name,
+      bornYear: null,
+      firstSeen: r.firstSeenToday ? "сегодня" : "ранее",
+      source: r.source ?? "—",
+      channel: "phone",
+      phones,
+      notes,
+      relations,
+      courses: [],
+      visits: [],
+      messages: [],
+    };
+  });
+  commit({ ...db, patients });
+}
+
+/**
+ * Гидрация диалогов из БД (Conversation + Message). Ядро — сообщения, статус,
+ * пациент, канал — из БД; UI-поля (черновик агента, таймер окна, причина
+ * эскалации, «непрочитано») сохраняем из текущего диалога по id.
+ */
+export function hydrateDialogs(records: DialogRecord[]) {
+  const byId = new Map(db.dialogs.map((d) => [d.id, d]));
+  const dialogs: Dialog[] = records.map((r) => {
+    const existing = byId.get(r.id);
+    const messages: Message[] = r.messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.at }));
+    return {
+      id: r.id,
+      name: r.name ?? existing?.name ?? "Без имени",
+      channel: r.channel,
+      patientId: r.patientId,
+      status: r.status,
+      preview: r.preview,
+      at: r.at,
+      unread: existing?.unread ?? false,
+      escalationReason: existing?.escalationReason,
+      agentDraft: existing?.agentDraft,
+      windowOpen: existing?.windowOpen ?? true,
+      windowMinutesLeft: existing?.windowMinutesLeft ?? null,
+      messages,
+    };
+  });
+  commit({ ...db, dialogs });
+}
+
+/** Гидрация расписания из БД (проекция Appointment) — единый источник. */
+export function hydrateAppointments(appts: Appt[]) {
+  commit({ ...db, appointments: appts });
 }
 
 // ─────────────────────────────────────────────── производные
@@ -400,6 +529,7 @@ function replacePatient(id: string, fn: (p: Patient) => Patient) {
 
 export function addPatient(input: { name: string; phone: string; source?: string }): Patient {
   const e164 = normalizePhone(input.phone);
+  const ph = e164 ? phone(e164, { isPrimary: true }) : null;
   const created: Patient = {
     id: uid("p"),
     name: input.name.trim(),
@@ -407,7 +537,7 @@ export function addPatient(input: { name: string; phone: string; source?: string
     firstSeen: "сегодня",
     source: input.source ?? "Вручную",
     channel: "phone",
-    phones: e164 ? [phone(e164, { isPrimary: true })] : [],
+    phones: ph ? [ph] : [],
     notes: [],
     relations: [],
     courses: [],
@@ -415,11 +545,21 @@ export function addPatient(input: { name: string; phone: string; source?: string
     messages: [],
   };
   commit({ ...db, patients: [created, ...db.patients] });
+  void createPatient({
+    id: created.id,
+    name: created.name,
+    source: input.source ?? null,
+    phoneId: ph?.id,
+    e164: e164 ?? null,
+  }).catch(() => {});
   return created;
 }
 
 export function updatePatient(id: string, patch: Partial<Pick<Patient, "name" | "bornYear" | "source">>) {
   replacePatient(id, (p) => ({ ...p, ...patch }));
+  if (patch.name !== undefined || patch.source !== undefined) {
+    void updatePatientDb(id, { name: patch.name, source: patch.source }).catch(() => {});
+  }
 }
 
 export function removePatient(id: string) {
@@ -431,27 +571,36 @@ export function removePatient(id: string) {
       .map((p) => ({ ...p, relations: p.relations.filter((r) => r.relatedPatientId !== id) })),
     calls: db.calls.map((c) => (c.patientId === id ? { ...c, patientId: null } : c)),
   });
+  void softDeletePatient(id).catch(() => {});
 }
 
 /** Добавить номер. Возвращает false, если номер не распознан. */
 export function addPhone(patientId: string, raw: string): boolean {
   const e164 = normalizePhone(raw);
   if (!e164) return false;
-  replacePatient(patientId, (p) => {
-    if (p.phones.some((ph) => ph.e164 === e164)) return p;
-    const isFirst = p.phones.length === 0;
-    return { ...p, phones: [...p.phones, phone(e164, { isPrimary: isFirst })] };
-  });
+  const p = findPatient(patientId);
+  if (p?.phones.some((ph) => ph.e164 === e164)) return true;
+  const isFirst = (p?.phones.length ?? 0) === 0;
+  const ph = phone(e164, { isPrimary: isFirst });
+  replacePatient(patientId, (cur) =>
+    cur.phones.some((x) => x.e164 === e164) ? cur : { ...cur, phones: [...cur.phones, ph] },
+  );
+  void addPhoneDb({ id: ph.id, patientId, e164, isPrimary: isFirst }).catch(() => {});
   return true;
 }
 
 export function removePhone(patientId: string, phoneId: string) {
-  replacePatient(patientId, (p) => {
-    const rest = p.phones.filter((ph) => ph.id !== phoneId);
-    // Если удалили основной — назначаем основным первый оставшийся.
-    if (rest.length > 0 && !rest.some((ph) => ph.isPrimary)) rest[0] = { ...rest[0], isPrimary: true };
-    return { ...p, phones: rest };
+  const p = findPatient(patientId);
+  if (!p) return;
+  const rest = p.phones.filter((ph) => ph.id !== phoneId);
+  let newPrimaryId: string | null = null;
+  if (rest.length > 0 && !rest.some((ph) => ph.isPrimary)) newPrimaryId = rest[0].id;
+  replacePatient(patientId, (cur) => {
+    const r = cur.phones.filter((ph) => ph.id !== phoneId);
+    if (r.length > 0 && !r.some((ph) => ph.isPrimary)) r[0] = { ...r[0], isPrimary: true };
+    return { ...cur, phones: r };
   });
+  void removePhoneDb(phoneId, newPrimaryId).catch(() => {});
 }
 
 export function setPrimaryPhone(patientId: string, phoneId: string) {
@@ -459,20 +608,23 @@ export function setPrimaryPhone(patientId: string, phoneId: string) {
     ...p,
     phones: p.phones.map((ph) => ({ ...ph, isPrimary: ph.id === phoneId })),
   }));
+  void setPrimaryPhoneDb(patientId, phoneId).catch(() => {});
 }
 
 export function toggleWhatsapp(patientId: string, phoneId: string) {
-  replacePatient(patientId, (p) => ({
-    ...p,
-    phones: p.phones.map((ph) => (ph.id === phoneId ? { ...ph, whatsapp: !ph.whatsapp } : ph)),
+  const p = findPatient(patientId);
+  const next = !p?.phones.find((ph) => ph.id === phoneId)?.whatsapp;
+  replacePatient(patientId, (cur) => ({
+    ...cur,
+    phones: cur.phones.map((ph) => (ph.id === phoneId ? { ...ph, whatsapp: !ph.whatsapp } : ph)),
   }));
+  void toggleWhatsappDb(phoneId, next).catch(() => {});
 }
 
 export function addNote(patientId: string, kind: NoteKind, text: string) {
-  replacePatient(patientId, (p) => ({
-    ...p,
-    notes: [...p.notes, { id: uid("n"), kind, text: text.trim(), createdAt: "сегодня", resolved: false }],
-  }));
+  const note: Note = { id: uid("n"), kind, text: text.trim(), createdAt: "сегодня", resolved: false };
+  replacePatient(patientId, (p) => ({ ...p, notes: [...p.notes, note] }));
+  void addNoteDb({ id: note.id, patientId, kind, text: note.text }).catch(() => {});
 }
 
 export function resolveNote(patientId: string, noteId: string) {
@@ -480,14 +632,20 @@ export function resolveNote(patientId: string, noteId: string) {
     ...p,
     notes: p.notes.map((n) => (n.id === noteId ? { ...n, resolved: true } : n)),
   }));
+  void resolveNoteDb(noteId).catch(() => {});
 }
 
 export function addRelation(patientId: string, relatedPatientId: string, kind: RelationKind) {
   if (patientId === relatedPatientId) return;
-  replacePatient(patientId, (p) => {
-    if (p.relations.some((r) => r.relatedPatientId === relatedPatientId)) return p;
-    return { ...p, relations: [...p.relations, { id: uid("r"), relatedPatientId, kind }] };
-  });
+  const p = findPatient(patientId);
+  if (p?.relations.some((r) => r.relatedPatientId === relatedPatientId)) return;
+  const rel: Relation = { id: uid("r"), relatedPatientId, kind };
+  replacePatient(patientId, (cur) =>
+    cur.relations.some((r) => r.relatedPatientId === relatedPatientId)
+      ? cur
+      : { ...cur, relations: [...cur.relations, rel] },
+  );
+  void addRelationDb({ id: rel.id, patientId, relatedPatientId, kind }).catch(() => {});
 }
 
 export function removeRelation(patientId: string, relationId: string) {
@@ -495,6 +653,7 @@ export function removeRelation(patientId: string, relationId: string) {
     ...p,
     relations: p.relations.filter((r) => r.id !== relationId),
   }));
+  void removeRelationDb(relationId).catch(() => {});
 }
 
 /**
@@ -563,14 +722,16 @@ function replaceDialog(id: string, fn: (d: Dialog) => Dialog) {
 export function sendMessage(dialogId: string, text: string) {
   const t = text.trim();
   if (!t) return;
+  const msg: Message = { id: uid("m"), from: "staff", text: t, at: "сейчас" };
   replaceDialog(dialogId, (d) => ({
     ...d,
-    messages: [...d.messages, { id: uid("m"), from: "staff", text: t, at: "сейчас" }],
-    status: d.status === "closed" ? "human" : "human",
+    messages: [...d.messages, msg],
+    status: "human",
     unread: false,
     preview: t,
     agentDraft: undefined,
   }));
+  void sendMessageDb(dialogId, msg.id, t).catch(() => {});
 }
 
 export function markDialogRead(dialogId: string) {
@@ -585,6 +746,7 @@ export function startDialog(input: {
   message: string;
 }): string {
   const id = uid("d");
+  const messageId = uid("m");
   const dialog: Dialog = {
     id,
     name: input.name,
@@ -596,8 +758,128 @@ export function startDialog(input: {
     unread: false,
     windowOpen: true,
     windowMinutesLeft: null,
-    messages: [{ id: uid("m"), from: "staff", text: input.message, at: "сейчас" }],
+    messages: [{ id: messageId, from: "staff", text: input.message, at: "сейчас" }],
   };
   commit({ ...db, dialogs: [dialog, ...db.dialogs] });
+  void startDialogDb({
+    id,
+    messageId,
+    channel: input.channel,
+    patientId: input.patientId,
+    message: input.message,
+  }).catch(() => {});
   return id;
+}
+
+// ─────────────────────────────────────────────── курсы (плоский список)
+
+const COURSE_PRICE: Record<string, number> = {
+  "IV-терапия, капельница": 6500,
+  "IV-терапия, экспресс": 4500,
+  "БОС-терапия, курс": 5000,
+  "Остеопатия, курс": 4200,
+};
+
+function daysSince(label: string): number | null {
+  if (label === "сегодня") return 0;
+  const m = /(\d+)\s+дн/.exec(label);
+  return m ? Number(m[1]) : null;
+}
+
+export interface CourseView {
+  patientId: string;
+  patientName: string;
+  channel: Channel;
+  courseId: string;
+  title: string;
+  used: number;
+  total: number;
+  remaining: number;
+  status: Course["status"];
+  lastVisit: string;
+  daysAgo: number | null;
+  hasFuture: boolean;
+  moneyLeft: number;
+  stalled: boolean;
+  onFinish: boolean;
+}
+
+/** Плоский список курсов по всем пациентам с деньгами в остатке. */
+export function allCourses(): CourseView[] {
+  const out: CourseView[] = [];
+  for (const p of db.patients) {
+    for (const c of p.courses) {
+      const remaining = Math.max(c.total - c.used, 0);
+      const hasFuture = c.hasFuture ?? c.status !== "stalled";
+      const price = COURSE_PRICE[c.title] ?? 5000;
+      out.push({
+        patientId: p.id,
+        patientName: p.name,
+        channel: p.channel,
+        courseId: c.id,
+        title: c.title,
+        used: c.used,
+        total: c.total,
+        remaining,
+        status: c.status,
+        lastVisit: c.lastVisit,
+        daysAgo: daysSince(c.lastVisit),
+        hasFuture,
+        moneyLeft: remaining * price,
+        stalled: c.status === "stalled" && !hasFuture,
+        onFinish: c.status === "active" && remaining > 0 && remaining <= 2,
+      });
+    }
+  }
+  return out;
+}
+
+/** Курс получил будущую запись — уходит из «выпавших». */
+export function setCourseBooked(patientId: string, courseId: string) {
+  replacePatient(patientId, (p) => ({
+    ...p,
+    courses: p.courses.map((c) =>
+      c.id === courseId ? { ...c, hasFuture: true, status: c.status === "stalled" ? "active" : c.status } : c,
+    ),
+  }));
+}
+
+// ─────────────────────────────────────────────── расписание
+
+function replaceAppt(id: string, fn: (a: Appt) => Appt) {
+  commit({ ...db, appointments: db.appointments.map((a) => (a.id === id ? fn(a) : a)) });
+}
+
+export function markArrived(id: string) {
+  replaceAppt(id, (a) => ({ ...a, status: "arrived" }));
+  void setApptStatusDb(id, "arrived").catch(() => {});
+}
+export function markNoShow(id: string) {
+  replaceAppt(id, (a) => ({ ...a, status: "no_show" }));
+  void setApptStatusDb(id, "no_show").catch(() => {});
+}
+export function rescheduleAppt(id: string, startMinute: number) {
+  replaceAppt(id, (a) => ({ ...a, startMinute }));
+  void rescheduleApptDb(id, startMinute).catch(() => {});
+}
+export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { status?: Appt["status"] }) {
+  const appt: Appt = {
+    id: uid("a"),
+    status: input.status ?? "planned",
+    isFirstVisit: false,
+    ...input,
+  };
+  commit({ ...db, appointments: [...db.appointments, appt] });
+  void createAppointmentDb({
+    id: appt.id,
+    roomId: appt.roomId,
+    doctor: appt.doctor,
+    service: appt.service,
+    patientId: appt.patientId,
+    patientName: appt.patientName,
+    startMinute: appt.startMinute,
+    durationMin: appt.durationMin,
+    status: appt.status,
+  }).catch(() => {});
+  return appt.id;
 }

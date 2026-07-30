@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   CHANNEL_LABEL,
@@ -12,13 +12,12 @@ import {
   activeNotes,
   findPatient,
   markDialogRead,
-  searchPatients,
   sendMessage,
-  startDialog,
   useDb,
   type Dialog,
 } from "@/app/_data/store";
-import { settingsStore } from "@/app/_data/settings";
+import { getApprovedTemplates, type ApprovedTemplate } from "./actions";
+import { ComposeOverlay } from "../_components/compose-overlay";
 import { PatientCardBody } from "../_components/patient-card";
 
 const NOTE_SHORT: Record<string, string> = {
@@ -109,7 +108,17 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
 
 function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
   const [text, setText] = useState("");
-  const approvedTemplates = settingsStore.templates.filter((t) => t.status === "approved");
+  const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    getApprovedTemplates().then((t) => {
+      if (alive) setApprovedTemplates(t);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function submit() {
     if (dialog.windowOpen && text.trim()) {
@@ -266,113 +275,6 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
   );
 }
 
-function ComposeForm({ onClose }: { onClose: () => void }) {
-  const db = useDb();
-  const [channel, setChannel] = useState<"instagram" | "whatsapp">("whatsapp");
-  const [pquery, setPquery] = useState("");
-  const [patientId, setPatientId] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
-
-  const matches = pquery.trim() ? searchPatients(pquery, db.patients).slice(0, 4) : [];
-  const chosen = patientId ? findPatient(patientId) : null;
-
-  return (
-    <div className="overlay-scrim fixed inset-0 z-40 flex justify-end" onMouseDown={onClose} role="presentation">
-      <div
-        className="bg-surface flex h-full w-full max-w-[400px] flex-col"
-        onMouseDown={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Начать диалог"
-      >
-        <div className="border-border flex items-center justify-between border-b px-5 py-4">
-          <div className="text-md font-medium">Начать диалог</div>
-          <button type="button" onClick={onClose} className="text-text-subtle hover:text-text px-1 text-lg leading-none">
-            ×
-          </button>
-        </div>
-        <div className="flex-1 overflow-auto px-5 py-4">
-          <div className="text-text-subtle mb-2 text-2xs">Канал</div>
-          <div className="border-border inline-flex overflow-hidden rounded-md border">
-            {(["whatsapp", "instagram"] as const).map((c, i) => (
-              <button
-                key={c}
-                type="button"
-                onClick={() => setChannel(c)}
-                className={`px-3 py-1.5 text-sm ${i > 0 ? "border-border border-l" : ""} ${
-                  channel === c ? "bg-accent-tint text-accent-text font-medium" : "text-text-muted hover:bg-hover"
-                }`}
-              >
-                {CHANNEL_LABEL[c]}
-              </button>
-            ))}
-          </div>
-
-          <div className="text-text-subtle mt-5 mb-2 text-2xs">Пациент</div>
-          {chosen ? (
-            <div className="border-border flex items-center gap-2 rounded-md border px-3 py-2">
-              <span className="flex-1 truncate text-sm">{chosen.name}</span>
-              <button type="button" onClick={() => setPatientId(null)} className="text-text-subtle hover:text-text text-sm">
-                ×
-              </button>
-            </div>
-          ) : (
-            <>
-              <input
-                value={pquery}
-                onChange={(e) => setPquery(e.target.value)}
-                placeholder="Имя или телефон"
-                className="border-border-input bg-surface w-full rounded-md border px-3 py-2 text-sm outline-none"
-              />
-              {matches.length > 0 ? (
-                <ul className="border-border mt-1 overflow-hidden rounded-md border">
-                  {matches.map((p) => (
-                    <li key={p.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPatientId(p.id);
-                          setPquery("");
-                        }}
-                        className="hover:bg-hover w-full px-3 py-2 text-left text-sm"
-                      >
-                        {p.name}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </>
-          )}
-
-          <div className="text-text-subtle mt-5 mb-2 text-2xs">Сообщение</div>
-          <textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            rows={3}
-            placeholder="Текст первого сообщения"
-            className="border-border-input bg-surface w-full resize-y rounded-md border px-3 py-2 text-sm outline-none"
-          />
-        </div>
-        <div className="border-border border-t px-5 py-4">
-          <button
-            type="button"
-            disabled={!chosen || message.trim().length === 0}
-            onClick={() => {
-              if (chosen) {
-                startDialog({ channel, name: chosen.name, patientId: chosen.id, message });
-                onClose();
-              }
-            }}
-            className="bg-accent text-accent-contrast hover:bg-accent-hover w-full rounded-md py-2.5 text-sm font-medium disabled:opacity-45"
-          >
-            Отправить
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function InboxPage() {
   const db = useDb();
@@ -461,7 +363,7 @@ export default function InboxPage() {
         ) : null}
       </div>
 
-      {composing ? <ComposeForm onClose={() => setComposing(false)} /> : null}
+      {composing ? <ComposeOverlay onClose={() => setComposing(false)} /> : null}
     </div>
   );
 }

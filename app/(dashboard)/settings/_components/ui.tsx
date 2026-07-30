@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, useEffect } from "react";
+
+
+
 
 /** Заголовок секции настроек + описание одной строкой. */
 export function SettingsHeader({
@@ -229,6 +232,62 @@ export function NoAccess() {
           Менять настройки может владелец клиники. Обратитесь к нему, если нужно
           изменить параметр.
         </p>
+      </div>
+    </div>
+  );
+}
+type ModalProps = {
+  open: boolean;
+  title?: string;
+  description?: string;
+  children: ReactNode;
+  onClose: () => void;
+  footer?: ReactNode;
+};
+
+/**
+ * Модальное окно по центру. Глубину даёт затемняющая подложка (overlay-scrim),
+ * а не тень — теней в языке нет (DESIGN §4).
+ */
+export function Modal({ open, title, description, children, footer, onClose }: ModalProps) {
+  useEffect(() => {
+    if (!open) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="overlay-scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+      onMouseDown={onClose}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="bg-surface border-border w-full max-w-[460px] overflow-hidden rounded-xl border"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        {title ? (
+          <div className="border-border-soft border-b px-5 py-4">
+            <h2 className="text-md font-medium">{title}</h2>
+            {description ? <p className="text-text-subtle mt-1 text-xs">{description}</p> : null}
+          </div>
+        ) : null}
+        <div className="px-5 py-4">{children}</div>
+        {footer ? (
+          <div className="border-border-soft flex justify-end gap-2 border-t px-5 py-4">{footer}</div>
+        ) : null}
       </div>
     </div>
   );

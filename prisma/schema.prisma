@@ -220,6 +220,9 @@ model Company {
   roomExceptions      RoomScheduleException[]
   staffUsers          StaffUser[]
   pushSubscriptions   PushSubscription[]
+  internalChatRooms   InternalChatRoom[]
+  internalChatParticipants InternalChatParticipant[]
+  internalChatMessages InternalChatMessage[]
   sources             Source[]
   webhookEvents       WebhookEvent[]
   auditLogs           AuditLog[]
@@ -556,7 +559,9 @@ model AppointmentService {
 model Service {
   id                String      @id @default(cuid())
   companyId         String
-  yclientsServiceId Int
+  /// Локально созданные услуги ещё не существуют в YCLIENTS — сопоставляются
+  /// позже (как Patient.yclientsId). Несколько NULL допустимы.
+  yclientsServiceId Int?
   title             String
   kind              ServiceKind @default(OTHER)
   price             Decimal     @default(0) @db.Decimal(12, 2)
@@ -630,7 +635,8 @@ model Course {
 model Staff {
   id              String  @id @default(cuid())
   companyId       String
-  yclientsStaffId Int
+  /// Локально заведённый специалист сопоставляется с YCLIENTS позже. NULL допустим.
+  yclientsStaffId Int?
   name            String
   specialty       String?
   /// Маппинг «специалист → кабинет» на случай, если кабинеты не заведены
@@ -760,10 +766,92 @@ model StaffUser {
   knowledgeEdits          KnowledgeEntry[]
   settingEdits            Setting[]
   consentDocuments        ConsentDocument[]
+  internalChatParticipants InternalChatParticipant[]
+  internalChatMessages     InternalChatMessage[]
 
   @@unique([companyId, email])
   @@index([companyId, role, isActive])
   @@map("staff_users")
+}
+
+enum InternalChatKind {
+  GENERAL
+  DIRECT
+}
+
+enum InternalChatMessageKind {
+  TEXT
+  VOICE
+  SYSTEM
+}
+
+/// Внутренние чаты сотрудников: общий канал клиники и личные диалоги между
+/// реальными StaffUser. Отдельно от Conversation/Message, потому что те — внешние
+/// пациентские каналы и участвуют в воронке обращений.
+model InternalChatRoom {
+  id        String           @id @default(cuid())
+  companyId String
+  kind      InternalChatKind
+  title     String?
+  /// Для DIRECT: стабильный ключ двух участников, отсортированные StaffUser.id.
+  directKey String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  participants InternalChatParticipant[]
+  messages     InternalChatMessage[]
+
+  @@unique([companyId, kind, directKey])
+  @@index([companyId, kind, updatedAt])
+  @@map("internal_chat_rooms")
+}
+
+model InternalChatParticipant {
+  id          String @id @default(cuid())
+  companyId   String
+  roomId      String
+  staffUserId String
+
+  lastReadAt DateTime? @db.Timestamptz(3)
+  mutedAt    DateTime? @db.Timestamptz(3)
+  deletedAt  DateTime? @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  company   Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  room      InternalChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  staffUser StaffUser        @relation(fields: [staffUserId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, staffUserId])
+  @@index([companyId, staffUserId, deletedAt])
+  @@map("internal_chat_participants")
+}
+
+model InternalChatMessage {
+  id        String                  @id @default(cuid())
+  companyId String
+  roomId    String
+  authorId  String
+  kind      InternalChatMessageKind @default(TEXT)
+  body      String                  @default("")
+  /// Вложения: patient/course/voice. Голос пока хранит короткий dataUrl в JSON;
+  /// при подключении object storage формат останется тем же, только появится url.
+  attachments Json?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  editedAt  DateTime? @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+  deletedById String?
+
+  company  Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  room     InternalChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  author   StaffUser        @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([roomId, createdAt])
+  @@index([companyId, authorId, createdAt])
+  @@map("internal_chat_messages")
 }
 
 model PushSubscription {

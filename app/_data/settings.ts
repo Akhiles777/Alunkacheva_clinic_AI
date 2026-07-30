@@ -82,21 +82,6 @@ export interface StaffAccount {
   isActive: boolean;
 }
 
-export interface CredentialField {
-  keyName: string;
-  label: string;
-  /** Зашифрованное значение (base64) или null, если не задано. */
-  encrypted: string | null;
-}
-
-export interface IntegrationBlock {
-  provider: string;
-  title: string;
-  status: "unknown" | "ok" | "failed";
-  lastCheckedAt: string | null;
-  fields: CredentialField[];
-  extra?: string;
-}
 
 export interface KnowledgeItem {
   id: string;
@@ -226,41 +211,7 @@ export const settingsStore = {
   ] as AuditRow[],
 };
 
-/** Маска секрета для интерфейса — полностью значение не отдаём никогда.
- *  Ни само значение, ни внутреннее имя ключа не показываем. */
-export function credentialMask(field: CredentialField): string {
-  return field.encrypted ? "••••••••••••" : "не задано";
-}
-
-export const INTEGRATIONS: IntegrationBlock[] = [
-  {
-    provider: "yclients",
-    title: "YCLIENTS",
-    status: "ok",
-    lastCheckedAt: "23 июля, 08:00",
-    extra: "последняя синхронизация 08:00 · расхождений 0",
-    fields: [
-      { keyName: "partner_token", label: "Партнёрский токен", encrypted: "seed" },
-      { keyName: "user_token", label: "Пользовательский токен", encrypted: "seed" },
-      { keyName: "company_id", label: "ID филиала", encrypted: "seed" },
-    ],
-  },
-  {
-    provider: "instagram",
-    title: "Instagram",
-    status: "ok",
-    lastCheckedAt: "23 июля, 08:00",
-    extra: "аккаунт @mera.clinic · токен действует до 12 сентября",
-    fields: [{ keyName: "page_token", label: "Токен страницы", encrypted: "seed" }],
-  },
-  {
-    provider: "whatsapp",
-    title: "WhatsApp",
-    status: "failed",
-    lastCheckedAt: "23 июля, 07:12",
-    extra: "провайдер Wazzup24 · номер +7 495 000-00-00",
-    fields: [{ keyName: "api_key", label: "Ключ API", encrypted: null }],
-  },
-];
+// Интеграции переехали на сервер: данные читаются из таблицы Credential
+// через server actions (settings/integrations/actions.ts), а не из мока.
 
 export { WEEKDAYS };
