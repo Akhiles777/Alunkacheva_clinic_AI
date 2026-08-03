@@ -7,8 +7,22 @@ import { PrismaPg } from "@prisma/adapter-pg";
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 function createClient() {
-  const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
-  return new PrismaClient({ adapter });
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("Не задан DATABASE_URL — приложению нужна база");
+  }
+  return new PrismaClient({
+    adapter: new PrismaPg({
+      connectionString,
+      // На serverless каждый инстанс держит свой пул, и десяток холодных
+      // стартов легко упирается в max_connections базы. Держим пул узким и
+      // отпускаем простаивающие соединения быстро; для постоянного сервера
+      // предел поднимается через DATABASE_POOL_MAX.
+      max: Number(process.env.DATABASE_POOL_MAX ?? 5),
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+    }),
+  });
 }
 
 export const prisma = globalForPrisma.prisma ?? createClient();

@@ -2,8 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import { registerUser } from "../actions";
+import { useEffect, useState, useTransition } from "react";
+import { isSelfRegistrationOpen, registerUser } from "../actions";
+import type { AppRole } from "@/lib/roles";
+
+function destFor(role: AppRole): string {
+  return role === "owner" ? "/owner" : role === "doctor" ? "/doctor" : "/";
+}
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -11,18 +16,47 @@ export default function RegisterPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState<boolean | null>(null);
   const [pending, start] = useTransition();
+
+  useEffect(() => {
+    let alive = true;
+    isSelfRegistrationOpen()
+      .then((v) => alive && setOpen(v))
+      .catch(() => alive && setOpen(false));
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function submit() {
     setError(null);
     start(async () => {
       const res = await registerUser({ name, email, password });
-      if (res.ok) {
-        router.replace("/");
+      if (res.ok && res.role) {
+        router.replace(destFor(res.role));
       } else {
         setError(res.error ?? "Не удалось зарегистрироваться");
       }
     });
+  }
+
+  if (open === false) {
+    return (
+      <div className="border-border bg-surface rounded-2xl border p-6">
+        <h1 className="text-md mb-1 font-medium">Регистрация закрыта</h1>
+        <p className="text-text-muted mb-5 text-sm">
+          Учётные записи сотрудников заводит владелец клиники в разделе «Настройки → Сотрудники».
+          Там же задаётся пароль.
+        </p>
+        <Link
+          href="/login"
+          className="bg-accent text-accent-contrast hover:bg-accent-hover block rounded-md py-2.5 text-center text-sm font-medium"
+        >
+          Ко входу
+        </Link>
+      </div>
+    );
   }
 
   return (

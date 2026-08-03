@@ -8,7 +8,13 @@
       "Bash(node --env-file=.env node_modules/.bin/tsx _q.ts)",
       "Bash(perl -0pi -e 's/        service: \\\\{ select: \\\\{ title: true \\\\} \\\\},/        primaryService: { select: { title: true } },/' \"app/\\(dashboard\\)/settings/staff/[id]/actions.ts\")",
       "Bash(perl -0pi -e 's/const key = r\\\\.service\\\\?\\\\.title \\\\?\\\\? \"Без услуги\";/const key = r.primaryService?.title ?? \"Без услуги\";/' \"app/\\(dashboard\\)/settings/staff/[id]/actions.ts\")",
-      "Bash(node _v.mjs)"
+      "Bash(node _v.mjs)",
+      "Bash(rm -rf buildtest)",
+      "Bash(mkdir buildtest *)",
+      "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL npx prisma generate)",
+      "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL ./node_modules/.bin/prisma generate)",
+      "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/prisma generate)",
+      "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL DOTENV_CONFIG_PATH=/dev/null npm run build)"
     ]
   }
 }

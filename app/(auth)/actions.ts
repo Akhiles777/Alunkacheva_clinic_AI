@@ -35,6 +35,21 @@ async function setSession(userId: string, cid: string, role: StaffRole) {
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
+/**
+ * Открыта ли свободная регистрация. По умолчанию — нет: это CRM с медицинскими
+ * данными, и публичная форма, выдающая права администратора любому желающему,
+ * — дыра, а не удобство. Сотрудников заводит владелец в настройках.
+ * Исключение — первый запуск: пока в клинике нет ни одной учётки, регистрация
+ * разрешена и создаёт владельца, иначе в свежую установку не войти.
+ */
+export async function isSelfRegistrationOpen(): Promise<boolean> {
+  if (process.env.ALLOW_SELF_REGISTRATION === "true") return true;
+  const cid = await companyId();
+  if (!cid) return false;
+  const count = await prisma.staffUser.count({ where: { companyId: cid, deletedAt: null } });
+  return count === 0;
+}
+
 export async function registerUser(input: { name: string; email: string; password: string }): Promise<AuthResult> {
   const cid = await companyId();
   if (!cid) return { ok: false, error: "Клиника не настроена" };
@@ -45,14 +60,26 @@ export async function registerUser(input: { name: string; email: string; passwor
   if (!EMAIL_RE.test(email)) return { ok: false, error: "Проверьте почту" };
   if (input.password.length < 6) return { ok: false, error: "Пароль не короче 6 символов" };
 
+  const existingCount = await prisma.staffUser.count({ where: { companyId: cid, deletedAt: null } });
+  const bootstrap = existingCount === 0;
+  if (!bootstrap && process.env.ALLOW_SELF_REGISTRATION !== "true") {
+    return {
+      ok: false,
+      error: "Свободная регистрация закрыта. Учётную запись заводит владелец в «Настройки → Сотрудники».",
+    };
+  }
+
+  // Уникальность почты в БД не смотрит на deletedAt — проверяем и удалённых.
   const exists = await prisma.staffUser.findFirst({ where: { companyId: cid, email }, select: { id: true } });
   if (exists) return { ok: false, error: "Пользователь с такой почтой уже есть" };
 
+  // Первый сотрудник свежей установки — владелец: иначе некому раздать доступы.
+  const role = bootstrap ? "OWNER" : "ADMIN";
   const user = await prisma.staffUser.create({
-    data: { companyId: cid, name, email, passwordHash: hashPassword(input.password), role: "ADMIN" },
+    data: { companyId: cid, name, email, passwordHash: hashPassword(input.password), role },
   });
-  await setSession(user.id, cid, "ADMIN");
-  return { ok: true, role: "admin" };
+  await setSession(user.id, cid, role);
+  return { ok: true, role: appRoleOf(role) };
 }
 
 export async function loginUser(input: { email: string; password: string }): Promise<AuthResult> {

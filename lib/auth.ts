@@ -4,8 +4,23 @@ import crypto from "node:crypto";
  * Аутентификация: хэширование паролей (scrypt) и подписанные сессионные куки
  * (HMAC). Без внешних зависимостей — только node:crypto. Секрет — из env.
  */
-const SECRET =
-  process.env.SESSION_SECRET || process.env.CREDENTIAL_MASTER_KEY || "dev-insecure-secret-change-me";
+/**
+ * Секрет подписи сессии. В продакшене отсутствие секрета — не мелочь: с
+ * известным значением куку подделает кто угодно и войдёт владельцем. Поэтому
+ * падаем сразу и с понятным текстом, а не работаем «как-нибудь».
+ */
+function loadSecret(): string {
+  const fromEnv = process.env.SESSION_SECRET || process.env.CREDENTIAL_MASTER_KEY;
+  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Не задан SESSION_SECRET (минимум 16 символов). Сгенерировать: openssl rand -base64 32",
+    );
+  }
+  return "dev-insecure-secret-change-me";
+}
+
+const SECRET = loadSecret();
 
 export const SESSION_COOKIE = "mera_session";
 export const INVITE_PENDING = "!invite-pending"; // засеянные учётки без пароля
