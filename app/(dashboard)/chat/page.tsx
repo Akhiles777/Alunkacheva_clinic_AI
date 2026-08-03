@@ -1,6 +1,6 @@
 import { InternalStaffChat } from "./internal-staff-chat";
 
-export const metadata = { title: "Чат сотрудников — Мера" };
+export const metadata = { title: "Чат сотрудников" };
 
 export default function StaffChatPage() {
   return (
@@ -10,7 +10,7 @@ export default function StaffChatPage() {
         <p className="text-text-muted mt-1 text-xs">общий канал клиники и личные диалоги</p>
       </header>
 
-      <div className="min-h-0 flex-1 px-7 py-6 max-md:px-5">
+      <div className="min-h-0 flex-1 px-7 py-6 max-md:px-3 max-md:py-3">
         <InternalStaffChat />
       </div>
     </>

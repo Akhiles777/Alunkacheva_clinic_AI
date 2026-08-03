@@ -98,7 +98,7 @@ export function TemplatesClient({ initial }: { initial: TemplatesData }) {
               <button
                 type="button"
                 onClick={() => setQuickReplies((qr) => qr.filter((_, j) => j !== i))}
-                className="text-text-subtle hover:text-text px-1 text-sm"
+                className="text-text-subtle hover:text-text flex h-9 w-9 items-center justify-center text-sm"
                 aria-label="Удалить быстрый ответ"
               >
                 ×

@@ -46,6 +46,33 @@ function firstVoice(attachments: InternalChatAttachment[]): InternalChatAttachme
   return attachments.find((a) => a.kind === "voice" && a.dataUrl) ?? null;
 }
 
+/**
+ * Отметка доставки: одна галочка — сообщение сохранено и доставлено, две —
+ * собеседник открыл чат после него. В общем канале вместо галочек показываем,
+ * сколько человек прочитали: там «прочитано» одним ничего не значит.
+ */
+function ReadMark({ message }: { message: InternalChatState["messages"][number] }) {
+  if (message.recipients === 0) {
+    return <span className="text-text-subtle" title="Пока некому прочитать">✓</span>;
+  }
+  if (message.recipients === 1) {
+    const read = message.readBy > 0;
+    return (
+      <span className={read ? "text-accent-text" : "text-text-subtle"} title={read ? "Прочитано" : "Доставлено"}>
+        {read ? "✓✓" : "✓"}
+      </span>
+    );
+  }
+  return (
+    <span
+      className={message.readBy > 0 ? "text-accent-text" : "text-text-subtle"}
+      title={`Прочитали ${message.readBy} из ${message.recipients}`}
+    >
+      {message.readBy > 0 ? `✓✓ ${message.readBy}/${message.recipients}` : "✓"}
+    </span>
+  );
+}
+
 export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
   const db = useDb();
   const [state, setState] = useState<InternalChatState | null>(null);
@@ -92,6 +119,26 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [state?.messages.length, state?.activeRoomId]);
 
+  // Тихое обновление: без него чужие сообщения и отметки прочтения не
+  // появлялись до следующего действия — для чата это выглядело как «не дошло».
+  const activeRoomId = state?.activeRoomId;
+  useEffect(() => {
+    if (!activeRoomId) return;
+    let alive = true;
+    const tick = () => {
+      getInternalChatState(activeRoomId)
+        .then((next) => {
+          if (alive) setState(next);
+        })
+        .catch(() => {});
+    };
+    const timer = setInterval(tick, 7000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [activeRoomId]);
+
   function run(action: () => Promise<InternalChatState>) {
     setError(null);
     startTransition(async () => {
@@ -111,7 +158,7 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
   return (
     <section
       className={`border-border bg-surface flex min-h-0 rounded-xl border ${
-        compact ? "h-[460px]" : "h-[calc(100vh-136px)]"
+        compact ? "h-[460px]" : "h-full"
       }`}
     >
       <aside className="border-border-soft flex w-[248px] flex-none flex-col border-r max-md:hidden">
@@ -233,6 +280,7 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
                       <span className="truncate">{message.mine ? "вы" : message.authorName}</span>
                       <span aria-hidden className="sep-dot" />
                       <span className="num">{timeLabel(message.createdAt)}</span>
+                      {message.mine && !message.deleted ? <ReadMark message={message} /> : null}
                       {message.canDelete ? (
                         <button
                           type="button"

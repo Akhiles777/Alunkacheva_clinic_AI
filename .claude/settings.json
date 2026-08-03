@@ -30,7 +30,12 @@
       "Bash(perl -0pi -e 's/const stalled = allCourses\\\\\\(\\\\\\)\\\\.filter/const stalled = allCourses\\(db.patients\\).filter/' \"app/\\(dashboard\\)/_components/today-alerts.tsx\")",
       "Bash(perl -0pi -e 's/  const courses = allCourses\\\\\\(\\\\\\);/  const courses = useMemo\\(\\(\\) => allCourses\\(db.patients\\), [db.patients]\\);/' \"app/\\(dashboard\\)/patients/patients-analytics.tsx\")",
       "Bash(perl -0pi -e 's/    void db; \\\\/\\\\/ пересчёт при изменении стора\\\\n    return allCourses\\\\\\(\\\\\\)/    return allCourses\\(db.patients\\)/' \"app/\\(dashboard\\)/courses/page.tsx\")",
-      "Bash(perl -0pi -e 's/  \\\\}, \\\\[db, filter\\\\]\\\\\\);/  }, [db.patients, filter]\\);/' \"app/\\(dashboard\\)/courses/page.tsx\")"
+      "Bash(perl -0pi -e 's/  \\\\}, \\\\[db, filter\\\\]\\\\\\);/  }, [db.patients, filter]\\);/' \"app/\\(dashboard\\)/courses/page.tsx\")",
+      "Bash(grep -rn \"«Мера»\\\\|Мера —\\\\|\\\\\"Мера\\\\\"\\\\|>Мера<\\\\|Мера · центр\\\\|mera\\\\.clinic\\\\|Мера$\\\\|клиника интегративной медицины\" app lib prisma public)",
+      "Bash(node _mob.mjs)",
+      "Bash(node --env-file=.env node_modules/.bin/tsx _rename.ts)",
+      "Bash(DATABASE_URL=\"postgres://450de0f7154386d9c8356cee10531c08fc41172e575626ed542b2b20e6f44cf2:sk_A5qjrB1adZGMi_nsLjK2-@db.prisma.io:5432/postgres?sslmode=require\" npx tsx _rename.ts)",
+      "Bash(env -u DATABASE_URL DOTENV_CONFIG_PATH=/dev/null npm run build)"
     ]
   }
 }

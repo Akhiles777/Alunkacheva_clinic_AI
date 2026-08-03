@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { getCurrentUser } from "./user-actions";
 import { todayRangeMoscow } from "@/lib/schedule";
+import { CLINIC_MAIL_DOMAIN, CLINIC_NAME } from "@/lib/brand";
 
 /**
  * Уведомления для всех ролей: в приложении (колокольчик) и push (PWA). Пункты
@@ -23,7 +24,7 @@ function ensureVapid(): boolean {
   const pub = process.env.VAPID_PUBLIC;
   const priv = process.env.VAPID_PRIVATE;
   if (!pub || !priv) return false;
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:admin@mera.clinic", pub, priv);
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || `mailto:admin@${CLINIC_MAIL_DOMAIN}`, pub, priv);
   vapidReady = true;
   return true;
 }
@@ -91,7 +92,7 @@ export async function sendTestPush(): Promise<{ sent: number }> {
   const subs = await prisma.pushSubscription.findMany({
     where: { companyId: session.companyId, staffUserId: session.userId },
   });
-  const payload = JSON.stringify({ title: "Мера", body: "Уведомления включены ✓", url: "/" });
+  const payload = JSON.stringify({ title: CLINIC_NAME, body: "Уведомления включены ✓", url: "/" });
   let sent = 0;
   for (const s of subs) {
     try {

@@ -56,6 +56,14 @@ export interface InternalChatMessageView {
   mine: boolean;
   deleted: boolean;
   canDelete: boolean;
+  /**
+   * Сколько собеседников уже прочитали сообщение. Считается по lastReadAt
+   * участника: он открывал чат позже, чем пришло сообщение. Заполняется только
+   * для своих сообщений — чужие статусы автору не нужны.
+   */
+  readBy: number;
+  /** Сколько собеседников в чате всего (без автора) — знаменатель для «прочитали N из M». */
+  recipients: number;
 }
 
 export interface InternalChatState {
@@ -312,6 +320,20 @@ async function getRooms(session: Session, userId: string): Promise<InternalChatR
 
 async function getMessages(session: Session, userId: string, roomId: string): Promise<InternalChatMessageView[]> {
   await assertRoomMember(session, userId, roomId);
+
+  // Отметки прочтения собеседников: одно сообщение — прочитано тем, кто заходил
+  // в чат позже него. Отдельной таблицы «прочитано» не заводим: lastReadAt
+  // участника даёт тот же ответ и не растёт с числом сообщений.
+  const readers = await prisma.$queryRaw<{ lastReadAt: Date | null }[]>(Prisma.sql`
+    SELECT p."lastReadAt"
+    FROM internal_chat_participants p
+    WHERE p."roomId" = ${roomId}
+      AND p."companyId" = ${session.companyId}
+      AND p."staffUserId" <> ${userId}
+      AND p."deletedAt" IS NULL
+  `);
+  const recipients = readers.length;
+
   const rows = await prisma.$queryRaw<MessageRow[]>(Prisma.sql`
     SELECT
       m.id,
@@ -332,7 +354,12 @@ async function getMessages(session: Session, userId: string, roomId: string): Pr
   `);
   return rows.map((m) => {
     const deleted = m.deletedAt !== null;
+    const mine = m.authorId === userId;
     return {
+      readBy: mine
+        ? readers.filter((r) => r.lastReadAt !== null && r.lastReadAt >= m.createdAt).length
+        : 0,
+      recipients: mine ? recipients : 0,
       id: m.id,
       roomId: m.roomId,
       authorId: m.authorId,
@@ -341,7 +368,7 @@ async function getMessages(session: Session, userId: string, roomId: string): Pr
       body: deleted ? "" : m.body,
       attachments: deleted ? [] : normalizeAttachments(m.attachments),
       createdAt: m.createdAt.toISOString(),
-      mine: m.authorId === userId,
+      mine,
       deleted,
       canDelete: !deleted && (m.authorId === userId || session.role === "OWNER"),
     };

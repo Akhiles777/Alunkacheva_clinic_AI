@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { CLINIC_NAME, CLINIC_SHORT_NAME } from "@/lib/brand";
 
 /**
  * PWA-манифест: платформа ставится на телефон как приложение (Добавить на
@@ -6,8 +7,8 @@ import type { MetadataRoute } from "next";
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Мера — CRM клиники",
-    short_name: "Мера",
+    name: `${CLINIC_NAME} — CRM`,
+    short_name: CLINIC_SHORT_NAME,
     description: "Инбокс, запись, аналитика и ИИ-ассистент клиники",
     start_url: "/",
     display: "standalone",

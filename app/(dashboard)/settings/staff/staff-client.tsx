@@ -137,7 +137,7 @@ export function StaffClient({
                       type="button"
                       onClick={() => removeAcc(acc.id)}
                       aria-label={`Удалить ${acc.name}`}
-                      className="text-text-subtle hover:text-text px-1 text-sm"
+                      className="text-text-subtle hover:text-text flex h-9 w-9 items-center justify-center text-sm"
                     >
                       ×
                     </button>

@@ -5,49 +5,14 @@ import { usePathname, useRouter } from "next/navigation";
 import { CallButton } from "./call-form";
 import { logoutUser } from "@/app/(auth)/actions";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
+import { CLINIC_NAME, CLINIC_TAGLINE } from "@/lib/brand";
+import { initials, isActive, navForRole } from "./nav-model";
 
 /**
- * Боковая навигация (232px). Роль и имя приходят из сессии (пропсами из layout),
- * а не из клиентского переключателя. Набор пунктов зависит от роли: владелец
- * видит «Владелец», врач — «Мой кабинет» и урезанный список.
+ * Боковая навигация (232px) для десктопа. Набор пунктов берётся из общей
+ * модели nav-model — той же, что у мобильного меню. На телефоне скрыта, там
+ * работает MobileNav.
  */
-type NavItem = { label: string; href: string; badge?: number };
-
-// «Чат» доступен всем ролям: это внутренняя переписка клиники, а не пациентский
-// канал. Раньше он был только внутри кабинета врача, и владелец с админом
-// физически не могли до него добраться.
-const NAV_COMMON: NavItem[] = [
-  { label: "Сегодня", href: "/" },
-  { label: "Диалоги", href: "/inbox", badge: 3 },
-  { label: "Чат", href: "/chat" },
-  { label: "Пациенты", href: "/patients" },
-  { label: "Курсы", href: "/courses" },
-  { label: "Кабинеты", href: "/schedule" },
-  { label: "Отчёты", href: "/analytics" },
-];
-
-function navForRole(role: AppRole): NavItem[] {
-  if (role === "owner") return [{ label: "Владелец", href: "/owner" }, ...NAV_COMMON];
-  if (role === "doctor")
-    return [
-      { label: "Мой кабинет", href: "/doctor" },
-      { label: "Диалоги", href: "/inbox", badge: 3 },
-      { label: "Чат", href: "/chat" },
-      { label: "Пациенты", href: "/patients" },
-      { label: "Курсы", href: "/courses" },
-    ];
-  return NAV_COMMON;
-}
-
-function isActive(pathname: string, href: string): boolean {
-  if (href === "/") return pathname === "/";
-  return pathname === href || pathname.startsWith(`${href}/`);
-}
-
-function initials(name: string): string {
-  return name.split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
-}
-
 export function Sidebar({
   role,
   userName,
@@ -66,10 +31,8 @@ export function Sidebar({
   return (
     <aside className="border-border bg-sidebar flex w-[232px] flex-none flex-col border-r px-4 py-5 max-md:hidden">
       <div className="px-2">
-        <div className="text-lg leading-none font-medium tracking-[-0.015em]">Мера</div>
-        <div className="text-text-subtle mt-1 text-2xs leading-tight">
-          клиника интегративной медицины
-        </div>
+        <div className="text-lg leading-none font-medium tracking-[-0.015em]">{CLINIC_NAME}</div>
+        <div className="text-text-subtle mt-1 text-2xs leading-tight">{CLINIC_TAGLINE}</div>
       </div>
 
       <nav className="mt-7 flex flex-col gap-0.5">

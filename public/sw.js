@@ -32,7 +32,7 @@ self.addEventListener("fetch", (event) => {
 // Пуш-уведомления. Тело сообщения в уведомление не кладём — только повод и
 // ссылка: текст переписки с пациентом не должен всплывать на экране блокировки.
 self.addEventListener("push", (event) => {
-  let data = { title: "Мера", body: "Новое уведомление", url: "/" };
+  let data = { title: "Алункачева клиник", body: "Новое уведомление", url: "/" };
   try {
     if (event.data) data = { ...data, ...event.data.json() };
   } catch {

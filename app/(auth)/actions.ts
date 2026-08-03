@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { hashPassword, SESSION_COOKIE, signSession, verifyPassword } from "@/lib/auth";
 import { appRoleOf, type AppRole } from "@/lib/roles";
 import type { StaffRole } from "@/generated/prisma/enums";
+import { CLINIC_MAIL_DOMAIN } from "@/lib/brand";
 
 /**
  * Вход/регистрация. Владелец может войти без регистрации (кнопка «Войти как
@@ -110,7 +111,7 @@ export async function loginAsOwner(): Promise<AuthResult> {
   // Если владельца ещё нет — заводим (демо-вход без регистрации).
   if (!owner) {
     owner = await prisma.staffUser.create({
-      data: { companyId: cid, name: "Владелец", email: "owner@mera.clinic", passwordHash: "!invite-pending", role: "OWNER" },
+      data: { companyId: cid, name: "Владелец", email: `owner@${CLINIC_MAIL_DOMAIN}`, passwordHash: "!invite-pending", role: "OWNER" },
       select: { id: true },
     });
   }

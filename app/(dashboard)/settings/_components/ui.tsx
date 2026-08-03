@@ -144,7 +144,10 @@ export function Toggle({
       aria-checked={checked}
       aria-label={label}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 flex-none items-center rounded-pill transition-colors ${
+      // Сам переключатель остаётся компактным (плотность интерфейса важна на
+      // десктопе), но область нажатия расширена невидимым слоем до 40px —
+      // иначе пальцем в него не попасть.
+      className={`relative inline-flex h-5 w-9 flex-none items-center rounded-pill transition-colors before:absolute before:-inset-2.5 before:content-[''] ${
         checked ? "bg-accent" : "bg-border-strong"
       }`}
     >

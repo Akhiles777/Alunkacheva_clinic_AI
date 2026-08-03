@@ -7,7 +7,7 @@ import { getToday, type CabinetNow, type FreeWindowRow } from "@/app/_data/today
  * Витрина граничных состояний — служебный экран визуальной проверки.
  * Фикстуры здесь: это визуальный слой, `lib/metrics` и моки он не трогает.
  */
-export const metadata = { title: "Состояния — Мера" };
+export const metadata = { title: "Состояния" };
 
 const base = getToday();
 

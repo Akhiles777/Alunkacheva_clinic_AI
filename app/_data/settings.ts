@@ -9,6 +9,7 @@
  * только маской.
  */
 import type { Permission, Role } from "@/lib/permissions";
+import { CLINIC_NAME } from "@/lib/brand";
 
 // Реальное шифрование Credential (AES-256-GCM, lib/crypto) — серверное, на
 // записи в БД (позже). В браузер node:crypto не тянем: здесь только маска.
@@ -143,7 +144,7 @@ const ROLE_MATRIX: Record<Role, Permission[]> = {
 /** Единый мутируемый стор. Живёт в памяти клиента в рамках сессии. */
 export const settingsStore = {
   clinic: {
-    name: "Мера",
+    name: CLINIC_NAME,
     timezone: "Europe/Moscow",
     dayBoundaryMinute: 0,
     schedule: defaultSchedule(),
@@ -175,8 +176,8 @@ export const settingsStore = {
   roleMatrix: ROLE_MATRIX,
   assistant: {
     mode: "drafts" as "on" | "off" | "drafts",
-    greeting: "Здравствуйте! Это клиника «Мера». Чем помочь?",
-    signature: "— команда «Мера»",
+    greeting: `Здравствуйте! Это клиника «${CLINIC_NAME}». Чем помочь?`,
+    signature: `— команда «${CLINIC_NAME}»`,
     stopWords: ["жалоба", "боль", "вернуть деньги", "юрист", "врач ошибся"],
   },
   knowledge: [

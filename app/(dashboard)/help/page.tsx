@@ -1,7 +1,8 @@
 import { getCurrentUser } from "../_components/user-actions";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
+import { CLINIC_NAME } from "@/lib/brand";
 
-export const metadata = { title: "Справка — Мера" };
+export const metadata = { title: "Справка" };
 
 interface Section {
   role: AppRole | "all";
@@ -16,7 +17,7 @@ const SECTIONS: Section[] = [
     role: "all",
     icon: "✦",
     title: "О платформе",
-    intro: "«Мера» — надстройка над YCLIENTS: единый инбокс, ИИ-ассистент, запись, аналитика. Данные о расписании и выручке приходят из YCLIENTS, платформа их показывает и анализирует.",
+    intro: `«${CLINIC_NAME}» — надстройка над YCLIENTS: единый инбокс, ИИ-ассистент, запись, аналитика. Данные о расписании и выручке приходят из YCLIENTS, платформа их показывает и анализирует.`,
     items: [
       { h: "Вход", t: "Каждый сотрудник входит по своей почте и паролю. Владелец может войти без регистрации кнопкой «Войти как владелец»." },
       { h: "Роли", t: "Владелец, Администратор, Врач — у каждой свой кабинет и набор возможностей. Роль задаётся учётной записью." },

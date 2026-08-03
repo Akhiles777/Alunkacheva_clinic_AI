@@ -3,7 +3,7 @@ import { getOwnerReport, getWeeklyDynamics } from "./actions";
 import { OwnerAssistant } from "./owner-assistant";
 import { WeeklyCharts } from "./weekly-charts";
 
-export const metadata = { title: "Владелец — Мера" };
+export const metadata = { title: "Владелец" };
 
 function Tile({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
   return (

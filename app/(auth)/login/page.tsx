@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { loginAsOwner, loginUser } from "../actions";
 import type { AppRole } from "@/lib/roles";
+import { CLINIC_MAIL_DOMAIN } from "@/lib/brand";
 
 function destFor(role: AppRole): string {
   return role === "owner" ? "/owner" : role === "doctor" ? "/doctor" : "/";
@@ -57,7 +58,7 @@ export default function LoginPage() {
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@mera.clinic"
+            placeholder={`you@${CLINIC_MAIL_DOMAIN}`}
             className="border-border-input bg-surface w-full rounded-md border px-3 py-2 text-sm outline-none"
           />
         </label>

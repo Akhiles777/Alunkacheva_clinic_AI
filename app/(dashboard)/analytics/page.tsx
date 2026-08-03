@@ -4,7 +4,7 @@ import { servicesLoad } from "@/app/_data/analytics";
 import { formatDuration, formatMoney, formatMoneyPrecise, formatNumber, formatPercent } from "@/lib/format";
 import type { PeriodKey } from "@/lib/metrics/types";
 
-export const metadata = { title: "Отчёты — Мера" };
+export const metadata = { title: "Отчёты" };
 
 const TABS = [
   { id: "funnel", label: "Воронка" },

@@ -9,6 +9,7 @@
 import { PrismaClient } from "../generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { SourceKind, ServiceKind, StaffRole, Permission } from "../generated/prisma/enums";
+import { CLINIC_NAME } from "../lib/brand";
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
@@ -88,7 +89,7 @@ async function main() {
     update: {},
     create: {
       yclientsId,
-      name: process.env.CLINIC_NAME ?? "Клиника интегративной медицины",
+      name: process.env.CLINIC_NAME ?? CLINIC_NAME,
       timezone: process.env.CLINIC_TIMEZONE ?? "Europe/Moscow",
     },
   });
