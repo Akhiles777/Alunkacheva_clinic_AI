@@ -14,7 +14,9 @@
       "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL npx prisma generate)",
       "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL ./node_modules/.bin/prisma generate)",
       "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL DOTENV_CONFIG_PATH=/dev/null ./node_modules/.bin/prisma generate)",
-      "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL DOTENV_CONFIG_PATH=/dev/null npm run build)"
+      "Bash(env -u DATABASE_URL -u SHADOW_DATABASE_URL DOTENV_CONFIG_PATH=/dev/null npm run build)",
+      "Bash(git fetch *)",
+      "Bash(DATABASE_URL= SHADOW_DATABASE_URL= npm run build)"
     ]
   }
 }
