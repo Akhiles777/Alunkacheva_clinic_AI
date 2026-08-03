@@ -28,6 +28,9 @@ export async function POST(req: Request) {
   }
 
   const events = parseWebhook(body);
+
+const gasan = 'gasan'
+
   // TODO(этап 1): по каждому событию точечно догнать проекцию (entityForResource
   // + адресный upsert по resource_id). Пока принимаем и подтверждаем приём.
   return NextResponse.json({ accepted: events.length });
