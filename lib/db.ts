@@ -15,10 +15,31 @@ import { PrismaPg } from "@prisma/adapter-pg";
  */
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
+/**
+ * Строка подключения. Основное имя — DATABASE_URL; POSTGRES_URL и
+ * PRISMA_DATABASE_URL подхватываем запасными, потому что управляемые базы
+ * (в том числе Prisma Postgres на Vercel) подставляют в окружение именно их, и
+ * без этого приложение падало бы при живой и настроенной базе.
+ * Берём только прямое подключение: адаптеру нужен постgres-протокол.
+ */
+export function resolveDatabaseUrl(): string | null {
+  const candidates = [
+    process.env.DATABASE_URL,
+    process.env.POSTGRES_URL,
+    process.env.PRISMA_DATABASE_URL,
+  ];
+  for (const value of candidates) {
+    if (value && /^postgres(ql)?:\/\//.test(value)) return value;
+  }
+  return null;
+}
+
 function createClient(): PrismaClient {
-  const connectionString = process.env.DATABASE_URL;
+  const connectionString = resolveDatabaseUrl();
   if (!connectionString) {
-    throw new Error("Не задан DATABASE_URL — приложению нужна база");
+    throw new Error(
+      "Не задана строка подключения к базе: ожидается DATABASE_URL (или POSTGRES_URL / PRISMA_DATABASE_URL)",
+    );
   }
   return new PrismaClient({
     adapter: new PrismaPg({

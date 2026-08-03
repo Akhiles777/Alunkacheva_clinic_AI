@@ -18,7 +18,7 @@ function StatTile({ label, value, hint }: { label: string; value: string | numbe
 export function PatientsAnalytics() {
   const db = useDb();
   const stats = useMemo(() => clinicPatientStats(db.patients), [db.patients]);
-  const courses = allCourses();
+  const courses = useMemo(() => allCourses(db.patients), [db.patients]);
 
   const moneyLeft = courses.reduce((sum, c) => sum + c.moneyLeft, 0);
   const toReturn = courses.filter((c) => c.stalled).length;

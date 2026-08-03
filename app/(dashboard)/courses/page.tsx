@@ -36,11 +36,10 @@ export default function CoursesPage() {
   const [writeTo, setWriteTo] = useState<CourseView | null>(null);
 
   const rows = useMemo(() => {
-    void db; // пересчёт при изменении стора
-    return allCourses()
+    return allCourses(db.patients)
       .filter((c) => matches(c, filter))
       .sort((a, b) => b.moneyLeft - a.moneyLeft);
-  }, [db, filter]);
+  }, [db.patients, filter]);
 
   return (
     <>

@@ -12,7 +12,7 @@ import { CallButton } from "./call-form";
 export function TodayAlerts() {
   const db = useDb();
   const unread = db.dialogs.filter((d) => d.unread && d.status !== "closed").length;
-  const stalled = allCourses().filter((c) => c.stalled).length;
+  const stalled = allCourses(db.patients).filter((c) => c.stalled).length;
 
   return (
     <div className="flex flex-wrap items-center gap-2">

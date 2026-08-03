@@ -10,7 +10,11 @@ import { defineConfig } from "prisma/config";
  * бросал исключение и валил весь билд. Команды, которым база нужна
  * (migrate, db seed, studio), запускаются с окружением и получают url.
  */
-const url = process.env.DATABASE_URL;
+// Те же запасные имена, что и в lib/db.ts: управляемые базы подставляют
+// POSTGRES_URL / PRISMA_DATABASE_URL, и миграции должны находить их тоже.
+const url = [process.env.DATABASE_URL, process.env.POSTGRES_URL, process.env.PRISMA_DATABASE_URL].find(
+  (v) => v && /^postgres(ql)?:\/\//.test(v),
+);
 const shadowUrl = process.env.SHADOW_DATABASE_URL;
 
 export default defineConfig({

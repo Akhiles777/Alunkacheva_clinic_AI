@@ -809,9 +809,17 @@ export interface CourseView {
 }
 
 /** Плоский список курсов по всем пациентам с деньгами в остатке. */
-export function allCourses(): CourseView[] {
+/**
+ * Курсы всех пациентов.
+ *
+ * Принимает список пациентов, а не читает модульный `db`: при рендере нужно
+ * брать ровно тот снимок, что вернул useDb(). Иначе SSR считает по исходным
+ * данным, а клиент к моменту гидратации уже видит подставленные из БД —
+ * React ловит расхождение и перерисовывает поддерево заново.
+ */
+export function allCourses(patients: Patient[] = db.patients): CourseView[] {
   const out: CourseView[] = [];
-  for (const p of db.patients) {
+  for (const p of patients) {
     for (const c of p.courses) {
       const remaining = Math.max(c.total - c.used, 0);
       const hasFuture = c.hasFuture ?? c.status !== "stalled";
