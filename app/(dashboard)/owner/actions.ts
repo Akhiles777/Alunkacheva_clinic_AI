@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import type { Appt } from "@/app/_data/store";
 import { hypotheses, priceOf, roomLoad, staffPerformance } from "@/lib/staff-analytics";
+import { todayRangeMoscow } from "@/lib/schedule";
 
 /**
  * Серверный отчёт владельца — из БД (проекция Appointment + пациенты). Не мок:
@@ -67,8 +68,14 @@ function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
 }
 
 async function loadAppts(companyId: string): Promise<Appt[]> {
+  const { start, end } = todayRangeMoscow();
   const rows = await prisma.appointment.findMany({
-    where: { companyId, deletedAt: null, status: { not: "CANCELLED" } },
+    where: {
+      companyId,
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      startAt: { gte: start, lt: end },
+    },
     include: {
       staff: { select: { name: true } },
       room: { select: { name: true } },
@@ -88,6 +95,8 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
     durationMin: r.durationMin,
     status: STATUS_MAP[r.status] ?? "planned",
     isFirstVisit: r.isFirstVisit,
+    price: Number(r.revenue),
+    note: r.note,
   }));
 }
 
@@ -110,7 +119,7 @@ function serviceBreakdown(appts: Appt[]): OwnerServiceRow[] {
     const key = a.service || "—";
     const cur = map.get(key) ?? { service: key, count: 0, revenue: 0 };
     cur.count += 1;
-    if (a.status === "arrived") cur.revenue += priceOf(a.service);
+    if (a.status === "arrived") cur.revenue += a.price ?? priceOf(a.service);
     map.set(key, cur);
   }
   return [...map.values()].sort((x, y) => y.revenue - x.revenue);
@@ -158,9 +167,71 @@ export async function getOwnerReport(): Promise<OwnerReport> {
   };
 }
 
+export interface WeekPoint {
+  label: string;
+  revenue: number;
+  clients: number;
+  appts: number;
+}
+export interface WeeklyDynamics {
+  weeks: WeekPoint[];
+  revenueGrowthPct: number | null;
+  clientsGrowthPct: number | null;
+}
+
+function weekKey(d: Date): number {
+  // Сдвигаем к московскому «настенному» времени и берём понедельник недели.
+  const msk = new Date(d.getTime() + 3 * 3600 * 1000);
+  const dow = (msk.getUTCDay() + 6) % 7; // 0 = понедельник
+  return Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth(), msk.getUTCDate() - dow);
+}
+function weekLabel(key: number): string {
+  const m = new Date(key);
+  return `${String(m.getUTCDate()).padStart(2, "0")}.${String(m.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/** Динамика по неделям (доход, клиенты, приёмы) за последние 6 недель. */
+export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
+  const session = await getSession();
+  const since = new Date(Date.now() - 8 * 7 * 24 * 3600 * 1000);
+  const rows = await prisma.appointment.findMany({
+    where: { companyId: session.companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since } },
+    select: { startAt: true, revenue: true, patientId: true },
+  });
+
+  const buckets = new Map<number, { revenue: number; clients: Set<string>; appts: number }>();
+  for (const r of rows) {
+    const key = weekKey(r.startAt);
+    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0 };
+    b.revenue += Number(r.revenue);
+    if (r.patientId) b.clients.add(r.patientId);
+    b.appts += 1;
+    buckets.set(key, b);
+  }
+
+  // Текущая неделя ещё не завершена — в динамику берём только полные недели.
+  const currentWeek = weekKey(new Date());
+  const keys = [...buckets.keys()].filter((k) => k < currentWeek).sort((a, b) => a - b).slice(-6);
+  const weeks: WeekPoint[] = keys.map((k) => {
+    const b = buckets.get(k)!;
+    return { label: weekLabel(k), revenue: b.revenue, clients: b.clients.size, appts: b.appts };
+  });
+
+  const pct = (arr: number[]) => {
+    if (arr.length < 2 || arr[0] === 0) return null;
+    return Math.round(((arr[arr.length - 1] - arr[0]) / arr[0]) * 100);
+  };
+  return {
+    weeks,
+    revenueGrowthPct: pct(weeks.map((w) => w.revenue)),
+    clientsGrowthPct: pct(weeks.map((w) => w.clients)),
+  };
+}
+
 /** Текстовый срез базы для ИИ-аналитика владельца (только чтение). */
 export async function getOwnerAiContext(): Promise<string> {
-  const report = await getOwnerReport();
+  const session = await getSession();
+  const [report, appts] = await Promise.all([getOwnerReport(), loadAppts(session.companyId)]);
   const lines: string[] = [];
   lines.push("# Сводка клиники");
   lines.push(
@@ -187,6 +258,12 @@ export async function getOwnerAiContext(): Promise<string> {
   lines.push("");
   lines.push("# Загрузка кабинетов");
   for (const r of report.rooms) lines.push(`- ${r.name}: ${r.ratePct}%.`);
+  const notes = appts.filter((a) => a.note && a.note.trim());
+  if (notes.length) {
+    lines.push("");
+    lines.push("# Заметки администратора по визитам (отзывы, проблемы, пожелания)");
+    for (const a of notes) lines.push(`- ${a.service} у «${a.doctor}» (${a.patientName}): «${a.note}»`);
+  }
   lines.push("");
   lines.push("# Уже замеченные гипотезы");
   for (const h of report.hypotheses) lines.push(`- ${h}`);

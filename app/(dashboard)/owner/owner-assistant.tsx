@@ -5,7 +5,6 @@ import { askAI } from "../_components/assistant-actions";
 import { getOwnerAiContext } from "./actions";
 import { useDb } from "@/app/_data/store";
 import { answerQuery } from "@/lib/assistant/engine";
-import { useVoice } from "@/lib/voice";
 
 interface Msg {
   role: "user" | "assistant";
@@ -22,28 +21,28 @@ const WELCOME: Msg = {
   role: "assistant",
   text:
     "Я ваш личный бизнес-аналитик. Вижу всю базу: загрузку кабинетов, часы и выручку по сотрудникам, " +
-    "воронку, удержание. Спросите текстом, зажмите микрофон, чтобы сказать голосом, или позвоните мне.",
+    "воронку, удержание. Спросите текстом — отвечу разбором по цифрам.",
 };
 
+/**
+ * ИИ-аналитик владельца — только текст. Озвучивание и режим звонка убраны
+ * намеренно (решение заказчика, август 2026): владелец читает разбор, а не
+ * слушает его. Голос остаётся в чате сотрудников как голосовые сообщения.
+ */
 export function OwnerAssistant() {
   const db = useDb();
-  const voice = useVoice();
   const [messages, setMessages] = useState<Msg[]>([WELCOME]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
-  const [voiceOut, setVoiceOut] = useState(true);
-  const [inCall, setInCall] = useState(false);
-  const inCallRef = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, thinking]);
 
-  // Возвращает текст ответа; при voice=true — озвучивает и ждёт окончания.
-  async function ask(text: string, voiceReply: boolean): Promise<string> {
+  async function ask(text: string) {
     const q = text.trim();
-    if (!q) return "";
+    if (!q || thinking) return;
     const history = messages.filter((m) => m !== WELCOME).map((m) => ({ role: m.role, content: m.text }));
     setMessages((m) => [...m, { role: "user", text: q }]);
     setInput("");
@@ -58,52 +57,7 @@ export function OwnerAssistant() {
     }
     setMessages((m) => [...m, { role: "assistant", text: answer }]);
     setThinking(false);
-    if (voiceReply && answer) await voice.speak(answer);
-    return answer;
   }
-
-  // ── звонок: непрерывный диалог ──
-  function callTurn() {
-    if (!inCallRef.current) return;
-    voice.startListening(
-      async (text) => {
-        if (!inCallRef.current) return;
-        await ask(text, true);
-        if (inCallRef.current) callTurn();
-      },
-      { continuous: false },
-    );
-  }
-  async function startCall() {
-    inCallRef.current = true;
-    setInCall(true);
-    await voice.speak("Здравствуйте! Слушаю вас. Что проанализировать?");
-    callTurn();
-  }
-  function endCall() {
-    inCallRef.current = false;
-    setInCall(false);
-    voice.stopListening();
-    voice.cancelSpeak();
-  }
-
-  // ── зажать и говорить ──
-  function holdStart() {
-    if (thinking || inCall) return;
-    voice.cancelSpeak();
-    voice.startListening((text) => ask(text, voiceOut), { continuous: true });
-  }
-  function holdEnd() {
-    voice.stopListening();
-  }
-
-  const callStatus = voice.listening
-    ? "слушаю…"
-    : thinking
-      ? "думаю…"
-      : voice.speaking
-        ? "говорю…"
-        : "…";
 
   return (
     <section className="border-border bg-surface flex flex-col rounded-xl border">
@@ -112,10 +66,7 @@ export function OwnerAssistant() {
           <span aria-hidden className="text-accent-text text-base">✦</span>
           <h2 className="text-sm font-medium">ИИ-аналитик владельца</h2>
         </div>
-        <label className="text-text-muted flex items-center gap-1.5 text-xs">
-          <input type="checkbox" checked={voiceOut} onChange={(e) => setVoiceOut(e.target.checked)} />
-          озвучивать ответы
-        </label>
+        <span className="text-text-subtle text-2xs">разбор по данным клиники</span>
       </div>
 
       <div className="flex h-[min(54vh,480px)] flex-col px-5 py-4">
@@ -139,13 +90,13 @@ export function OwnerAssistant() {
           <div ref={endRef} />
         </div>
 
-        {messages.length <= 1 && !inCall ? (
+        {messages.length <= 1 ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {OWNER_SUGGESTIONS.map((s) => (
               <button
                 key={s}
                 type="button"
-                onClick={() => ask(s, voiceOut)}
+                onClick={() => ask(s)}
                 className="border-border text-text-muted hover:bg-hover rounded-md border px-2.5 py-1 text-xs"
               >
                 {s}
@@ -154,78 +105,27 @@ export function OwnerAssistant() {
           </div>
         ) : null}
 
-        {inCall ? (
-          // Режим звонка — непрерывный разговор.
-          <div className="border-border mt-3 flex items-center gap-4 rounded-xl border px-4 py-3">
-            <span className="relative flex h-3 w-3 flex-none">
-              <span className="bg-accent absolute inline-flex h-full w-full animate-ping rounded-full opacity-60" />
-              <span className="bg-accent relative inline-flex h-3 w-3 rounded-full" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">Звонок с ассистентом · {callStatus}</div>
-              <div className="text-text-subtle truncate text-xs">
-                {voice.interimText || "говорите — я слушаю и отвечу голосом"}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={endCall}
-              className="bg-accent text-accent-contrast hover:bg-accent-hover flex-none rounded-md px-3.5 py-2 text-sm font-medium"
-            >
-              Завершить
-            </button>
-          </div>
-        ) : (
-          <form
-            className="mt-3 flex items-center gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              ask(input, voiceOut);
-            }}
+        <form
+          className="mt-3 flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            ask(input);
+          }}
+        >
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Спросите про выручку, загрузку, сотрудников…"
+            className="border-border-input bg-surface placeholder:text-text-subtle min-w-0 flex-1 rounded-md border px-3 py-2 text-sm outline-none"
+          />
+          <button
+            type="submit"
+            disabled={!input.trim() || thinking}
+            className="bg-accent text-accent-contrast hover:bg-accent-hover flex-none rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
           >
-            {voice.recognitionSupported ? (
-              <button
-                type="button"
-                onPointerDown={holdStart}
-                onPointerUp={holdEnd}
-                onPointerLeave={() => voice.listening && holdEnd()}
-                aria-label="Зажмите, чтобы говорить"
-                title="Зажмите, чтобы говорить"
-                className={`flex-none touch-none rounded-md border px-3 py-2 text-sm select-none ${
-                  voice.listening
-                    ? "border-accent bg-accent text-accent-contrast"
-                    : "border-border text-text-muted hover:bg-hover"
-                }`}
-              >
-                {voice.listening ? "● отпустите" : "🎤 зажать"}
-              </button>
-            ) : null}
-            <input
-              value={voice.listening ? voice.interimText : input}
-              onChange={(e) => setInput(e.target.value)}
-              readOnly={voice.listening}
-              placeholder="Спросите или зажмите микрофон…"
-              className="border-border-input bg-surface placeholder:text-text-subtle flex-1 rounded-md border px-3 py-2 text-sm outline-none"
-            />
-            {voice.recognitionSupported ? (
-              <button
-                type="button"
-                onClick={startCall}
-                className="border-accent-border bg-accent-tint text-accent-text hover:bg-accent hover:text-accent-contrast flex-none rounded-md border px-3 py-2 text-sm font-medium"
-                title="Позвонить ассистенту — разговор голосом"
-              >
-                Позвонить
-              </button>
-            ) : null}
-            <button
-              type="submit"
-              disabled={!input.trim() || thinking}
-              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
-            >
-              Спросить
-            </button>
-          </form>
-        )}
+            Спросить
+          </button>
+        </form>
       </div>
     </section>
   );

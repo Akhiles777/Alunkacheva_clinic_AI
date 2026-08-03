@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { addAppt, getDb, useDb } from "@/app/_data/store";
 import { formatMinute, freeGaps } from "@/lib/metrics/occupancy";
 import { CLINIC_DAY, durationLabel, hasConflict, roomIntervals } from "@/lib/schedule";
+import { getServicePrices } from "../schedule/actions";
 
 /**
  * Панель записи. Свободные окна считаются из ЕДИНОГО источника (стор
@@ -88,13 +89,21 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   const [patient, setPatient] = useState("");
   const [check, setCheck] = useState<Check>("idle");
   const [booked, setBooked] = useState<{ time: string; room: string } | null>(null);
+  const [prices, setPrices] = useState<Record<string, number>>({});
+  const [price, setPrice] = useState<string>("");
+  const [note, setNote] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => () => {
-    if (timer.current) clearTimeout(timer.current);
+  useEffect(() => {
+    getServicePrices().then(setPrices).catch(() => {});
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
   }, []);
 
   const service = SERVICES.find((s) => s.key === serviceKey) ?? null;
+  // Цена по умолчанию — из настроек услуги; администратор может изменить.
+  const defaultPrice = service ? (prices[service.title] ?? 0) : 0;
 
   // Реальные свободные окна выбранной услуги в её кабинете — из стора.
   const windows: WindowOption[] = useMemo(() => {
@@ -140,6 +149,8 @@ function BookingInner({ onClose }: { onClose: () => void }) {
         startMinute: selected.startMinute,
         durationMin: selected.durationMin,
         status: "planned",
+        price: price.trim() === "" ? defaultPrice : Number(price),
+        note: note.trim() || null,
       });
       setBooked({ time: formatMinute(selected.startMinute), room: ROOM_NAME[selected.roomId] });
       setCheck("created");
@@ -182,6 +193,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
                   setServiceKey(s.key);
                   setWindowId(null);
                   setCheck("idle");
+                  setPrice(String(prices[s.title] ?? ""));
                 }}
                 className={`rounded-md border px-2.5 py-1.5 text-sm ${
                   serviceKey === s.key
@@ -244,6 +256,32 @@ function BookingInner({ onClose }: { onClose: () => void }) {
             }}
             placeholder="Имя или телефон"
             className="border-border-input bg-surface placeholder:text-text-subtle w-full rounded-md border px-3 py-2 text-sm outline-none"
+          />
+
+          <div className="text-text-subtle mt-5 mb-2 text-2xs">
+            Цена{service ? ` · по умолчанию ${defaultPrice} ₽` : ""}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              step={100}
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              placeholder={service ? String(defaultPrice) : "выберите услугу"}
+              disabled={!service}
+              className="border-border-input bg-surface num w-32 rounded-md border px-3 py-2 text-sm outline-none disabled:opacity-50"
+            />
+            <span className="text-text-subtle text-sm">₽</span>
+          </div>
+
+          <div className="text-text-subtle mt-5 mb-2 text-2xs">Дополнительно · отзыв, проблема, примечание</div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            placeholder="Необязательно. Это учтёт ИИ-аналитик."
+            className="border-border-input bg-surface placeholder:text-text-subtle w-full resize-y rounded-md border px-3 py-2 text-sm outline-none"
           />
         </div>
 

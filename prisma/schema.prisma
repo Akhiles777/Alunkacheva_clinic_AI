@@ -245,6 +245,7 @@ model Company {
   consentDocuments    ConsentDocument[]
   patientConsents     PatientConsent[]
   rolePermissions     RolePermission[]
+  userPermissions     UserPermission[]
 
   @@map("companies")
 }
@@ -496,6 +497,9 @@ model Appointment {
   isPaid             Boolean @default(false)
   /// Порядковый номер сеанса внутри курса, 1-based.
   courseSessionIndex Int?
+  /// Свободная заметка администратора при записи: отзыв клиента, проблема,
+  /// пожелание. Необязательная; учитывается ИИ-анализом (§6).
+  note               String?
 
   /// Дата создания записи в YCLIENTS. Метрика «записались» считается по ней,
   /// а не по дате визита и не по нашему createdAt.
@@ -755,6 +759,7 @@ model StaffUser {
   company                 Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   staff                   Staff?             @relation(fields: [staffId], references: [id], onDelete: SetNull)
   subscriptions           PushSubscription[]
+  permissions             UserPermission[]
   conversations           Conversation[]
   approvedMessages        Message[]          @relation("MessageApprovedBy")
   acknowledgedEscalations Escalation[]       @relation("EscalationAcknowledgedBy")
@@ -1415,4 +1420,24 @@ model RolePermission {
 
   @@unique([companyId, role, permission])
   @@map("role_permissions")
+}
+
+/// Персональные права сотрудника. Перекрывают матрицу роли: строка есть —
+/// решает она, строки нет — действует право роли. Так доступ настраивается
+/// по каждому человеку, не ломая роль как разумную заготовку.
+model UserPermission {
+  id          String     @id @default(cuid())
+  companyId   String
+  staffUserId String
+  permission  Permission
+  allowed     Boolean
+
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  staffUser StaffUser @relation(fields: [staffUserId], references: [id], onDelete: Cascade)
+
+  @@unique([staffUserId, permission])
+  @@index([companyId])
+  @@map("user_permissions")
 }

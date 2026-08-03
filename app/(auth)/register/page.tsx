@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { registerUser } from "../actions";
-import { setRole } from "@/app/_data/role";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -19,7 +18,6 @@ export default function RegisterPage() {
     start(async () => {
       const res = await registerUser({ name, email, password });
       if (res.ok) {
-        setRole("admin");
         router.replace("/");
       } else {
         setError(res.error ?? "Не удалось зарегистрироваться");

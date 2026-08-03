@@ -39,7 +39,8 @@ export function staffPerformance(appts: Appt[]): DoctorStats[] {
     cur.appts += 1;
     if (a.status === "arrived") {
       cur.arrived += 1;
-      cur.revenue += priceOf(a.service);
+      // Цена визита — из записи (пришла из цены услуги в настройках); keyword-map — фоллбэк.
+      cur.revenue += a.price ?? priceOf(a.service);
     }
     if (a.status === "no_show") cur.noShow += 1;
     if (occupies(a)) cur.bookedMinutes += a.durationMin;

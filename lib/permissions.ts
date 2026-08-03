@@ -12,6 +12,15 @@ export type Permission =
   | "MESSAGE_PATIENTS"
   | "VIEW_AUDIT";
 
+/** Полный перечень прав — единственный список, от которого пляшут UI и сервер. */
+export const ALL_PERMISSIONS: Permission[] = [
+  "VIEW_OTHER_PATIENTS",
+  "VIEW_REVENUE",
+  "EDIT_SETTINGS",
+  "MESSAGE_PATIENTS",
+  "VIEW_AUDIT",
+];
+
 export interface RolePermissionRow {
   role: Role;
   permission: Permission;
@@ -26,6 +35,28 @@ export function hasPermission(
 ): boolean {
   const row = matrix.find((r) => r.role === role && r.permission === permission);
   return row?.allowed === true;
+}
+
+/** Персональное перекрытие права. Строки нет — наследуем роль. */
+export interface UserPermissionRow {
+  permission: Permission;
+  allowed: boolean;
+}
+
+/**
+ * Итоговое право сотрудника: персональная настройка перекрывает роль, и только
+ * при её отсутствии действует матрица роли. Порядок обратный ломает смысл —
+ * персональный запрет должен переживать щедрую роль.
+ */
+export function effectivePermission(
+  matrix: RolePermissionRow[],
+  role: Role,
+  personal: UserPermissionRow[],
+  permission: Permission,
+): boolean {
+  const override = personal.find((p) => p.permission === permission);
+  if (override) return override.allowed;
+  return hasPermission(matrix, role, permission);
 }
 
 /** Полный набор разрешённых прав роли. */

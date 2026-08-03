@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import type { Appt } from "@/app/_data/store";
 import type { AppointmentStatus } from "@/generated/prisma/enums";
+import { todayRangeMoscow } from "@/lib/schedule";
 
 /**
  * Расписание/«Сегодня» из ЕДИНОГО источника — проекции Appointment в БД (та же,
@@ -43,8 +44,14 @@ function startAtFromMinute(startMinute: number): Date {
 
 export async function getAppointmentsForStore(): Promise<Appt[]> {
   const session = await getSession();
+  const { start, end } = todayRangeMoscow();
   const rows = await prisma.appointment.findMany({
-    where: { companyId: session.companyId, deletedAt: null, status: { not: "CANCELLED" } },
+    where: {
+      companyId: session.companyId,
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      startAt: { gte: start, lt: end },
+    },
     include: {
       staff: { select: { name: true } },
       room: { select: { name: true } },
@@ -65,6 +72,8 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     durationMin: r.durationMin,
     status: TO_STORE[r.status] ?? "planned",
     isFirstVisit: r.isFirstVisit,
+    price: Number(r.revenue),
+    note: r.note,
   }));
 }
 
@@ -95,6 +104,20 @@ export interface CreateApptInput {
   startMinute: number;
   durationMin: number;
   status: Appt["status"];
+  price?: number;
+  note?: string | null;
+}
+
+/** Цены услуг из настроек (для формы записи). */
+export async function getServicePrices(): Promise<Record<string, number>> {
+  const session = await getSession();
+  const rows = await prisma.service.findMany({
+    where: { companyId: session.companyId, isActive: true },
+    select: { title: true, price: true },
+  });
+  const map: Record<string, number> = {};
+  for (const r of rows) map[r.title] = Number(r.price);
+  return map;
 }
 
 export async function createAppointmentDb(input: CreateApptInput): Promise<void> {
@@ -135,7 +158,9 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
       durationMin: input.durationMin,
       status: TO_DB[input.status],
       isFirstVisit: false,
-      revenue: 0,
+      // Цена визита — из формы (по умолчанию цена услуги из настроек).
+      revenue: input.price ?? 0,
+      note: input.note?.trim() || null,
       createdAtYclients: startAt,
       updatedAtYclients: startAt,
     },

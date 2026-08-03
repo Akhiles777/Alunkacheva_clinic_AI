@@ -3,6 +3,7 @@
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db";
 import { hashPassword, SESSION_COOKIE, signSession, verifyPassword } from "@/lib/auth";
+import { appRoleOf, type AppRole } from "@/lib/roles";
 import type { StaffRole } from "@/generated/prisma/enums";
 
 /**
@@ -10,17 +11,10 @@ import type { StaffRole } from "@/generated/prisma/enums";
  * владелец») — под засеянной учёткой владельца. Пароли хэшируются (scrypt),
  * сессия — подписанная кука.
  */
-export type AppRole = "owner" | "admin" | "doctor";
 export interface AuthResult {
   ok: boolean;
   role?: AppRole;
   error?: string;
-}
-
-function appRoleOf(role: StaffRole): AppRole {
-  if (role === "OWNER") return "owner";
-  if (role === "DOCTOR") return "doctor";
-  return "admin";
 }
 
 async function companyId(): Promise<string | null> {

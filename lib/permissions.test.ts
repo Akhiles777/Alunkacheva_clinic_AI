@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  effectivePermission,
   hasPermission,
   permissionChecker,
   resolvePermissions,
@@ -12,7 +13,7 @@ import {
 const DEFAULTS: Record<Role, Permission[]> = {
   OWNER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "EDIT_SETTINGS", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
   MANAGER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
-  ADMIN: ["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS"],
+  ADMIN: ["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS", "EDIT_SETTINGS"],
   DOCTOR: [],
 };
 const ALL: Permission[] = [
@@ -46,10 +47,10 @@ describe("hasPermission", () => {
     expect(hasPermission(matrix, "DOCTOR", "MESSAGE_PATIENTS")).toBe(false);
   });
 
-  it("администратор пишет пациентам, но не видит выручку и не меняет настройки", () => {
+  it("администратор пишет пациентам и ведёт настройки, но не видит выручку", () => {
     expect(hasPermission(matrix, "ADMIN", "MESSAGE_PATIENTS")).toBe(true);
+    expect(hasPermission(matrix, "ADMIN", "EDIT_SETTINGS")).toBe(true);
     expect(hasPermission(matrix, "ADMIN", "VIEW_REVENUE")).toBe(false);
-    expect(hasPermission(matrix, "ADMIN", "EDIT_SETTINGS")).toBe(false);
   });
 
   it("управляющий видит выручку и аудит, но не меняет настройки", () => {
@@ -73,12 +74,36 @@ describe("hasPermission", () => {
 describe("resolvePermissions и checker", () => {
   it("возвращает набор прав роли", () => {
     expect(resolvePermissions(matrix, "ADMIN")).toEqual(
-      new Set<Permission>(["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS"]),
+      new Set<Permission>(["VIEW_OTHER_PATIENTS", "EDIT_SETTINGS", "MESSAGE_PATIENTS"]),
     );
   });
 
   it("предикат совпадает с hasPermission", () => {
     const canManager = permissionChecker(matrix, "MANAGER");
     for (const p of ALL) expect(canManager(p)).toBe(hasPermission(matrix, "MANAGER", p));
+  });
+});
+
+describe("effectivePermission — персональные права", () => {
+  it("без персональных строк действует роль", () => {
+    expect(effectivePermission(matrix, "DOCTOR", [], "VIEW_REVENUE")).toBe(false);
+    expect(effectivePermission(matrix, "OWNER", [], "VIEW_REVENUE")).toBe(true);
+  });
+
+  it("персональное разрешение перекрывает запрет роли", () => {
+    const personal = [{ permission: "VIEW_REVENUE" as const, allowed: true }];
+    expect(effectivePermission(matrix, "DOCTOR", personal, "VIEW_REVENUE")).toBe(true);
+  });
+
+  it("персональный запрет перекрывает щедрую роль", () => {
+    const personal = [{ permission: "EDIT_SETTINGS" as const, allowed: false }];
+    expect(effectivePermission(matrix, "ADMIN", personal, "EDIT_SETTINGS")).toBe(false);
+  });
+
+  it("перекрытие одного права не задевает остальные", () => {
+    const personal = [{ permission: "VIEW_REVENUE" as const, allowed: true }];
+    expect(effectivePermission(matrix, "DOCTOR", personal, "VIEW_REVENUE")).toBe(true);
+    expect(effectivePermission(matrix, "DOCTOR", personal, "EDIT_SETTINGS")).toBe(false);
+    expect(effectivePermission(matrix, "DOCTOR", personal, "VIEW_OTHER_PATIENTS")).toBe(false);
   });
 });

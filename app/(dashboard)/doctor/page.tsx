@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { formatMoney } from "@/lib/format";
 import { useDb } from "@/app/_data/store";
-import { useRole } from "@/app/_data/role";
 import { priceOf } from "@/lib/staff-analytics";
+import { getCurrentUser, type CurrentUser } from "../_components/user-actions";
 import { InternalStaffChat } from "../chat/internal-staff-chat";
 
 const APPT_STATUS: Record<string, string> = {
@@ -18,12 +18,17 @@ const APPT_STATUS: Record<string, string> = {
 
 export default function DoctorPage() {
   const db = useDb();
-  const { doctor } = useRole();
+  const [me, setMe] = useState<CurrentUser | null>(null);
+  useEffect(() => {
+    getCurrentUser().then(setMe).catch(() => {});
+  }, []);
+  const myName = me?.name ?? "";
 
   const myAppts = useMemo(
-    () => db.appointments.filter((a) => a.doctor === doctor.name).sort((a, b) => a.startMinute - b.startMinute),
-    [db.appointments, doctor.name],
+    () => db.appointments.filter((a) => a.doctor === myName).sort((a, b) => a.startMinute - b.startMinute),
+    [db.appointments, myName],
   );
+  const roomName = me?.roomName ?? myAppts[0]?.roomName ?? "—";
 
   const arrived = myAppts.filter((a) => a.status === "arrived").length;
   const noShow = myAppts.filter((a) => a.status === "no_show").length;
@@ -56,7 +61,7 @@ export default function DoctorPage() {
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
         <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Мой кабинет</h1>
         <p className="text-text-muted mt-1 text-xs">
-          {doctor.name} · {doctor.specialty} · {doctor.roomName}
+          {myName || "Врач"} · {roomName}
         </p>
       </header>
 
@@ -70,7 +75,7 @@ export default function DoctorPage() {
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
           <section className="border-border bg-surface rounded-xl border p-5">
-            <h2 className="mb-3 text-sm font-medium">Моё расписание · {doctor.roomName}</h2>
+            <h2 className="mb-3 text-sm font-medium">Моё расписание · {roomName}</h2>
             {myAppts.length === 0 ? (
               <p className="text-text-subtle text-sm">Записей на сегодня нет.</p>
             ) : (

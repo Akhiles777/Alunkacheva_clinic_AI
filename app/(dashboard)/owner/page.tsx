@@ -1,6 +1,7 @@
 import { formatMoney } from "@/lib/format";
-import { getOwnerReport } from "./actions";
+import { getOwnerReport, getWeeklyDynamics } from "./actions";
 import { OwnerAssistant } from "./owner-assistant";
+import { WeeklyCharts } from "./weekly-charts";
 
 export const metadata = { title: "Владелец — Мера" };
 
@@ -15,7 +16,7 @@ function Tile({ label, value, hint }: { label: string; value: string | number; h
 }
 
 export default async function OwnerPage() {
-  const report = await getOwnerReport();
+  const [report, weekly] = await Promise.all([getOwnerReport(), getWeeklyDynamics()]);
 
   return (
     <>
@@ -94,6 +95,10 @@ export default async function OwnerPage() {
               ))}
             </ul>
           </section>
+        </div>
+
+        <div className="mt-4">
+          <WeeklyCharts data={weekly} />
         </div>
 
         <section className="border-border bg-surface mt-4 rounded-xl border p-5">

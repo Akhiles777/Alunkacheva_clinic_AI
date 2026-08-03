@@ -10,7 +10,15 @@ import {
   type InternalChatAttachment,
   type InternalChatState,
 } from "./actions";
+import { VoicePlayer, VoiceRecorder } from "./voice-message";
 import { patientTags, primaryPhone, useDb } from "@/app/_data/store";
+
+/**
+ * Внутренний чат клиники. Устройство намеренно простое (решение заказчика,
+ * август 2026): один общий канал и плоский список всех сотрудников — кто
+ * заведён в настройках, тот и в списке. Никаких групп, ролевых веток и
+ * прикреплений: служебная переписка, а не второй инбокс.
+ */
 
 function timeLabel(iso: string): string {
   return new Intl.DateTimeFormat("ru-RU", {
@@ -24,51 +32,47 @@ function roleLabel(role: string): string {
   const labels: Record<string, string> = {
     OWNER: "владелец",
     ADMIN: "администратор",
-    MANAGER: "менеджер",
+    MANAGER: "управляющий",
     DOCTOR: "врач",
   };
   return labels[role] ?? role.toLowerCase();
+}
+
+function initials(name: string): string {
+  return name.split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
 }
 
 function firstVoice(attachments: InternalChatAttachment[]): InternalChatAttachment | null {
   return attachments.find((a) => a.kind === "voice" && a.dataUrl) ?? null;
 }
 
-function dataUrlFromBlob(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
-
 export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
   const db = useDb();
   const [state, setState] = useState<InternalChatState | null>(null);
   const [text, setText] = useState("");
-  const [shareId, setShareId] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [shareId, setShareId] = useState("");
   const [isPending, startTransition] = useTransition();
-  const [recording, setRecording] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const recordStartedAtRef = useRef<number>(0);
   const endRef = useRef<HTMLDivElement | null>(null);
 
-  const activeRoom = state?.rooms.find((r) => r.id === state.activeRoomId) ?? null;
   const sharePatient = db.patients.find((p) => p.id === shareId) ?? null;
   const activeCourse = sharePatient?.courses.find((c) => c.status !== "done");
 
+  const activeRoom = state?.rooms.find((r) => r.id === state.activeRoomId) ?? null;
+  const generalRoom = state?.rooms.find((r) => r.kind === "GENERAL") ?? null;
   const peers = useMemo(() => state?.staff.filter((s) => !s.isSelf) ?? [], [state]);
-  const doctors = useMemo(
-    () => peers.filter((s) => s.role === "DOCTOR" || s.staffId !== null),
-    [peers],
-  );
-  const team = useMemo(
-    () => peers.filter((s) => s.role !== "DOCTOR" && s.staffId === null),
-    [peers],
-  );
+
+  /** Непрочитанные по личному диалогу с конкретным сотрудником. */
+  const unreadByPeer = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const room of state?.rooms ?? []) {
+      if (room.kind === "DIRECT" && room.peerId) map.set(room.peerId, room.unread);
+    }
+    return map;
+  }, [state]);
+
+  const activePeerId = activeRoom?.kind === "DIRECT" ? activeRoom.peerId : null;
 
   useEffect(() => {
     let alive = true;
@@ -104,72 +108,76 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
     run(() => sendInternalMessage({ roomId: state.activeRoomId, body, attachments }));
   }
 
-  async function startVoice() {
-    setError(null);
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      setError("Браузер не поддерживает запись голоса.");
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      chunksRef.current = [];
-      const recorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = recorder;
-      recordStartedAtRef.current = Date.now();
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
-      };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop());
-        setRecording(false);
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        if (blob.size === 0) return;
-        try {
-          const dataUrl = await dataUrlFromBlob(blob);
-          const durationSec = Math.max(1, Math.round((Date.now() - recordStartedAtRef.current) / 1000));
-          send("", [{ kind: "voice", dataUrl, mimeType: blob.type, durationSec }]);
-        } catch {
-          setError("Не удалось подготовить голосовое сообщение.");
-        }
-      };
-      recorder.start();
-      setRecording(true);
-    } catch {
-      setError("Нет доступа к микрофону.");
-    }
-  }
-
-  function stopVoice() {
-    mediaRecorderRef.current?.stop();
-  }
-
   return (
-    <section className={`border-border bg-surface flex min-h-0 rounded-xl border ${compact ? "h-[460px]" : "h-[calc(100vh-136px)]"}`}>
-      <aside className="border-border-soft flex w-[260px] flex-none flex-col border-r max-md:hidden">
-        <div className="border-border-soft border-b px-4 py-3">
-          <h2 className="text-sm font-medium">Чаты</h2>
-          <p className="text-text-subtle text-2xs">общий канал и личные диалоги</p>
-        </div>
-
+    <section
+      className={`border-border bg-surface flex min-h-0 rounded-xl border ${
+        compact ? "h-[460px]" : "h-[calc(100vh-136px)]"
+      }`}
+    >
+      <aside className="border-border-soft flex w-[248px] flex-none flex-col border-r max-md:hidden">
         <div className="flex-1 overflow-auto p-2">
-          {state?.rooms.map((room) => (
+          {generalRoom ? (
             <button
-              key={room.id}
               type="button"
-              onClick={() => run(() => getInternalChatState(room.id))}
+              onClick={() => run(() => getInternalChatState(generalRoom.id))}
               className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm ${
-                room.id === state.activeRoomId ? "bg-nav-active text-accent-text font-medium" : "text-text-muted hover:bg-hover"
+                generalRoom.id === state?.activeRoomId
+                  ? "bg-nav-active text-accent-text font-medium"
+                  : "text-text-muted hover:bg-hover"
               }`}
             >
-              <span className="min-w-0 flex-1 truncate">{room.title}</span>
-              {room.unread > 0 ? (
-                <span className="num bg-chip-strong text-text-muted rounded-pill px-[7px] py-px text-2xs">{room.unread}</span>
+              <span aria-hidden className="flex-none opacity-70">#</span>
+              <span className="min-w-0 flex-1 truncate">Общий чат</span>
+              {generalRoom.unread > 0 ? (
+                <span className="num bg-chip-strong text-text-muted rounded-pill px-[7px] py-px text-2xs">
+                  {generalRoom.unread}
+                </span>
               ) : null}
             </button>
-          ))}
+          ) : (
+            <div className="skeleton h-9 rounded-md" />
+          )}
 
-          <StaffDirectorySection title="Врачи" empty="Нет врачей с учётной записью" people={doctors} onOpen={(id) => run(() => openDirectChat(id))} />
-          <StaffDirectorySection title="Команда" empty="Нет других сотрудников" people={team} onOpen={(id) => run(() => openDirectChat(id))} />
+          <div className="text-text-subtle mt-4 px-3 pb-1 text-2xs">Сотрудники</div>
+          <div className="flex flex-col gap-0.5">
+            {peers.length === 0 ? (
+              <p className="text-text-subtle px-3 py-2 text-2xs">
+                Других сотрудников нет. Добавьте их в «Настройки → Сотрудники».
+              </p>
+            ) : (
+              peers.map((person) => {
+                const unread = unreadByPeer.get(person.id) ?? 0;
+                const active = person.id === activePeerId;
+                return (
+                  <button
+                    key={person.id}
+                    type="button"
+                    onClick={() => run(() => openDirectChat(person.id))}
+                    className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left ${
+                      active ? "bg-nav-active" : "hover:bg-hover"
+                    }`}
+                  >
+                    <span className="bg-ink-avatar text-text-muted flex h-7 w-7 flex-none items-center justify-center rounded-full text-2xs font-medium">
+                      {initials(person.name) || "?"}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate text-sm ${active ? "text-accent-text font-medium" : ""}`}>
+                        {person.name}
+                      </span>
+                      <span className="text-text-subtle block truncate text-2xs">
+                        {person.specialty || roleLabel(person.role)}
+                      </span>
+                    </span>
+                    {unread > 0 ? (
+                      <span className="num bg-chip-strong text-text-muted rounded-pill px-[7px] py-px text-2xs">
+                        {unread}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
       </aside>
 
@@ -182,42 +190,33 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
             </p>
           </div>
           <div className="flex flex-none items-center gap-2">
+            {/* На телефоне список слева скрыт — выбор чата через один select. */}
             {state ? (
-              <>
-                <select
-                  value={state.activeRoomId}
-                  onChange={(e) => run(() => getInternalChatState(e.target.value))}
-                  aria-label="Чат"
-                  className="border-border-input bg-surface hidden max-w-[150px] rounded-md border px-2 py-1.5 text-xs outline-none max-md:block"
-                >
-                  {state.rooms.map((room) => (
-                    <option key={room.id} value={room.id}>
-                      {room.title}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value) run(() => openDirectChat(e.target.value));
-                  }}
-                  aria-label="Открыть личный чат"
-                  className="border-border-input bg-surface hidden max-w-[150px] rounded-md border px-2 py-1.5 text-xs outline-none max-md:block"
-                >
-                  <option value="">сотрудник…</option>
-                  {peers.map((staff) => (
-                    <option key={staff.id} value={staff.id}>
-                      {staff.role === "DOCTOR" || staff.staffId ? `Врач: ${staff.name}` : staff.name}
-                    </option>
-                  ))}
-                </select>
-              </>
+              <select
+                value={activeRoom?.kind === "DIRECT" ? `peer:${activePeerId}` : "general"}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value.startsWith("peer:")) run(() => openDirectChat(value.slice(5)));
+                  else if (generalRoom) run(() => getInternalChatState(generalRoom.id));
+                }}
+                aria-label="Выбрать чат"
+                className="border-border-input bg-surface hidden max-w-[170px] rounded-md border px-2 py-1.5 text-xs outline-none max-md:block"
+              >
+                <option value="general">Общий чат</option>
+                {peers.map((person) => (
+                  <option key={person.id} value={`peer:${person.id}`}>
+                    {person.name}
+                  </option>
+                ))}
+              </select>
             ) : null}
             {isPending ? <span className="text-text-subtle text-2xs">синхронизация…</span> : null}
           </div>
         </div>
 
-        {error ? <div className="border-border-soft bg-hover text-text-muted border-b px-5 py-2 text-xs">{error}</div> : null}
+        {error ? (
+          <div className="border-border-soft bg-hover text-text-muted border-b px-5 py-2 text-xs">{error}</div>
+        ) : null}
 
         <div className="flex-1 overflow-auto px-5 py-4">
           {!state ? (
@@ -254,34 +253,33 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
                       ) : (
                         <>
                           {message.body ? <div className="whitespace-pre-line">{message.body}</div> : null}
-                          {voice?.dataUrl ? (
-                            <div className="min-w-[220px]">
-                              <audio controls src={voice.dataUrl} className="h-9 w-full" />
-                              {voice.durationSec ? <div className="mt-1 text-2xs opacity-75">{voice.durationSec} сек.</div> : null}
-                            </div>
-                          ) : null}
-                          {message.attachments.filter((a) => a.kind !== "voice").map((attachment, index) => (
-                            <div
-                              key={`${message.id}-${index}`}
-                              className={`mt-1.5 rounded-lg border px-2.5 py-1.5 ${
-                                message.mine ? "border-accent-border" : "border-border"
-                              }`}
-                            >
-                              <div className="text-2xs opacity-80">
-                                {attachment.kind === "patient" ? "карточка пациента" : "курс"}
+                          {voice ? <VoicePlayer attachment={voice} /> : null}
+                          {/* Карточки пациентов и курсов больше не прикрепляются,
+                              но старые сообщения обязаны читаться. */}
+                          {message.attachments
+                            .filter((a) => a.kind !== "voice")
+                            .map((attachment, index) => (
+                              <div
+                                key={`${message.id}-${index}`}
+                                className={`mt-1.5 rounded-lg border px-2.5 py-1.5 ${
+                                  message.mine ? "border-accent-border" : "border-border"
+                                }`}
+                              >
+                                <div className="text-2xs opacity-80">
+                                  {attachment.kind === "patient" ? "карточка пациента" : "курс"}
+                                </div>
+                                {attachment.label ? <div className="text-sm font-medium">{attachment.label}</div> : null}
+                                {attachment.detail ? <div className="text-2xs opacity-80">{attachment.detail}</div> : null}
+                                {attachment.patientId ? (
+                                  <Link
+                                    href={`/patients/${attachment.patientId}`}
+                                    className={`text-2xs underline ${message.mine ? "" : "text-accent-text"}`}
+                                  >
+                                    открыть
+                                  </Link>
+                                ) : null}
                               </div>
-                              {attachment.label ? <div className="text-sm font-medium">{attachment.label}</div> : null}
-                              {attachment.detail ? <div className="text-2xs opacity-80">{attachment.detail}</div> : null}
-                              {attachment.patientId ? (
-                                <Link
-                                  href={`/patients/${attachment.patientId}`}
-                                  className={`text-2xs underline ${message.mine ? "" : "text-accent-text"}`}
-                                >
-                                  открыть
-                                </Link>
-                              ) : null}
-                            </div>
-                          ))}
+                            ))}
                         </>
                       )}
                     </div>
@@ -294,74 +292,89 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
         </div>
 
         <div className="border-border-soft flex-none border-t px-5 py-3">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <select
-              value={shareId}
-              onChange={(e) => setShareId(e.target.value)}
-              aria-label="Пациент для отправки"
-              className="border-border-input bg-surface rounded-md border px-2.5 py-1.5 text-sm outline-none"
-            >
-              <option value="">прикрепить пациента…</option>
-              {db.patients.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              disabled={!sharePatient || !state}
-              onClick={() => {
-                if (!sharePatient) return;
-                send("", [{
-                  kind: "patient",
-                  label: sharePatient.name,
-                  detail: `${primaryPhone(sharePatient)?.pretty ?? "нет номера"} · ${patientTags(sharePatient).join(", ") || "без меток"}`,
-                  patientId: sharePatient.id,
-                }]);
-                setShareId("");
-              }}
-              className="border-border text-text-muted hover:bg-hover rounded-md border px-2.5 py-1.5 text-xs disabled:opacity-45"
-            >
-              Карточка
-            </button>
-            <button
-              type="button"
-              disabled={!activeCourse || !state}
-              onClick={() => {
-                if (!sharePatient || !activeCourse) return;
-                send("", [{
-                  kind: "course",
-                  label: `${activeCourse.title} — ${sharePatient.name}`,
-                  detail: `${activeCourse.used}/${activeCourse.total}, ${activeCourse.status === "stalled" ? "выпал из графика" : "идёт по курсу"}`,
-                  patientId: sharePatient.id,
-                }]);
-                setShareId("");
-              }}
-              className="border-border text-text-muted hover:bg-hover rounded-md border px-2.5 py-1.5 text-xs disabled:opacity-45"
-            >
-              Курс
-            </button>
-          </div>
+          {attachOpen ? (
+            <div className="border-border-soft mb-2 flex flex-wrap items-center gap-2 rounded-lg border p-2">
+              <select
+                value={shareId}
+                onChange={(e) => setShareId(e.target.value)}
+                aria-label="Клиент для отправки"
+                className="border-border-input bg-surface min-w-0 flex-1 rounded-md border px-2.5 py-1.5 text-sm outline-none"
+              >
+                <option value="">выберите клиента…</option>
+                {db.patients.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!sharePatient || !state}
+                onClick={() => {
+                  if (!sharePatient) return;
+                  send("", [
+                    {
+                      kind: "patient",
+                      label: sharePatient.name,
+                      detail: `${primaryPhone(sharePatient)?.pretty ?? "нет номера"} · ${
+                        patientTags(sharePatient).join(", ") || "без меток"
+                      }`,
+                      patientId: sharePatient.id,
+                    },
+                  ]);
+                  setShareId("");
+                  setAttachOpen(false);
+                }}
+                className="border-border text-text-muted hover:bg-hover flex-none rounded-md border px-2.5 py-1.5 text-xs disabled:opacity-45"
+              >
+                Карточка
+              </button>
+              <button
+                type="button"
+                disabled={!activeCourse || !state}
+                onClick={() => {
+                  if (!sharePatient || !activeCourse) return;
+                  send("", [
+                    {
+                      kind: "course",
+                      label: `${activeCourse.title} — ${sharePatient.name}`,
+                      detail: `${activeCourse.used}/${activeCourse.total}, ${
+                        activeCourse.status === "stalled" ? "выпал из графика" : "идёт по курсу"
+                      }`,
+                      patientId: sharePatient.id,
+                    },
+                  ]);
+                  setShareId("");
+                  setAttachOpen(false);
+                }}
+                className="border-border text-text-muted hover:bg-hover flex-none rounded-md border px-2.5 py-1.5 text-xs disabled:opacity-45"
+              >
+                Курс
+              </button>
+            </div>
+          ) : null}
 
           <form
             className="flex items-center gap-2"
             onSubmit={(event) => {
               event.preventDefault();
-              const next = text;
+              const next = text.trim();
+              if (!next) return;
               setText("");
               send(next);
             }}
           >
             <button
               type="button"
-              onClick={recording ? stopVoice : startVoice}
+              onClick={() => setAttachOpen((v) => !v)}
               disabled={!state}
-              className={`border-border rounded-md border px-3 py-2 text-sm ${
-                recording ? "bg-accent text-accent-contrast" : "text-text-muted hover:bg-hover"
-              } disabled:opacity-45`}
+              aria-label="Прикрепить клиента"
+              title="Прикрепить клиента или курс"
+              className={`flex h-9 w-9 flex-none items-center justify-center rounded-full border text-base disabled:opacity-45 ${
+                attachOpen ? "border-accent bg-accent text-accent-contrast" : "border-border text-text-muted hover:bg-hover"
+              }`}
             >
-              {recording ? "Стоп" : "Голос"}
+              <span aria-hidden>📎</span>
             </button>
             <input
               value={text}
@@ -369,57 +382,35 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
               placeholder="Сообщение коллегам…"
               className="border-border-input bg-surface placeholder:text-text-subtle min-w-0 flex-1 rounded-md border px-3 py-2 text-sm outline-none"
             />
+            {/* Микрофон справа, рядом с отправкой — как в мессенджерах. */}
+            <VoiceRecorder
+              disabled={!state}
+              onError={setError}
+              onRecorded={(voice) =>
+                send("", [
+                  {
+                    kind: "voice",
+                    dataUrl: voice.dataUrl,
+                    mimeType: voice.mimeType,
+                    durationSec: voice.durationSec,
+                    peaks: voice.peaks,
+                  },
+                ])
+              }
+            />
             <button
               type="submit"
               disabled={!text.trim() || !state}
-              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
+              className="bg-accent text-accent-contrast hover:bg-accent-hover flex-none rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45 max-md:px-3"
             >
-              Отправить
+              <span className="max-md:hidden">Отправить</span>
+              <span aria-hidden className="hidden max-md:inline">
+                ↑
+              </span>
             </button>
           </form>
         </div>
       </div>
     </section>
-  );
-}
-
-function StaffDirectorySection({
-  title,
-  empty,
-  people,
-  onOpen,
-}: {
-  title: string;
-  empty: string;
-  people: NonNullable<InternalChatState["staff"]>;
-  onOpen: (id: string) => void;
-}) {
-  return (
-    <div className="mt-4">
-      <div className="text-text-subtle px-3 text-2xs">{title}</div>
-      <div className="mt-1 flex flex-col gap-0.5">
-        {people.length === 0 ? (
-          <div className="text-text-subtle px-3 py-2 text-2xs">{empty}</div>
-        ) : (
-          people.map((staff) => {
-            const detail = staff.specialty || roleLabel(staff.role);
-            return (
-              <button
-                key={staff.id}
-                type="button"
-                onClick={() => onOpen(staff.id)}
-                className="hover:bg-hover rounded-md px-3 py-2 text-left"
-              >
-                <div className="truncate text-sm">{staff.name}</div>
-                <div className="text-text-subtle truncate text-2xs">
-                  {detail}
-                  {staff.roomName ? ` · ${staff.roomName.replace(/ —.*/, "")}` : ""}
-                </div>
-              </button>
-            );
-          })
-        )}
-      </div>
-    </div>
   );
 }

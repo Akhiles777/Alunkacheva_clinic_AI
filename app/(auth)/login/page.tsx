@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { loginAsOwner, loginUser, type AppRole } from "../actions";
-import { setRole } from "@/app/_data/role";
+import { loginAsOwner, loginUser } from "../actions";
+import type { AppRole } from "@/lib/roles";
 
 function destFor(role: AppRole): string {
   return role === "owner" ? "/owner" : role === "doctor" ? "/doctor" : "/";
@@ -18,7 +18,6 @@ export default function LoginPage() {
   const [pending, start] = useTransition();
 
   function enter(role: AppRole) {
-    setRole(role);
     router.replace(destFor(role));
   }
 

@@ -84,6 +84,10 @@ export interface Appt {
   durationMin: number;
   status: "planned" | "confirmed" | "arrived" | "no_show";
   isFirstVisit: boolean;
+  /** Цена визита (по умолчанию — цена услуги из настроек, можно изменить). */
+  price?: number;
+  /** «Дополнительно»: отзыв клиента, проблема, примечание. Анализируется ИИ. */
+  note?: string | null;
 }
 export interface Visit {
   id: string;
@@ -880,6 +884,8 @@ export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { 
     startMinute: appt.startMinute,
     durationMin: appt.durationMin,
     status: appt.status,
+    price: appt.price,
+    note: appt.note,
   }).catch(() => {});
   return appt.id;
 }

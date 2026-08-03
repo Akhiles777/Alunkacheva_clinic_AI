@@ -170,11 +170,8 @@ export const settingsStore = {
     { id: "st-5", name: "Литвинова О. А.", specialty: "Медсестра · Лотос", roomId: null, isActive: true },
     { id: "st-6", name: "Гущина Р. К.", specialty: "Медсестра", roomId: null, isActive: true },
   ] as StaffSettings[],
-  accounts: [
-    { id: "acc-1", name: "Ирина Долева", email: "irina@mera.clinic", role: "ADMIN", isActive: true },
-    { id: "acc-2", name: "Пётр Веденин", email: "petr@mera.clinic", role: "ADMIN", isActive: true },
-    { id: "acc-3", name: "Ольга Мерова", email: "owner@mera.clinic", role: "OWNER", isActive: true },
-  ] as StaffAccount[],
+  // Учётные записи живут только в БД (Настройки → Сотрудники). Здесь их нет
+  // намеренно: выдуманные сотрудники попадали в чат и списки.
   roleMatrix: ROLE_MATRIX,
   assistant: {
     mode: "drafts" as "on" | "off" | "drafts",
@@ -204,11 +201,7 @@ export const settingsStore = {
     text: "Согласие на обработку персональных данных. Текст заполняется клиникой.",
     policyUrl: "",
   },
-  audit: [
-    { id: "au1", at: "23 июля, 10:41", actor: "Ирина Долева", action: "Просмотр карточки", target: "Гринберг И. Л." },
-    { id: "au2", at: "23 июля, 10:05", actor: "Пётр Веденин", action: "Изменение настроек", target: "Услуги" },
-    { id: "au3", at: "23 июля, 09:58", actor: "Ирина Долева", action: "Отправка сообщения", target: "Чернышёва Ж. З." },
-  ] as AuditRow[],
+  // Журнал аудита читается из БД (таблица AuditLog), выдуманных строк нет.
 };
 
 // Интеграции переехали на сервер: данные читаются из таблицы Credential

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node _t.mjs)",
+      "Bash(npx eslint *)",
+      "Bash(node _check.mjs)",
+      "Bash(node _q.mjs)",
+      "Bash(node --env-file=.env node_modules/.bin/tsx _q.ts)",
+      "Bash(perl -0pi -e 's/        service: \\\\{ select: \\\\{ title: true \\\\} \\\\},/        primaryService: { select: { title: true } },/' \"app/\\(dashboard\\)/settings/staff/[id]/actions.ts\")",
+      "Bash(perl -0pi -e 's/const key = r\\\\.service\\\\?\\\\.title \\\\?\\\\? \"Без услуги\";/const key = r.primaryService?.title ?? \"Без услуги\";/' \"app/\\(dashboard\\)/settings/staff/[id]/actions.ts\")",
+      "Bash(node _v.mjs)"
+    ]
+  }
+}

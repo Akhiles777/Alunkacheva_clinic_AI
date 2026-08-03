@@ -63,7 +63,9 @@ const PERMISSIONS: Permission[] = [
 const ROLE_MATRIX: Record<StaffRole, Permission[]> = {
   OWNER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "EDIT_SETTINGS", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
   MANAGER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
-  ADMIN: ["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS"],
+  // Администратор ведёт клинику ежедневно: заводит сотрудников, услуги и цены.
+  // Без EDIT_SETTINGS пункт «Настройки» превращался в кнопку, которая падает.
+  ADMIN: ["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS", "EDIT_SETTINGS"],
   DOCTOR: [],
 };
 

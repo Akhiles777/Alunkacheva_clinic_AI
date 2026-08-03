@@ -63,6 +63,18 @@ export function nowMinuteInTz(tz = "Europe/Moscow", at: Date = new Date()): numb
   return h * 60 + m;
 }
 
+/** Границы сегодняшних суток в таймзоне клиники (для фильтра расписания/отчёта). */
+export function todayRangeMoscow(now: Date = new Date()): { start: Date; end: Date } {
+  const dateStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+  const start = new Date(`${dateStr}T00:00:00+03:00`);
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
+}
+
 export function dateLabelInTz(tz = "Europe/Moscow", at: Date = new Date()): string {
   return new Intl.DateTimeFormat("ru-RU", {
     timeZone: tz,

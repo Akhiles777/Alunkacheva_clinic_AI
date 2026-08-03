@@ -1,16 +1,11 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import type { Permission, Role } from "@/lib/permissions";
 import { Group, SaveBar, TextInput, Toggle } from "../_components/ui";
 import { saveRoleMatrix, type RoleMatrix } from "./actions";
-import {
-  saveAccounts,
-  saveSpecialists,
-  type AccountRow,
-  type SpecialistRow,
-  type StaffPeople,
-} from "./people-actions";
+import { saveAccounts, type AccountRow, type StaffPeople } from "./people-actions";
 
 const ROLE_LABEL: Record<Role, string> = {
   OWNER: "Владелец",
@@ -36,58 +31,19 @@ export function StaffClient({
   initialMatrix: RoleMatrix;
   initialPeople: StaffPeople;
 }) {
-  const [specialists, setSpecialists] = useState<SpecialistRow[]>(initialPeople.specialists);
   const [accounts, setAccounts] = useState<AccountRow[]>(initialPeople.accounts);
-  const [roomOptions, setRoomOptions] = useState(initialPeople.roomOptions);
+  const roomOptions = initialPeople.roomOptions;
+  const [specialistOptions, setSpecialistOptions] = useState(initialPeople.specialistOptions);
   const [matrix, setMatrix] = useState<RoleMatrix>(initialMatrix);
-
-  const [spError, setSpError] = useState<string | null>(null);
-  const [spSaved, setSpSaved] = useState(false);
   const [accError, setAccError] = useState<string | null>(null);
   const [accSaved, setAccSaved] = useState(false);
   const [matrixSaved, setMatrixSaved] = useState(false);
   const [pending, start] = useTransition();
 
-  function applyPeople(p: StaffPeople) {
-    setSpecialists(p.specialists);
-    setAccounts(p.accounts);
-    setRoomOptions(p.roomOptions);
-  }
-
   const matrixError = !matrix.OWNER.includes("EDIT_SETTINGS")
     ? "Владелец должен уметь менять настройки — иначе некому"
     : null;
 
-  // ── специалисты ──
-  function patchSp(id: string, next: Partial<SpecialistRow>) {
-    setSpecialists((s) => s.map((r) => (r.id === id ? { ...r, ...next } : r)));
-    setSpSaved(false);
-    setSpError(null);
-  }
-  function addSp() {
-    setSpecialists((s) => [
-      ...s,
-      { id: `new-${Date.now()}`, name: "", specialty: "", defaultRoomId: null, isActive: true },
-    ]);
-    setSpSaved(false);
-  }
-  function removeSp(id: string) {
-    setSpecialists((s) => s.filter((r) => r.id !== id));
-    setSpSaved(false);
-  }
-  function saveSp() {
-    start(async () => {
-      try {
-        applyPeople(await saveSpecialists(specialists));
-        setSpSaved(true);
-        setSpError(null);
-      } catch (e) {
-        setSpError(e instanceof Error ? e.message : "Не удалось сохранить");
-      }
-    });
-  }
-
-  // ── учётные записи ──
   function patchAcc(id: string, next: Partial<AccountRow>) {
     setAccounts((a) => a.map((r) => (r.id === id ? { ...r, ...next } : r)));
     setAccSaved(false);
@@ -96,7 +52,17 @@ export function StaffClient({
   function addAcc() {
     setAccounts((a) => [
       ...a,
-      { id: `new-${Date.now()}`, name: "", email: "", role: "ADMIN", isActive: true, staffId: null },
+      {
+        id: `new-${Date.now()}`,
+        name: "",
+        email: "",
+        role: "ADMIN",
+        isActive: true,
+        staffId: null,
+        specialty: "",
+        defaultRoomId: null,
+        password: "",
+      },
     ]);
     setAccSaved(false);
   }
@@ -107,7 +73,9 @@ export function StaffClient({
   function saveAcc() {
     start(async () => {
       try {
-        applyPeople(await saveAccounts(accounts));
+        const fresh = await saveAccounts(accounts);
+        setAccounts(fresh.accounts);
+        setSpecialistOptions(fresh.specialistOptions);
         setAccSaved(true);
         setAccError(null);
       } catch (e) {
@@ -116,7 +84,6 @@ export function StaffClient({
     });
   }
 
-  // ── матрица ──
   function togglePerm(role: Role, permission: Permission) {
     setMatrixSaved(false);
     setMatrix((m) => {
@@ -127,127 +94,127 @@ export function StaffClient({
 
   return (
     <div className="flex max-w-[760px] flex-col gap-5">
-      <Group title="Специалисты" hint="кто принимает; закреплённый кабинет — необязателен">
-        {spError ? <p className="text-accent-text text-sm">{spError}</p> : null}
-        <ul className="flex flex-col gap-2.5">
-          {specialists.map((sp) => (
-            <li key={sp.id} className="grid grid-cols-[1fr_170px_auto_auto] items-center gap-2.5 max-md:grid-cols-1">
-              <TextInput
-                value={sp.name}
-                onChange={(e) => patchSp(sp.id, { name: e.target.value })}
-                placeholder="Имя специалиста"
-                className="py-1.5"
-              />
-              <TextInput
-                value={sp.specialty}
-                onChange={(e) => patchSp(sp.id, { specialty: e.target.value })}
-                placeholder="Специальность"
-                className="py-1.5"
-              />
-              <select
-                value={sp.defaultRoomId ?? ""}
-                onChange={(e) => patchSp(sp.id, { defaultRoomId: e.target.value || null })}
-                aria-label={`Кабинет ${sp.name}`}
-                className="border-border-input bg-surface rounded-md border px-2.5 py-1.5 text-sm outline-none"
-              >
-                <option value="">принимает в разных</option>
-                {roomOptions.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-              <div className="flex items-center gap-2">
-                <Toggle
-                  checked={sp.isActive}
-                  onChange={(v) => patchSp(sp.id, { isActive: v })}
-                  label={`${sp.name} активен`}
-                />
-                <button
-                  type="button"
-                  onClick={() => removeSp(sp.id)}
-                  aria-label={`Удалить ${sp.name}`}
-                  className="text-text-subtle hover:text-text px-1 text-sm"
-                >
-                  ×
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-        <button
-          type="button"
-          onClick={addSp}
-          className="border-border text-text-muted hover:bg-hover self-start rounded-md border px-3 py-1.5 text-sm"
-        >
-          + Добавить специалиста
-        </button>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={saveSp}
-            disabled={pending}
-            className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
-          >
-            {pending ? "Сохраняем…" : "Сохранить"}
-          </button>
-          {spSaved && !pending ? <span className="text-text-muted text-sm">Сохранено</span> : null}
-        </div>
-      </Group>
-
-      <Group title="Учётные записи" hint="доступ сотрудников в систему; должен остаться активный владелец">
+      <Group
+        title="Сотрудники"
+        hint="один список: логин, пароль и роль. Врачу здесь же задаются специальность и кабинет — карточка специалиста создаётся платформой, отдельного списка нет"
+      >
         {accError ? <p className="text-accent-text text-sm">{accError}</p> : null}
-        <ul className="flex flex-col gap-2.5">
-          {accounts.map((acc) => (
-            <li key={acc.id} className="grid grid-cols-[1fr_1fr_150px_auto] items-center gap-2.5 max-md:grid-cols-1">
-              <TextInput
-                value={acc.name}
-                onChange={(e) => patchAcc(acc.id, { name: e.target.value })}
-                placeholder="Имя"
-                className="py-1.5"
-              />
-              <TextInput
-                value={acc.email}
-                onChange={(e) => patchAcc(acc.id, { email: e.target.value })}
-                placeholder="почта@клиника"
-                className="py-1.5"
-              />
-              <select
-                value={acc.role}
-                onChange={(e) => patchAcc(acc.id, { role: e.target.value as AccountRow["role"] })}
-                aria-label={`Роль ${acc.name}`}
-                className="border-border-input bg-surface rounded-md border px-2.5 py-1.5 text-sm outline-none"
-              >
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {ROLE_LABEL[r]}
-                  </option>
-                ))}
-              </select>
-              <div className="flex items-center gap-2">
-                <Toggle
-                  checked={acc.isActive}
-                  onChange={(v) => patchAcc(acc.id, { isActive: v })}
-                  label={`${acc.name} активен`}
-                />
-                <button
-                  type="button"
-                  onClick={() => removeAcc(acc.id)}
-                  aria-label={`Удалить ${acc.name}`}
-                  className="text-text-subtle hover:text-text px-1 text-sm"
-                >
-                  ×
-                </button>
-              </div>
-            </li>
-          ))}
+        <ul className="flex flex-col gap-3">
+          {accounts.map((acc) => {
+            const isNew = acc.id.startsWith("new-");
+            return (
+              <li key={acc.id} className="border-border-soft flex flex-col gap-2.5 rounded-lg border p-3">
+                <div className="grid grid-cols-[1fr_1fr_auto] items-center gap-2.5 max-md:grid-cols-1">
+                  <TextInput
+                    value={acc.name}
+                    onChange={(e) => patchAcc(acc.id, { name: e.target.value })}
+                    placeholder="Имя сотрудника"
+                    className="py-1.5"
+                  />
+                  <TextInput
+                    value={acc.email}
+                    onChange={(e) => patchAcc(acc.id, { email: e.target.value })}
+                    placeholder="логин (почта)"
+                    className="py-1.5"
+                  />
+                  <div className="flex items-center gap-2 max-md:justify-between">
+                    {!isNew ? (
+                      <Link
+                        href={`/settings/staff/${acc.id}`}
+                        className="text-accent-text text-2xs hover:underline"
+                        title="Права доступа и метрики сотрудника"
+                      >
+                        карточка
+                      </Link>
+                    ) : null}
+                    <Toggle
+                      checked={acc.isActive}
+                      onChange={(v) => patchAcc(acc.id, { isActive: v })}
+                      label={`${acc.name} активен`}
+                    />
+                    <span className="text-text-subtle text-2xs max-md:hidden">активен</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAcc(acc.id)}
+                      aria-label={`Удалить ${acc.name}`}
+                      className="text-text-subtle hover:text-text px-1 text-sm"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-[150px_1fr] items-center gap-2.5 max-md:grid-cols-1">
+                  <select
+                    value={acc.role}
+                    onChange={(e) => patchAcc(acc.id, { role: e.target.value as AccountRow["role"] })}
+                    aria-label={`Роль ${acc.name}`}
+                    className="border-border-input bg-surface rounded-md border px-2.5 py-2 text-sm outline-none"
+                  >
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {ROLE_LABEL[r]}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="password"
+                    value={acc.password ?? ""}
+                    onChange={(e) => patchAcc(acc.id, { password: e.target.value })}
+                    placeholder={isNew ? "пароль (не короче 6)" : acc.hasPassword ? "новый пароль — чтобы сбросить" : "задайте пароль"}
+                    className="border-border-input bg-surface w-full rounded-md border px-3 py-2 text-sm outline-none"
+                  />
+                </div>
+
+                {acc.role === "DOCTOR" ? (
+                  <div className="grid grid-cols-[1fr_1fr_1fr] items-center gap-2.5 max-md:grid-cols-1">
+                    <select
+                      value={acc.staffId ?? ""}
+                      onChange={(e) => patchAcc(acc.id, { staffId: e.target.value || null })}
+                      aria-label={`Специалист для ${acc.name}`}
+                      title="Привязать к существующему специалисту, чтобы не создать дубль в расписании"
+                      className="border-border-input bg-surface rounded-md border px-2.5 py-2 text-sm outline-none"
+                    >
+                      <option value="">создать нового специалиста</option>
+                      {specialistOptions
+                        .filter((s) => s.takenBy === null || s.id === acc.staffId)
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                            {s.specialty ? ` — ${s.specialty}` : ""}
+                          </option>
+                        ))}
+                    </select>
+                    <TextInput
+                      value={acc.specialty}
+                      onChange={(e) => patchAcc(acc.id, { specialty: e.target.value })}
+                      placeholder="специальность (например, невролог)"
+                      className="py-1.5"
+                    />
+                    <select
+                      value={acc.defaultRoomId ?? ""}
+                      onChange={(e) => patchAcc(acc.id, { defaultRoomId: e.target.value || null })}
+                      aria-label={`Кабинет ${acc.name}`}
+                      className="border-border-input bg-surface rounded-md border px-2.5 py-2 text-sm outline-none"
+                    >
+                      <option value="">кабинет не задан</option>
+                      {roomOptions.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
         <button
           type="button"
           onClick={addAcc}
           className="border-border text-text-muted hover:bg-hover self-start rounded-md border px-3 py-1.5 text-sm"
         >
-          + Добавить учётную запись
+          + Добавить сотрудника
         </button>
         <div className="flex items-center gap-3">
           <button

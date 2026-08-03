@@ -4,19 +4,22 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { CallButton } from "./call-form";
 import { logoutUser } from "@/app/(auth)/actions";
-import { DOCTORS, ROLE_LABEL, setDoctor, setRole, useRole, type AppRole } from "@/app/_data/role";
+import { ROLE_LABEL, type AppRole } from "@/lib/roles";
 
 /**
- * Боковая навигация (232px). Набор пунктов зависит от роли (личные кабинеты):
- * владелец видит «Владелец», врач — «Мой кабинет» и урезанный список. Внизу —
- * переключатель роли (демо, пока нет входа) и профиль.
+ * Боковая навигация (232px). Роль и имя приходят из сессии (пропсами из layout),
+ * а не из клиентского переключателя. Набор пунктов зависит от роли: владелец
+ * видит «Владелец», врач — «Мой кабинет» и урезанный список.
  */
 type NavItem = { label: string; href: string; badge?: number };
 
+// «Чат» доступен всем ролям: это внутренняя переписка клиники, а не пациентский
+// канал. Раньше он был только внутри кабинета врача, и владелец с админом
+// физически не могли до него добраться.
 const NAV_COMMON: NavItem[] = [
   { label: "Сегодня", href: "/" },
-  { label: "Чат", href: "/chat" },
   { label: "Диалоги", href: "/inbox", badge: 3 },
+  { label: "Чат", href: "/chat" },
   { label: "Пациенты", href: "/patients" },
   { label: "Курсы", href: "/courses" },
   { label: "Кабинеты", href: "/schedule" },
@@ -28,8 +31,8 @@ function navForRole(role: AppRole): NavItem[] {
   if (role === "doctor")
     return [
       { label: "Мой кабинет", href: "/doctor" },
-      { label: "Чат", href: "/chat" },
       { label: "Диалоги", href: "/inbox", badge: 3 },
+      { label: "Чат", href: "/chat" },
       { label: "Пациенты", href: "/patients" },
       { label: "Курсы", href: "/courses" },
     ];
@@ -45,15 +48,20 @@ function initials(name: string): string {
   return name.split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
 }
 
-export function Sidebar() {
+export function Sidebar({
+  role,
+  userName,
+  canEditSettings,
+}: {
+  role: AppRole;
+  userName: string;
+  canEditSettings: boolean;
+}) {
   const pathname = usePathname();
   const router = useRouter();
-  const { role, doctor } = useRole();
   const nav = navForRole(role);
-  const showSettings = role !== "doctor";
-
-  const profileName =
-    role === "doctor" ? doctor.name : role === "owner" ? "Ольга Мерова" : "Ирина Долева";
+  // Пункт показываем ровно тогда, когда сервер пропустит действие (матрица прав).
+  const showSettings = canEditSettings;
 
   return (
     <aside className="border-border bg-sidebar flex w-[232px] flex-none flex-col border-r px-4 py-5 max-md:hidden">
@@ -93,6 +101,18 @@ export function Sidebar() {
         <CallButton className="w-full" />
       </div>
 
+      <Link
+        href="/help"
+        aria-current={isActive(pathname, "/help") ? "page" : undefined}
+        className={`mb-2 rounded-md px-3 py-2 text-sm ${
+          isActive(pathname, "/help")
+            ? "bg-nav-active text-accent-text font-medium"
+            : "text-text-muted hover:bg-hover"
+        }`}
+      >
+        Справка
+      </Link>
+
       {showSettings ? (
         <Link
           href="/settings"
@@ -107,45 +127,12 @@ export function Sidebar() {
         </Link>
       ) : null}
 
-      {/* Переключатель роли — демо, пока нет входа. */}
-      <div className="border-border-soft mt-1 border-t pt-2.5">
-        <div className="text-text-subtle mb-1.5 px-1 text-2xs">Роль (демо)</div>
-        <div className="flex flex-col gap-1.5">
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value as AppRole)}
-            aria-label="Роль"
-            className="border-border-input bg-surface w-full rounded-md border px-2.5 py-1.5 text-sm outline-none"
-          >
-            {(["owner", "admin", "doctor"] as AppRole[]).map((r) => (
-              <option key={r} value={r}>
-                {ROLE_LABEL[r]}
-              </option>
-            ))}
-          </select>
-          {role === "doctor" ? (
-            <select
-              value={doctor.name}
-              onChange={(e) => setDoctor(e.target.value)}
-              aria-label="Врач"
-              className="border-border-input bg-surface w-full rounded-md border px-2.5 py-1.5 text-sm outline-none"
-            >
-              {DOCTORS.map((d) => (
-                <option key={d.name} value={d.name}>
-                  {d.name} · {d.specialty}
-                </option>
-              ))}
-            </select>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="border-border-soft mt-2 flex items-center gap-2.5 border-t px-2 pt-2.5">
+      <div className="border-border-soft mt-1 flex items-center gap-2.5 border-t px-2 pt-2.5">
         <div className="bg-ink-avatar text-text-muted flex h-[30px] w-[30px] flex-none items-center justify-center rounded-full text-2xs font-medium">
-          {initials(profileName)}
+          {initials(userName) || "?"}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium">{profileName}</div>
+          <div className="truncate text-xs font-medium">{userName}</div>
           <div className="text-text-subtle text-2xs">{ROLE_LABEL[role].toLowerCase()}</div>
         </div>
         <button

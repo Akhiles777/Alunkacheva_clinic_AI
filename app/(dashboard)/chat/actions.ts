@@ -36,6 +36,12 @@ export interface InternalChatAttachment {
   mimeType?: string;
   dataUrl?: string;
   durationSec?: number;
+  /**
+   * Форма волны, снятая при записи (значения 0..1). Храним готовые пики, а не
+   * считаем их на клиенте: decodeAudioData для webm/opus работает не во всех
+   * браузерах, а плеер должен выглядеть одинаково везде.
+   */
+  peaks?: number[];
 }
 
 export interface InternalChatMessageView {
@@ -122,6 +128,11 @@ function normalizeAttachments(value: unknown): InternalChatAttachment[] {
       durationSec: typeof raw.durationSec === "number" && Number.isFinite(raw.durationSec)
         ? Math.max(0, Math.min(600, Math.round(raw.durationSec)))
         : undefined,
+      peaks: Array.isArray(raw.peaks)
+        ? raw.peaks
+            .slice(0, 64)
+            .map((p) => (typeof p === "number" && Number.isFinite(p) ? Math.max(0, Math.min(1, p)) : 0))
+        : undefined,
     }];
   });
 }
@@ -147,35 +158,6 @@ async function assertActiveUser(session: Session, userId: string): Promise<void>
     LIMIT 1
   `);
   if (!rows[0]) throw new Error("Пользователь не найден или отключён.");
-}
-
-async function ensureDoctorAccounts(session: Session): Promise<void> {
-  const doctors = await prisma.$queryRaw<{ id: string; name: string }[]>(Prisma.sql`
-    SELECT s.id, s.name
-    FROM staff s
-    LEFT JOIN staff_users u ON u."staffId" = s.id AND u."deletedAt" IS NULL
-    WHERE s."companyId" = ${session.companyId}
-      AND s."isActive" = true
-      AND s."deletedAt" IS NULL
-      AND u.id IS NULL
-  `);
-  for (const doctor of doctors) {
-    await prisma.$executeRaw(Prisma.sql`
-      INSERT INTO staff_users (id, "companyId", email, "passwordHash", name, role, "staffId", "isActive", "updatedAt")
-      VALUES (
-        ${cuid("user")},
-        ${session.companyId},
-        ${`doctor-${doctor.id}@mera.local`},
-        '!invite-pending',
-        ${doctor.name},
-        'DOCTOR'::"StaffRole",
-        ${doctor.id},
-        true,
-        now()
-      )
-      ON CONFLICT ("companyId", email) DO NOTHING
-    `);
-  }
 }
 
 async function ensureGeneralRoom(session: Session, userId: string): Promise<string> {
@@ -370,7 +352,6 @@ export async function getInternalChatState(roomId?: string | null): Promise<Inte
   const session = await getSession();
   const userId = requireUser(session);
   await assertActiveUser(session, userId);
-  await ensureDoctorAccounts(session);
   const generalRoomId = await ensureGeneralRoom(session, userId);
   const activeRoomId = roomId ?? generalRoomId;
   await assertRoomMember(session, userId, activeRoomId);
