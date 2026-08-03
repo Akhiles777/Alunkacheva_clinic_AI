@@ -5,22 +5,33 @@ import crypto from "node:crypto";
  * (HMAC). Без внешних зависимостей — только node:crypto. Секрет — из env.
  */
 /**
- * Секрет подписи сессии. В продакшене отсутствие секрета — не мелочь: с
- * известным значением куку подделает кто угодно и войдёт владельцем. Поэтому
- * падаем сразу и с понятным текстом, а не работаем «как-нибудь».
+ * Секрет подписи сессии. Читается лениво, при первой подписи или проверке.
+ *
+ * Не на уровне модуля: сборка Next импортирует все страницы («Collecting page
+ * data»), а переменных окружения на этом шаге нет — бросок при импорте валит
+ * билд ещё до деплоя. Проверка нужна, но её место — первый реальный вызов.
+ *
+ * В продакшене отсутствие секрета — не мелочь: с известным значением куку
+ * подделает кто угодно и войдёт владельцем. Поэтому там падаем с понятным
+ * текстом, а не работаем «как-нибудь».
  */
-function loadSecret(): string {
+let cachedSecret: string | null = null;
+
+function secret(): string {
+  if (cachedSecret) return cachedSecret;
   const fromEnv = process.env.SESSION_SECRET || process.env.CREDENTIAL_MASTER_KEY;
-  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  if (fromEnv && fromEnv.length >= 16) {
+    cachedSecret = fromEnv;
+    return cachedSecret;
+  }
   if (process.env.NODE_ENV === "production") {
     throw new Error(
       "Не задан SESSION_SECRET (минимум 16 символов). Сгенерировать: openssl rand -base64 32",
     );
   }
-  return "dev-insecure-secret-change-me";
+  cachedSecret = "dev-insecure-secret-change-me";
+  return cachedSecret;
 }
-
-const SECRET = loadSecret();
 
 export const SESSION_COOKIE = "mera_session";
 export const INVITE_PENDING = "!invite-pending"; // засеянные учётки без пароля
@@ -49,14 +60,14 @@ export interface SessionPayload {
 
 export function signSession(payload: SessionPayload): string {
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = crypto.createHmac("sha256", SECRET).update(body).digest("base64url");
+  const sig = crypto.createHmac("sha256", secret()).update(body).digest("base64url");
   return `${body}.${sig}`;
 }
 
 export function verifySession(token: string): SessionPayload | null {
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
-  const expected = crypto.createHmac("sha256", SECRET).update(body).digest("base64url");
+  const expected = crypto.createHmac("sha256", secret()).update(body).digest("base64url");
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
     return null;
   }
