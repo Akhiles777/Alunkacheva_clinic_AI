@@ -33,7 +33,22 @@ export async function GET() {
       prisma.staffUser.count({ where: { deletedAt: null } }),
       prisma.conversation.count(),
     ]);
-    db = { knowledgeEntries: knowledge, pushSubscriptions: pushSubs, staffUsers: staff, conversations };
+    // Последние неудачи доставки: сразу видно, почему push не дошёл.
+    const failed = await prisma.notification.findMany({
+      where: { pushError: { not: null } },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { kind: true, pushError: true, createdAt: true, staffUser: { select: { login: true } } },
+    });
+    db = {
+      knowledgeEntries: knowledge,
+      pushSubscriptions: pushSubs,
+      staffUsers: staff,
+      conversations,
+      lastPushProblems: failed
+        .map((f) => `${f.createdAt.toISOString().slice(5, 16)} ${f.kind} → ${f.staffUser.login}: ${f.pushError}`)
+        .join(" | ") || "нет",
+    };
   } catch {
     // Оставляем пометку об отсутствии связи.
   }

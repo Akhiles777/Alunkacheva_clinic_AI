@@ -145,6 +145,13 @@ export function NotificationCenter({ align = "right" }: { align?: "left" | "righ
                           {n.preview ? (
                             <span className="text-text-subtle mt-0.5 block text-xs italic">«{n.preview}»</span>
                           ) : null}
+                          {n.pushError ? (
+                            // Видно, почему на телефон ничего не пришло: иначе
+                            // тишина выглядит как поломка платформы.
+                            <span className="text-text-subtle mt-0.5 block text-[10px]">
+                              push не отправлен · {n.pushError}
+                            </span>
+                          ) : null}
                         </span>
                       </Link>
                       <button

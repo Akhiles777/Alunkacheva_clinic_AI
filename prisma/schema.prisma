@@ -914,6 +914,12 @@ model Notification {
   preview     String?
 
   readAt    DateTime? @db.Timestamptz(3)
+  /// Когда ушёл push. NULL и пустая ошибка — отправка была отложена (тихие
+  /// часы) либо у получателя нет подписки. Без этих полей сбой доставки был
+  /// невидим: уведомление в базе есть, а на телефон ничего не пришло, и
+  /// понять почему было нельзя.
+  pushedAt  DateTime? @db.Timestamptz(3)
+  pushError String?
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
 
   company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
