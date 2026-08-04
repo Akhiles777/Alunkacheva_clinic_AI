@@ -25,6 +25,20 @@ export async function GET() {
     TELEGRAM_WEBHOOK_SECRET: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
   };
 
+  /**
+   * Какие модели реально используются этим экземпляром. Имена моделей — не
+   * секрет, а без них невозможно понять, почему счёт у провайдера не падает:
+   * переменная ROUTER_AI_MODEL на хостинге перебивает значение из кода.
+   */
+  const models = {
+    аналитик: process.env.ROUTER_AI_MODEL || "anthropic/claude-sonnet-4.5 (по умолчанию)",
+    ботПациентов:
+      process.env.ROUTER_AI_BOT_MODEL ||
+      process.env.ROUTER_AI_MODEL ||
+      "anthropic/claude-haiku-4.5 (по умолчанию)",
+    переопределеноПеременной: Boolean(process.env.ROUTER_AI_MODEL || process.env.ROUTER_AI_BOT_MODEL),
+  };
+
   let db: Record<string, number | string> = { ok: "нет связи" };
   try {
     const [knowledge, pushSubs, staff, conversations] = await Promise.all([
@@ -63,5 +77,12 @@ export async function GET() {
     warnings.push("База знаний пуста — ассистенту нечем отвечать про адрес, подготовку и условия");
   }
 
-  return NextResponse.json({ ok: warnings.length === 0, env, db, warnings });
+  if (process.env.ROUTER_AI_MODEL?.includes("opus")) {
+    warnings.push(
+      "ROUTER_AI_MODEL на хостинге указывает на Opus — он дороже Sonnet примерно втрое. " +
+        "Уберите переменную, чтобы работало значение из кода.",
+    );
+  }
+
+  return NextResponse.json({ ok: warnings.length === 0, env, models, db, warnings });
 }
