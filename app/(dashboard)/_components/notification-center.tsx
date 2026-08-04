@@ -9,7 +9,7 @@ import {
   sendTestPush,
   type NotificationItem,
 } from "./notifications-actions";
-import { enablePush as connectDevice, pushPermission } from "./push-subscribe";
+import { enablePush as connectDevice, PUSH_CHANGED, pushActive } from "./push-subscribe";
 
 /**
  * Центр уведомлений: колокольчик с числом, выпадающий список (под роль) и
@@ -37,13 +37,24 @@ export function NotificationCenter({ align = "right" }: { align?: "left" | "righ
     const load = () => getNotifications().then((n) => alive && setItems(n)).catch(() => {});
     load();
     const t = setInterval(load, 60_000);
-    // Отложенно (не синхронно в теле эффекта).
-    void Promise.resolve().then(() => {
-      if (alive) setPushOn(pushPermission() === "granted");
-    });
+    /**
+     * Состояние push проверяем не только при загрузке. Устройство могли
+     * подключить полосой при входе или из настроек — тогда колокольчик обязан
+     * это увидеть, иначе он предлагает включить уже включённое.
+     */
+    const refreshPush = () => {
+      void pushActive().then((on) => alive && setPushOn(on));
+    };
+    refreshPush();
+    window.addEventListener(PUSH_CHANGED, refreshPush);
+    // Возврат на вкладку: разрешение могли выдать в настройках браузера.
+    document.addEventListener("visibilitychange", refreshPush);
+
     return () => {
       alive = false;
       clearInterval(t);
+      window.removeEventListener(PUSH_CHANGED, refreshPush);
+      document.removeEventListener("visibilitychange", refreshPush);
     };
   }, []);
 

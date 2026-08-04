@@ -32,6 +32,20 @@ function bufferToBase64Url(buf: ArrayBuffer): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/**
+ * Событие «подписка изменилась». Состояние push нужно сразу в двух местах —
+ * в полосе при входе и в колокольчике, — а живёт оно в браузере, а не в
+ * данных. Без оповещения колокольчик оставался с прежним ответом и предлагал
+ * включить push, который только что включили.
+ */
+export const PUSH_CHANGED = "push-subscription-changed";
+
+export function announcePushChange(): void {
+  window.dispatchEvent(new CustomEvent(PUSH_CHANGED));
+}
+
+const announceChange = announcePushChange;
+
 /** Умеет ли этот браузер push вообще. */
 export function pushSupported(): boolean {
   return (
@@ -126,7 +140,27 @@ async function registerSubscription(): Promise<PushResult> {
   }
 
   await subscribePush(JSON.parse(JSON.stringify(sub)), navigator.userAgent);
+  announceChange();
   return { ok: true, endpoint: sub.endpoint };
+}
+
+/**
+ * Подключено ли это устройство на самом деле. Одного разрешения браузера мало:
+ * подписка могла быть отозвана или выдана под прежний ключ сервера — тогда
+ * уведомления не приходят, хотя разрешение на месте.
+ */
+export async function pushActive(): Promise<boolean> {
+  if (!pushSupported() || Notification.permission !== "granted") return false;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (!sub) return false;
+    const key = await getVapidPublicKey();
+    const used = sub.options.applicationServerKey;
+    return Boolean(key && used && bufferToBase64Url(used) === key);
+  } catch {
+    return false;
+  }
 }
 
 /**

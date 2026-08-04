@@ -4,7 +4,12 @@ import { useEffect, useState, useTransition } from "react";
 import { Group } from "../_components/ui";
 import { getDevices, removeDevice, type DeviceRow } from "./devices-actions";
 import { sendTestPush } from "@/app/(dashboard)/_components/notifications-actions";
-import { enablePush, pushSupported } from "@/app/(dashboard)/_components/push-subscribe";
+import {
+  announcePushChange,
+  enablePush,
+  PUSH_CHANGED,
+  pushSupported,
+} from "@/app/(dashboard)/_components/push-subscribe";
 
 /**
  * Устройства для push. Раздел показывает реальные подписки текущего сотрудника
@@ -27,11 +32,17 @@ export function Devices() {
 
   useEffect(() => {
     let alive = true;
-    getDevices()
-      .then((r) => alive && setRows(r))
-      .catch(() => {});
+    // Список обновляется и по событию: устройство могли подключить полосой
+    // при входе, и тогда оно должно появиться здесь без перезагрузки.
+    const load = () =>
+      getDevices()
+        .then((r) => alive && setRows(r))
+        .catch(() => {});
+    load();
+    window.addEventListener(PUSH_CHANGED, load);
     return () => {
       alive = false;
+      window.removeEventListener(PUSH_CHANGED, load);
     };
   }, []);
 
@@ -83,7 +94,13 @@ export function Devices() {
               <button
                 type="button"
                 disabled={pending}
-                onClick={() => start(async () => setRows(await removeDevice(d.id)))}
+                onClick={() =>
+                  start(async () => {
+                    setRows(await removeDevice(d.id));
+                    // Колокольчик должен сразу показать, что push выключен.
+                    announcePushChange();
+                  })
+                }
                 className="text-text-subtle hover:text-text flex-none text-sm disabled:opacity-45"
               >
                 Отключить
