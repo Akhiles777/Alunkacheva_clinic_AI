@@ -135,7 +135,7 @@ export interface Patient {
   messages: Message[];
 }
 
-export type DialogChannel = "instagram" | "whatsapp";
+export type DialogChannel = "instagram" | "whatsapp" | "telegram";
 export type DialogStatus = "bot" | "escalated" | "human" | "closed";
 
 export interface Dialog {
@@ -166,9 +166,19 @@ export interface DB {
 // ─────────────────────────────────────────────── seed
 
 let seq = 1000;
+/**
+ * Идентификатор для новой строки. Обязательно случайный, а не порядковый:
+ * счётчик сбрасывается при каждой загрузке страницы, и второй ответ в диалоге
+ * получал id, уже занятый в базе, — запись падала на уникальном ключе, а
+ * администратор видел «не удалось отправить» без объяснения.
+ */
 function uid(prefix: string): string {
   seq += 1;
-  return `${prefix}-${seq}`;
+  const rand =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `${prefix}-${seq}-${rand}`;
 }
 function phone(e164: string, opts: Partial<Phone> = {}): Phone {
   return {
@@ -475,11 +485,13 @@ export function hydrateDialogs(records: DialogRecord[]) {
       status: r.status,
       preview: r.preview,
       at: r.at,
-      unread: existing?.unread ?? false,
-      escalationReason: existing?.escalationReason,
+      // Состояние берём с сервера: раньше оно бралось из мока и для диалогов
+      // из базы всегда было пустым — фильтр «Нужен ответ» не находил ничего.
+      unread: r.unread,
+      escalationReason: r.escalationReason ?? undefined,
       agentDraft: existing?.agentDraft,
-      windowOpen: existing?.windowOpen ?? true,
-      windowMinutesLeft: existing?.windowMinutesLeft ?? null,
+      windowOpen: r.windowOpen,
+      windowMinutesLeft: r.windowMinutesLeft,
       messages,
     };
   });
@@ -730,9 +742,14 @@ function replaceDialog(id: string, fn: (d: Dialog) => Dialog) {
 }
 
 /** Отправить ответ вручную. Диалог переходит к человеку, черновик снимается. */
-export function sendMessage(dialogId: string, text: string) {
+/**
+ * Отправить ответ пациенту. Возвращает промис с результатом доставки: если
+ * канал не принял сообщение, интерфейс обязан это показать — иначе
+ * администратор уверен, что ответил, а пациент ничего не получил.
+ */
+export function sendMessage(dialogId: string, text: string): Promise<{ ok: boolean; error?: string }> {
   const t = text.trim();
-  if (!t) return;
+  if (!t) return Promise.resolve({ ok: false, error: "Пустое сообщение" });
   const msg: Message = { id: uid("m"), from: "staff", text: t, at: "сейчас" };
   replaceDialog(dialogId, (d) => ({
     ...d,
@@ -742,7 +759,10 @@ export function sendMessage(dialogId: string, text: string) {
     preview: t,
     agentDraft: undefined,
   }));
-  void sendMessageDb(dialogId, msg.id, t).catch(() => {});
+  return sendMessageDb(dialogId, msg.id, t).catch(() => ({
+    ok: false,
+    error: "Не удалось связаться с сервером",
+  }));
 }
 
 export function markDialogRead(dialogId: string) {

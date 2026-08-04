@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
+import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 
@@ -30,11 +31,14 @@ export async function getApprovedTemplates(): Promise<ApprovedTemplate[]> {
 }
 
 /**
- * Диалоги инбокса — из доменных таблиц Conversation + Message. UI-поля (черновик
- * агента, таймер окна, причина эскалации, флаг «непрочитано») в схеме отсутствуют
- * — они остаются в клиентском сторе и сливаются по id при гидрации.
+ * Диалоги инбокса — из доменных таблиц Conversation + Message.
+ *
+ * Состояние считается на сервере, а не в клиентском сторе: «непрочитано»,
+ * причина эскалации и окно ответа раньше брались из мока и для диалогов из
+ * базы всегда были пустыми — поэтому фильтр «Нужен ответ» показывал пусто,
+ * даже когда пациент ждал ответа.
  */
-export type DialogChannel = "instagram" | "whatsapp";
+export type DialogChannel = "instagram" | "whatsapp" | "telegram";
 export type DialogStatus = "bot" | "escalated" | "human" | "closed";
 
 export interface DialogMessageRecord {
@@ -48,6 +52,14 @@ export interface DialogRecord {
   name: string | null;
   patientId: string | null;
   channel: DialogChannel;
+  /** Последнее слово за пациентом — диалог ждёт ответа. */
+  unread: boolean;
+  /** Почему диалог передан человеку. */
+  escalationReason: string | null;
+  /** Можно ли писать свободным текстом (24-часовое окно Instagram). */
+  windowOpen: boolean;
+  /** Сколько минут осталось до закрытия окна; null — окно без таймера. */
+  windowMinutesLeft: number | null;
   status: DialogStatus;
   preview: string;
   at: string;
@@ -82,6 +94,22 @@ function atLabel(d: Date): string {
   return dateFmt.format(d);
 }
 
+const CHANNEL_MAP: Record<string, DialogChannel> = {
+  INSTAGRAM: "instagram",
+  WHATSAPP: "whatsapp",
+  TELEGRAM: "telegram",
+};
+
+const ESCALATION_LABEL: Record<string, string> = {
+  AGENT_REQUEST: "агент позвал человека",
+  PATIENT_REQUEST: "пациент просит человека",
+  KEYWORD: "стоп-слово",
+  MEDICAL_QUESTION: "медицинский вопрос",
+  MISUNDERSTOOD: "агент не понял запрос",
+  TIMEOUT: "агент долго молчал",
+  OTHER: "другое",
+};
+
 export async function getConversations(): Promise<DialogRecord[]> {
   const session = await getSession();
   const convs = await prisma.conversation.findMany({
@@ -89,7 +117,13 @@ export async function getConversations(): Promise<DialogRecord[]> {
     orderBy: { lastMessageAt: "desc" },
     include: {
       patient: { select: { name: true } },
-      messages: { orderBy: { createdAt: "asc" } },
+      messages: { where: { deletedAt: null, isDraft: false }, orderBy: { createdAt: "asc" } },
+      escalations: {
+        where: { status: { not: "RESOLVED" } },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { reason: true },
+      },
     },
   });
   return convs.map((c) => {
@@ -100,12 +134,23 @@ export async function getConversations(): Promise<DialogRecord[]> {
       at: atLabel(m.createdAt),
     }));
     const last = c.messages[c.messages.length - 1];
+    // Ждёт ответа, если последним написал пациент и диалог не закрыт.
+    const unread = last?.direction === "IN" && c.status !== "CLOSED";
+    // Окно 24 часов — ограничение Instagram. В Telegram и WhatsApp его нет.
+    const windowLeftMs = c.replyWindowExpiresAt ? c.replyWindowExpiresAt.getTime() - Date.now() : null;
     return {
       id: c.id,
       name: c.patient?.name ?? null,
       patientId: c.patientId,
-      channel: c.channel === "INSTAGRAM" ? "instagram" : "whatsapp",
+      channel: CHANNEL_MAP[c.channel] ?? "whatsapp",
       status: STATUS_MAP[c.status],
+      unread,
+      escalationReason: c.escalations[0] ? ESCALATION_LABEL[c.escalations[0].reason] ?? null : null,
+      windowOpen: c.channel !== "INSTAGRAM" || windowLeftMs === null || windowLeftMs > 0,
+      windowMinutesLeft:
+        c.channel === "INSTAGRAM" && windowLeftMs !== null && windowLeftMs > 0
+          ? Math.round(windowLeftMs / 60000)
+          : null,
       preview: last?.body ?? "",
       at: atLabel(c.lastMessageAt),
       messages,
@@ -113,13 +158,50 @@ export async function getConversations(): Promise<DialogRecord[]> {
   });
 }
 
-export async function sendMessageDb(conversationId: string, messageId: string, text: string): Promise<void> {
+export interface SendResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Ответ администратора пациенту.
+ *
+ * Сообщение не только сохраняется, но и уходит в канал. Раньше оно просто
+ * ложилось в базу: администратор писал, видел свой текст в переписке и был
+ * уверен, что ответил, — а пациент не получал ничего.
+ *
+ * Instagram и WhatsApp пока не подключены (этап 2), поэтому там сообщение
+ * помечается как неотправленное с честной причиной, а не тихо «отправляется».
+ */
+export async function sendMessageDb(
+  conversationId: string,
+  messageId: string,
+  text: string,
+): Promise<SendResult> {
   const session = await getSession();
   const conv = await prisma.conversation.findFirst({
     where: { id: conversationId, companyId: session.companyId },
-    select: { channel: true },
+    select: { channel: true, externalUserId: true },
   });
-  if (!conv) return;
+  if (!conv) return { ok: false, error: "Диалог не найден" };
+
+  const body = text.trim();
+  let delivered = false;
+  let failure: string | null = null;
+  let externalId: string | null = null;
+
+  if (conv.channel === "TELEGRAM") {
+    const res = await sendTelegram(conv.externalUserId, body);
+    if (res) {
+      delivered = true;
+      externalId = res.externalId;
+    } else {
+      failure = "Telegram не принял сообщение. Проверьте настройки бота.";
+    }
+  } else {
+    failure = "Канал ещё не подключён — сообщение сохранено, но пациенту не ушло.";
+  }
+
   await prisma.$transaction([
     prisma.message.create({
       data: {
@@ -130,7 +212,11 @@ export async function sendMessageDb(conversationId: string, messageId: string, t
         direction: "OUT",
         authorType: "STAFF",
         authorId: session.userId,
-        body: text.trim(),
+        body,
+        externalId,
+        status: delivered ? "SENT" : "FAILED",
+        failureReason: failure,
+        sentAt: delivered ? new Date() : null,
       },
     }),
     prisma.conversation.update({
@@ -152,6 +238,8 @@ export async function sendMessageDb(conversationId: string, messageId: string, t
     url: "/inbox",
     entityId: conversationId,
   });
+
+  return failure ? { ok: false, error: failure } : { ok: true };
 }
 
 export async function startDialogDb(input: {

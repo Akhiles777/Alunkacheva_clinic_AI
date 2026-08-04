@@ -37,4 +37,5 @@ export const DIALOG_STATUS_LABEL: Record<DialogStatus, string> = {
 export const CHANNEL_LABEL: Record<DialogChannel, string> = {
   instagram: "Instagram",
   whatsapp: "WhatsApp",
+  telegram: "Telegram",
 };

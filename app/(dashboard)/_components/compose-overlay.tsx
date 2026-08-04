@@ -6,10 +6,14 @@ import {
   searchPatients,
   startDialog,
   useDb,
-  type DialogChannel,
 } from "@/app/_data/store";
 
-const CHANNEL_LABEL: Record<DialogChannel, string> = {
+/** Каналы, в которых администратор может написать первым. */
+type OutboundChannel = "instagram" | "whatsapp";
+
+// Начать диалог администратор может в Instagram или WhatsApp. Telegram сюда
+// не входит: там первым пишет пациент — бот не может постучаться сам.
+const CHANNEL_LABEL: Record<OutboundChannel, string> = {
   instagram: "Instagram",
   whatsapp: "WhatsApp",
 };
@@ -30,10 +34,10 @@ export function ComposeOverlay({
   onSent?: (dialogId: string) => void;
   prefillPatientId?: string | null;
   prefillMessage?: string;
-  prefillChannel?: DialogChannel;
+  prefillChannel?: OutboundChannel;
 }) {
   const db = useDb();
-  const [channel, setChannel] = useState<DialogChannel>(prefillChannel);
+  const [channel, setChannel] = useState<OutboundChannel>(prefillChannel);
   const [pquery, setPquery] = useState("");
   const [patientId, setPatientId] = useState<string | null>(prefillPatientId);
   const [message, setMessage] = useState(prefillMessage);

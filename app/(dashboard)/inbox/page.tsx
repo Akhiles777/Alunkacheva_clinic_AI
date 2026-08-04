@@ -108,6 +108,7 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
 
 function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
   const [text, setText] = useState("");
+  const [sendError, setSendError] = useState<string | null>(null);
   const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
 
   useEffect(() => {
@@ -122,7 +123,11 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
 
   function submit() {
     if (dialog.windowOpen && text.trim()) {
-      sendMessage(dialog.id, text);
+      // Показываем результат доставки: молчаливый «успех» при неотправленном
+      // сообщении — худший исход, администратор будет ждать ответа зря.
+      void sendMessage(dialog.id, text).then((res) => {
+        setSendError(res.ok ? null : (res.error ?? "Сообщение не отправлено"));
+      });
       setText("");
     }
   }
@@ -204,6 +209,14 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
               Изменить
             </button>
           </div>
+        </div>
+      ) : null}
+
+      {/* Результат доставки. Молчаливый «успех» при неотправленном сообщении —
+          худший исход: администратор будет напрасно ждать ответа пациента. */}
+      {sendError ? (
+        <div className="border-border-soft bg-hover text-accent-text flex-none border-t px-5 py-2 text-xs">
+          {sendError}
         </div>
       ) : null}
 
