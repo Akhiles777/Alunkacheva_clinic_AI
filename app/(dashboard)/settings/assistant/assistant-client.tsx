@@ -12,6 +12,7 @@ import {
   Toggle,
 } from "../_components/ui";
 import { saveSection } from "../blob-actions";
+import { saveKnowledge } from "./actions";
 
 type AssistantConfig = typeof settingsStore.assistant;
 
@@ -212,7 +213,10 @@ export function AssistantClient({
           error={error}
           onSave={() => {
             startTransition(async () => {
-              await saveSection("assistant", { assistant, knowledge });
+              // Конфигурацию и знания сохраняем в их настоящие места: поведение — в
+              // настройку, тексты — в таблицу, которую читает агент.
+              await saveSection("assistant", { assistant });
+              setKnowledge(await saveKnowledge(knowledge));
             });
           }}
         />

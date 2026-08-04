@@ -3,8 +3,8 @@ import { normalizePhone } from "@/lib/phone";
 import { notifyStaff, inboxRecipients } from "@/lib/server/notify";
 import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
-import { KNOWLEDGE_MIN_SCORE, matchKnowledge } from "./knowledge";
-import { answerLLM } from "./llm";
+import { confidentMatch, matchKnowledge } from "./knowledge";
+import { answerLLM, type Turn } from "./llm";
 
 /**
  * Агент пациентского канала.
@@ -154,11 +154,22 @@ async function saveMessage(input: {
   });
 }
 
+/**
+ * Передать диалог человеку. Повторно не эскалируем: пациент, который написал
+ * три сообщения подряд, не должен создавать три эскалации и три push
+ * администратору.
+ */
 async function escalate(companyId: string, conversationId: string, reason: "MEDICAL_QUESTION" | "PATIENT_REQUEST" | "KEYWORD" | "MISUNDERSTOOD", note: string) {
+  const current = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { status: true },
+  });
+  const alreadyEscalated = current?.status === "ESCALATED";
   await prisma.conversation.update({
     where: { id: conversationId },
     data: { status: "ESCALATED" },
   });
+  if (alreadyEscalated) return;
   await prisma.escalation.create({
     data: {
       companyId,
@@ -198,15 +209,58 @@ async function clinicContext(companyId: string): Promise<string> {
   const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
   const days = ["", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
-  const lines = [`# Клиника «${CLINIC_NAME}»`, "", "## Услуги и цены"];
-  for (const s of services) lines.push(`- ${s.title}: ${s.price} ₽, ${s.durationMin} мин`);
-  lines.push("", "## Часы работы");
-  for (const d of schedule) lines.push(`- ${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
+  // Без разметки: этот текст и уходит в модель, и показывается пациенту.
+  // Символы # и * в мессенджере выглядят как мусор.
+  const lines = [`Клиника «${CLINIC_NAME}».`, "", "Услуги и цены:"];
+  for (const s of services) lines.push(`• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
+  lines.push("", "Часы работы:");
+  for (const d of schedule) lines.push(`${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
+  const closed = [1, 2, 3, 4, 5, 6, 7].filter((w) => !schedule.some((d) => d.weekday === w));
+  if (closed.length) lines.push(`Выходной: ${closed.map((w) => days[w]).join(", ")}`);
   if (knowledge.length) {
-    lines.push("", "## Справка");
-    for (const k of knowledge) lines.push(`- ${k.topic}: ${k.answer}`);
+    lines.push("", "Справка клиники:");
+    for (const k of knowledge) lines.push(`${k.topic}: ${k.answer}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * Последние реплики диалога для модели. Без них ассистент отвечал на каждое
+ * сообщение как на первое и терял нить: «а сколько это стоит?» после вопроса
+ * об услуге он уже не понимал.
+ */
+async function recentTurns(conversationId: string): Promise<Turn[]> {
+  const rows = await prisma.message.findMany({
+    where: { conversationId, deletedAt: null, isDraft: false },
+    orderBy: { createdAt: "desc" },
+    take: 11,
+    select: { direction: true, body: true },
+  });
+  return rows
+    .reverse()
+    .slice(0, -1) // последнее — текущий вопрос, он передаётся отдельно
+    .map((m) => ({ role: m.direction === "IN" ? ("user" as const) : ("assistant" as const), content: m.body }));
+}
+
+/**
+ * Ответ бота всегда попадает в переписку. Раньше часть веток возвращала текст
+ * пациенту, но не сохраняла его: в инбоксе диалог выглядел как молчание бота,
+ * а администратор не понимал, что уже было сказано.
+ */
+async function respond(
+  ctx: AgentContext,
+  conversationId: string,
+  reply: AgentReply,
+): Promise<AgentReply> {
+  await saveMessage({
+    companyId: ctx.companyId,
+    conversationId,
+    channel: "TELEGRAM",
+    direction: "OUT",
+    authorType: "BOT",
+    body: reply.text,
+  });
+  return reply;
 }
 
 // ─────────────────────────────────────────────── обработка
@@ -272,30 +326,24 @@ export async function handlePatientMessage(
   // Расписание — зона администратора (решение заказчика).
   if (scheduleTopic(text)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
-    const reply =
-      "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
-      "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.";
-    await saveMessage({
-      companyId: ctx.companyId,
-      conversationId: conversation.id,
-      channel: "TELEGRAM",
-      direction: "OUT",
-      authorType: "BOT",
-      body: reply,
+    return respond(ctx, conversation.id, {
+      text:
+        "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
+        "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.",
+      buttons: mainMenu(),
     });
-    return { text: reply, buttons: mainMenu() };
   }
 
   if (personalTopic(text) || wantsHuman(text)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба").catch(() => {});
-    return { text: "Передал(а) администратору — он ответит здесь же." };
+    return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
 
   if (/^\/start\b/.test(text)) {
-    return {
+    return respond(ctx, conversation.id, {
       text: `Здравствуйте! Это клиника «${CLINIC_NAME}». Расскажу про услуги, цены, адрес, часы работы, подготовку к процедурам и условия отмены. Запись и переносы ведёт администратор — передам ему.`,
       buttons: mainMenu(),
-    };
+    });
   }
 
   const knowledgeRows = await prisma.knowledgeEntry.findMany({
@@ -306,61 +354,41 @@ export async function handlePatientMessage(
   // Правило 1: на медицинскую тему отвечаем ТОЛЬКО дословной справкой клиники.
   if (medical(text)) {
     const match = matchKnowledge(text, knowledgeRows);
-    if (!match || match.score < KNOWLEDGE_MIN_SCORE) {
+    if (!confidentMatch(match)) {
       await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос без готового ответа").catch(() => {});
-      return {
+      return respond(ctx, conversation.id, {
         text:
           "Этот вопрос лучше уточнить у специалиста — передал(а) администратору клиники. " +
           "Могу пока рассказать про услуги, цены, адрес и часы работы.",
         buttons: mainMenu(),
-      };
+      });
     }
-    const reply = `${match.row.answer}\n\nЕсли есть особенности здоровья — уточните у специалиста, я позову администратора.`;
-    await saveMessage({
-      companyId: ctx.companyId,
-      conversationId: conversation.id,
-      channel: "TELEGRAM",
-      direction: "OUT",
-      authorType: "BOT",
-      body: reply,
+    return respond(ctx, conversation.id, {
+      text: `${match!.row.answer}\n\nЕсли есть особенности здоровья — уточните у специалиста, я позову администратора.`,
+      buttons: mainMenu(),
     });
-    return { text: reply, buttons: mainMenu() };
   }
 
   // Прочие организационные вопросы: сначала точная справка, иначе модель,
   // ограниченная справочником и данными из базы.
   const exact = matchKnowledge(text, knowledgeRows);
-  if (exact && exact.score >= KNOWLEDGE_MIN_SCORE) {
-    await saveMessage({
-      companyId: ctx.companyId,
-      conversationId: conversation.id,
-      channel: "TELEGRAM",
-      direction: "OUT",
-      authorType: "BOT",
-      body: exact.row.answer,
-    });
-    return { text: exact.row.answer, buttons: mainMenu() };
+  if (confidentMatch(exact)) {
+    return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
   }
 
   const context = await clinicContext(ctx.companyId);
-  const answer = await answerLLM(text, context);
+  const answer = await answerLLM(text, context, await recentTurns(conversation.id));
   if (!answer) {
+    // Модель недоступна или молчит. Не бросаем пациента: отдаём то, что знаем
+    // наверняка — услуги, цены и часы, — и зовём человека.
     await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Нет ответа в справке клиники").catch(() => {});
-    return {
-      text: "Не нашёл(ла) ответ в справке клиники — передал(а) администратору.",
+    return respond(ctx, conversation.id, {
+      text: `${context}\n\nЕсли нужен другой ответ — передал(а) администратору, он подключится здесь же.`,
       buttons: mainMenu(),
-    };
+    });
   }
 
-  await saveMessage({
-    companyId: ctx.companyId,
-    conversationId: conversation.id,
-    channel: "TELEGRAM",
-    direction: "OUT",
-    authorType: "BOT",
-    body: answer,
-  });
-  return { text: answer, buttons: mainMenu() };
+  return respond(ctx, conversation.id, { text: answer, buttons: mainMenu() });
 }
 
 function mainMenu() {

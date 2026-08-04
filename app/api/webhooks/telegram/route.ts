@@ -121,8 +121,11 @@ export async function POST(req: Request) {
       else if (msg?.contact) await removeKeyboard(chatId, reply.text);
       else await sendText(chatId, reply.text, reply.buttons);
     }
-  } catch {
-    // Ошибку не показываем Telegram: иначе он будет слать этот update по кругу.
+  } catch (e) {
+    // Telegram отвечаем 200, иначе он шлёт update по кругу. Но в лог пишем:
+    // молчаливый catch однажды спрятал причину, по которой бот переставал
+    // отвечать, и её пришлось искать вслепую.
+    console.error("[telegram] обработка update упала:", e);
   }
   return ok();
 }

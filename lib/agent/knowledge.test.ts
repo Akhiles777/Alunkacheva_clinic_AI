@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KNOWLEDGE_MIN_SCORE, matchKnowledge, type KnowledgeRow } from "./knowledge";
+import { confidentMatch, KNOWLEDGE_MIN_SCORE, matchKnowledge, type KnowledgeRow } from "./knowledge";
 
 /**
  * Подбор справки — место, где ошибка означает выдуманный медицинский ответ
@@ -43,5 +43,23 @@ describe("matchKnowledge", () => {
 
   it("пустой вопрос ничего не даёт", () => {
     expect(matchKnowledge("   ", ROWS)).toBeNull();
+  });
+});
+
+describe("confidentMatch", () => {
+  it("односложный вопрос не считается уверенным совпадением", () => {
+    // «а капельница?» — одно значимое слово, доля 1.0, но смысл неясен:
+    // спрашивают цену или подготовку. Такое отдаём модели с контекстом.
+    const m = matchKnowledge("а капельница?", ROWS);
+    expect(m!.score).toBeGreaterThanOrEqual(KNOWLEDGE_MIN_SCORE);
+    expect(confidentMatch(m)).toBe(false);
+  });
+
+  it("развёрнутый вопрос по теме — уверенное совпадение", () => {
+    expect(confidentMatch(matchKnowledge("как готовиться к капельнице", ROWS))).toBe(true);
+  });
+
+  it("пустое совпадение не уверенное", () => {
+    expect(confidentMatch(null)).toBe(false);
   });
 });

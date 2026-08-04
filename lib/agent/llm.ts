@@ -21,9 +21,24 @@ const PATIENT_PROMPT = [
   "НИКОГДА не обсуждай симптомы, диагнозы, лечение, препараты, противопоказания и результаты анализов:",
   "на такие вопросы отвечай, что позовёшь специалиста.",
   "Не запрашивай персональные данные, кроме имени. Не обещай того, чего нет в справке.",
+  "Не используй разметку: никаких #, *, списков со звёздочками. Пиши обычным текстом.",
 ].join(" ");
 
-export async function answerLLM(question: string, clinicContext: string): Promise<string | null> {
+export interface Turn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/**
+ * history — последние реплики диалога. Без неё ассистент отвечал на каждое
+ * сообщение как на первое: «а сколько это стоит?» после вопроса об остеопатии
+ * он уже не понимал.
+ */
+export async function answerLLM(
+  question: string,
+  clinicContext: string,
+  history: Turn[] = [],
+): Promise<string | null> {
   const key = process.env.ROUTER_AI;
   if (!key) return null;
 
@@ -37,7 +52,10 @@ export async function answerLLM(question: string, clinicContext: string): Promis
         max_tokens: 400,
         messages: [
           { role: "system", content: PATIENT_PROMPT },
-          { role: "user", content: `Справка клиники:\n${clinicContext}\n\nВопрос пациента: ${question}` },
+          { role: "system", content: `Справка клиники:\n${clinicContext}` },
+          // Последние реплики — чтобы «а сколько это стоит?» понималось в контексте.
+          ...history.slice(-10),
+          { role: "user", content: question },
         ],
       }),
       // Вебхук должен уложиться в лимит serverless-функции (на Hobby 10 с),

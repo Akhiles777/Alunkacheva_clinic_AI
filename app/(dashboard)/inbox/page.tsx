@@ -12,6 +12,7 @@ import {
   activeNotes,
   findPatient,
   markDialogRead,
+  returnToBot,
   sendMessage,
   useDb,
   type Dialog,
@@ -153,6 +154,16 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
           </div>
         </div>
         <div className="ml-auto flex flex-none items-center gap-2.5">
+          {dialog.status !== "bot" ? (
+            <button
+              type="button"
+              onClick={() => returnToBot(dialog.id)}
+              title="Снять паузу агента: после ручного ответа он молчит 12 часов"
+              className="border-border text-text-muted hover:bg-hover flex-none rounded-md border px-2.5 py-1 text-2xs"
+            >
+              Вернуть агенту
+            </button>
+          ) : null}
           {dialog.status === "escalated" ? (
             <span className="text-accent-text flex-none text-2xs font-medium max-md:hidden">
               эскалация: {dialog.escalationReason}

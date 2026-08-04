@@ -242,6 +242,24 @@ export async function sendMessageDb(
   return failure ? { ok: false, error: failure } : { ok: true };
 }
 
+/**
+ * Вернуть диалог агенту. После ручного ответа агент молчит 12 часов (§6.4) —
+ * это защита от бота, перебивающего администратора. Но без явной кнопки
+ * диалог оставался немым до утра, и со стороны выглядело как «бот сломался».
+ */
+export async function returnToBotDb(conversationId: string): Promise<{ ok: true }> {
+  const session = await getSession();
+  await prisma.conversation.updateMany({
+    where: { id: conversationId, companyId: session.companyId },
+    data: { status: "BOT_ACTIVE", botPausedUntil: null },
+  });
+  await prisma.escalation.updateMany({
+    where: { conversationId, status: { not: "RESOLVED" } },
+    data: { status: "RESOLVED", resolvedAt: new Date(), resolvedById: session.userId },
+  });
+  return { ok: true };
+}
+
 export async function startDialogDb(input: {
   id: string;
   messageId: string;

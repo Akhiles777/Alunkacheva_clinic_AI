@@ -1,14 +1,18 @@
 import { settingsStore } from "@/app/_data/settings";
 import { SettingsHeader } from "../_components/ui";
 import { getSection } from "../blob-actions";
+import { getKnowledge } from "./actions";
 import { getServices } from "../services/actions";
 import { AssistantClient, type AssistantData } from "./assistant-client";
 
 export default async function AssistantSettingsPage() {
-  const stored = (await getSection("assistant")) as AssistantData | null;
-  const initial: AssistantData = stored ?? {
-    assistant: settingsStore.assistant,
-    knowledge: settingsStore.knowledge,
+  // Конфигурация — из JSON-настройки, база знаний — из доменной таблицы, той
+  // самой, откуда её читает агент.
+  const stored = (await getSection("assistant")) as Partial<AssistantData> | null;
+  const knowledge = await getKnowledge();
+  const initial: AssistantData = {
+    assistant: stored?.assistant ?? settingsStore.assistant,
+    knowledge,
   };
 
   // Опции услуг для привязки записей базы знаний — из доменной таблицы Service.

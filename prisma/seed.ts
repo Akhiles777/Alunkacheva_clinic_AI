@@ -17,6 +17,7 @@ const prisma = new PrismaClient({ adapter });
 const SOURCES: { code: string; title: string; kind: SourceKind; sortOrder: number }[] = [
   { code: "instagram", title: "Instagram", kind: "MESSENGER", sortOrder: 10 },
   { code: "whatsapp", title: "WhatsApp", kind: "MESSENGER", sortOrder: 20 },
+  { code: "telegram", title: "Telegram", kind: "MESSENGER", sortOrder: 25 },
   { code: "phone", title: "Звонок", kind: "PHONE", sortOrder: 30 },
   { code: "site", title: "Сайт", kind: "WEB", sortOrder: 40 },
   { code: "offline", title: "Пришёл сам", kind: "OFFLINE", sortOrder: 50 },
@@ -69,6 +70,19 @@ const ROLE_MATRIX: Record<StaffRole, Permission[]> = {
   ADMIN: ["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS", "EDIT_SETTINGS"],
   DOCTOR: [],
 };
+
+/** Стартовая база знаний ассистента. Клиника правит её в «Настройки → Ассистент». */
+const KNOWLEDGE: { topic: string; question: string; answer: string }[] = [
+  { topic: "Адрес", question: "Где вы находитесь?", answer: "Мы находимся по адресу: уточните у администратора. Заполните этот ответ в «Настройки → Ассистент»." },
+  { topic: "Часы работы", question: "Когда вы работаете?", answer: "Пн–Сб с 09:00 до 21:00, воскресенье — выходной." },
+  { topic: "Как записаться", question: "Как записаться на приём?", answer: "Запись ведёт администратор: напишите здесь, и он подберёт удобное время." },
+  { topic: "Отмена записи", question: "Как отменить или перенести запись?", answer: "Сообщите об этом заранее, лучше не позже чем за сутки — администратор перенесёт визит." },
+  { topic: "Оплата", question: "Как можно оплатить?", answer: "Оплата в клинике после приёма: наличными или картой." },
+  { topic: "Согласие на обработку данных", question: "Зачем подписывать согласие?", answer: "Согласие на обработку персональных данных нужно по закону — без него мы не можем вести карту пациента. Подписывается один раз при первом визите." },
+  { topic: "Подготовка к капельнице", question: "Как готовиться к IV-терапии?", answer: "Лёгкий приём пищи за 1–2 часа до процедуры и обычный питьевой режим. Если принимаете лекарства — предупредите специалиста." },
+  { topic: "Подготовка к остеопатии", question: "Как готовиться к приёму остеопата?", answer: "Приходите в удобной одежде, не есть плотно за час до приёма. Возьмите с собой снимки и заключения, если они есть." },
+  { topic: "Первый визит", question: "Что взять на первый приём?", answer: "Паспорт для оформления карты и медицинские документы, если они у вас есть." },
+];
 
 const SETTINGS: { key: string; value: unknown }[] = [
   // Источник кабинета для загрузки. Дублирует прежний флаг ROOMS_FROM_RESOURCES.
@@ -190,6 +204,18 @@ async function main() {
         create: { companyId: company.id, role, permission, allowed: allowedSet.has(permission) },
       });
     }
+  }
+
+  // База знаний ассистента: без неё бот на любой вопрос зовёт человека.
+  for (const k of KNOWLEDGE) {
+    const existing = await prisma.knowledgeEntry.findFirst({
+      where: { companyId: company.id, topic: k.topic },
+      select: { id: true },
+    });
+    if (existing) continue;
+    await prisma.knowledgeEntry.create({
+      data: { companyId: company.id, topic: k.topic, question: k.question, answer: k.answer, isActive: true },
+    });
   }
 
   // Дефолтные настройки.

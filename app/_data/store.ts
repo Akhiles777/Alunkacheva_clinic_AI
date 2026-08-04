@@ -27,6 +27,7 @@ import {
   type PatientRecord,
 } from "@/app/(dashboard)/patients/actions";
 import {
+  returnToBotDb,
   sendMessageDb,
   startDialogDb,
   type DialogRecord,
@@ -763,6 +764,12 @@ export function sendMessage(dialogId: string, text: string): Promise<{ ok: boole
     ok: false,
     error: "Не удалось связаться с сервером",
   }));
+}
+
+/** Вернуть диалог агенту: снять паузу и закрыть эскалацию. */
+export function returnToBot(dialogId: string) {
+  replaceDialog(dialogId, (d) => ({ ...d, status: "bot", escalationReason: undefined }));
+  void returnToBotDb(dialogId).catch(() => {});
 }
 
 export function markDialogRead(dialogId: string) {

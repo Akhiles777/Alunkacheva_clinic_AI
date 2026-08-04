@@ -37,18 +37,32 @@ function stem(word: string): string {
 export function matchKnowledge(
   question: string,
   rows: KnowledgeRow[],
-): { row: KnowledgeRow; score: number } | null {
+): { row: KnowledgeRow; score: number; hits: number } | null {
   const asked = words(question).map(stem);
   if (asked.length === 0 || rows.length === 0) return null;
 
-  let best: { row: KnowledgeRow; score: number } | null = null;
+  let best: { row: KnowledgeRow; score: number; hits: number } | null = null;
   for (const row of rows) {
     const haystack = new Set(words(`${row.topic} ${row.question} ${row.answer}`).map(stem));
     const hits = asked.filter((w) => haystack.has(w)).length;
     const score = hits / asked.length;
-    if (!best || score > best.score) best = { row, score };
+    if (!best || score > best.score) best = { row, score, hits };
   }
   return best;
+}
+
+/**
+ * Достаточно ли уверенное совпадение, чтобы отвечать справкой.
+ *
+ * Одной доли мало: у короткого вопроса «а капельница?» одно значимое слово, и
+ * доля выходит 1.0 — бот отвечал про подготовку, когда спрашивали цену.
+ * Поэтому для коротких вопросов требуем не меньше двух совпавших слов, а
+ * односложные отдаём модели: у неё есть контекст переписки.
+ */
+export function confidentMatch(m: { score: number; hits: number } | null): boolean {
+  if (!m) return false;
+  if (m.score < KNOWLEDGE_MIN_SCORE) return false;
+  return m.hits >= 2;
 }
 
 /** Порог уверенности: ниже него отвечать нельзя, вопрос уходит человеку. */
