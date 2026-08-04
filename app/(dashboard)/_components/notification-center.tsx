@@ -5,6 +5,8 @@ import Link from "next/link";
 import {
   getNotifications,
   getVapidPublicKey,
+  markAllNotificationsRead,
+  markNotificationRead,
   sendTestPush,
   subscribePush,
   type NotificationItem,
@@ -114,20 +116,53 @@ export function NotificationCenter() {
             {items.length === 0 ? (
               <p className="text-text-subtle px-2 py-3 text-sm">Новых уведомлений нет.</p>
             ) : (
-              <ul className="flex flex-col">
-                {items.map((n) => (
-                  <li key={n.id}>
-                    <Link
-                      href={n.url}
-                      onClick={() => setOpen(false)}
-                      className="hover:bg-hover flex items-start gap-2 rounded-md px-2 py-2 text-sm"
-                    >
-                      <span aria-hidden className={`mt-0.5 flex-none ${n.urgent ? "text-accent-text" : "text-text-subtle"}`}>•</span>
-                      <span className="text-text-muted">{n.text}</span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="flex max-h-[50vh] flex-col overflow-auto">
+                  {items.map((n) => (
+                    <li key={n.id} className="hover:bg-hover flex items-start gap-1 rounded-md">
+                      <Link
+                        href={n.url}
+                        onClick={() => {
+                          setOpen(false);
+                          void markNotificationRead(n.id).then(setItems).catch(() => {});
+                        }}
+                        className="flex min-w-0 flex-1 items-start gap-2 px-2 py-2 text-sm"
+                      >
+                        <span
+                          aria-hidden
+                          className={`mt-1 flex-none ${n.urgent ? "text-accent-text" : "text-text-subtle"}`}
+                        >
+                          •
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block font-medium">{n.title}</span>
+                          <span className="text-text-muted block text-xs">{n.text}</span>
+                        </span>
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void markNotificationRead(n.id).then(setItems).catch(() => {});
+                        }}
+                        aria-label="Пометить прочитанным"
+                        title="Прочитано"
+                        className="text-text-subtle hover:text-accent-text flex h-9 w-9 flex-none items-center justify-center text-sm"
+                      >
+                        ✓
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void markAllNotificationsRead().then(setItems).catch(() => {});
+                  }}
+                  className="border-border-soft text-text-muted hover:bg-hover mt-1 w-full rounded-md border-t px-2 py-2 text-xs"
+                >
+                  Прочитать все
+                </button>
+              </>
             )}
           </div>
         </>

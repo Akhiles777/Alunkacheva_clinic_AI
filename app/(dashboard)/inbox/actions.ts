@@ -2,6 +2,8 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
+import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 
@@ -133,9 +135,23 @@ export async function sendMessageDb(conversationId: string, messageId: string, t
     }),
     prisma.conversation.update({
       where: { id: conversationId },
-      data: { status: "HUMAN_TAKEOVER", lastMessageAt: new Date() },
+      // Сотрудник ответил вручную — агент замолкает на 12 часов (§6.4).
+      // Бот, перебивающий администратора, — худший баг в этой системе.
+      data: { status: "HUMAN_TAKEOVER", lastMessageAt: new Date(), botPausedUntil: humanTakeoverUntil() },
     }),
   ]);
+
+  // Диалог перешёл к человеку — остальным администраторам это важно знать,
+  // чтобы двое не отвечали одному пациенту одновременно.
+  await notifyStaff({
+    companyId: session.companyId,
+    recipientIds: await inboxRecipients(session.companyId, session.userId),
+    kind: "PATIENT_MESSAGE",
+    title: "Диалог взят в работу",
+    body: "Коллега ответил пациенту вручную",
+    url: "/inbox",
+    entityId: conversationId,
+  });
 }
 
 export async function startDialogDb(input: {

@@ -1,67 +1,66 @@
 "use server";
 
-import webpush from "web-push";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
-import { getCurrentUser } from "./user-actions";
-import { todayRangeMoscow } from "@/lib/schedule";
-import { CLINIC_MAIL_DOMAIN, CLINIC_NAME } from "@/lib/brand";
+import { notifyStaff } from "@/lib/server/notify";
 
 /**
- * Уведомления для всех ролей: в приложении (колокольчик) и push (PWA). Пункты
- * считаются из данных под роль текущего пользователя. Push — через VAPID.
+ * Колокольчик: реальные события из таблицы Notification, а не пересчитанные
+ * счётчики. Поэтому у каждого пункта есть «прочитано», и список действительно
+ * очищается.
  */
 export interface NotificationItem {
   id: string;
   text: string;
+  title: string;
   url: string;
   urgent: boolean;
+  createdAt: string;
 }
 
-let vapidReady = false;
-function ensureVapid(): boolean {
-  if (vapidReady) return true;
-  const pub = process.env.VAPID_PUBLIC;
-  const priv = process.env.VAPID_PRIVATE;
-  if (!pub || !priv) return false;
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || `mailto:admin@${CLINIC_MAIL_DOMAIN}`, pub, priv);
-  vapidReady = true;
-  return true;
-}
+const URGENT_KINDS = new Set(["ESCALATION", "PATIENT_MESSAGE"]);
 
 export async function getNotifications(): Promise<NotificationItem[]> {
   const session = await getSession();
-  const user = await getCurrentUser();
-  const { start, end } = todayRangeMoscow();
-  const items: NotificationItem[] = [];
+  if (!session.userId) return [];
 
-  const escalated = await prisma.conversation.count({
-    where: { companyId: session.companyId, status: "ESCALATED" },
+  const rows = await prisma.notification.findMany({
+    where: { companyId: session.companyId, staffUserId: session.userId, readAt: null },
+    orderBy: { createdAt: "desc" },
+    take: 30,
+    select: { id: true, kind: true, title: true, body: true, url: true, createdAt: true },
   });
-  if (escalated > 0) {
-    items.push({ id: "esc", text: `${escalated} диалог(а) требуют ответа`, url: "/inbox", urgent: true });
-  }
 
-  if (user.role === "doctor") {
-    const mine = await prisma.appointment.count({
-      where: {
-        companyId: session.companyId,
-        deletedAt: null,
-        staff: { name: user.name },
-        startAt: { gte: start, lt: end },
-      },
-    });
-    if (mine > 0) items.push({ id: "myday", text: `${mine} приём(ов) у вас сегодня`, url: "/doctor", urgent: false });
-  } else {
-    const [newPatients, todayAppts] = await Promise.all([
-      prisma.patient.count({ where: { companyId: session.companyId, deletedAt: null, firstSeenAt: { gte: start, lt: end } } }),
-      prisma.appointment.count({ where: { companyId: session.companyId, deletedAt: null, startAt: { gte: start, lt: end }, status: { not: "CANCELLED" } } }),
-    ]);
-    if (newPatients > 0) items.push({ id: "newp", text: `${newPatients} новых пациент(ов) сегодня`, url: "/patients", urgent: false });
-    if (todayAppts > 0) items.push({ id: "appts", text: `${todayAppts} записей на сегодня`, url: "/schedule", urgent: false });
-  }
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    text: r.body,
+    url: r.url,
+    urgent: URGENT_KINDS.has(r.kind),
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
 
-  return items;
+/** Пометить одно уведомление прочитанным. */
+export async function markNotificationRead(id: string): Promise<NotificationItem[]> {
+  const session = await getSession();
+  if (!session.userId) return [];
+  await prisma.notification.updateMany({
+    where: { id, staffUserId: session.userId, readAt: null },
+    data: { readAt: new Date() },
+  });
+  return getNotifications();
+}
+
+/** Прочитать все — кнопка «очистить» в виджете. */
+export async function markAllNotificationsRead(): Promise<NotificationItem[]> {
+  const session = await getSession();
+  if (!session.userId) return [];
+  await prisma.notification.updateMany({
+    where: { companyId: session.companyId, staffUserId: session.userId, readAt: null },
+    data: { readAt: new Date() },
+  });
+  return getNotifications();
 }
 
 export async function getVapidPublicKey(): Promise<string> {
@@ -85,25 +84,17 @@ export async function subscribePush(sub: { endpoint: string; keys: { p256dh: str
   return { ok: true };
 }
 
-/** Отправить push текущему пользователю (проверка, что уведомления работают). */
+/** Проверка, что push доходит: уведомление себе. */
 export async function sendTestPush(): Promise<{ sent: number }> {
   const session = await getSession();
-  if (!session.userId || !ensureVapid()) return { sent: 0 };
-  const subs = await prisma.pushSubscription.findMany({
-    where: { companyId: session.companyId, staffUserId: session.userId },
+  if (!session.userId) return { sent: 0 };
+  const res = await notifyStaff({
+    companyId: session.companyId,
+    recipientIds: [session.userId],
+    kind: "SYSTEM",
+    title: "Уведомления включены",
+    body: "Push работает — так будут приходить сообщения и эскалации.",
+    url: "/",
   });
-  const payload = JSON.stringify({ title: CLINIC_NAME, body: "Уведомления включены ✓", url: "/" });
-  let sent = 0;
-  for (const s of subs) {
-    try {
-      await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
-      sent += 1;
-    } catch (e) {
-      const status = (e as { statusCode?: number }).statusCode;
-      if (status === 404 || status === 410) {
-        await prisma.pushSubscription.delete({ where: { id: s.id } }).catch(() => {});
-      }
-    }
-  }
-  return { sent };
+  return { sent: res.pushed };
 }

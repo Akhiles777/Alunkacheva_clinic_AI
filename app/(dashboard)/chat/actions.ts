@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/db";
 import { getSession, type Session } from "@/lib/server/session";
 import { Prisma } from "@/generated/prisma/client";
+import { notifyStaff } from "@/lib/server/notify";
 
 export type InternalRoomKind = "GENERAL" | "DIRECT";
 export type InternalMessageKind = "TEXT" | "VOICE" | "SYSTEM";
@@ -447,6 +448,31 @@ export async function sendInternalMessage(input: {
   await prisma.$executeRaw(Prisma.sql`
     UPDATE internal_chat_rooms SET "updatedAt" = now() WHERE id = ${input.roomId} AND "companyId" = ${session.companyId}
   `);
+
+  // Уведомляем остальных участников комнаты. Текст сообщения в push не кладём —
+  // только автора и повод: уведомление всплывает на заблокированном экране.
+  const others = await prisma.$queryRaw<{ staffUserId: string }[]>(Prisma.sql`
+    SELECT p."staffUserId"
+    FROM internal_chat_participants p
+    JOIN staff_users u ON u.id = p."staffUserId"
+    WHERE p."roomId" = ${input.roomId}
+      AND p."companyId" = ${session.companyId}
+      AND p."staffUserId" <> ${userId}
+      AND p."deletedAt" IS NULL
+      AND u."isActive" = true
+      AND u."deletedAt" IS NULL
+  `);
+  const me = await prisma.staffUser.findUnique({ where: { id: userId }, select: { name: true } });
+  await notifyStaff({
+    companyId: session.companyId,
+    recipientIds: others.map((o) => o.staffUserId),
+    kind: "CHAT_MESSAGE",
+    title: `Сообщение от ${me?.name ?? "коллеги"}`,
+    body: kind === "VOICE" ? "Голосовое сообщение" : "Новое сообщение в чате сотрудников",
+    url: "/chat",
+    entityId: input.roomId,
+  });
+
   await markInternalChatRead(input.roomId);
   return getInternalChatState(input.roomId);
 }

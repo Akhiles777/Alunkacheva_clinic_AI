@@ -22,6 +22,20 @@ datasource db {
 
 // ─────────────────────────────────────────────────────────── enums
 
+/// Повод уведомления. Нужен, чтобы виджет мог группировать и подсвечивать
+/// срочное, а не разбирать текст.
+enum NotificationKind {
+  /// Сообщение во внутреннем чате сотрудников.
+  CHAT_MESSAGE
+  /// Сообщение от пациента во внешнем канале.
+  PATIENT_MESSAGE
+  /// Диалог передан человеку.
+  ESCALATION
+  /// Новая запись на приём.
+  BOOKING
+  SYSTEM
+}
+
 enum Channel {
   INSTAGRAM
   WHATSAPP
@@ -147,6 +161,7 @@ enum WebhookProvider {
   YCLIENTS
   INSTAGRAM
   WHATSAPP
+  TELEGRAM
 }
 
 enum WebhookStatus {
@@ -246,6 +261,7 @@ model Company {
   patientConsents     PatientConsent[]
   rolePermissions     RolePermission[]
   userPermissions     UserPermission[]
+  notifications       Notification[]
 
   @@map("companies")
 }
@@ -760,6 +776,7 @@ model StaffUser {
   staff                   Staff?             @relation(fields: [staffId], references: [id], onDelete: SetNull)
   subscriptions           PushSubscription[]
   permissions             UserPermission[]
+  notifications           Notification[]
   conversations           Conversation[]
   approvedMessages        Message[]          @relation("MessageApprovedBy")
   acknowledgedEscalations Escalation[]       @relation("EscalationAcknowledgedBy")
@@ -857,6 +874,34 @@ model InternalChatMessage {
   @@index([roomId, createdAt])
   @@index([companyId, authorId, createdAt])
   @@map("internal_chat_messages")
+}
+
+/// Уведомление сотруднику. Это событие, а не вычисляемый счётчик: только так
+/// его можно пометить прочитанным и убрать из колокольчика. Раньше пункты
+/// пересчитывались из данных на каждый запрос, и «прочитать» было нечего.
+model Notification {
+  id          String           @id @default(cuid())
+  companyId   String
+  /// Получатель. Уведомление всегда адресное: рассылка «всем» разошлась бы
+  /// и врачу, которому чужой диалог видеть не положено.
+  staffUserId String
+  kind        NotificationKind
+  title       String
+  body        String
+  /// Куда ведёт нажатие.
+  url         String
+  /// Источник события (сообщение, диалог, визит) — чтобы не плодить дубли.
+  entityId    String?
+
+  readAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  staffUser StaffUser @relation(fields: [staffUserId], references: [id], onDelete: Cascade)
+
+  @@index([staffUserId, readAt, createdAt])
+  @@index([companyId, createdAt])
+  @@map("notifications")
 }
 
 model PushSubscription {
