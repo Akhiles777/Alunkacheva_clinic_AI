@@ -4,22 +4,12 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   getNotifications,
-  getVapidPublicKey,
   markAllNotificationsRead,
   markNotificationRead,
   sendTestPush,
-  subscribePush,
   type NotificationItem,
 } from "./notifications-actions";
-
-function urlBase64ToUint8Array(base64: string): Uint8Array {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = atob(b64);
-  const arr = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-  return arr;
-}
+import { enablePush as connectDevice, pushPermission } from "./push-subscribe";
 
 /**
  * Центр уведомлений: колокольчик с числом, выпадающий список (под роль) и
@@ -49,7 +39,7 @@ export function NotificationCenter({ align = "right" }: { align?: "left" | "righ
     const t = setInterval(load, 60_000);
     // Отложенно (не синхронно в теле эффекта).
     void Promise.resolve().then(() => {
-      if (alive && typeof Notification !== "undefined") setPushOn(Notification.permission === "granted");
+      if (alive) setPushOn(pushPermission() === "granted");
     });
     return () => {
       alive = false;
@@ -61,17 +51,8 @@ export function NotificationCenter({ align = "right" }: { align?: "left" | "righ
     if (busy) return;
     setBusy(true);
     try {
-      if (!("serviceWorker" in navigator) || typeof Notification === "undefined") return;
-      const perm = await Notification.requestPermission();
-      if (perm !== "granted") return;
-      const reg = await navigator.serviceWorker.ready;
-      const key = await getVapidPublicKey();
-      if (!key) return;
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
-      });
-      await subscribePush(JSON.parse(JSON.stringify(sub)), navigator.userAgent);
+      const res = await connectDevice();
+      if (!res.ok) return;
       await sendTestPush();
       setPushOn(true);
     } catch {

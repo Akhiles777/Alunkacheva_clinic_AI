@@ -3,7 +3,8 @@
 import { useEffect, useState, useTransition } from "react";
 import { Group } from "../_components/ui";
 import { getDevices, removeDevice, type DeviceRow } from "./devices-actions";
-import { getVapidPublicKey, sendTestPush, subscribePush } from "@/app/(dashboard)/_components/notifications-actions";
+import { sendTestPush } from "@/app/(dashboard)/_components/notifications-actions";
+import { enablePush, pushSupported } from "@/app/(dashboard)/_components/push-subscribe";
 
 /**
  * Устройства для push. Раздел показывает реальные подписки текущего сотрудника
@@ -13,15 +14,10 @@ import { getVapidPublicKey, sendTestPush, subscribePush } from "@/app/(dashboard
  * конкретном устройстве: подключить телефон, сидя за компьютером, нельзя —
  * это ограничение самих браузеров, а не платформы. Поэтому здесь честно
  * написано, что делать.
+ *
+ * Само подключение живёт в общем модуле push-subscribe: тот же код работает
+ * при входе. Раньше эта логика была написана трижды и успела разойтись.
  */
-function urlBase64ToUint8Array(base64: string): Uint8Array {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = atob(b64);
-  const arr = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-  return arr;
-}
 
 export function Devices() {
   const [rows, setRows] = useState<DeviceRow[]>([]);
@@ -40,9 +36,7 @@ export function Devices() {
   }, []);
 
   useEffect(() => {
-    const id = requestAnimationFrame(() =>
-      setSupported(typeof Notification !== "undefined" && "serviceWorker" in navigator),
-    );
+    const id = requestAnimationFrame(() => setSupported(pushSupported()));
     return () => cancelAnimationFrame(id);
   }, []);
 
@@ -50,31 +44,15 @@ export function Devices() {
     setStatus(null);
     start(async () => {
       try {
-        if (!("serviceWorker" in navigator) || typeof Notification === "undefined") {
-          setStatus("Этот браузер не умеет push-уведомления.");
+        const res = await enablePush();
+        if (!res.ok) {
+          setStatus(res.reason);
           return;
         }
-        const permission = await Notification.requestPermission();
-        if (permission !== "granted") {
-          setStatus("Браузер не дал разрешение. Разрешите уведомления в настройках сайта и повторите.");
-          return;
-        }
-        await navigator.serviceWorker.register("/sw.js").catch(() => {});
-        const reg = await navigator.serviceWorker.ready;
-        const key = await getVapidPublicKey();
-        if (!key) {
-          setStatus("На сервере не заданы ключи VAPID — push отправлять нечем. Проверьте /api/health.");
-          return;
-        }
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
-        });
-        await subscribePush(JSON.parse(JSON.stringify(sub)), navigator.userAgent);
-        const res = await sendTestPush();
-        setRows(await getDevices(sub.endpoint));
+        const test = await sendTestPush();
+        setRows(await getDevices(res.endpoint));
         setStatus(
-          res.sent > 0
+          test.sent > 0
             ? "Устройство подключено — проверочное уведомление отправлено."
             : "Устройство подключено, но проверочное уведомление не ушло. Проверьте /api/health.",
         );

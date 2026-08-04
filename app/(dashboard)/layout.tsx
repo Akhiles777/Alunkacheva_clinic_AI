@@ -6,6 +6,7 @@ import { CommandPalette } from "./_components/command-palette";
 import { BookingPanel } from "./_components/booking-panel";
 import { CallForm } from "./_components/call-form";
 import { StoreHydrator } from "./_components/store-hydrator";
+import { PushGate } from "./_components/push-gate";
 import { AssistantChat } from "./_components/assistant-chat";
 import { getCurrentUser } from "./_components/user-actions";
 import { getSessionOrNull } from "@/lib/server/session";
@@ -35,6 +36,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <CallForm />
       <AssistantChat />
       <StoreHydrator />
+      <PushGate />
     </div>
   );
 }
