@@ -63,7 +63,7 @@ export function Sidebar({
 
       <div className="mb-2 flex items-center gap-2">
         <CallButton className="min-w-0 flex-1" />
-        <NotificationCenter />
+        <NotificationCenter align="left" />
       </div>
 
       <Link

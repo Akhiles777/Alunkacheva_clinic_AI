@@ -2,22 +2,30 @@ import { prisma } from "@/lib/db";
 import { normalizePhone } from "@/lib/phone";
 import { notifyStaff, inboxRecipients } from "@/lib/server/notify";
 import { CLINIC_NAME } from "@/lib/brand";
-import { createBooking, getFreeSlots, getServices, slotLabel } from "./booking";
+import { getServices } from "./booking";
+import { KNOWLEDGE_MIN_SCORE, matchKnowledge } from "./knowledge";
 import { answerLLM } from "./llm";
 
 /**
- * Агент пациентского канала: отвечает на типовые вопросы и записывает на приём.
+ * Агент пациентского канала.
  *
- * Жёсткие правила (§6), нарушать нельзя:
- *   1. Никакой медицины. Симптомы, диагнозы, назначения, противопоказания —
- *      немедленная эскалация, без попытки ответить.
+ * Разделение зон — решение заказчика (август 2026), см. §6 CLAUDE.md:
+ *
+ *   Отвечает сам: адрес, график, условия приёма, информация об услугах и ценах,
+ *   согласие на обработку ПДн, условия отмены, подготовка и противопоказания.
+ *   Передаёт человеку: свободные окна, запись, переносы и отмены, жалобы,
+ *   уточнения по конкретному пациенту.
+ *
+ * То есть расписанием агент НЕ распоряжается: заказчик хочет, чтобы окна и
+ * записи вёл администратор. Записи бот не создаёт.
+ *
+ * Жёсткие правила, нарушать нельзя:
+ *   1. Медицинские темы — только дословным текстом из справочника клиники,
+ *      который она завела и утвердила сама. Нет подходящей записи — вопрос
+ *      уходит человеку. Своей медицинской эрудицией агент не пользуется.
  *   2. Ничего не выдумывать: цены, услуги, часы — только из базы.
- *   3. Слот перепроверяется перед записью (это делает createBooking).
- *   4. После перехвата человеком агент молчит, пока пауза не истечёт. Бот,
+ *   3. После перехвата человеком агент молчит, пока пауза не истечёт. Бот,
  *      перебивающий администратора, — худший баг в системе.
- *
- * Запись сделана кнопками, а не разбором свободного текста: пациент выбирает
- * услугу и время из реальных вариантов, поэтому «записался не туда» не бывает.
  */
 
 /**
@@ -30,11 +38,34 @@ export function humanTakeoverUntil(from: Date = new Date()): Date {
   return new Date(from.getTime() + HUMAN_TAKEOVER_HOURS * 3600 * 1000);
 }
 
+/**
+ * Расписание — зона администратора. Сюда же отмены и переносы: заказчик хочет
+ * держать эти решения за человеком.
+ */
+const SCHEDULE_PATTERNS = [
+  /запиш|записать|записаться|запись\b/i, /свободн/i, /окошк|окно\b|окна\b/i,
+  /перенест|перенос/i, /отменит|отмена записи|отменить запись/i,
+  /когда можно прийти|на какое время/i,
+];
+
+/**
+ * Личное: жалобы и вопросы про конкретного пациента. Всегда человеку — здесь
+ * и врачебная тайна, и репутационный риск.
+ */
+const PERSONAL_PATTERNS = [
+  /жалоб/i, /претенз/i, /вернуть деньги|возврат/i, /юрист/i, /врач ошибс/i,
+  /мой визит|моя запись|мои записи/i, /мой анализ|мои анализ/i,
+];
+
+/**
+ * Медицинские темы. Отвечаем на них ТОЛЬКО дословной справкой клиники; если
+ * подходящей записи нет — человеку.
+ */
 const MEDICAL_PATTERNS = [
   /симптом/i, /диагноз/i, /болит|боль\b|болел/i, /лечени[ея]/i, /назнач/i,
   /дозировк|доза\b/i, /противопоказан/i, /анализ[ыа]?\s+показал/i, /побочн/i,
   /таблетк|препарат|лекарств/i, /беременн/i, /температур/i, /давлени[ея]/i,
-  /можно ли мне\b/i, /опасно ли/i, /вредно ли/i,
+  /подготов|готовит/i, /можно ли мне\b/i, /опасно ли/i, /вредно ли/i,
 ];
 
 const HUMAN_PATTERNS = [
@@ -58,6 +89,12 @@ export interface AgentContext {
 
 function medical(text: string): boolean {
   return MEDICAL_PATTERNS.some((re) => re.test(text));
+}
+function scheduleTopic(text: string): boolean {
+  return SCHEDULE_PATTERNS.some((re) => re.test(text));
+}
+function personalTopic(text: string): boolean {
+  return PERSONAL_PATTERNS.some((re) => re.test(text));
 }
 function wantsHuman(text: string): boolean {
   return HUMAN_PATTERNS.some((re) => re.test(text));
@@ -275,39 +312,88 @@ export async function handlePatientMessage(
     externalId: input.externalId,
   });
 
-  // Правило 1: медицина — сразу человеку, без попытки ответить.
-  if (medical(text)) {
-    await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос от пациента").catch(() => {});
-    return {
-      text:
-        "Этот вопрос я не решаю — он медицинский. Передал(а) администратору клиники, " +
-        "с вами свяжутся. Могу пока записать на приём или рассказать про услуги и цены.",
-      buttons: mainMenu(),
-    };
+  // Расписание — зона администратора (решение заказчика).
+  if (scheduleTopic(text)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
+    const reply =
+      "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
+      "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.";
+    await saveMessage({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      channel: "TELEGRAM",
+      direction: "OUT",
+      authorType: "BOT",
+      body: reply,
+    });
+    return { text: reply, buttons: mainMenu() };
   }
 
-  if (wantsHuman(text)) {
-    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент просит человека").catch(() => {});
+  if (personalTopic(text) || wantsHuman(text)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба").catch(() => {});
     return { text: "Передал(а) администратору — он ответит здесь же." };
   }
 
   if (/^\/start\b/.test(text)) {
     return {
-      text: `Здравствуйте! Это клиника «${CLINIC_NAME}». Помогу записаться на приём и отвечу на вопросы об услугах, ценах и времени работы.`,
+      text: `Здравствуйте! Это клиника «${CLINIC_NAME}». Расскажу про услуги, цены, адрес, часы работы, подготовку к процедурам и условия отмены. Запись и переносы ведёт администратор — передам ему.`,
       buttons: mainMenu(),
     };
   }
 
-  if (/запис|записать|прием|приём|свободн|окно|время/i.test(text)) {
-    return serviceMenu(ctx.companyId);
+  const knowledgeRows = await prisma.knowledgeEntry.findMany({
+    where: { companyId: ctx.companyId, isActive: true },
+    select: { topic: true, question: true, answer: true },
+  });
+
+  // Правило 1: на медицинскую тему отвечаем ТОЛЬКО дословной справкой клиники.
+  if (medical(text)) {
+    const match = matchKnowledge(text, knowledgeRows);
+    if (!match || match.score < KNOWLEDGE_MIN_SCORE) {
+      await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос без готового ответа").catch(() => {});
+      return {
+        text:
+          "Этот вопрос лучше уточнить у специалиста — передал(а) администратору клиники. " +
+          "Могу пока рассказать про услуги, цены, адрес и часы работы.",
+        buttons: mainMenu(),
+      };
+    }
+    const reply = `${match.row.answer}\n\nЕсли есть особенности здоровья — уточните у специалиста, я позову администратора.`;
+    await saveMessage({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      channel: "TELEGRAM",
+      direction: "OUT",
+      authorType: "BOT",
+      body: reply,
+    });
+    return { text: reply, buttons: mainMenu() };
   }
 
-  // Правило 2: отвечаем строго по справке из базы.
+  // Прочие организационные вопросы: сначала точная справка, иначе модель,
+  // ограниченная справочником и данными из базы.
+  const exact = matchKnowledge(text, knowledgeRows);
+  if (exact && exact.score >= KNOWLEDGE_MIN_SCORE) {
+    await saveMessage({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      channel: "TELEGRAM",
+      direction: "OUT",
+      authorType: "BOT",
+      body: exact.row.answer,
+    });
+    return { text: exact.row.answer, buttons: mainMenu() };
+  }
+
   const context = await clinicContext(ctx.companyId);
   const answer = await answerLLM(text, context);
-  const reply =
-    answer ??
-    "Не нашёл(ла) ответ в справке клиники. Могу записать на приём или позвать администратора.";
+  if (!answer) {
+    await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Нет ответа в справке клиники").catch(() => {});
+    return {
+      text: "Не нашёл(ла) ответ в справке клиники — передал(а) администратору.",
+      buttons: mainMenu(),
+    };
+  }
 
   await saveMessage({
     companyId: ctx.companyId,
@@ -315,9 +401,9 @@ export async function handlePatientMessage(
     channel: "TELEGRAM",
     direction: "OUT",
     authorType: "BOT",
-    body: reply,
+    body: answer,
   });
-  return { text: reply, buttons: mainMenu() };
+  return { text: answer, buttons: mainMenu() };
 }
 
 function mainMenu() {

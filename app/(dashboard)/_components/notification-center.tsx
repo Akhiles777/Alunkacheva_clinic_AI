@@ -28,7 +28,12 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
  * Живёт в шапке (на телефоне) и в боковой панели (на десктопе), а не плавающей
  * кнопкой у нижнего края: там он накрывал кнопку отправки в чате и в инбоксе.
  */
-export function NotificationCenter() {
+/**
+ * align задаёт, в какую сторону раскрывается панель. В боковом меню кнопка
+ * стоит у левого края экрана, и панель шириной 300px, привязанная правым краем,
+ * уезжала за границу окна — половину списка было не видно.
+ */
+export function NotificationCenter({ align = "right" }: { align?: "left" | "right" } = {}) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [open, setOpen] = useState(false);
   const [pushOn, setPushOn] = useState(false);
@@ -97,7 +102,7 @@ export function NotificationCenter() {
       {open ? (
         <>
           <div className="fixed inset-0 -z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div className="border-border bg-surface absolute top-full right-0 z-50 mt-2 w-[300px] rounded-xl border p-2 shadow-lg max-md:w-[80vw]">
+          <div className={`border-border bg-surface absolute top-full z-50 mt-2 w-[300px] rounded-xl border p-2 shadow-lg max-md:w-[80vw] ${align === "left" ? "left-0" : "right-0"}`}>
             <div className="flex items-center justify-between px-2 py-1.5">
               <span className="text-sm font-medium">Уведомления</span>
               {!pushOn ? (
