@@ -5,6 +5,7 @@ import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
+import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 
 /**
  * Агент пациентского канала.
@@ -170,17 +171,27 @@ async function saveMessage(input: {
  * три сообщения подряд, не должен создавать три эскалации и три push
  * администратору.
  */
-async function escalate(companyId: string, conversationId: string, reason: "MEDICAL_QUESTION" | "PATIENT_REQUEST" | "KEYWORD" | "MISUNDERSTOOD" | "AGENT_REQUEST", note: string) {
-  const current = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    select: { status: true },
-  });
-  const alreadyEscalated = current?.status === "ESCALATED";
+async function escalate(companyId: string, conversationId: string, reason: EscalationReason, note: string) {
   await prisma.conversation.update({
     where: { id: conversationId },
     data: { status: "ESCALATED" },
   });
-  if (alreadyEscalated) return;
+
+  /**
+   * Повторы гасим по времени последнего вызова, а не по статусу диалога.
+   * Статус ESCALATED держится, пока сотрудник не вернёт диалог боту, и
+   * прежняя проверка «уже эскалирован — выходим» означала, что после первого
+   * же перевода просьбы позвать администратора не доходили никогда.
+   */
+  const last = await prisma.escalation.findFirst({
+    where: { conversationId },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  if (!shouldNotifyEscalation({ reason, lastEscalatedAt: last?.createdAt ?? null, now: new Date() })) {
+    return;
+  }
+
   await prisma.escalation.create({
     data: {
       companyId,
