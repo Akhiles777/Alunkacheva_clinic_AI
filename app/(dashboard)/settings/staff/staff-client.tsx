@@ -157,7 +157,7 @@ export function StaffClient({
                     value={acc.role}
                     onChange={(e) => patchAcc(acc.id, { role: e.target.value as AccountRow["role"] })}
                     aria-label={`Роль ${acc.name}`}
-                    className="border-border-input bg-surface rounded-md border px-2.5 py-2 text-sm outline-none"
+                    className="border-border-input bg-surface w-full min-w-0 rounded-md border px-2.5 py-2 text-sm outline-none"
                   >
                     {ROLES.map((r) => (
                       <option key={r} value={r}>
@@ -189,7 +189,7 @@ export function StaffClient({
                       onChange={(e) => patchAcc(acc.id, { staffId: e.target.value || null })}
                       aria-label={`Специалист для ${acc.name}`}
                       title="Привязать к существующему специалисту, чтобы не создать дубль в расписании"
-                      className="border-border-input bg-surface rounded-md border px-2.5 py-2 text-sm outline-none"
+                      className="border-border-input bg-surface w-full min-w-0 rounded-md border px-2.5 py-2 text-sm outline-none"
                     >
                       <option value="">создать нового специалиста</option>
                       {specialistOptions
@@ -211,7 +211,7 @@ export function StaffClient({
                       value={acc.defaultRoomId ?? ""}
                       onChange={(e) => patchAcc(acc.id, { defaultRoomId: e.target.value || null })}
                       aria-label={`Кабинет ${acc.name}`}
-                      className="border-border-input bg-surface rounded-md border px-2.5 py-2 text-sm outline-none"
+                      className="border-border-input bg-surface w-full min-w-0 rounded-md border px-2.5 py-2 text-sm outline-none"
                     >
                       <option value="">кабинет не задан</option>
                       {roomOptions.map((r) => (
@@ -247,8 +247,30 @@ export function StaffClient({
       </Group>
 
       <Group title="Матрица прав" hint="в базе; проверка доступа на сервере читает эти строки">
-        <div className="-mx-1 overflow-x-auto px-1">
-          <table className="w-full min-w-[520px] border-collapse">
+        {/* Телефон: право — карточка с переключателями по ролям. Таблица здесь
+            требовала горизонтальной прокрутки, и экран «ездил» под пальцем. */}
+        <div className="flex flex-col gap-3 md:hidden">
+          {PERMISSIONS.map((perm) => (
+            <div key={perm} className="border-border-soft rounded-lg border p-3">
+              <div className="text-sm font-medium">{PERMISSION_LABEL[perm]}</div>
+              <div className="mt-2.5 flex flex-col gap-2">
+                {ROLES.map((role) => (
+                  <label key={role} className="flex items-center justify-between gap-3">
+                    <span className="text-text-muted text-sm">{ROLE_LABEL[role]}</span>
+                    <Toggle
+                      checked={matrix[role].includes(perm)}
+                      onChange={() => togglePerm(role, perm)}
+                      label={`${ROLE_LABEL[role]}: ${PERMISSION_LABEL[perm]}`}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="-mx-1 px-1 max-md:hidden">
+          <table className="w-full border-collapse">
             <thead>
               <tr>
                 <th className="text-text-subtle py-2 pr-3 text-left text-2xs font-normal">Право</th>

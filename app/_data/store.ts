@@ -155,6 +155,8 @@ export interface Dialog {
   windowOpen: boolean;
   /** Сколько минут до закрытия окна, если открыто. null — окно без таймера. */
   windowMinutesLeft: number | null;
+  /** Сообщений в переписке всего. Больше загруженных — значит история длиннее. */
+  totalMessages?: number;
 }
 
 export interface DB {
@@ -322,6 +324,7 @@ export function hydrateDialogs(records: DialogRecord[]) {
       agentDraft: existing?.agentDraft,
       windowOpen: r.windowOpen,
       windowMinutesLeft: r.windowMinutesLeft,
+      totalMessages: r.totalMessages,
       messages,
     };
   });

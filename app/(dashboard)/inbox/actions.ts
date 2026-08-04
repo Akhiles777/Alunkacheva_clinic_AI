@@ -60,6 +60,8 @@ export interface DialogRecord {
   windowOpen: boolean;
   /** Сколько минут осталось до закрытия окна; null — окно без таймера. */
   windowMinutesLeft: number | null;
+  /** Сколько сообщений в переписке всего: если больше загруженных — покажем. */
+  totalMessages: number;
   status: DialogStatus;
   preview: string;
   at: string;
@@ -110,6 +112,9 @@ const ESCALATION_LABEL: Record<string, string> = {
   OTHER: "другое",
 };
 
+/** Сколько последних сообщений диалога загружаем в инбокс. */
+const MESSAGE_WINDOW = 100;
+
 export async function getConversations(): Promise<DialogRecord[]> {
   const session = await getSession();
   const convs = await prisma.conversation.findMany({
@@ -117,7 +122,15 @@ export async function getConversations(): Promise<DialogRecord[]> {
     orderBy: { lastMessageAt: "desc" },
     include: {
       patient: { select: { name: true } },
-      messages: { where: { deletedAt: null, isDraft: false }, orderBy: { createdAt: "asc" } },
+      // Последние сообщения, а не вся история: список обновляется каждые
+      // несколько секунд, и тянуть переписку за год на каждый запрос нельзя.
+      // Ничего не удаляется — просто не грузится лишнее.
+      messages: {
+        where: { deletedAt: null, isDraft: false },
+        orderBy: { createdAt: "desc" },
+        take: MESSAGE_WINDOW,
+      },
+      _count: { select: { messages: { where: { deletedAt: null, isDraft: false } } } },
       escalations: {
         where: { status: { not: "RESOLVED" } },
         orderBy: { createdAt: "desc" },
@@ -127,13 +140,15 @@ export async function getConversations(): Promise<DialogRecord[]> {
     },
   });
   return convs.map((c) => {
-    const messages: DialogMessageRecord[] = c.messages.map((m) => ({
+    // Из базы пришли в обратном порядке (последние сверху) — разворачиваем.
+    const ordered = [...c.messages].reverse();
+    const messages: DialogMessageRecord[] = ordered.map((m) => ({
       id: m.id,
       from: m.authorType === "PATIENT" ? "patient" : m.authorType === "BOT" ? "bot" : "staff",
       text: m.body,
       at: atLabel(m.createdAt),
     }));
-    const last = c.messages[c.messages.length - 1];
+    const last = ordered[ordered.length - 1];
     // Ждёт ответа, если последним написал пациент и диалог не закрыт.
     const unread = last?.direction === "IN" && c.status !== "CLOSED";
     // Окно 24 часов — ограничение Instagram. В Telegram и WhatsApp его нет.
@@ -154,6 +169,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
           : null,
       preview: last?.body ?? "",
       at: atLabel(c.lastMessageAt),
+      totalMessages: c._count.messages,
       messages,
     };
   });

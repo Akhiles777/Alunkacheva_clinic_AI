@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   CHANNEL_LABEL,
@@ -112,7 +112,21 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
 function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => void; refresh: () => void }) {
   const [text, setText] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
   const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
+
+  /**
+   * Открыли переписку — сразу к последнему сообщению. Читают всегда конец, а
+   * не начало: без этого администратор пролистывал всю историю вручную.
+   * Мгновенно при смене диалога и плавно при новом сообщении.
+   */
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [dialog.id]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [dialog.messages.length]);
 
   useEffect(() => {
     let alive = true;
@@ -179,6 +193,14 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
       <div className="flex-1 overflow-auto px-5 py-4">
         <div className="flex flex-col gap-3">
+          {dialog.totalMessages && dialog.totalMessages > dialog.messages.length ? (
+            // История никуда не делась — просто не грузим её целиком каждые
+            // несколько секунд. Говорим об этом прямо, чтобы не выглядело
+            // как потеря переписки.
+            <p className="text-text-subtle text-center text-2xs">
+              Показаны последние {dialog.messages.length} из {dialog.totalMessages} сообщений
+            </p>
+          ) : null}
           {dialog.messages.map((m) => {
             const mine = m.from !== "patient";
             return (
@@ -199,6 +221,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
               </div>
             );
           })}
+          <div ref={endRef} />
         </div>
       </div>
 
