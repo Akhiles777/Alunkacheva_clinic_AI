@@ -16,6 +16,12 @@ import { answerCallback, isTelegramConfigured, removeKeyboard, requestPhone, sen
  */
 
 export const runtime = "nodejs";
+/**
+ * Лимит времени на serverless-функцию. Telegram ждёт ответ несколько секунд и
+ * при отсутствии ответа шлёт update заново, поэтому вся обработка должна
+ * укладываться в окно. На тарифе Hobby у Vercel потолок 10 с — держимся ниже.
+ */
+export const maxDuration = 15;
 
 const Update = z.object({
   update_id: z.number(),
@@ -49,8 +55,14 @@ function msgType(u: z.infer<typeof Update>): string {
 export async function POST(req: Request) {
   if (!isTelegramConfigured()) return ok();
 
+  // Секрет обязателен: без него адрес вебхука — единственная защита, а он
+  // легко утекает в логах и настройках. Пустой секрет = открытый эндпоинт.
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (secret && req.headers.get("x-telegram-bot-api-secret-token") !== secret) {
+  if (!secret) {
+    console.error("TELEGRAM_WEBHOOK_SECRET не задан — вебхук отключён");
+    return NextResponse.json({ ok: false }, { status: 503 });
+  }
+  if (req.headers.get("x-telegram-bot-api-secret-token") !== secret) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
 
@@ -117,5 +129,9 @@ export async function POST(req: Request) {
 
 /** Проверка живости вебхука. */
 export async function GET() {
-  return NextResponse.json({ ok: true, configured: isTelegramConfigured() });
+  return NextResponse.json({
+    ok: true,
+    configured: isTelegramConfigured(),
+    secretSet: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
+  });
 }

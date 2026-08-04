@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { VisitNote } from "../_components/visit-note";
 import {
   getDb,
   markArrived,
@@ -93,6 +94,7 @@ function ApptCard({ appt }: { appt: Appt }) {
       <div className="text-text-subtle truncate text-xs">
         {appt.service} · {appt.doctor}
       </div>
+      <VisitNote appt={appt} />
       {appt.bookedByName ? (
         // Кто записал, если на приём придёт другой человек: администратору
         // нужно знать, кому звонить при переносе.

@@ -40,8 +40,9 @@ export async function answerLLM(question: string, clinicContext: string): Promis
           { role: "user", content: `Справка клиники:\n${clinicContext}\n\nВопрос пациента: ${question}` },
         ],
       }),
-      // Telegram ждёт ответ на вебхук; долгий вызов приведёт к повторной доставке.
-      signal: AbortSignal.timeout(20_000),
+      // Вебхук должен уложиться в лимит serverless-функции (на Hobby 10 с),
+      // иначе Telegram не дождётся ответа и пришлёт сообщение повторно.
+      signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return null;
     const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };

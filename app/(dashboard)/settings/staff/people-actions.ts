@@ -20,7 +20,13 @@ import type { StaffRole } from "@/generated/prisma/enums";
  * владельца.
  */
 export interface AccountRow {
-  id: string; // существующие — cuid; новые — "new-*"
+  /**
+   * cuid учётной записи; "new-*" — новая строка; "staff-<id>" — специалист,
+   * у которого учётной записи ещё нет. Последние показываем в том же списке:
+   * иначе в отчётах шесть человек, а в настройках пусто — именно на это
+   * жаловался заказчик.
+   */
+  id: string;
   name: string;
   email: string;
   role: StaffRole;
@@ -35,6 +41,10 @@ export interface AccountRow {
   password?: string;
   /** Есть ли у учётки заданный пароль (для UI). */
   hasPassword?: boolean;
+  /** Есть ли вход в систему. false — специалист заведён, но логина у него нет. */
+  hasLogin: boolean;
+  /** Сколько визитов на этом специалисте — видно, что человек реально работает. */
+  visits?: number;
 }
 
 export interface StaffPeople {
@@ -76,6 +86,9 @@ export async function getStaffPeople(): Promise<StaffPeople> {
         id: true,
         name: true,
         specialty: true,
+        defaultRoomId: true,
+        isActive: true,
+        _count: { select: { appointments: true } },
         // deletedAt нужен: удалённая учётка не должна считаться владельцем
         // специалиста, иначе живого врача нельзя привязать к новому логину.
         user: { select: { id: true, name: true, deletedAt: true } },
@@ -83,21 +96,43 @@ export async function getStaffPeople(): Promise<StaffPeople> {
     }),
   ]);
 
+  const accountRows: AccountRow[] = accounts.map((a) => {
+    const staff = a.staff && a.staff.deletedAt === null ? a.staff : null;
+    return {
+      id: a.id,
+      name: a.name,
+      email: a.email,
+      role: a.role,
+      isActive: a.isActive,
+      staffId: staff?.id ?? null,
+      specialty: staff?.specialty ?? "",
+      defaultRoomId: staff?.defaultRoomId ?? null,
+      hasPassword: a.passwordHash !== INVITE_PENDING && a.passwordHash.length > 0,
+      hasLogin: true,
+    };
+  });
+
+  // Специалисты без входа в систему: они есть в расписании и в отчётах, значит
+  // должны быть видны и здесь — с честной пометкой «нет доступа».
+  const linked = new Set(accountRows.map((a) => a.staffId).filter(Boolean));
+  const specialistRows: AccountRow[] = specialists
+    .filter((s) => !linked.has(s.id) && !(s.user && s.user.deletedAt === null))
+    .map((s) => ({
+      id: `staff-${s.id}`,
+      name: s.name,
+      email: "",
+      role: "DOCTOR" as StaffRole,
+      isActive: s.isActive,
+      staffId: s.id,
+      specialty: s.specialty ?? "",
+      defaultRoomId: s.defaultRoomId,
+      hasPassword: false,
+      hasLogin: false,
+      visits: s._count.appointments,
+    }));
+
   return {
-    accounts: accounts.map((a) => {
-      const staff = a.staff && a.staff.deletedAt === null ? a.staff : null;
-      return {
-        id: a.id,
-        name: a.name,
-        email: a.email,
-        role: a.role,
-        isActive: a.isActive,
-        staffId: staff?.id ?? null,
-        specialty: staff?.specialty ?? "",
-        defaultRoomId: staff?.defaultRoomId ?? null,
-        hasPassword: a.passwordHash !== INVITE_PENDING && a.passwordHash.length > 0,
-      };
-    }),
+    accounts: [...accountRows, ...specialistRows],
     roomOptions: rooms.map((r) => ({ id: r.id, label: r.name.replace(/ —.*/, "") })),
     specialistOptions: specialists.map((s) => ({
       id: s.id,
@@ -112,11 +147,19 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
 
-  // Валидация почты и уникальности в наборе.
+  /**
+   * Строка специалиста без почты — это человек в расписании без входа в
+   * систему. Он допустим: медсестра может работать, не заходя в платформу.
+   * Как только почта заполнена, строка превращается в учётную запись.
+   */
+  const wantsLogin = (a: AccountRow) => a.hasLogin || a.email.trim().length > 0;
+
+  // Валидация почты и уникальности среди тех, у кого есть вход.
   const seen = new Set<string>();
   for (const a of rows) {
+    if (!a.name.trim()) throw new Error("У сотрудника должно быть имя");
+    if (!wantsLogin(a)) continue;
     const email = a.email.trim().toLowerCase();
-    if (!a.name.trim()) throw new Error(`Укажите имя сотрудника (${email || "новая учётка"})`);
     if (!EMAIL_RE.test(email)) throw new Error(`Проверьте почту: ${a.name || email}`);
     if (seen.has(email)) throw new Error(`Почта повторяется: ${email}`);
     seen.add(email);
@@ -124,12 +167,14 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
   // Почта уникальна в пределах клиники, включая уже удалённых сотрудников:
   // индекс не смотрит на deletedAt. Проверяем заранее, иначе вместо понятного
   // сообщения пользователь получал 500.
-  const emails = rows.map((a) => a.email.trim().toLowerCase());
+  const emails = rows.filter(wantsLogin).map((a) => a.email.trim().toLowerCase());
   const clashes = await prisma.staffUser.findMany({
     where: { companyId: session.companyId, email: { in: emails } },
     select: { id: true, email: true, deletedAt: true },
   });
-  const submittedIds = new Set(rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id));
+  const submittedIds = new Set(
+    rows.filter((r) => !r.id.startsWith("new-") && !r.id.startsWith("staff-")).map((r) => r.id),
+  );
   for (const clash of clashes) {
     if (submittedIds.has(clash.id)) continue;
     throw new Error(
@@ -153,9 +198,11 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
   if (!rows.some((a) => a.role === "OWNER" && a.isActive)) {
     throw new Error("Должен остаться хотя бы один активный владелец");
   }
-  // Новому сотруднику обязателен пароль (≥6).
+  // Новому сотруднику обязателен пароль (≥6). Специалист, которому только что
+  // выдают вход, тоже считается новым.
+  const isNewLogin = (a: AccountRow) => a.id.startsWith("new-") || (a.id.startsWith("staff-") && wantsLogin(a));
   for (const a of rows) {
-    if (a.id.startsWith("new-") && (!a.password || a.password.length < 6)) {
+    if (isNewLogin(a) && (!a.password || a.password.length < 6)) {
       throw new Error(`Задайте пароль (не короче 6 символов) для «${a.name || a.email}»`);
     }
     if (a.password && a.password.length > 0 && a.password.length < 6) {
@@ -167,7 +214,10 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
     where: { companyId: session.companyId, deletedAt: null },
     select: { id: true, staffId: true },
   });
-  const kept = new Set(rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id));
+  // Удаляем только настоящие учётки: строки специалистов учётками не являются.
+  const kept = new Set(
+    rows.filter((r) => !r.id.startsWith("new-") && !r.id.startsWith("staff-")).map((r) => r.id),
+  );
   const toDelete = existing.filter((e) => !kept.has(e.id));
 
   await prisma.$transaction(async (tx) => {
@@ -204,9 +254,15 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
         sortOrder: i + 1,
       };
 
+      // Специалист без входа: обновляем только его карточку, учётку не заводим.
+      if (r.id.startsWith("staff-") && !wantsLogin(r)) {
+        if (r.staffId) await tx.staff.update({ where: { id: r.staffId }, data: specialistData });
+        continue;
+      }
+
       // Учётка.
       let userId = r.id;
-      if (r.id.startsWith("new-")) {
+      if (r.id.startsWith("new-") || r.id.startsWith("staff-")) {
         const created = await tx.staffUser.create({
           data: {
             companyId: session.companyId,

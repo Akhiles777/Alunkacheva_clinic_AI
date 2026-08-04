@@ -34,6 +34,7 @@ import {
 import {
   createAppointmentDb,
   rescheduleApptDb,
+  setApptNoteDb,
   setApptStatusDb,
 } from "@/app/(dashboard)/schedule/actions";
 
@@ -871,6 +872,11 @@ function replaceAppt(id: string, fn: (a: Appt) => Appt) {
 export function markArrived(id: string) {
   replaceAppt(id, (a) => ({ ...a, status: "arrived" }));
   void setApptStatusDb(id, "arrived").catch(() => {});
+}
+/** Заметка по визиту после приёма. Её разбирает ИИ-аналитик владельца. */
+export function setApptNote(id: string, note: string) {
+  replaceAppt(id, (a) => ({ ...a, note: note.trim() || null }));
+  void setApptNoteDb(id, note).catch(() => {});
 }
 export function markNoShow(id: string) {
   replaceAppt(id, (a) => ({ ...a, status: "no_show" }));

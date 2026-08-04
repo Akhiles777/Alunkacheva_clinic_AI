@@ -62,6 +62,7 @@ export function StaffClient({
         specialty: "",
         defaultRoomId: null,
         password: "",
+        hasLogin: true,
       },
     ]);
     setAccSaved(false);
@@ -96,7 +97,7 @@ export function StaffClient({
     <div className="flex max-w-[760px] flex-col gap-5">
       <Group
         title="Сотрудники"
-        hint="один список: логин, пароль и роль. Врачу здесь же задаются специальность и кабинет — карточка специалиста создаётся платформой, отдельного списка нет"
+        hint="все, кто работает в клинике: и с доступом в систему, и специалисты без входа. Врачу здесь же задаются специальность и кабинет"
       >
         {accError ? <p className="text-accent-text text-sm">{accError}</p> : null}
         <ul className="flex flex-col gap-3">
@@ -114,11 +115,19 @@ export function StaffClient({
                   <TextInput
                     value={acc.email}
                     onChange={(e) => patchAcc(acc.id, { email: e.target.value })}
-                    placeholder="логин (почта)"
+                    placeholder={acc.hasLogin ? "логин (почта)" : "почта — чтобы выдать вход"}
                     className="py-1.5"
                   />
                   <div className="flex items-center gap-2 max-md:justify-between">
-                    {!isNew ? (
+                    {!acc.hasLogin ? (
+                      <span
+                        className="bg-chip text-text-muted rounded-md px-2 py-0.5 text-2xs whitespace-nowrap"
+                        title="Специалист работает в расписании, но входа в систему у него нет. Заполните почту и пароль, чтобы выдать доступ."
+                      >
+                        нет доступа{acc.visits ? ` · визитов ${acc.visits}` : ""}
+                      </span>
+                    ) : null}
+                    {!isNew && acc.hasLogin ? (
                       <Link
                         href={`/settings/staff/${acc.id}`}
                         className="text-accent-text text-2xs hover:underline"
@@ -160,7 +169,15 @@ export function StaffClient({
                     type="password"
                     value={acc.password ?? ""}
                     onChange={(e) => patchAcc(acc.id, { password: e.target.value })}
-                    placeholder={isNew ? "пароль (не короче 6)" : acc.hasPassword ? "новый пароль — чтобы сбросить" : "задайте пароль"}
+                    placeholder={
+                      !acc.hasLogin
+                        ? "пароль — вместе с почтой откроет вход"
+                        : isNew
+                          ? "пароль (не короче 6)"
+                          : acc.hasPassword
+                            ? "новый пароль — чтобы сбросить"
+                            : "задайте пароль"
+                    }
                     className="border-border-input bg-surface w-full rounded-md border px-3 py-2 text-sm outline-none"
                   />
                 </div>

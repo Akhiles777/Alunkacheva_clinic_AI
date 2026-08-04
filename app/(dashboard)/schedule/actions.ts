@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { normalizePhone } from "@/lib/phone";
 import type { Appt } from "@/app/_data/store";
 import type { AppointmentStatus } from "@/generated/prisma/enums";
 import { todayRangeMoscow } from "@/lib/schedule";
@@ -78,6 +79,19 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
   }));
 }
 
+/**
+ * Заметка по визиту: отзыв пациента, что пошло не так, на что обратить
+ * внимание. Заполняет врач или администратор после приёма, читает ИИ-аналитик
+ * владельца — поэтому текст живёт на визите, а не в свободном чате.
+ */
+export async function setApptNoteDb(id: string, note: string): Promise<void> {
+  const session = await getSession();
+  await prisma.appointment.updateMany({
+    where: { id, companyId: session.companyId },
+    data: { note: note.trim() || null },
+  });
+}
+
 export async function setApptStatusDb(id: string, status: Appt["status"]): Promise<void> {
   const session = await getSession();
   await prisma.appointment.updateMany({
@@ -143,6 +157,47 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
     patientId = found?.id ?? (await prisma.patient.create({ data: { companyId: co, name: input.patientName.trim(), firstSeenAt: new Date() } })).id;
   }
 
+  /**
+   * «Записывает другой человек»: родитель за ребёнка, супруг за супругу.
+   * Если этот человек уже есть в базе (по телефону или по имени), связываем
+   * карточки — тогда у ребёнка своя история визитов, а в карточке родителя
+   * видно, кого он водит. Не нашли — остаётся просто подпись, кому звонить.
+   */
+  let bookedById: string | null = null;
+  const bookedByRaw = input.bookedByName?.trim() ?? "";
+  if (bookedByRaw) {
+    const maybePhone = normalizePhone(bookedByRaw.replace(/[^\d+]/g, ""));
+    const byPhone = maybePhone
+      ? await prisma.patientPhone.findFirst({
+          where: { companyId: co, phone: maybePhone },
+          select: { patientId: true },
+        })
+      : null;
+    const byName = byPhone
+      ? null
+      : await prisma.patient.findFirst({
+          where: { companyId: co, deletedAt: null, name: bookedByRaw },
+          select: { id: true },
+        });
+    bookedById = byPhone?.patientId ?? byName?.id ?? null;
+
+    if (bookedById && bookedById !== patientId) {
+      // Родство заводим один раз: повторная запись того же ребёнка не должна
+      // плодить дубли связей.
+      await prisma.patientRelation.upsert({
+        where: {
+          patientId_relatedPatientId_kind: {
+            patientId: bookedById,
+            relatedPatientId: patientId,
+            kind: "PARENT",
+          },
+        },
+        update: {},
+        create: { companyId: co, patientId: bookedById, relatedPatientId: patientId, kind: "PARENT" },
+      });
+    }
+  }
+
   const startAt = startAtFromMinute(input.startMinute);
   const endAt = new Date(startAt.getTime() + input.durationMin * 60_000);
   await prisma.appointment.create({
@@ -152,6 +207,7 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
       // Локальная запись до синка с YCLIENTS — синтетический recordId.
       yclientsRecordId: 700_000_000 + Math.floor(Math.random() * 99_999_999),
       bookedByName: input.bookedByName?.trim() || null,
+      bookedByPatientId: bookedById,
       patientId,
       staffId: staff.id,
       roomId: room.id,

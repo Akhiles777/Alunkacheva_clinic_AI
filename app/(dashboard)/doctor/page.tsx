@@ -8,6 +8,7 @@ import { useDb } from "@/app/_data/store";
 import { priceOf } from "@/lib/staff-analytics";
 import { getCurrentUser, type CurrentUser } from "../_components/user-actions";
 import { InternalStaffChat } from "../chat/internal-staff-chat";
+import { VisitNote } from "../_components/visit-note";
 
 const APPT_STATUS: Record<string, string> = {
   planned: "запланирован",
@@ -96,6 +97,10 @@ export default function DoctorPage() {
                         )}
                       </span>
                       <span className="text-text-subtle block truncate text-xs">{a.service}</span>
+                      {a.note ? (
+                        <span className="text-text-muted block text-2xs italic">«{a.note}»</span>
+                      ) : null}
+                      <VisitNote appt={a} />
                     </span>
                     <span className="text-text-subtle flex-none text-2xs">{APPT_STATUS[a.status]}</span>
                   </li>
