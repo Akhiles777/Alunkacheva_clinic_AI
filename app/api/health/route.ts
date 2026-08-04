@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { vapidPublicKey, vapidStatus } from "@/lib/server/notify";
+import { vapidPublicKey, vapidStatus, vapidSubject } from "@/lib/server/notify";
 
 /**
  * Проверка окружения. Отдаёт только факт «переменная задана», без значений —
@@ -52,6 +52,7 @@ export async function GET() {
     открытыйКлючСовпадаетСКлиентским:
       Boolean(process.env.NEXT_PUBLIC_VAPID_PUBLIC) &&
       process.env.NEXT_PUBLIC_VAPID_PUBLIC === vapidPublicKey(),
+    контактОтправителя: vapidSubject(),
   };
 
   let db: Record<string, number | string> = { ok: "нет связи" };
@@ -86,6 +87,12 @@ export async function GET() {
   const warnings: string[] = [];
   if (!env.ROUTER_AI) warnings.push("Нет ROUTER_AI — ассистент не может отвечать своими словами и зовёт человека");
   if (!push.ключиРабочие) warnings.push(`Push не отправляется: ${vapid.error}`);
+  if (process.env.VAPID_SUBJECT && process.env.VAPID_SUBJECT.trim() !== push.контактОтправителя) {
+    warnings.push(
+      "VAPID_SUBJECT на хостинге задан неверно (ожидается mailto:адрес или https://адрес) — " +
+        `значение проигнорировано, используется ${push.контактОтправителя}. Исправьте переменную.`,
+    );
+  }
   if (push.ключиРабочие && !push.открытыйКлючСовпадаетСКлиентским) {
     warnings.push(
       "NEXT_PUBLIC_VAPID_PUBLIC не совпадает с VAPID_PUBLIC — браузер подписывается одним ключом, " +

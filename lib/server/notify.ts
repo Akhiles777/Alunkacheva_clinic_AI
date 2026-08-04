@@ -1,6 +1,7 @@
 import webpush from "web-push";
 import { prisma } from "@/lib/db";
-import { CLINIC_MAIL_DOMAIN, CLINIC_NAME } from "@/lib/brand";
+import { CLINIC_NAME } from "@/lib/brand";
+import { vapidSubject } from "./vapid-subject";
 import type { NotificationKind } from "@/generated/prisma/enums";
 import { DEFAULT_QUIET, shouldPushNow, type QuietSettings } from "./notify-window";
 
@@ -37,13 +38,15 @@ export function vapidStatus(): { ok: boolean; error: string | null } {
     return vapidState;
   }
   try {
-    webpush.setVapidDetails(process.env.VAPID_SUBJECT || `mailto:admin@${CLINIC_MAIL_DOMAIN}`, pub, priv);
+    webpush.setVapidDetails(vapidSubject(), pub, priv);
     vapidState = { ok: true, error: null };
   } catch (e) {
     vapidState = { ok: false, error: `ключи VAPID неверны — ${String((e as Error)?.message ?? e).slice(0, 100)}` };
   }
   return vapidState;
 }
+
+export { vapidSubject } from "./vapid-subject";
 
 /**
  * Открытый ключ, которым браузер подписывался. Если на хостинге его заменили,
