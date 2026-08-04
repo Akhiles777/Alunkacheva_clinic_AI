@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { vapidPublicKey, vapidStatus, vapidSubject } from "@/lib/server/notify";
+import { checkVapidKeys } from "@/lib/server/vapid-keys";
 
 /**
  * Проверка окружения. Отдаёт только факт «переменная задана», без значений —
@@ -46,9 +47,11 @@ export async function GET() {
    * событии, а выглядит это как «push просто не приходит».
    */
   const vapid = vapidStatus();
+  const keys = checkVapidKeys(process.env.VAPID_PUBLIC, process.env.VAPID_PRIVATE);
   const push = {
     ключиРабочие: vapid.ok,
     ошибка: vapid.error,
+    размерыКлючей: keys.note,
     открытыйКлючСовпадаетСКлиентским:
       Boolean(process.env.NEXT_PUBLIC_VAPID_PUBLIC) &&
       process.env.NEXT_PUBLIC_VAPID_PUBLIC === vapidPublicKey(),
@@ -87,6 +90,12 @@ export async function GET() {
   const warnings: string[] = [];
   if (!env.ROUTER_AI) warnings.push("Нет ROUTER_AI — ассистент не может отвечать своими словами и зовёт человека");
   if (!push.ключиРабочие) warnings.push(`Push не отправляется: ${vapid.error}`);
+  if (!keys.ok) {
+    warnings.push(
+      `Ключи VAPID заданы неверно: ${keys.note}. Сгенерируйте пару командой ` +
+        "npx web-push generate-vapid-keys и впишите её в переменные хостинга.",
+    );
+  }
   if (process.env.VAPID_SUBJECT && process.env.VAPID_SUBJECT.trim() !== push.контактОтправителя) {
     warnings.push(
       "VAPID_SUBJECT на хостинге задан неверно (ожидается mailto:адрес или https://адрес) — " +
