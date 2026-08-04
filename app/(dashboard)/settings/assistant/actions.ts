@@ -46,11 +46,16 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
     }
   }
 
+  // Новизну строки определяем по факту наличия в базе, а не по префиксу id.
+  // Соглашение «новые начинаются с new-» уже подвело: экран заводит записи с
+  // id вида k1785..., и сохранение падало с попыткой обновить несуществующую
+  // строку. Проверка по базе не зависит от того, как экран назвал строку.
   const existing = await prisma.knowledgeEntry.findMany({
     where: { companyId: session.companyId },
     select: { id: true },
   });
-  const kept = new Set(items.filter((k) => !k.id.startsWith("new-")).map((k) => k.id));
+  const existingIds = new Set(existing.map((e) => e.id));
+  const kept = new Set(items.map((k) => k.id).filter((id) => existingIds.has(id)));
 
   await prisma.$transaction(async (tx) => {
     // Удалённые в интерфейсе строки убираем и из базы: знание, которого нет в
@@ -69,10 +74,11 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
         isActive: k.isActive,
         updatedById: session.userId,
       };
-      if (k.id.startsWith("new-")) {
-        await tx.knowledgeEntry.create({ data: { companyId: session.companyId, ...data } });
-      } else {
+      if (existingIds.has(k.id)) {
         await tx.knowledgeEntry.update({ where: { id: k.id }, data });
+      } else {
+        // id, придуманный экраном, не сохраняем: пусть базa выдаст свой.
+        await tx.knowledgeEntry.create({ data: { companyId: session.companyId, ...data } });
       }
     }
   });
