@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
-import { hashPassword, INVITE_PENDING } from "@/lib/auth";
+import { hashPassword, INVITE_PENDING, LOGIN_RE, normalizeLogin } from "@/lib/auth";
 import type { StaffRole } from "@/generated/prisma/enums";
 
 /**
@@ -28,7 +28,7 @@ export interface AccountRow {
    */
   id: string;
   name: string;
-  email: string;
+  login: string;
   role: StaffRole;
   isActive: boolean;
   /** Привязанный специалист — заполняется платформой для роли DOCTOR. */
@@ -58,8 +58,6 @@ export interface StaffPeople {
    */
   specialistOptions: { id: string; name: string; specialty: string | null; takenBy: string | null }[];
 }
-
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 /** У врача есть карточка специалиста; у остальных ролей её быть не должно. */
 function needsSpecialist(role: StaffRole): boolean {
@@ -101,7 +99,7 @@ export async function getStaffPeople(): Promise<StaffPeople> {
     return {
       id: a.id,
       name: a.name,
-      email: a.email,
+      login: a.login,
       role: a.role,
       isActive: a.isActive,
       staffId: staff?.id ?? null,
@@ -120,7 +118,7 @@ export async function getStaffPeople(): Promise<StaffPeople> {
     .map((s) => ({
       id: `staff-${s.id}`,
       name: s.name,
-      email: "",
+      login: "",
       role: "DOCTOR" as StaffRole,
       isActive: s.isActive,
       staffId: s.id,
@@ -152,25 +150,27 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
    * систему. Он допустим: медсестра может работать, не заходя в платформу.
    * Как только почта заполнена, строка превращается в учётную запись.
    */
-  const wantsLogin = (a: AccountRow) => a.hasLogin || a.email.trim().length > 0;
+  const wantsLogin = (a: AccountRow) => a.hasLogin || a.login.trim().length > 0;
 
   // Валидация почты и уникальности среди тех, у кого есть вход.
   const seen = new Set<string>();
   for (const a of rows) {
     if (!a.name.trim()) throw new Error("У сотрудника должно быть имя");
     if (!wantsLogin(a)) continue;
-    const email = a.email.trim().toLowerCase();
-    if (!EMAIL_RE.test(email)) throw new Error(`Проверьте почту: ${a.name || email}`);
-    if (seen.has(email)) throw new Error(`Почта повторяется: ${email}`);
-    seen.add(email);
+    const login = normalizeLogin(a.login);
+    if (!LOGIN_RE.test(login)) {
+      throw new Error(`Логин «${login || a.name}»: латиница, цифры, точка, дефис — от 3 до 30 знаков`);
+    }
+    if (seen.has(login)) throw new Error(`Логин повторяется: ${login}`);
+    seen.add(login);
   }
   // Почта уникальна в пределах клиники, включая уже удалённых сотрудников:
   // индекс не смотрит на deletedAt. Проверяем заранее, иначе вместо понятного
   // сообщения пользователь получал 500.
-  const emails = rows.filter(wantsLogin).map((a) => a.email.trim().toLowerCase());
+  const logins = rows.filter(wantsLogin).map((a) => normalizeLogin(a.login));
   const clashes = await prisma.staffUser.findMany({
-    where: { companyId: session.companyId, email: { in: emails } },
-    select: { id: true, email: true, deletedAt: true },
+    where: { companyId: session.companyId, login: { in: logins } },
+    select: { id: true, login: true, deletedAt: true },
   });
   const submittedIds = new Set(
     rows.filter((r) => !r.id.startsWith("new-") && !r.id.startsWith("staff-")).map((r) => r.id),
@@ -179,8 +179,8 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
     if (submittedIds.has(clash.id)) continue;
     throw new Error(
       clash.deletedAt
-        ? `Почта ${clash.email} уже занята удалённым сотрудником — выберите другую`
-        : `Почта ${clash.email} уже занята`,
+        ? `Логин ${clash.login} занят удалённым сотрудником — выберите другой`
+        : `Логин ${clash.login} уже занят`,
     );
   }
 
@@ -203,10 +203,10 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
   const isNewLogin = (a: AccountRow) => a.id.startsWith("new-") || (a.id.startsWith("staff-") && wantsLogin(a));
   for (const a of rows) {
     if (isNewLogin(a) && (!a.password || a.password.length < 6)) {
-      throw new Error(`Задайте пароль (не короче 6 символов) для «${a.name || a.email}»`);
+      throw new Error(`Задайте пароль (не короче 6 символов) для «${a.name || a.login}»`);
     }
     if (a.password && a.password.length > 0 && a.password.length < 6) {
-      throw new Error(`Пароль не короче 6 символов: «${a.name || a.email}»`);
+      throw new Error(`Пароль не короче 6 символов: «${a.name || a.login}»`);
     }
   }
 
@@ -241,7 +241,7 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
       const name = r.name.trim();
       const base = {
         name,
-        email: r.email.trim().toLowerCase(),
+        login: normalizeLogin(r.login),
         role: r.role,
         isActive: r.isActive,
       };

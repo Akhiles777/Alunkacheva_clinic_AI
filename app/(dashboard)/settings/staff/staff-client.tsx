@@ -55,7 +55,7 @@ export function StaffClient({
       {
         id: `new-${Date.now()}`,
         name: "",
-        email: "",
+        login: "",
         role: "ADMIN",
         isActive: true,
         staffId: null,
@@ -113,9 +113,9 @@ export function StaffClient({
                     className="py-1.5"
                   />
                   <TextInput
-                    value={acc.email}
-                    onChange={(e) => patchAcc(acc.id, { email: e.target.value })}
-                    placeholder={acc.hasLogin ? "логин (почта)" : "почта — чтобы выдать вход"}
+                    value={acc.login}
+                    onChange={(e) => patchAcc(acc.id, { login: e.target.value })}
+                    placeholder={acc.hasLogin ? "логин" : "логин — чтобы выдать вход"}
                     className="py-1.5"
                   />
                   <div className="flex items-center gap-2 max-md:justify-between">
@@ -171,7 +171,7 @@ export function StaffClient({
                     onChange={(e) => patchAcc(acc.id, { password: e.target.value })}
                     placeholder={
                       !acc.hasLogin
-                        ? "пароль — вместе с почтой откроет вход"
+                        ? "пароль — вместе с логином откроет вход"
                         : isNew
                           ? "пароль (не короче 6)"
                           : acc.hasPassword

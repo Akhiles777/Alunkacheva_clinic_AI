@@ -767,7 +767,9 @@ model RoomScheduleException {
 model StaffUser {
   id           String    @id @default(cuid())
   companyId    String
-  email        String
+  /// Логин сотрудника. Не почта: клиника заводит людей вручную, требовать
+  /// адрес ради входа незачем. Хранится в нижнем регистре.
+  login        String
   passwordHash String
   name         String
   role         StaffRole @default(ADMIN)
@@ -800,7 +802,7 @@ model StaffUser {
   internalChatParticipants InternalChatParticipant[]
   internalChatMessages     InternalChatMessage[]
 
-  @@unique([companyId, email])
+  @@unique([companyId, login])
   @@index([companyId, role, isActive])
   @@map("staff_users")
 }

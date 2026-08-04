@@ -13,7 +13,7 @@ export interface InternalStaff {
   id: string;
   name: string;
   role: string;
-  email: string;
+  login: string;
   staffId: string | null;
   specialty: string | null;
   roomName: string | null;
@@ -79,7 +79,7 @@ type StaffRow = {
   id: string;
   name: string;
   role: string;
-  email: string;
+  login: string;
   staffId: string | null;
   specialty: string | null;
   roomName: string | null;
@@ -245,7 +245,7 @@ async function getStaff(session: Session, userId: string): Promise<InternalStaff
       u.id,
       u.name,
       u.role::text AS role,
-      u.email,
+      u.login,
       u."staffId",
       s.specialty,
       r.name AS "roomName"

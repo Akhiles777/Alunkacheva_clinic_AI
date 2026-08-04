@@ -12,7 +12,7 @@ import { appRoleOf, type AppRole } from "@/lib/roles";
 export interface CurrentUser {
   id: string | null;
   name: string;
-  email: string;
+  login: string;
   role: AppRole;
   /** Кабинет врача (если у учётки есть привязанный специалист). */
   roomName: string | null;
@@ -30,13 +30,13 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   if (session.userId) {
     const u = await prisma.staffUser.findUnique({
       where: { id: session.userId },
-      select: { id: true, name: true, email: true, role: true, staff: { select: { defaultRoom: { select: { name: true } } } } },
+      select: { id: true, name: true, login: true, role: true, staff: { select: { defaultRoom: { select: { name: true } } } } },
     });
     if (u) {
       return {
         id: u.id,
         name: u.name,
-        email: u.email,
+        login: u.login,
         role: appRoleOf(u.role),
         roomName: u.staff?.defaultRoom?.name ?? null,
         canEditSettings,
@@ -47,7 +47,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   return {
     id: null,
     name: "Владелец",
-    email: "",
+    login: "",
     role: appRoleOf(session.role),
     roomName: null,
     canEditSettings,

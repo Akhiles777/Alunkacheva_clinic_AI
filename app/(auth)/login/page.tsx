@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { loginUser } from "../actions";
 import type { AppRole } from "@/lib/roles";
-import { CLINIC_MAIL_DOMAIN } from "@/lib/brand";
 
 function destFor(role: AppRole): string {
   return role === "owner" ? "/owner" : role === "doctor" ? "/doctor" : "/";
@@ -13,7 +12,7 @@ function destFor(role: AppRole): string {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -25,7 +24,7 @@ export default function LoginPage() {
   function submit() {
     setError(null);
     start(async () => {
-      const res = await loginUser({ email, password });
+      const res = await loginUser({ login, password });
       if (res.ok && res.role) enter(res.role);
       else setError(res.error ?? "Не удалось войти");
     });
@@ -44,12 +43,13 @@ export default function LoginPage() {
         }}
       >
         <label className="flex flex-col gap-1.5">
-          <span className="text-text-subtle text-2xs">Почта</span>
+          <span className="text-text-subtle text-2xs">Логин</span>
           <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder={`you@${CLINIC_MAIL_DOMAIN}`}
+            type="text"
+            autoComplete="username"
+            value={login}
+            onChange={(e) => setLogin(e.target.value)}
+            placeholder="например, olga"
             className="border-border-input bg-surface w-full rounded-md border px-3 py-2 text-sm outline-none"
           />
         </label>
@@ -68,7 +68,7 @@ export default function LoginPage() {
 
         <button
           type="submit"
-          disabled={pending || !email.trim() || !password}
+          disabled={pending || !login.trim() || !password}
           className="bg-accent text-accent-contrast hover:bg-accent-hover mt-1 rounded-md py-2.5 text-sm font-medium disabled:opacity-45"
         >
           {pending ? "Входим…" : "Войти"}

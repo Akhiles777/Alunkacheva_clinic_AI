@@ -2,7 +2,7 @@
 
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/db";
-import { hashPassword, SESSION_COOKIE, signSession, verifyPassword } from "@/lib/auth";
+import { hashPassword, LOGIN_RE, normalizeLogin, SESSION_COOKIE, signSession, verifyPassword } from "@/lib/auth";
 import { appRoleOf, type AppRole } from "@/lib/roles";
 import type { StaffRole } from "@/generated/prisma/enums";
 
@@ -34,8 +34,6 @@ async function setSession(userId: string, cid: string, role: StaffRole) {
   });
 }
 
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-
 /**
  * Открыта ли свободная регистрация. По умолчанию — нет: это CRM с медицинскими
  * данными, и публичная форма, выдающая права администратора любому желающему,
@@ -51,14 +49,16 @@ export async function isSelfRegistrationOpen(): Promise<boolean> {
   return count === 0;
 }
 
-export async function registerUser(input: { name: string; email: string; password: string }): Promise<AuthResult> {
+export async function registerUser(input: { name: string; login: string; password: string }): Promise<AuthResult> {
   const cid = await companyId();
   if (!cid) return { ok: false, error: "Клиника не настроена" };
 
   const name = input.name.trim();
-  const email = input.email.trim().toLowerCase();
+  const login = normalizeLogin(input.login);
   if (name.length < 2) return { ok: false, error: "Укажите имя" };
-  if (!EMAIL_RE.test(email)) return { ok: false, error: "Проверьте почту" };
+  if (!LOGIN_RE.test(login)) {
+    return { ok: false, error: "Логин: латиница, цифры, точка, дефис — от 3 до 30 знаков" };
+  }
   if (input.password.length < 6) return { ok: false, error: "Пароль не короче 6 символов" };
 
   const existingCount = await prisma.staffUser.count({ where: { companyId: cid, deletedAt: null } });
@@ -71,29 +71,29 @@ export async function registerUser(input: { name: string; email: string; passwor
   }
 
   // Уникальность почты в БД не смотрит на deletedAt — проверяем и удалённых.
-  const exists = await prisma.staffUser.findFirst({ where: { companyId: cid, email }, select: { id: true } });
-  if (exists) return { ok: false, error: "Пользователь с такой почтой уже есть" };
+  const exists = await prisma.staffUser.findFirst({ where: { companyId: cid, login }, select: { id: true } });
+  if (exists) return { ok: false, error: "Такой логин уже занят" };
 
   // Первый сотрудник свежей установки — владелец: иначе некому раздать доступы.
   const role = bootstrap ? "OWNER" : "ADMIN";
   const user = await prisma.staffUser.create({
-    data: { companyId: cid, name, email, passwordHash: hashPassword(input.password), role },
+    data: { companyId: cid, name, login, passwordHash: hashPassword(input.password), role },
   });
   await setSession(user.id, cid, role);
   return { ok: true, role: appRoleOf(role) };
 }
 
-export async function loginUser(input: { email: string; password: string }): Promise<AuthResult> {
+export async function loginUser(input: { login: string; password: string }): Promise<AuthResult> {
   const cid = await companyId();
   if (!cid) return { ok: false, error: "Клиника не настроена" };
 
-  const email = input.email.trim().toLowerCase();
+  const login = normalizeLogin(input.login);
   const user = await prisma.staffUser.findFirst({
-    where: { companyId: cid, email, deletedAt: null },
+    where: { companyId: cid, login, deletedAt: null },
     select: { id: true, passwordHash: true, role: true },
   });
   if (!user || !verifyPassword(input.password, user.passwordHash)) {
-    return { ok: false, error: "Неверная почта или пароль" };
+    return { ok: false, error: "Неверный логин или пароль" };
   }
   await prisma.staffUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   await setSession(user.id, cid, user.role);

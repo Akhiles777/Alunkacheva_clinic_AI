@@ -288,7 +288,7 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm max-md:grid-cols-1">
           <div className="flex justify-between gap-3">
             <dt className="text-text-subtle">Логин</dt>
-            <dd className="truncate">{member.email}</dd>
+            <dd className="truncate">{member.login}</dd>
           </div>
           <div className="flex justify-between gap-3">
             <dt className="text-text-subtle">Последний вход</dt>

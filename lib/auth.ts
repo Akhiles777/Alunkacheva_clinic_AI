@@ -34,6 +34,17 @@ function secret(): string {
 }
 
 export const SESSION_COOKIE = "mera_session";
+
+/**
+ * Логин сотрудника: латиница, цифры, точка, дефис, подчёркивание, 3–30 знаков.
+ * Почту не требуем — клиника заводит людей вручную, и у медсестры адреса может
+ * не быть. Кириллицу не пускаем: логин набирают в спешке, а раскладка подводит.
+ */
+export const LOGIN_RE = /^[a-z0-9._-]{3,30}$/;
+
+export function normalizeLogin(raw: string): string {
+  return raw.trim().toLowerCase();
+}
 export const INVITE_PENDING = "!invite-pending"; // засеянные учётки без пароля
 
 export function hashPassword(password: string): string {

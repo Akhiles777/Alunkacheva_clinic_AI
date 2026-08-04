@@ -87,7 +87,7 @@ export interface StaffMemberView {
   /** Id карточки специалиста: к ней привязаны ставки и выплаты. */
   staffId: string | null;
   name: string;
-  email: string;
+  login: string;
   role: Role;
   isActive: boolean;
   specialty: string | null;
@@ -323,7 +323,7 @@ export async function getStaffMember(id: string): Promise<StaffMemberView | null
     select: {
       id: true,
       name: true,
-      email: true,
+      login: true,
       role: true,
       isActive: true,
       staffId: true,
@@ -356,7 +356,7 @@ export async function getStaffMember(id: string): Promise<StaffMemberView | null
     id: user.id,
     staffId: user.staffId,
     name: user.name,
-    email: user.email,
+    login: user.login,
     role: user.role as Role,
     isActive: user.isActive,
     specialty: user.staff?.specialty ?? null,
