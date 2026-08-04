@@ -6,21 +6,23 @@ import { PrismaPg } from "@prisma/adapter-pg";
  *
  * Next на шаге «Collecting page data» импортирует все страницы, а базы на
  * сборке нет. Если создавать пул (и требовать DATABASE_URL) прямо в теле
- * модуля, сборка падает ещё до деплоя. Проверка переменной осталась, но
- * срабатывает на первом запросе — там она уместна и сообщение видно в логах.
+ * модуля, сборка падает ещё до деплоя.
  *
- * Синглтон в globalThis нужен и в dev (hot reload иначе плодит пулы, и Postgres
- * упирается в max_connections), и в проде (инстанс переиспользует соединения
- * между вызовами).
+ * Размер пула — критичная настройка, а не мелочь. На serverless каждый вызов
+ * функции живёт в своём экземпляре со своим пулом, и экземпляров одновременно
+ * бывают десятки. Пул в 5 соединений на экземпляр упирался в предел базы
+ * (50 соединений): запросы начинали получать «too many connections», причём
+ * первыми страдали не страницы, а фоновые шаги — отправка push переставала
+ * находить подписки и молча падала, хотя само уведомление уже записалось.
+ * Поэтому на serverless держим ровно одно соединение на экземпляр: вызов
+ * всё равно обрабатывает один запрос за раз.
  */
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 /**
  * Строка подключения. Основное имя — DATABASE_URL; POSTGRES_URL и
  * PRISMA_DATABASE_URL подхватываем запасными, потому что управляемые базы
- * (в том числе Prisma Postgres на Vercel) подставляют в окружение именно их, и
- * без этого приложение падало бы при живой и настроенной базе.
- * Берём только прямое подключение: адаптеру нужен постgres-протокол.
+ * (в том числе Prisma Postgres на Vercel) подставляют в окружение именно их.
  */
 export function resolveDatabaseUrl(): string | null {
   const candidates = [
@@ -34,6 +36,17 @@ export function resolveDatabaseUrl(): string | null {
   return null;
 }
 
+/** Признак бессерверного окружения: там каждый вызов — отдельный экземпляр. */
+function isServerless(): boolean {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
+
+function poolSize(): number {
+  const fromEnv = Number(process.env.DATABASE_POOL_MAX);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return isServerless() ? 1 : 5;
+}
+
 function createClient(): PrismaClient {
   const connectionString = resolveDatabaseUrl();
   if (!connectionString) {
@@ -44,13 +57,15 @@ function createClient(): PrismaClient {
   return new PrismaClient({
     adapter: new PrismaPg({
       connectionString,
-      // На serverless каждый инстанс держит свой пул, и десяток холодных
-      // стартов легко упирается в max_connections базы. Держим пул узким и
-      // отпускаем простаивающие соединения быстро; для постоянного сервера
-      // предел поднимается через DATABASE_POOL_MAX.
-      max: Number(process.env.DATABASE_POOL_MAX ?? 5),
-      idleTimeoutMillis: 10_000,
+      max: poolSize(),
+      // Простаивающее соединение освобождаем быстро: на serverless экземпляр
+      // может жить минутами после ответа и всё это время держать место в
+      // лимите базы, не делая ничего полезного.
+      idleTimeoutMillis: isServerless() ? 3_000 : 10_000,
       connectionTimeoutMillis: 10_000,
+      // Пул закрывается, когда все соединения простаивают: экземпляр,
+      // «замороженный» между вызовами, не удерживает подключение.
+      allowExitOnIdle: isServerless(),
     }),
   });
 }

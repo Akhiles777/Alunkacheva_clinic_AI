@@ -54,13 +54,15 @@ interface DeliveryResult {
   error: string | null;
 }
 
-async function pushToUser(companyId: string, staffUserId: string, payload: string): Promise<DeliveryResult> {
-  if (!ensureVapid()) return { ok: false, error: "не заданы ключи VAPID на сервере" };
+interface Sub {
+  id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}
 
-  const subs = await prisma.pushSubscription.findMany({
-    where: { companyId, staffUserId },
-    select: { id: true, endpoint: true, p256dh: true, auth: true },
-  });
+async function pushToUser(subs: Sub[], payload: string): Promise<DeliveryResult> {
+  if (!ensureVapid()) return { ok: false, error: "не заданы ключи VAPID на сервере" };
   if (subs.length === 0) return { ok: false, error: "нет подключённых устройств" };
 
   let sent = 0;
@@ -101,19 +103,55 @@ export async function notifyStaff(input: NotifyInput): Promise<{ created: number
     url: input.url,
   });
 
+  /**
+   * Подписки всех получателей забираем одним запросом, а не по одному на
+   * человека. Раньше на четверых сотрудников выходило девять обращений к базе
+   * ради одного уведомления; на бессерверном хостинге это упиралось в предел
+   * соединений, и тогда push молча не уходил.
+   */
+  const subsByUser = new Map<string, Sub[]>();
+  let dbError: string | null = null;
+  if (deliverNow) {
+    try {
+      const all = await prisma.pushSubscription.findMany({
+        where: { companyId: input.companyId, staffUserId: { in: recipients } },
+        select: { id: true, endpoint: true, p256dh: true, auth: true, staffUserId: true },
+      });
+      for (const s of all) {
+        const list = subsByUser.get(s.staffUserId) ?? [];
+        list.push(s);
+        subsByUser.set(s.staffUserId, list);
+      }
+    } catch (e) {
+      // База не ответила — причину сохраним в строке уведомления, чтобы сбой
+      // не остался невидимым.
+      dbError = String((e as Error)?.message ?? e).slice(0, 120);
+    }
+  }
+
+  const results = new Map<string, DeliveryResult>();
   let pushed = 0;
   for (const staffUserId of recipients) {
-    const result: DeliveryResult = deliverNow
-      ? await pushToUser(input.companyId, staffUserId, payload).catch(() => ({
-          ok: false,
-          error: "сбой отправки",
-        }))
-      : { ok: false, error: "отложено до начала смены" };
+    let result: DeliveryResult;
+    if (!deliverNow) {
+      result = { ok: false, error: "отложено до начала смены" };
+    } else if (dbError) {
+      result = { ok: false, error: `база недоступна — ${dbError}` };
+    } else {
+      result = await pushToUser(subsByUser.get(staffUserId) ?? [], payload).catch(() => ({
+        ok: false,
+        error: "сбой отправки",
+      }));
+    }
     if (result.ok) pushed += 1;
+    results.set(staffUserId, result);
+  }
 
-    try {
-      await prisma.notification.create({
-        data: {
+  try {
+    await prisma.notification.createMany({
+      data: recipients.map((staffUserId) => {
+        const result = results.get(staffUserId)!;
+        return {
           companyId: input.companyId,
           staffUserId,
           kind: input.kind,
@@ -124,11 +162,11 @@ export async function notifyStaff(input: NotifyInput): Promise<{ created: number
           preview: input.preview?.slice(0, 200) ?? null,
           pushedAt: result.ok ? now : null,
           pushError: result.ok ? null : result.error,
-        },
-      });
-    } catch {
-      // Строка не записалась — но действие пользователя ронять нельзя.
-    }
+        };
+      }),
+    });
+  } catch {
+    // Строки не записались — но действие пользователя ронять нельзя.
   }
   return { created: recipients.length, pushed };
 }
