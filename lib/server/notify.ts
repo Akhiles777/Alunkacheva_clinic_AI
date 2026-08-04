@@ -97,15 +97,26 @@ async function pushToUser(subs: Sub[], payload: string): Promise<DeliveryResult>
     } catch (e) {
       const err = e as { statusCode?: number; body?: string; message?: string };
       const detail = String(err.body || err.message || "").slice(0, 120);
-      // 403 от службы push почти всегда значит, что ключи VAPID на хостинге
-      // сменились после того, как устройство подписалось. Лечится только
-      // повторным подключением устройства — пишем это прямо.
-      lastError =
-        err.statusCode === 403
-          ? `403 — ключи VAPID сменились, подключите устройство заново (${detail})`
-          : `${err.statusCode ?? "исключение"}: ${detail}`;
-      // 404/410 — подписка отозвана браузером, хранить её незачем.
-      if (err.statusCode === 404 || err.statusCode === 410) {
+
+      /**
+       * Подписка выдана под конкретный ключ сервера. Если ключ сменили, Apple
+       * отвечает VapidPkHashMismatch, Google — 403: подписка мертва навсегда,
+       * оживить её нечем, нужно подписаться заново.
+       */
+      const keyChanged = err.statusCode === 403 || /VapidPkHashMismatch/i.test(detail);
+      // 404/410 — подписку отозвал сам браузер.
+      const revoked = err.statusCode === 404 || err.statusCode === 410;
+
+      lastError = keyChanged
+        ? "ключи push сменились — устройство переподключится при следующем входе"
+        : `${err.statusCode ?? "исключение"}: ${detail}`;
+
+      /**
+       * Мёртвую подписку удаляем. Иначе в разделе «Устройства» она значится
+       * подключённой, сотрудник считает, что уведомления придут, а они не
+       * приходят никогда — худший вид поломки: незаметный.
+       */
+      if (keyChanged || revoked) {
         await prisma.pushSubscription.delete({ where: { id: s.id } }).catch(() => {});
       }
     }
