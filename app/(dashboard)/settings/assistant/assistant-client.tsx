@@ -199,7 +199,10 @@ export function AssistantClient({
           onClick={() =>
             setKnowledge([
               ...knowledge,
-              { id: `k${Date.now()}`, topic: "Новая тема", question: "", answer: "", serviceId: null, isActive: false },
+              // Новая запись сразу включена: выключенная по умолчанию — ловушка.
+              // Администратор заполнял ответ, сохранял и не понимал, почему
+              // ассистент про него не знает.
+              { id: `k${Date.now()}`, topic: "", question: "", answer: "", serviceId: null, isActive: true },
             ])
           }
           className="border-border text-text-muted hover:bg-hover self-start rounded-md border px-3 py-1.5 text-sm"

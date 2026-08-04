@@ -170,7 +170,7 @@ async function saveMessage(input: {
  * три сообщения подряд, не должен создавать три эскалации и три push
  * администратору.
  */
-async function escalate(companyId: string, conversationId: string, reason: "MEDICAL_QUESTION" | "PATIENT_REQUEST" | "KEYWORD" | "MISUNDERSTOOD", note: string) {
+async function escalate(companyId: string, conversationId: string, reason: "MEDICAL_QUESTION" | "PATIENT_REQUEST" | "KEYWORD" | "MISUNDERSTOOD" | "AGENT_REQUEST", note: string) {
   const current = await prisma.conversation.findUnique({
     where: { id: conversationId },
     select: { status: true },
@@ -199,6 +199,48 @@ async function escalate(companyId: string, conversationId: string, reason: "MEDI
     url: "/inbox",
     entityId: conversationId,
   });
+}
+
+// ─────────────────────────────────────────────── настройки ассистента
+
+export interface AssistantMode {
+  /** on — отвечает сам; drafts — только зовёт человека; off — молчит совсем. */
+  mode: "on" | "off" | "drafts";
+  greeting: string;
+  stopWords: string[];
+}
+
+const DEFAULT_MODE: AssistantMode = {
+  mode: "on",
+  greeting: "",
+  stopWords: [],
+};
+
+/**
+ * Режим и стоп-слова из «Настройки → Ассистент». Раньше переключатель в
+ * интерфейсе ни на что не влиял: агент его просто не читал.
+ */
+async function assistantMode(companyId: string): Promise<AssistantMode> {
+  try {
+    const row = await prisma.setting.findUnique({
+      where: { companyId_key: { companyId, key: "assistant" } },
+      select: { value: true },
+    });
+    const cfg = (row?.value as { assistant?: Partial<AssistantMode> } | null)?.assistant;
+    if (!cfg) return DEFAULT_MODE;
+    return {
+      mode: cfg.mode === "off" || cfg.mode === "drafts" ? cfg.mode : "on",
+      greeting: typeof cfg.greeting === "string" ? cfg.greeting : "",
+      stopWords: Array.isArray(cfg.stopWords) ? cfg.stopWords.filter((w) => typeof w === "string") : [],
+    };
+  } catch {
+    return DEFAULT_MODE;
+  }
+}
+
+function hitsStopWord(text: string, stopWords: string[]): boolean {
+  const lower = text.toLowerCase();
+  return stopWords.some((w) => w.trim().length > 2 && lower.includes(w.trim().toLowerCase()));
 }
 
 // ─────────────────────────────────────────────── справка из базы
@@ -334,6 +376,29 @@ export async function handlePatientMessage(
     externalId: input.externalId,
   });
 
+  const settings = await assistantMode(ctx.companyId);
+
+  // Режим «выключен»: агент молчит полностью, диалог ведёт человек.
+  if (settings.mode === "off") {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Ассистент выключен в настройках").catch(() => {});
+    return null;
+  }
+
+  // Стоп-слова из настроек: клиника сама решает, о чём агент не говорит.
+  if (hitsStopWord(text, settings.stopWords)) {
+    await escalate(ctx.companyId, conversation.id, "KEYWORD", "Стоп-слово из настроек").catch(() => {});
+    return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
+  }
+
+  // Режим «только черновики»: агент сам не отвечает, а зовёт человека.
+  // Автономная работа включается в настройках осознанно (§6.4).
+  if (settings.mode === "drafts") {
+    await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ассистент в режиме черновиков").catch(() => {});
+    return respond(ctx, conversation.id, {
+      text: "Передал(а) ваш вопрос администратору — он ответит здесь же.",
+    });
+  }
+
   // Расписание — зона администратора (решение заказчика).
   if (scheduleTopic(text)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
@@ -406,7 +471,8 @@ function mainMenu() {
   // Кнопки записи нет намеренно: расписанием распоряжается администратор.
   return [
     { text: "Услуги и цены", data: "prices" },
-    { text: "Адрес и часы", data: "info" },
+    { text: "Адрес", data: "address" },
+    { text: "Часы работы", data: "hours" },
     { text: "Позвать администратора", data: "human" },
   ];
 }
@@ -415,12 +481,42 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
   if (data === "prices") {
     const services = await getServices(ctx.companyId);
     const lines = services.map((s) => `• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
-    return { text: `Услуги и цены:\n${lines.join("\n")}`, buttons: mainMenu() };
+    return respond(ctx, conversationId, {
+      text: `Услуги и цены:\n${lines.join("\n")}`,
+      buttons: mainMenu(),
+    });
   }
 
-  if (data === "info") {
-    const text = await clinicContext(ctx.companyId);
-    return { text, buttons: mainMenu() };
+  if (data === "address") {
+    // Адрес — из справочника клиники. Нет записи — честно зовём человека,
+    // а не пересказываем весь справочник.
+    const rows = await prisma.knowledgeEntry.findMany({
+      where: { companyId: ctx.companyId, isActive: true },
+      select: { topic: true, question: true, answer: true },
+    });
+    const m = matchKnowledge("адрес как добраться где находитесь", rows);
+    if (m && m.topicCoverage > 0) {
+      return respond(ctx, conversationId, { text: m.row.answer, buttons: mainMenu() });
+    }
+    await escalate(ctx.companyId, conversationId, "MISUNDERSTOOD", "Адрес не заполнен в справочнике").catch(() => {});
+    return respond(ctx, conversationId, {
+      text: "Адрес уточнит администратор — передал(а) ему вопрос.",
+      buttons: mainMenu(),
+    });
+  }
+
+  if (data === "hours") {
+    const schedule = await prisma.clinicSchedule.findMany({
+      where: { companyId: ctx.companyId },
+      orderBy: { weekday: "asc" },
+      select: { weekday: true, startMinute: true, endMinute: true },
+    });
+    const days = ["", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+    const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    const lines = schedule.map((d) => `${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
+    const closed = [1, 2, 3, 4, 5, 6, 7].filter((w) => !schedule.some((d) => d.weekday === w));
+    if (closed.length) lines.push(`Выходной: ${closed.map((w) => days[w]).join(", ")}`);
+    return respond(ctx, conversationId, { text: `Часы работы:\n${lines.join("\n")}`, buttons: mainMenu() });
   }
 
   if (data === "human" || data === "book") {

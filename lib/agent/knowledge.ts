@@ -37,16 +37,25 @@ function stem(word: string): string {
 export function matchKnowledge(
   question: string,
   rows: KnowledgeRow[],
-): { row: KnowledgeRow; score: number; hits: number } | null {
+): { row: KnowledgeRow; score: number; hits: number; topicCoverage: number } | null {
   const asked = words(question).map(stem);
   if (asked.length === 0 || rows.length === 0) return null;
 
-  let best: { row: KnowledgeRow; score: number; hits: number } | null = null;
+  let best: { row: KnowledgeRow; score: number; hits: number; topicCoverage: number } | null = null;
   for (const row of rows) {
     const haystack = new Set(words(`${row.topic} ${row.question} ${row.answer}`).map(stem));
+    const topicWords = words(row.topic).map(stem);
     const hits = asked.filter((w) => haystack.has(w)).length;
-    const score = hits / asked.length;
-    if (!best || score > best.score) best = { row, score, hits };
+    // Насколько вопрос покрывает саму тему. «Адрес» — одно слово, покрытие
+    // 100%: спрашивают именно это. «Капельница» покрывает «Подготовку к
+    // капельнице» лишь наполовину — вопрос может быть и про цену, тут гадать
+    // нельзя, пусть отвечает модель с контекстом переписки.
+    const topicCoverage =
+      topicWords.length === 0
+        ? 0
+        : topicWords.filter((w) => asked.includes(w)).length / topicWords.length;
+    const score = hits / asked.length + topicCoverage * 0.5;
+    if (!best || score > best.score) best = { row, score, hits, topicCoverage };
   }
   return best;
 }
@@ -59,10 +68,13 @@ export function matchKnowledge(
  * Поэтому для коротких вопросов требуем не меньше двух совпавших слов, а
  * односложные отдаём модели: у неё есть контекст переписки.
  */
-export function confidentMatch(m: { score: number; hits: number } | null): boolean {
+export function confidentMatch(m: { score: number; hits: number; topicCoverage: number } | null): boolean {
   if (!m) return false;
   if (m.score < KNOWLEDGE_MIN_SCORE) return false;
-  return m.hits >= 2;
+  // Двух совпавших слов достаточно. Одного — только если вопрос покрывает тему
+  // целиком: «адрес» → тема «Адрес», но не «капельница» → «Подготовка к
+  // капельнице», где спрашивать могли и про цену.
+  return m.hits >= 2 || m.topicCoverage >= 0.99;
 }
 
 /** Порог уверенности: ниже него отвечать нельзя, вопрос уходит человеку. */

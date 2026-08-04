@@ -63,3 +63,20 @@ describe("confidentMatch", () => {
     expect(confidentMatch(null)).toBe(false);
   });
 });
+
+describe("совпадение по названию темы", () => {
+  it("однословный вопрос «адрес» находит тему «Адрес»", () => {
+    const m = matchKnowledge("адрес", ROWS);
+    expect(m?.row.topic).toBe("Адрес");
+    expect(confidentMatch(m)).toBe(true);
+  });
+
+  it("«какой у вас адрес» тоже уверенно", () => {
+    expect(confidentMatch(matchKnowledge("какой у вас адрес", ROWS))).toBe(true);
+  });
+
+  it("слово не из темы одно по себе не даёт уверенности", () => {
+    // «режим» нет ни в одной теме — угадывать нельзя.
+    expect(confidentMatch(matchKnowledge("режим", ROWS))).toBe(false);
+  });
+});

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { settingsStore, WEEKDAYS } from "@/app/_data/settings";
 import { Field, Group, SaveBar, TimeInput, Toggle } from "../_components/ui";
 import { saveSection } from "../blob-actions";
+import { Devices } from "./devices";
 
 type NotificationsSettings = typeof settingsStore.notifications;
 
@@ -84,25 +85,7 @@ export function NotificationsClient({ initial }: { initial: NotificationsSetting
         ))}
       </Group>
 
-      <Group title="Устройства" hint="куда приходят push-уведомления">
-        <ul className="flex flex-col gap-2">
-          <li className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-sm">Chrome · MacBook Ирины</p>
-              <p className="text-text-subtle text-xs">подключено 20 июля</p>
-            </div>
-            <button type="button" className="text-text-subtle hover:text-text text-sm">
-              Отключить
-            </button>
-          </li>
-        </ul>
-        <button
-          type="button"
-          className="border-border text-text-muted hover:bg-hover self-start rounded-md border px-3 py-1.5 text-sm"
-        >
-          + Подключить это устройство
-        </button>
-      </Group>
+      <Devices />
 
       <div className="flex items-center gap-3">
         <SaveBar

@@ -71,7 +71,7 @@ export function NotificationCenter({ align = "right" }: { align?: "left" | "righ
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
       });
-      await subscribePush(JSON.parse(JSON.stringify(sub)));
+      await subscribePush(JSON.parse(JSON.stringify(sub)), navigator.userAgent);
       await sendTestPush();
       setPushOn(true);
     } catch {

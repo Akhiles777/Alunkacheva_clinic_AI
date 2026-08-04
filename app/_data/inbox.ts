@@ -4,12 +4,16 @@
  */
 import type { Dialog, DialogChannel, DialogStatus } from "./store";
 
+/**
+ * Три фильтра вместо пяти. «Черновики агента» всегда были пусты — suggest-режим
+ * не реализован; «Закрытые» администратору в работе не нужны и прятались за
+ * лишним кликом. Осталось то, по чему действительно работают: кому ответить,
+ * что горит, и полный список.
+ */
 export const DIALOG_FILTERS = [
   { id: "need", label: "Нужен ответ" },
-  { id: "escalated", label: "Эскалации" },
-  { id: "drafts", label: "Черновики агента" },
+  { id: "escalated", label: "Срочные" },
   { id: "all", label: "Все" },
-  { id: "closed", label: "Закрытые" },
 ] as const;
 
 export function dialogMatchesFilter(d: Dialog, filter: string): boolean {
@@ -18,12 +22,10 @@ export function dialogMatchesFilter(d: Dialog, filter: string): boolean {
       return d.unread && d.status !== "closed";
     case "escalated":
       return d.status === "escalated";
-    case "drafts":
-      return Boolean(d.agentDraft);
-    case "closed":
-      return d.status === "closed";
     default:
-      return true;
+      // «Все» — без закрытых: они уводят внимание, а вернуться к ним можно
+      // через карточку пациента.
+      return d.status !== "closed";
   }
 }
 

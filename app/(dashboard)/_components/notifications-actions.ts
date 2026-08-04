@@ -70,18 +70,22 @@ export async function getVapidPublicKey(): Promise<string> {
   return process.env.NEXT_PUBLIC_VAPID_PUBLIC || process.env.VAPID_PUBLIC || "";
 }
 
-export async function subscribePush(sub: { endpoint: string; keys: { p256dh: string; auth: string } }): Promise<{ ok: boolean }> {
+export async function subscribePush(
+  sub: { endpoint: string; keys: { p256dh: string; auth: string } },
+  userAgent?: string,
+): Promise<{ ok: boolean }> {
   const session = await getSession();
   if (!session.userId) return { ok: false };
   await prisma.pushSubscription.upsert({
     where: { endpoint: sub.endpoint },
-    update: { p256dh: sub.keys.p256dh, auth: sub.keys.auth, staffUserId: session.userId, failureCount: 0 },
+    update: { p256dh: sub.keys.p256dh, auth: sub.keys.auth, staffUserId: session.userId, failureCount: 0, userAgent: userAgent ?? null },
     create: {
       companyId: session.companyId,
       staffUserId: session.userId,
       endpoint: sub.endpoint,
       p256dh: sub.keys.p256dh,
       auth: sub.keys.auth,
+      userAgent: userAgent ?? null,
     },
   });
   return { ok: true };
