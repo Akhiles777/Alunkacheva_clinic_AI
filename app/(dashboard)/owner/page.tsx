@@ -1,4 +1,6 @@
 import { formatMoney } from "@/lib/format";
+import { getSession } from "@/lib/server/session";
+import { can } from "@/lib/server/authz";
 import { getOwnerReport, getWeeklyDynamics } from "./actions";
 import { OwnerAssistant } from "./owner-assistant";
 import { WeeklyCharts } from "./weekly-charts";
@@ -16,6 +18,26 @@ function Tile({ label, value, hint }: { label: string; value: string | number; h
 }
 
 export default async function OwnerPage() {
+  /**
+   * Отказ показываем понятной страницей, а не красным экраном ошибки: без
+   * права на выручку этот раздел просто не для этого сотрудника, и это не
+   * поломка.
+   */
+  const session = await getSession();
+  if (!(await can(session, "VIEW_REVENUE"))) {
+    return (
+      <div className="px-7 py-8 max-md:px-5">
+        <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+          <p className="text-md font-medium">Раздел недоступен</p>
+          <p className="text-text-muted mt-2 text-sm leading-relaxed">
+            Кабинет владельца показывает выручку клиники. Доступ к нему выдаётся отдельно —
+            обратитесь к владельцу или администратору.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const [report, weekly] = await Promise.all([getOwnerReport(), getWeeklyDynamics()]);
 
   return (

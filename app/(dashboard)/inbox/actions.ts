@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { can } from "@/lib/server/authz";
 import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
@@ -196,6 +197,15 @@ export async function sendMessageDb(
   text: string,
 ): Promise<SendResult> {
   const session = await getSession();
+  /**
+   * Право «писать пациентам» настраивается по каждому сотруднику, но до сих
+   * пор его соблюдал только интерфейс: кнопку прятали, а действие на сервере
+   * работало у кого угодно. Отвечаем отказом текстом, а не исключением —
+   * сообщение не должно исчезать в красном экране.
+   */
+  if (!(await can(session, "MESSAGE_PATIENTS"))) {
+    return { ok: false, error: "Нет права писать пациентам" };
+  }
   const conv = await prisma.conversation.findFirst({
     where: { id: conversationId, companyId: session.companyId },
     select: { channel: true, externalUserId: true },

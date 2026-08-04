@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { requirePermission } from "@/lib/server/authz";
 import type { Appt } from "@/app/_data/store";
 import { hypotheses, priceOf, roomLoad, staffPerformance } from "@/lib/staff-analytics";
 import { todayRangeMoscow } from "@/lib/schedule";
@@ -127,6 +128,8 @@ function serviceBreakdown(appts: Appt[]): OwnerServiceRow[] {
 
 export async function getOwnerReport(): Promise<OwnerReport> {
   const session = await getSession();
+  // Отчёт по выручке — только тем, кому это право выдано (§9).
+  await requirePermission(session, "VIEW_REVENUE");
   const [appts, patients, dialogs, calls] = await Promise.all([
     loadAppts(session.companyId),
     patientCounts(session.companyId),
@@ -193,6 +196,8 @@ function weekLabel(key: number): string {
 /** Динамика по неделям (доход, клиенты, приёмы) за последние 6 недель. */
 export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
   const session = await getSession();
+  // Отчёт по выручке — только тем, кому это право выдано (§9).
+  await requirePermission(session, "VIEW_REVENUE");
   const since = new Date(Date.now() - 8 * 7 * 24 * 3600 * 1000);
   const rows = await prisma.appointment.findMany({
     where: { companyId: session.companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since } },
@@ -231,6 +236,8 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
 /** Текстовый срез базы для ИИ-аналитика владельца (только чтение). */
 export async function getOwnerAiContext(): Promise<string> {
   const session = await getSession();
+  // Отчёт по выручке — только тем, кому это право выдано (§9).
+  await requirePermission(session, "VIEW_REVENUE");
   const [report, appts] = await Promise.all([getOwnerReport(), loadAppts(session.companyId)]);
   const lines: string[] = [];
   lines.push("# Сводка клиники");

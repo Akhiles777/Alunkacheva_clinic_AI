@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { requirePermission } from "@/lib/server/authz";
 
 export interface AuditDisplayRow {
   id: string;
@@ -46,6 +47,8 @@ const fmt = new Intl.DateTimeFormat("ru-RU", {
 
 export async function getAuditLog(): Promise<AuditDisplayRow[]> {
   const session = await getSession();
+  // Журнал доступа к карточкам пациентов — сам по себе чувствительные данные.
+  await requirePermission(session, "VIEW_AUDIT");
   const rows = await prisma.auditLog.findMany({
     where: { companyId: session.companyId },
     orderBy: { createdAt: "desc" },
