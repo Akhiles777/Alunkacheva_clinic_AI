@@ -21,10 +21,13 @@ describe("shouldNotifyEscalation", () => {
     ).toBe(true);
   });
 
-  it("гасит мгновенный повтор прямой просьбы — это двойная отправка", () => {
+  it("зовёт по прямой просьбе всегда, даже сразу после предыдущей", () => {
     expect(
-      shouldNotifyEscalation({ reason: "PATIENT_REQUEST", lastEscalatedAt: ago(1), now }),
-    ).toBe(false);
+      shouldNotifyEscalation({ reason: "PATIENT_REQUEST", lastEscalatedAt: ago(0), now }),
+    ).toBe(true);
+    expect(
+      shouldNotifyEscalation({ reason: "AGENT_REQUEST", lastEscalatedAt: ago(0), now }),
+    ).toBe(true);
   });
 
   it("медицинский вопрос считается прямой просьбой", () => {

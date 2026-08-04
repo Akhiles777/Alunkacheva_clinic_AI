@@ -69,6 +69,8 @@ const PATIENTS = [
 ];
 
 const WEEKS = 8;
+/** На сколько дней вперёд заполняем запись. Стенд не должен «пустеть» назавтра. */
+const DAYS_AHEAD = 21;
 const DAY_START_MIN = 9 * 60;
 const DAY_END_MIN = 20 * 60;
 
@@ -180,9 +182,18 @@ async function main() {
   const rows: Prisma.AppointmentCreateManyInput[] = [];
   let index = 0;
 
-  for (let dayBack = WEEKS * 7; dayBack >= 0; dayBack--) {
+  /**
+   * Окно данных: история назад и записи вперёд.
+   *
+   * Записи вперёд — не украшение. Почти все экраны («Сегодня», расписание,
+   * кабинет владельца, загрузка кабинетов) показывают текущие сутки. Когда
+   * демо заканчивалось днём генерации, назавтра клиника выглядела вымершей:
+   * выручка ноль, кабинеты пусты, панель владельца пуста — при полной базе
+   * визитов за два месяца. Запас вперёд держит стенд живым.
+   */
+  for (let offset = -WEEKS * 7; offset <= DAYS_AHEAD; offset++) {
     const day = new Date();
-    day.setDate(day.getDate() - dayBack);
+    day.setDate(day.getDate() + offset);
     day.setHours(0, 0, 0, 0);
     if (day.getDay() === 0) continue; // воскресенье клиника не работает
 
@@ -214,7 +225,7 @@ async function main() {
         // часу, считаются состоявшимися. Иначе на «Сегодня» и у владельца
         // выручка всегда ноль — экран выглядит сломанным, хотя данные есть.
         const finished = start.getTime() + duration * 60_000 <= Date.now();
-        const past = dayBack > 0 || finished;
+        const past = offset < 0 || finished;
         const roll = rnd();
         const status = !past
           ? roll < 0.5

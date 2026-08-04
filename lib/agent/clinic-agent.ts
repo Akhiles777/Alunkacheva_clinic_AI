@@ -355,8 +355,10 @@ export async function handlePatientMessage(
         companyId: ctx.companyId,
         recipientIds: await inboxRecipients(ctx.companyId),
         kind: "PATIENT_MESSAGE",
-        title: "Новое сообщение в Telegram",
-        body: "Диалог ведёт сотрудник — агент не отвечает",
+        title: "Новое сообщение от пациента",
+        // Без служебных пояснений про агента: сотруднику важно, что пациент
+        // написал и ждёт ответа, а не в каком режиме сейчас бот.
+        body: "Пациент написал в Telegram",
         url: "/inbox",
         entityId: conversation.id,
       });

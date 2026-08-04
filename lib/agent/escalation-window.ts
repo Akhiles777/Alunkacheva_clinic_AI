@@ -7,11 +7,14 @@
  * просьбы позвать администратора не доходили вообще — ни первая после
  * нажатия кнопки, ни все следующие.
  *
- * Поэтому решаем по времени и по поводу:
- *  · пациент прямо просит человека (или задал медицинский вопрос) — зовём,
- *    отсекая только мгновенный повтор, то есть двойную отправку;
- *  · агент решил сам (стоп-слово, не понял вопрос) — зовём не чаще раза в
- *    четверть часа, этого хватает, чтобы не заваливать администратора.
+ * Поэтому решаем по поводу:
+ *  · пациент прямо просит человека (или задал медицинский вопрос) — зовём
+ *    всегда, без исключений. Просьба, оставшаяся без ответа, — это потерянный
+ *    пациент; шум от лишнего уведомления несопоставимо дешевле. Неважно,
+ *    нажата кнопка или сказано словами: это одно и то же обращение;
+ *  · агент решил сам (стоп-слово, не понял вопрос) — не чаще раза в четверть
+ *    часа: здесь за повторами не стоит человек, и заваливать администратора
+ *    догадками агента незачем.
  */
 export type EscalationReason =
   | "MEDICAL_QUESTION"
@@ -23,7 +26,6 @@ export type EscalationReason =
 /** Просьбы, за которыми стоит человек, а не догадка агента. */
 const EXPLICIT: EscalationReason[] = ["PATIENT_REQUEST", "AGENT_REQUEST", "MEDICAL_QUESTION"];
 
-export const EXPLICIT_REPEAT_MS = 2 * 60_000;
 export const AUTOMATIC_REPEAT_MS = 15 * 60_000;
 
 export function isExplicit(reason: EscalationReason): boolean {
@@ -36,9 +38,11 @@ export function shouldNotifyEscalation(input: {
   lastEscalatedAt: Date | null;
   now: Date;
 }): boolean {
+  // Человека позвали прямо — доносим всегда.
+  if (isExplicit(input.reason)) return true;
   if (!input.lastEscalatedAt) return true;
   const passed = input.now.getTime() - input.lastEscalatedAt.getTime();
   // Время назад (расхождение часов) не должно превращаться в вечную тишину.
   if (passed < 0) return true;
-  return passed >= (isExplicit(input.reason) ? EXPLICIT_REPEAT_MS : AUTOMATIC_REPEAT_MS);
+  return passed >= AUTOMATIC_REPEAT_MS;
 }
