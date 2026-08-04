@@ -154,7 +154,7 @@ async function saveMessage(input: {
   });
 }
 
-async function escalate(companyId: string, conversationId: string, reason: "MEDICAL_QUESTION" | "PATIENT_REQUEST" | "KEYWORD", note: string) {
+async function escalate(companyId: string, conversationId: string, reason: "MEDICAL_QUESTION" | "PATIENT_REQUEST" | "KEYWORD" | "MISUNDERSTOOD", note: string) {
   await prisma.conversation.update({
     where: { id: conversationId },
     data: { status: "ESCALATED" },
@@ -209,49 +209,6 @@ async function clinicContext(companyId: string): Promise<string> {
   return lines.join("\n");
 }
 
-// ─────────────────────────────────────────────── состояние записи
-//
-// Черновик записи держим в самом диалоге (Conversation.botDraft не существует,
-// поэтому — в отдельной служебной записи Message с authorType BOT и префиксом).
-// Так состояние переживает перезапуск процесса и не требует новой таблицы.
-
-const DRAFT_PREFIX = "__draft__";
-
-interface Draft {
-  serviceId?: string;
-  startAt?: string;
-  staffId?: string;
-  /** Показанные пациенту окна: в кнопку влезает только индекс. */
-  slots?: { startAt: string; staffId: string }[];
-}
-
-async function readDraft(conversationId: string): Promise<Draft> {
-  const row = await prisma.message.findFirst({
-    where: { conversationId, body: { startsWith: DRAFT_PREFIX } },
-    orderBy: { createdAt: "desc" },
-    select: { body: true },
-  });
-  if (!row) return {};
-  try {
-    return JSON.parse(row.body.slice(DRAFT_PREFIX.length));
-  } catch {
-    return {};
-  }
-}
-
-async function writeDraft(companyId: string, conversationId: string, draft: object) {
-  await prisma.message.create({
-    data: {
-      companyId,
-      conversationId,
-      channel: "TELEGRAM",
-      direction: "OUT",
-      authorType: "BOT",
-      body: `${DRAFT_PREFIX}${JSON.stringify(draft)}`,
-    },
-  });
-}
-
 // ─────────────────────────────────────────────── обработка
 
 export async function handlePatientMessage(
@@ -296,7 +253,7 @@ export async function handlePatientMessage(
 
   // ── контакт с номером
   if (input.phone) {
-    return finishBooking(ctx, conversation.id, input.phone);
+    return attachPhone(ctx, conversation.id, input.phone);
   }
 
   const text = (input.text ?? "").trim();
@@ -407,94 +364,47 @@ export async function handlePatientMessage(
 }
 
 function mainMenu() {
+  // Кнопки записи нет намеренно: расписанием распоряжается администратор.
   return [
-    { text: "Записаться", data: "book" },
     { text: "Услуги и цены", data: "prices" },
+    { text: "Адрес и часы", data: "info" },
     { text: "Позвать администратора", data: "human" },
   ];
 }
 
-async function serviceMenu(companyId: string): Promise<AgentReply> {
-  const services = await getServices(companyId);
-  if (services.length === 0) return { text: "Список услуг пока не заполнен.", buttons: mainMenu() };
-  return {
-    text: "Выберите услугу:",
-    buttons: services.slice(0, 10).map((s) => ({ text: `${s.title} · ${s.price} ₽`, data: `svc:${s.id}` })),
-  };
-}
-
 async function handleCallback(ctx: AgentContext, conversationId: string, data: string): Promise<AgentReply> {
-  if (data === "book") return serviceMenu(ctx.companyId);
-
   if (data === "prices") {
     const services = await getServices(ctx.companyId);
     const lines = services.map((s) => `• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
     return { text: `Услуги и цены:\n${lines.join("\n")}`, buttons: mainMenu() };
   }
 
-  if (data === "human") {
+  if (data === "info") {
+    const text = await clinicContext(ctx.companyId);
+    return { text, buttons: mainMenu() };
+  }
+
+  if (data === "human" || data === "book") {
     await escalate(ctx.companyId, conversationId, "PATIENT_REQUEST", "Пациент просит человека").catch(() => {});
     return { text: "Передал(а) администратору — он ответит здесь же." };
-  }
-
-  if (data.startsWith("svc:")) {
-    const serviceId = data.slice(4);
-    const from = new Date();
-    const to = new Date(from.getTime() + 14 * 24 * 3600 * 1000);
-    const slots = await getFreeSlots({ companyId: ctx.companyId, serviceId, dateFrom: from, dateTo: to, limit: 8 });
-    if (slots.length === 0) {
-      await escalate(ctx.companyId, conversationId, "KEYWORD", "Нет свободных окон на две недели").catch(() => {});
-      return { text: "На ближайшие две недели свободных окон нет. Передал(а) администратору — подберёт время." };
-    }
-    // В callback_data Telegram помещается 64 байта — идентификаторы услуги,
-    // специалиста и время туда не влезают. Кладём варианты в черновик, а в
-    // кнопку — только порядковый номер.
-    await writeDraft(ctx.companyId, conversationId, {
-      serviceId,
-      slots: slots.map((s) => ({ startAt: s.startAt, staffId: s.staffId })),
-    });
-    return {
-      text: "Свободное время:",
-      buttons: slots.map((s, i) => ({ text: s.label, data: `slot:${i}` })),
-    };
-  }
-
-  if (data.startsWith("slot:")) {
-    const index = Number(data.slice(5));
-    const draft = await readDraft(conversationId);
-    const chosen = draft.slots?.[index];
-    if (!chosen || !draft.serviceId) {
-      return { text: "Список времени устарел. Выберите услугу заново.", buttons: mainMenu() };
-    }
-    await writeDraft(ctx.companyId, conversationId, {
-      serviceId: draft.serviceId,
-      startAt: chosen.startAt,
-      staffId: chosen.staffId,
-    });
-    return {
-      text: "Чтобы закрепить запись, отправьте номер телефона — по нему администратор найдёт вас в базе.",
-      askPhone: true,
-    };
   }
 
   return { text: "Не понял(а) выбор. Попробуйте ещё раз.", buttons: mainMenu() };
 }
 
-async function finishBooking(ctx: AgentContext, conversationId: string, rawPhone: string): Promise<AgentReply> {
+/**
+ * Номер телефона от пациента. Записи бот не создаёт, поэтому номер просто
+ * привязываем к диалогу и передаём администратору — ему звонить и записывать.
+ */
+async function attachPhone(ctx: AgentContext, conversationId: string, rawPhone: string): Promise<AgentReply> {
   const phone = normalizePhone(rawPhone);
   if (!phone) return { text: "Не удалось разобрать номер. Отправьте его ещё раз.", askPhone: true };
 
-  const draft = await readDraft(conversationId);
-  if (!draft.serviceId || !draft.startAt || !draft.staffId) {
-    return { text: "Давайте начнём заново — выберите услугу.", buttons: mainMenu() };
-  }
-
-  // Пациент по номеру: телефон — единственный надёжный ключ (§4).
-  const existingPhone = await prisma.patientPhone.findFirst({
+  const existing = await prisma.patientPhone.findFirst({
     where: { companyId: ctx.companyId, phone },
     select: { patientId: true },
   });
-  let patientId = existingPhone?.patientId ?? null;
+  let patientId = existing?.patientId ?? null;
   if (!patientId) {
     const source = await prisma.source.findFirst({
       where: { companyId: ctx.companyId, code: "telegram" },
@@ -514,48 +424,7 @@ async function finishBooking(ctx: AgentContext, conversationId: string, rawPhone
     });
     patientId = created.id;
   }
-
   await prisma.conversation.update({ where: { id: conversationId }, data: { patientId } });
-
-  const result = await createBooking({
-    companyId: ctx.companyId,
-    patientId,
-    serviceId: draft.serviceId,
-    staffId: draft.staffId,
-    startAt: new Date(draft.startAt),
-    conversationId,
-    note: "Запись через Telegram-бота",
-  });
-
-  if (!result.ok) {
-    // Слот заняли, пока пациент отправлял номер — предлагаем выбрать заново.
-    if (result.reason === "slot_taken") {
-      return { text: `${result.message}`, buttons: [{ text: "Выбрать другое время", data: `svc:${draft.serviceId}` }] };
-    }
-    await escalate(ctx.companyId, conversationId, "KEYWORD", `Не удалось записать: ${result.message}`).catch(() => {});
-    return { text: `${result.message} Передал(а) администратору.` };
-  }
-
-  await notifyStaff({
-    companyId: ctx.companyId,
-    recipientIds: await inboxRecipients(ctx.companyId),
-    kind: "BOOKING",
-    title: "Новая запись из Telegram",
-    body: `${result.label} · ${result.staffName}`,
-    url: "/schedule",
-    entityId: result.appointmentId,
-  });
-
-  const text = `Записал(а): ${result.label}, ${result.staffName}, ${result.roomName}. Если планы изменятся — напишите здесь.`;
-  await saveMessage({
-    companyId: ctx.companyId,
-    conversationId,
-    channel: "TELEGRAM",
-    direction: "OUT",
-    authorType: "BOT",
-    body: text,
-  });
-  return { text, buttons: mainMenu() };
+  await escalate(ctx.companyId, conversationId, "PATIENT_REQUEST", "Пациент оставил номер для записи").catch(() => {});
+  return { text: "Спасибо, передал(а) номер администратору — он свяжется и подберёт время." };
 }
-
-export { slotLabel };
