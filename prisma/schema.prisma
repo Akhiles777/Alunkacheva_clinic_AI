@@ -319,8 +319,13 @@ model Conversation {
   companyId      String
   patientId      String?
   channel        Channel
-  /// ig scoped id / номер в WhatsApp.
+  /// ig scoped id / номер в WhatsApp / chat id в Telegram.
   externalUserId String
+  /// Имя, как его отдал канал (Telegram First/Last name, профиль Instagram).
+  /// Держим отдельно от Patient.name: до привязки к карточке это единственное,
+  /// чем администратор может отличить один диалог от другого. Раньше такие
+  /// диалоги показывались как «Без имени».
+  contactName    String?
   status         ConversationStatus @default(BOT_ACTIVE)
   assignedToId   String?
   sourceId       String?

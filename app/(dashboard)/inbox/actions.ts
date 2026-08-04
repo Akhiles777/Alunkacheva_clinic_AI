@@ -140,7 +140,8 @@ export async function getConversations(): Promise<DialogRecord[]> {
     const windowLeftMs = c.replyWindowExpiresAt ? c.replyWindowExpiresAt.getTime() - Date.now() : null;
     return {
       id: c.id,
-      name: c.patient?.name ?? null,
+      // Имя карточки важнее имени из профиля: карточку ведёт клиника.
+      name: c.patient?.name ?? c.contactName ?? null,
       patientId: c.patientId,
       channel: CHANNEL_MAP[c.channel] ?? "whatsapp",
       status: STATUS_MAP[c.status],
@@ -258,6 +259,82 @@ export async function returnToBotDb(conversationId: string): Promise<{ ok: true 
     data: { status: "RESOLVED", resolvedAt: new Date(), resolvedById: session.userId },
   });
   return { ok: true };
+}
+
+/**
+ * Переименовать контакт. Правит имя карточки, если диалог к ней привязан, и
+ * имя из профиля — если ещё нет. Администратору всё равно, где оно лежит:
+ * он видит одно имя и хочет его поправить.
+ */
+export async function renameContactDb(conversationId: string, name: string): Promise<{ ok: true }> {
+  const session = await getSession();
+  const clean = name.trim().slice(0, 120);
+  if (!clean) throw new Error("Имя не может быть пустым");
+  const conv = await prisma.conversation.findFirst({
+    where: { id: conversationId, companyId: session.companyId },
+    select: { patientId: true },
+  });
+  if (!conv) throw new Error("Диалог не найден");
+  if (conv.patientId) {
+    await prisma.patient.update({ where: { id: conv.patientId }, data: { name: clean } });
+  } else {
+    await prisma.conversation.update({ where: { id: conversationId }, data: { contactName: clean } });
+  }
+  return { ok: true };
+}
+
+/**
+ * Привязать диалог к карточке клиента: существующей или новой.
+ *
+ * Без этого переписка из мессенджера жила отдельно от базы клиентов —
+ * администратор видел «Без имени» и не мог связать её с историей визитов.
+ */
+export async function linkPatientDb(
+  conversationId: string,
+  input: { patientId?: string; createName?: string },
+): Promise<{ ok: true; patientId: string }> {
+  const session = await getSession();
+  const conv = await prisma.conversation.findFirst({
+    where: { id: conversationId, companyId: session.companyId },
+    select: { id: true, contactName: true, sourceId: true },
+  });
+  if (!conv) throw new Error("Диалог не найден");
+
+  let patientId = input.patientId ?? null;
+  if (!patientId) {
+    const name = (input.createName ?? conv.contactName ?? "").trim();
+    if (!name) throw new Error("Укажите имя для новой карточки");
+    const created = await prisma.patient.create({
+      data: {
+        companyId: session.companyId,
+        name,
+        firstSeenAt: new Date(),
+        sourceId: conv.sourceId,
+      },
+      select: { id: true },
+    });
+    patientId = created.id;
+  }
+
+  await prisma.conversation.update({ where: { id: conversationId }, data: { patientId } });
+  return { ok: true, patientId };
+}
+
+/** Пациенты для выбора при привязке диалога. */
+export async function searchPatientsForLink(query: string): Promise<{ id: string; name: string; phone: string | null }[]> {
+  const session = await getSession();
+  const q = query.trim();
+  const rows = await prisma.patient.findMany({
+    where: {
+      companyId: session.companyId,
+      deletedAt: null,
+      ...(q ? { OR: [{ name: { contains: q, mode: "insensitive" } }, { phones: { some: { phone: { contains: q } } } }] } : {}),
+    },
+    orderBy: { name: "asc" },
+    take: 15,
+    select: { id: true, name: true, phones: { where: { isPrimary: true }, take: 1, select: { phone: true } } },
+  });
+  return rows.map((p) => ({ id: p.id, name: p.name ?? "Без имени", phone: p.phones[0]?.phone ?? null }));
 }
 
 export async function startDialogDb(input: {

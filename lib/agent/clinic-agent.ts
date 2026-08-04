@@ -106,7 +106,17 @@ async function loadConversation(ctx: AgentContext) {
   const existing = await prisma.conversation.findFirst({
     where: { companyId: ctx.companyId, channel: ctx.channel, externalUserId: ctx.externalUserId },
   });
-  if (existing) return existing;
+  if (existing) {
+    // Имя в профиле могло измениться, а до привязки к карточке оно —
+    // единственное, чем администратор отличает диалоги друг от друга.
+    if (ctx.displayName && existing.contactName !== ctx.displayName) {
+      return prisma.conversation.update({
+        where: { id: existing.id },
+        data: { contactName: ctx.displayName },
+      });
+    }
+    return existing;
+  }
 
   const source = await prisma.source.findFirst({
     where: { companyId: ctx.companyId, code: "telegram" },
@@ -117,6 +127,7 @@ async function loadConversation(ctx: AgentContext) {
       companyId: ctx.companyId,
       channel: ctx.channel,
       externalUserId: ctx.externalUserId,
+      contactName: ctx.displayName ?? null,
       status: "BOT_ACTIVE",
       sourceId: source?.id ?? null,
       startedAt: new Date(),

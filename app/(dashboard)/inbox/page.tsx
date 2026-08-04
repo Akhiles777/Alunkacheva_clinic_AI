@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   CHANNEL_LABEL,
@@ -11,14 +11,16 @@ import {
 import {
   activeNotes,
   findPatient,
+  hydrateDialogs,
   markDialogRead,
   returnToBot,
   sendMessage,
   useDb,
   type Dialog,
 } from "@/app/_data/store";
-import { getApprovedTemplates, type ApprovedTemplate } from "./actions";
+import { getApprovedTemplates, getConversations, type ApprovedTemplate } from "./actions";
 import { ComposeOverlay } from "../_components/compose-overlay";
+import { ContactPanel } from "./contact-panel";
 import { PatientCardBody } from "../_components/patient-card";
 
 const NOTE_SHORT: Record<string, string> = {
@@ -107,7 +109,7 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
   return null;
 }
 
-function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
+function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => void; refresh: () => void }) {
   const [text, setText] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
   const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
@@ -172,6 +174,8 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
           <WindowBadge dialog={dialog} />
         </div>
       </div>
+
+      <ContactPanel key={dialog.id} dialog={dialog} onChanged={refresh} />
 
       <div className="flex-1 overflow-auto px-5 py-4">
         <div className="flex flex-col gap-3">
@@ -303,6 +307,24 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
 export default function InboxPage() {
   const db = useDb();
   const [filter, setFilter] = useState("need");
+  const [syncing, setSyncing] = useState(false);
+
+  /**
+   * Тихое обновление списка. Без него новые сообщения появлялись только после
+   * перезахода на страницу: инбокс загружался один раз при монтировании.
+   */
+  const refresh = useCallback(() => {
+    setSyncing(true);
+    getConversations()
+      .then(hydrateDialogs)
+      .catch(() => {})
+      .finally(() => setSyncing(false));
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(refresh, 6000);
+    return () => clearInterval(timer);
+  }, [refresh]);
   const [selectedId, setSelectedId] = useState<string | null>("d-grinberg");
   const [composing, setComposing] = useState(false);
 
@@ -335,6 +357,7 @@ export default function InboxPage() {
             </button>
           </div>
           <div className="mt-2.5 flex flex-wrap gap-1">
+            {syncing ? <span className="text-text-subtle self-center text-2xs">обновляем…</span> : null}
             {DIALOG_FILTERS.map((f) => (
               <button
                 key={f.id}
@@ -362,7 +385,7 @@ export default function InboxPage() {
 
       <div className={`min-w-0 flex-1 ${selected ? "" : "max-md:hidden"}`}>
         {selected ? (
-          <Thread dialog={selected} onBack={() => setSelectedId(null)} />
+          <Thread dialog={selected} onBack={() => setSelectedId(null)} refresh={refresh} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <p className="text-text-subtle text-sm">Выберите диалог слева.</p>
