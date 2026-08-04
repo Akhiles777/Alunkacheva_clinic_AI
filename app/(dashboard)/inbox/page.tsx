@@ -325,7 +325,9 @@ export default function InboxPage() {
     const timer = setInterval(refresh, 6000);
     return () => clearInterval(timer);
   }, [refresh]);
-  const [selectedId, setSelectedId] = useState<string | null>("d-grinberg");
+  // Ничего не выбрано по умолчанию: раньше здесь стоял id выдуманного диалога,
+  // и при пустом инбоксе экран пытался открыть несуществующую переписку.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
 
   const list = useMemo(

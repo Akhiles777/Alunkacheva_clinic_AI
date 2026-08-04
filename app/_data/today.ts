@@ -75,7 +75,7 @@ export interface AttentionItem {
 export interface TodayInquiry {
   id: string;
   name: string;
-  channel: "instagram" | "whatsapp";
+  channel: "instagram" | "whatsapp" | "telegram";
   preview: string;
   at: string;
   isNewPatient: boolean;
@@ -158,19 +158,13 @@ const ROOM_PLAN: {
   },
 ];
 
-const ATTENTION: AttentionItem[] = [
-  { id: "a1", kind: "escalation", title: "Гринберг И. Л. спрашивает про побочные эффекты", detail: "Агент передал: медицинский вопрос", waiting: "7 мин", urgent: true },
-  { id: "a2", kind: "unanswered", title: "Чернышёва Ж. З. ждёт ответа", detail: "WhatsApp · спрашивает про перенос", waiting: "21 мин", urgent: false },
-  { id: "a3", kind: "stalled_course", title: "7 курсов без следующей записи", detail: "Дольше всех не ходит Седых Д. П. — сеанс 4 из 10", waiting: "18 дней", urgent: false },
-  { id: "a4", kind: "unconfirmed", title: "5 визитов на завтра не подтверждены", detail: "Напоминания ещё не отправлены", waiting: "до 20:00", urgent: false },
-];
-
-const INQUIRIES: TodayInquiry[] = [
-  { id: "i1", name: "Новый номер +7 916 320-14-08", channel: "instagram", preview: "Здравствуйте! Сколько стоит курс капельниц?", at: "10:42", isNewPatient: true },
-  { id: "i2", name: "Белов Л. К.", channel: "whatsapp", preview: "Спасибо, всё подошло. Можно записаться ещё раз?", at: "10:18", isNewPatient: false },
-  { id: "i3", name: "Новый номер +7 903 771-52-30", channel: "whatsapp", preview: "А остеопат принимает детей?", at: "09:55", isNewPatient: true },
-  { id: "i4", name: "Шаповалова З. И.", channel: "instagram", preview: "Подскажите адрес, я подъезжаю", at: "09:31", isNewPatient: false },
-];
+/**
+ * «Требует внимания» и «обращения» считаются экраном «Сегодня» из живых
+ * диалогов. Здесь раньше лежали выдуманные строки с именами пациентов,
+ * которых в клинике нет, — они попадали на главный экран.
+ */
+const ATTENTION: AttentionItem[] = [];
+const INQUIRIES: TodayInquiry[] = [];
 
 function durationLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);

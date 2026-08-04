@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CabinetCard } from "./cabinet-card";
 import { FreeWindows } from "./free-windows";
 import { AttentionList, InquiryList } from "./today-lists";
 import { TodayAlerts } from "./today-alerts";
 import { SearchTrigger } from "./command-palette";
 import { BookingButton } from "./booking-panel";
-import { getToday } from "@/app/_data/today";
-import { useDb } from "@/app/_data/store";
+import { getToday, type AttentionItem } from "@/app/_data/today";
+import { allCourses, useDb } from "@/app/_data/store";
+import { CHANNEL_LABEL } from "@/app/_data/inbox";
 import { ROOM_SOURCE_LABEL } from "@/lib/rooms";
 import { formatMoney, formatNumber } from "@/lib/format";
 import { formatMinute } from "@/lib/metrics/occupancy";
@@ -18,7 +19,10 @@ import { buildCabinets, buildFreeWindows, dateLabelInTz, nowMinuteInTz } from "@
  * «Сегодня» из ЕДИНОГО источника — стора db.appointments (как страница
  * «Расписание»). Кабинеты, свободные окна и «сейчас» считаются из тех же данных,
  * а не из отдельного хардкода. Время — реальное, в таймзоне клиники.
- * Сводка/обращения/«требует внимания» пока из мок-агрегата getToday().
+ * Сводка, обращения и «требует внимания» считаются из общего стора — то есть
+ * из настоящих визитов и диалогов. Раньше здесь стоял мок-агрегат: на главном
+ * экране светилась выдуманная выручка и обращения от людей, которых в клинике
+ * нет.
  */
 export function TodayClient() {
   const db = useDb();
@@ -44,6 +48,68 @@ export function TodayClient() {
   const scheduled = db.appointments.length;
   const firstVisits = db.appointments.filter((a) => a.isFirstVisit).length;
 
+  // Деньги — только по состоявшимся визитам: запланированный визит ещё не
+  // выручка, и показывать его в сводке дня нельзя.
+  const arrived = db.appointments.filter((a) => a.status === "arrived");
+  const revenue = arrived.reduce((sum, a) => sum + (a.price ?? 0), 0);
+  const avgCheck = arrived.length ? Math.round(revenue / arrived.length) : 0;
+
+  // «Требует внимания» и «обращения» — из живых диалогов.
+  const attention = useMemo(() => {
+    const items: AttentionItem[] = [];
+    const escalated = db.dialogs.filter((d) => d.status === "escalated");
+    for (const d of escalated) {
+      items.push({
+        id: `esc-${d.id}`,
+        kind: "escalation",
+        title: `${d.name} — нужен человек`,
+        detail: d.escalationReason ? `Агент передал: ${d.escalationReason}` : "Агент передал диалог",
+        waiting: d.at,
+        urgent: true,
+      });
+    }
+    const waiting = db.dialogs.filter((d) => d.unread && d.status !== "escalated" && d.status !== "closed");
+    for (const d of waiting) {
+      items.push({
+        id: `wait-${d.id}`,
+        kind: "unanswered",
+        title: `${d.name} ждёт ответа`,
+        detail: `${CHANNEL_LABEL[d.channel]} · ${d.preview.slice(0, 60)}`,
+        waiting: d.at,
+        urgent: false,
+      });
+    }
+    const stalled = allCourses(db.patients).filter((c) => c.stalled);
+    if (stalled.length > 0) {
+      const worst = stalled.reduce((a, b) => ((a.daysAgo ?? 0) > (b.daysAgo ?? 0) ? a : b));
+      items.push({
+        id: "stalled",
+        kind: "stalled_course",
+        title: `${stalled.length} курс(ов) без следующей записи`,
+        detail: `Дольше всех не ходит ${worst.patientName} — сеанс ${worst.used} из ${worst.total}`,
+        waiting: worst.daysAgo !== null ? `${worst.daysAgo} дн.` : "давно",
+        urgent: false,
+      });
+    }
+    return items;
+  }, [db.dialogs, db.patients]);
+
+  const inquiries = useMemo(
+    () =>
+      db.dialogs
+        .filter((d) => d.status !== "closed")
+        .slice(0, 6)
+        .map((d) => ({
+          id: d.id,
+          name: d.name,
+          channel: d.channel,
+          preview: d.preview,
+          at: d.at,
+          isNewPatient: d.patientId === null,
+        })),
+    [db.dialogs],
+  );
+
   return (
     <div className="text-scale-compact contents">
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
@@ -60,12 +126,12 @@ export function TodayClient() {
         <div className="text-text-muted mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
           <span>
             Выручка{" "}
-            <b className="num text-text font-medium whitespace-nowrap">{formatMoney(data.summary.revenue)}</b>
+            <b className="num text-text font-medium whitespace-nowrap">{formatMoney(revenue)}</b>
           </span>
           <span aria-hidden className="sep-dot" />
           <span>
             средний чек{" "}
-            <b className="num text-text font-medium whitespace-nowrap">{formatMoney(data.summary.avgCheck)}</b>
+            <b className="num text-text font-medium whitespace-nowrap">{formatMoney(avgCheck)}</b>
           </span>
           <span aria-hidden className="sep-dot" />
           <span>
@@ -101,16 +167,16 @@ export function TodayClient() {
           <section>
             <div className="mb-3.5 flex items-baseline justify-between">
               <h2 className="text-base font-medium">Требует внимания</h2>
-              <span className="num text-text-subtle text-xs">{data.attention.length}</span>
+              <span className="num text-text-subtle text-xs">{attention.length}</span>
             </div>
-            <AttentionList items={data.attention} />
+            <AttentionList items={attention} />
           </section>
           <section>
             <div className="mb-3.5 flex items-baseline justify-between">
               <h2 className="text-base font-medium">Новые обращения</h2>
-              <span className="num text-text-subtle text-xs">{data.inquiries.length}</span>
+              <span className="num text-text-subtle text-xs">{inquiries.length}</span>
             </div>
-            <InquiryList items={data.inquiries} />
+            <InquiryList items={inquiries} />
           </section>
         </div>
 

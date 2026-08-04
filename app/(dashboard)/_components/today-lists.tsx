@@ -37,6 +37,7 @@ export function AttentionList({ items }: { items: AttentionItem[] }) {
 const CHANNEL_LABEL: Record<TodayInquiry["channel"], string> = {
   instagram: "Instagram",
   whatsapp: "WhatsApp",
+  telegram: "Telegram",
 };
 
 export function InquiryList({ items }: { items: TodayInquiry[] }) {
