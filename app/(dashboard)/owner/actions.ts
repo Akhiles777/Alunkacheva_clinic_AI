@@ -246,10 +246,12 @@ export async function getOwnerAiContext(): Promise<string> {
   lines.push(`Воронка: диалогов ${report.funnel.dialogs}, звонков ${report.funnel.calls}.`);
   lines.push("");
   lines.push("# Выручка по услугам");
-  for (const s of report.services) lines.push(`- ${s.service}: ${s.count} приёмов, ${s.revenue} ₽`);
+  // Верхние позиции: полный перечень раздувает запрос, а решения принимают
+  // по значимым строкам.
+  for (const s of report.services.slice(0, 8)) lines.push(`- ${s.service}: ${s.count} приёмов, ${s.revenue} ₽`);
   lines.push("");
   lines.push("# Сотрудники (сегодня)");
-  for (const s of report.staff) {
+  for (const s of report.staff.slice(0, 10)) {
     lines.push(
       `- ${s.name}: приёмов ${s.appts} (пришли ${s.arrived}, неявок ${s.noShow}); ` +
         `часы ${s.hours.toFixed(1)}; выручка ${s.revenue} ₽.`,
@@ -262,7 +264,7 @@ export async function getOwnerAiContext(): Promise<string> {
   if (notes.length) {
     lines.push("");
     lines.push("# Заметки администратора по визитам (отзывы, проблемы, пожелания)");
-    for (const a of notes) lines.push(`- ${a.service} у «${a.doctor}» (${a.patientName}): «${a.note}»`);
+    for (const a of notes.slice(0, 15)) lines.push(`- ${a.service} у «${a.doctor}»: «${a.note?.slice(0, 200)}»`);
   }
   lines.push("");
   lines.push("# Уже замеченные гипотезы");

@@ -11,7 +11,13 @@ import { CLINIC_NAME } from "@/lib/brand";
  * вместо выдумки.
  */
 const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1").replace(/\/+$/, "");
-const MODEL = process.env.ROUTER_AI_MODEL || "anthropic/claude-opus-4.8-fast";
+/**
+ * Модель бота пациентов — Haiku 4.5: здесь не нужен глубокий разбор, нужно
+ * аккуратно ответить по справочнику клиники. На замере вышло 0.07 за ответ
+ * против 0.87 у старшей модели — в двенадцать раз дешевле при том же
+ * результате. Отдельная переменная: у бота и у аналитика разные задачи.
+ */
+const MODEL = process.env.ROUTER_AI_BOT_MODEL || process.env.ROUTER_AI_MODEL || "anthropic/claude-haiku-4.5";
 
 const PATIENT_PROMPT = [
   `Ты — администратор клиники «${CLINIC_NAME}» в мессенджере.`,

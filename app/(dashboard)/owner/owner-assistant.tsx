@@ -43,7 +43,13 @@ export function OwnerAssistant() {
   async function ask(text: string) {
     const q = text.trim();
     if (!q || thinking) return;
-    const history = messages.filter((m) => m !== WELCOME).map((m) => ({ role: m.role, content: m.text }));
+    // Только последние реплики: полная история уходила в модель целиком и
+    // с каждым вопросом счёт рос — при этом старые ответы для нового вопроса
+    // почти не нужны.
+    const history = messages
+      .filter((m) => m !== WELCOME)
+      .slice(-8)
+      .map((m) => ({ role: m.role, content: m.text.slice(0, 1500) }));
     setMessages((m) => [...m, { role: "user", text: q }]);
     setInput("");
     setThinking(true);

@@ -210,7 +210,11 @@ async function main() {
         const start = new Date(day);
         start.setMinutes(cursor);
 
-        const past = dayBack > 0;
+        // Сегодняшний день живой: визиты, которые уже закончились к текущему
+        // часу, считаются состоявшимися. Иначе на «Сегодня» и у владельца
+        // выручка всегда ноль — экран выглядит сломанным, хотя данные есть.
+        const finished = start.getTime() + duration * 60_000 <= Date.now();
+        const past = dayBack > 0 || finished;
         const roll = rnd();
         const status = !past
           ? roll < 0.5
