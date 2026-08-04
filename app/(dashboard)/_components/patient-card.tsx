@@ -328,7 +328,7 @@ export function PatientCardBody({
               const stalled = course.status === "stalled";
               return (
                 <div key={course.id}>
-                  <div className="flex items-baseline justify-between gap-3">
+                  <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
                     <span className="truncate text-sm font-medium">{course.title}</span>
                     <span className="num text-text-muted flex-none text-xs">
                       {course.used}/{course.total}

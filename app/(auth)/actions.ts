@@ -5,12 +5,12 @@ import { prisma } from "@/lib/db";
 import { hashPassword, SESSION_COOKIE, signSession, verifyPassword } from "@/lib/auth";
 import { appRoleOf, type AppRole } from "@/lib/roles";
 import type { StaffRole } from "@/generated/prisma/enums";
-import { CLINIC_MAIL_DOMAIN } from "@/lib/brand";
 
 /**
- * Вход/регистрация. Владелец может войти без регистрации (кнопка «Войти как
- * владелец») — под засеянной учёткой владельца. Пароли хэшируются (scrypt),
- * сессия — подписанная кука.
+ * Вход и регистрация. Входа «без пароля» нет: прежняя кнопка «Войти как
+ * владелец» пускала владельцем любого, кто открыл страницу входа, — для CRM с
+ * медицинскими данными это дыра. Пароли хэшируются (scrypt), сессия —
+ * подписанная кука.
  */
 export interface AuthResult {
   ok: boolean;
@@ -98,25 +98,6 @@ export async function loginUser(input: { email: string; password: string }): Pro
   await prisma.staffUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   await setSession(user.id, cid, user.role);
   return { ok: true, role: appRoleOf(user.role) };
-}
-
-export async function loginAsOwner(): Promise<AuthResult> {
-  const cid = await companyId();
-  if (!cid) return { ok: false, error: "Клиника не настроена" };
-
-  let owner = await prisma.staffUser.findFirst({
-    where: { companyId: cid, role: "OWNER", deletedAt: null },
-    select: { id: true },
-  });
-  // Если владельца ещё нет — заводим (демо-вход без регистрации).
-  if (!owner) {
-    owner = await prisma.staffUser.create({
-      data: { companyId: cid, name: "Владелец", email: `owner@${CLINIC_MAIL_DOMAIN}`, passwordHash: "!invite-pending", role: "OWNER" },
-      select: { id: true },
-    });
-  }
-  await setSession(owner.id, cid, "OWNER");
-  return { ok: true, role: "owner" };
 }
 
 export async function logoutUser(): Promise<void> {

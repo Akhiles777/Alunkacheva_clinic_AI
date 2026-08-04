@@ -7,6 +7,7 @@ import { logoutUser } from "@/app/(auth)/actions";
 import { CLINIC_NAME, CLINIC_TAGLINE } from "@/lib/brand";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
 import { initials, isActive, navForRole } from "./nav-model";
+import { NotificationCenter } from "./notification-center";
 
 /**
  * Навигация для телефона: верхняя панель с кнопкой меню и выезжающая панель
@@ -73,6 +74,7 @@ export function MobileNav({
             {ROLE_LABEL[role].toLowerCase()} · {userName}
           </div>
         </div>
+        <NotificationCenter />
       </header>
 
       {open ? (

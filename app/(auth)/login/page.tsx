@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { loginAsOwner, loginUser } from "../actions";
+import { loginUser } from "../actions";
 import type { AppRole } from "@/lib/roles";
 import { CLINIC_MAIL_DOMAIN } from "@/lib/brand";
 
@@ -27,15 +27,6 @@ export default function LoginPage() {
     start(async () => {
       const res = await loginUser({ email, password });
       if (res.ok && res.role) enter(res.role);
-      else setError(res.error ?? "Не удалось войти");
-    });
-  }
-
-  function ownerBypass() {
-    setError(null);
-    start(async () => {
-      const res = await loginAsOwner();
-      if (res.ok) enter("owner");
       else setError(res.error ?? "Не удалось войти");
     });
   }
@@ -83,21 +74,6 @@ export default function LoginPage() {
           {pending ? "Входим…" : "Войти"}
         </button>
       </form>
-
-      <div className="my-4 flex items-center gap-3">
-        <span className="border-border-soft h-px flex-1 border-t" />
-        <span className="text-text-subtle text-2xs">или</span>
-        <span className="border-border-soft h-px flex-1 border-t" />
-      </div>
-
-      <button
-        type="button"
-        onClick={ownerBypass}
-        disabled={pending}
-        className="border-accent-border bg-accent-tint text-accent-text hover:bg-accent hover:text-accent-contrast w-full rounded-md border py-2.5 text-sm font-medium disabled:opacity-45"
-      >
-        Войти как владелец
-      </button>
 
       <p className="text-text-subtle mt-5 text-center text-xs">
         Нет учётной записи?{" "}

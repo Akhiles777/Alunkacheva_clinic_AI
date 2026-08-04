@@ -45,7 +45,7 @@ export default function CoursesPage() {
     <>
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
         <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Курсы</h1>
-        <p className="text-text-muted mt-1.5 max-w-[70ch] text-xs leading-relaxed">
+        <p className="text-text-muted mt-1.5 max-w-[70ch] text-xs leading-relaxed max-md:hidden">
           Выпавшие из графика — потерянные деньги: курс идёт, а будущей записи нет.
           Список отсортирован по деньгам в остатке. «Написать» открывает диалог, не
           уводя со страницы; из списка убирает только реальная будущая запись.
@@ -74,7 +74,7 @@ export default function CoursesPage() {
             {rows.map((c) => (
               <li
                 key={`${c.patientId}-${c.courseId}`}
-                className="border-border-soft flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-3 last:border-b-0"
+                className="border-border-soft flex flex-wrap items-center gap-x-4 gap-y-2.5 border-b px-4 py-3 last:border-b-0 max-md:flex-col max-md:items-stretch"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
@@ -91,7 +91,7 @@ export default function CoursesPage() {
                   <div className="text-text-subtle mt-0.5 text-2xs">{reasonLine(c)}</div>
                 </div>
 
-                <div className="w-28 flex-none max-md:hidden">
+                <div className="w-28 flex-none max-md:w-full">
                   <div className="bg-list-gap h-1.5 overflow-hidden rounded-pill">
                     <div
                       className="bg-accent h-full rounded-pill"
@@ -103,16 +103,16 @@ export default function CoursesPage() {
                   </div>
                 </div>
 
-                <div className="num w-24 flex-none text-right text-sm">
-                  {formatMoney(c.moneyLeft)}
-                  <div className="text-text-subtle text-2xs">в остатке</div>
+                <div className="num w-24 flex-none text-right text-sm max-md:flex max-md:w-full max-md:items-baseline max-md:justify-between max-md:text-left">
+                  <span>{formatMoney(c.moneyLeft)}</span>
+                  <span className="text-text-subtle text-2xs">в остатке</span>
                 </div>
 
-                <div className="flex flex-none gap-2">
+                <div className="flex flex-none gap-2 max-md:w-full">
                   <button
                     type="button"
                     onClick={() => setWriteTo(c)}
-                    className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3 py-1.5 text-sm font-medium"
+                    className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3 py-1.5 text-sm font-medium max-md:flex-1 max-md:py-2.5"
                   >
                     Написать
                   </button>
@@ -120,7 +120,7 @@ export default function CoursesPage() {
                     <button
                       type="button"
                       onClick={() => setCourseBooked(c.patientId, c.courseId)}
-                      className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-1.5 text-sm"
+                      className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-1.5 text-sm max-md:flex-1 max-md:py-2.5"
                       title="Отметить, что появилась будущая запись"
                     >
                       Записан

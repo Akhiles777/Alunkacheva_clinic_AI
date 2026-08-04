@@ -39,14 +39,14 @@ export default function PatientsPage() {
   return (
     <>
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4 max-md:flex-col max-md:items-stretch max-md:gap-2.5">
           <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Пациенты</h1>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 max-md:gap-2">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Имя или телефон"
-              className="border-border-input bg-surface placeholder:text-text-subtle w-[220px] rounded-md border px-3 py-2 text-sm outline-none max-md:w-32"
+              className="border-border-input bg-surface placeholder:text-text-subtle w-[220px] rounded-md border px-3 py-2 text-sm outline-none max-md:w-full max-md:min-w-0 max-md:flex-1"
             />
             <button
               type="button"
@@ -92,7 +92,7 @@ export default function PatientsPage() {
                   <tr className="border-border bg-surface border-b text-left">
                     <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Пациент</th>
                     <th className="text-text-subtle w-[30%] px-4 py-2.5 text-2xs font-normal max-md:hidden">Метки</th>
-                    <th className="text-text-subtle w-[20%] px-4 py-2.5 text-2xs font-normal max-md:hidden">Источник</th>
+                    <th className="text-text-subtle w-[20%] px-4 py-2.5 text-2xs font-normal max-lg:hidden">Источник</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -129,7 +129,7 @@ export default function PatientsPage() {
                             )}
                           </div>
                         </td>
-                        <td className="text-text-muted px-4 py-3 align-middle text-sm max-md:hidden">{p.source}</td>
+                        <td className="text-text-muted px-4 py-3 align-middle text-sm max-lg:hidden">{p.source}</td>
                       </tr>
                     );
                   })}

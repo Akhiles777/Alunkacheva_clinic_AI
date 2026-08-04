@@ -34,7 +34,7 @@ function Bar({ value, tone = "accent" }: { value: number; tone?: "accent" | "mut
 function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <section className="border-border bg-surface rounded-xl border p-5">
-      <div className="mb-4 flex items-baseline justify-between gap-3">
+      <div className="mb-4 flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
         <h2 className="text-sm font-medium">{title}</h2>
         {hint ? <span className="text-text-subtle text-xs">{hint}</span> : null}
       </div>
@@ -60,14 +60,14 @@ export default async function AnalyticsPage({
   return (
     <>
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 max-md:flex-col max-md:items-stretch max-md:gap-2.5">
           <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Отчёты</h1>
-          <div className="border-border inline-flex overflow-hidden rounded-md border">
+          <div className="border-border inline-flex overflow-hidden rounded-md border max-md:flex">
             {PERIODS.map((p, i) => (
               <Link
                 key={p.id}
                 href={q(tab, p.id)}
-                className={`px-3 py-1.5 text-sm ${i > 0 ? "border-border border-l" : ""} ${
+                className={`px-3 py-1.5 text-sm max-md:flex-1 max-md:py-2.5 max-md:text-center ${i > 0 ? "border-border border-l" : ""} ${
                   period === p.id ? "bg-accent-tint text-accent-text font-medium" : "text-text-muted hover:bg-hover"
                 }`}
               >
@@ -98,7 +98,7 @@ export default async function AnalyticsPage({
               <ul className="flex flex-col gap-4">
                 {m.funnelSteps.map((s) => (
                   <li key={s.key}>
-                    <div className="flex items-baseline justify-between gap-3">
+                    <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
                       <span className="text-sm">{s.label}</span>
                       <span className="num text-sm font-medium">{formatNumber(s.value)}</span>
                     </div>
@@ -210,7 +210,7 @@ export default async function AnalyticsPage({
               <ul className="flex flex-col gap-3.5">
                 {servicesLoad(period).map((s) => (
                   <li key={s.title}>
-                    <div className="flex items-baseline justify-between gap-3">
+                    <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
                       <span className="text-sm">{s.title}</span>
                       <span className="num text-sm font-medium">{formatPercent(s.ratio)}</span>
                     </div>
@@ -231,7 +231,7 @@ export default async function AnalyticsPage({
               <ul className="flex flex-col gap-3.5">
                 {m.rooms.map((r) => (
                   <li key={r.roomId}>
-                    <div className="flex items-baseline justify-between gap-3">
+                    <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
                       <span className="text-sm">{r.roomName}</span>
                       <span className="num text-sm font-medium">{formatPercent(r.periodOccupancy)}</span>
                     </div>

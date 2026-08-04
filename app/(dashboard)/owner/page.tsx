@@ -102,7 +102,7 @@ export default async function OwnerPage() {
         </div>
 
         <section className="border-border bg-surface mt-4 rounded-xl border p-5">
-          <div className="mb-4 flex items-baseline justify-between gap-3">
+          <div className="mb-4 flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
             <h2 className="text-sm font-medium">Выручка по услугам</h2>
             <span className="text-text-subtle text-xs">
               воронка: диалогов {report.funnel.dialogs} · звонков {report.funnel.calls}

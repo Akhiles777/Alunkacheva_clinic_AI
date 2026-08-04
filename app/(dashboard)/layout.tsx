@@ -7,7 +7,6 @@ import { BookingPanel } from "./_components/booking-panel";
 import { CallForm } from "./_components/call-form";
 import { StoreHydrator } from "./_components/store-hydrator";
 import { AssistantChat } from "./_components/assistant-chat";
-import { NotificationCenter } from "./_components/notification-center";
 import { getCurrentUser } from "./_components/user-actions";
 import { getSessionOrNull } from "@/lib/server/session";
 
@@ -35,7 +34,6 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <BookingPanel />
       <CallForm />
       <AssistantChat />
-      <NotificationCenter />
       <StoreHydrator />
     </div>
   );

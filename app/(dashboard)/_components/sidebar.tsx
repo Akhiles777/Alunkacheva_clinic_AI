@@ -6,6 +6,7 @@ import { CallButton } from "./call-form";
 import { logoutUser } from "@/app/(auth)/actions";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
 import { CLINIC_NAME, CLINIC_TAGLINE } from "@/lib/brand";
+import { NotificationCenter } from "./notification-center";
 import { initials, isActive, navForRole } from "./nav-model";
 
 /**
@@ -60,8 +61,9 @@ export function Sidebar({
 
       <div className="flex-1" />
 
-      <div className="mb-2">
-        <CallButton className="w-full" />
+      <div className="mb-2 flex items-center gap-2">
+        <CallButton className="min-w-0 flex-1" />
+        <NotificationCenter />
       </div>
 
       <Link

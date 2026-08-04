@@ -22,6 +22,9 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
 /**
  * Центр уведомлений: колокольчик с числом, выпадающий список (под роль) и
  * включение push (PWA). Регистрирует service worker.
+ *
+ * Живёт в шапке (на телефоне) и в боковой панели (на десктопе), а не плавающей
+ * кнопкой у нижнего края: там он накрывал кнопку отправки в чате и в инбоксе.
  */
 export function NotificationCenter() {
   const [items, setItems] = useState<NotificationItem[]>([]);
@@ -74,12 +77,12 @@ export function NotificationCenter() {
   const count = items.length;
 
   return (
-    <div className="fixed right-5 bottom-[76px] z-40 max-md:right-4 max-md:bottom-[68px]">
+    <div className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-label="Уведомления"
-        className="border-border bg-surface text-text-muted hover:bg-hover relative flex h-9 w-9 items-center justify-center rounded-full border"
+        className="border-border text-text-muted hover:bg-hover relative flex h-9 w-9 flex-none items-center justify-center rounded-md border"
       >
         <span aria-hidden className="text-base leading-none">🔔</span>
         {count > 0 ? (
@@ -92,7 +95,7 @@ export function NotificationCenter() {
       {open ? (
         <>
           <div className="fixed inset-0 -z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div className="border-border bg-surface absolute right-0 bottom-full mb-2 w-[300px] rounded-xl border p-2 max-md:w-[80vw]">
+          <div className="border-border bg-surface absolute top-full right-0 z-50 mt-2 w-[300px] rounded-xl border p-2 shadow-lg max-md:w-[80vw]">
             <div className="flex items-center justify-between px-2 py-1.5">
               <span className="text-sm font-medium">Уведомления</span>
               {!pushOn ? (

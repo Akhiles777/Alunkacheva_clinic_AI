@@ -129,11 +129,11 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-border flex flex-none items-center gap-3 border-b px-5 py-3.5">
+      <div className="border-border flex flex-none items-center gap-3 border-b px-5 py-3.5 max-md:flex-wrap max-md:gap-y-1.5">
         <button type="button" onClick={onBack} className="text-text-muted hover:text-text text-sm md:hidden">
           ← Диалоги
         </button>
-        <div className="min-w-0">
+        <div className="min-w-0 max-md:order-3 max-md:w-full">
           <div className="truncate text-sm font-medium">
             {dialog.patientId ? (
               <Link href={`/patients/${dialog.patientId}`} className="hover:underline">
@@ -147,7 +147,7 @@ function Thread({ dialog, onBack }: { dialog: Dialog; onBack: () => void }) {
             {CHANNEL_LABEL[dialog.channel]} · {DIALOG_STATUS_LABEL[dialog.status]}
           </div>
         </div>
-        <div className="ml-auto flex items-center gap-2.5">
+        <div className="ml-auto flex flex-none items-center gap-2.5">
           {dialog.status === "escalated" ? (
             <span className="text-accent-text flex-none text-2xs font-medium max-md:hidden">
               эскалация: {dialog.escalationReason}

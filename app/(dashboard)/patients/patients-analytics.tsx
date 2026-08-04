@@ -26,7 +26,7 @@ export function PatientsAnalytics() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
         <StatTile label="Всего пациентов" value={stats.total} />
         <StatTile label="Первичные" value={stats.primary} hint="первый контакт сегодня" />
         <StatTile label="На курсе" value={stats.onCourse} />
@@ -36,7 +36,7 @@ export function PatientsAnalytics() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <section className="border-border bg-surface rounded-xl border p-5">
-          <div className="mb-4 flex items-baseline justify-between gap-3">
+          <div className="mb-4 flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
             <h2 className="text-sm font-medium">Источники обращений</h2>
             <span className="text-text-subtle text-xs">откуда пришли пациенты</span>
           </div>
@@ -61,7 +61,7 @@ export function PatientsAnalytics() {
         </section>
 
         <section className="border-border bg-surface rounded-xl border p-5">
-          <div className="mb-4 flex items-baseline justify-between gap-3">
+          <div className="mb-4 flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
             <h2 className="text-sm font-medium">Удержание и курсы</h2>
             <span className="text-text-subtle text-xs">деньги и регулярность</span>
           </div>

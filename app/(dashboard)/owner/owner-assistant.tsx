@@ -61,7 +61,7 @@ export function OwnerAssistant() {
 
   return (
     <section className="border-border bg-surface flex flex-col rounded-xl border">
-      <div className="border-border flex items-center justify-between gap-3 border-b px-5 py-3.5">
+      <div className="border-border flex items-center justify-between gap-3 border-b px-5 py-3.5 max-md:flex-col max-md:items-start max-md:gap-1">
         <div className="flex items-center gap-2">
           <span aria-hidden className="text-accent-text text-base">✦</span>
           <h2 className="text-sm font-medium">ИИ-аналитик владельца</h2>
