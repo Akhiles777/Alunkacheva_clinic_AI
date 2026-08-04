@@ -20,19 +20,38 @@ import { DEFAULT_QUIET, shouldPushNow, type QuietSettings } from "./notify-windo
  * блокировки, а это медицинские данные (§7).
  */
 
-let vapidReady: boolean | null = null;
+let vapidState: { ok: boolean; error: string | null } | null = null;
 
-function ensureVapid(): boolean {
-  if (vapidReady !== null) return vapidReady;
+/**
+ * Настройка ключей VAPID. Раньше отсюда могло вылететь исключение: библиотека
+ * бросает, если ключ задан, но не той длины или не в том формате. Наверху оно
+ * попадало в общий перехват и превращалось в «сбой отправки» — причина
+ * терялась, и понять, что дело в ключах на хостинге, было невозможно.
+ */
+export function vapidStatus(): { ok: boolean; error: string | null } {
+  if (vapidState !== null) return vapidState;
   const pub = process.env.VAPID_PUBLIC;
   const priv = process.env.VAPID_PRIVATE;
   if (!pub || !priv) {
-    vapidReady = false;
-    return false;
+    vapidState = { ok: false, error: "не заданы VAPID_PUBLIC / VAPID_PRIVATE на хостинге" };
+    return vapidState;
   }
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || `mailto:admin@${CLINIC_MAIL_DOMAIN}`, pub, priv);
-  vapidReady = true;
-  return true;
+  try {
+    webpush.setVapidDetails(process.env.VAPID_SUBJECT || `mailto:admin@${CLINIC_MAIL_DOMAIN}`, pub, priv);
+    vapidState = { ok: true, error: null };
+  } catch (e) {
+    vapidState = { ok: false, error: `ключи VAPID неверны — ${String((e as Error)?.message ?? e).slice(0, 100)}` };
+  }
+  return vapidState;
+}
+
+/**
+ * Открытый ключ, которым браузер подписывался. Если на хостинге его заменили,
+ * старые подписки становятся недействительными и служба push отвечает отказом:
+ * подписаться нужно заново. Сравнение с ключом подписки ловит это сразу.
+ */
+export function vapidPublicKey(): string {
+  return process.env.VAPID_PUBLIC ?? "";
 }
 
 export interface NotifyInput {
@@ -62,7 +81,8 @@ interface Sub {
 }
 
 async function pushToUser(subs: Sub[], payload: string): Promise<DeliveryResult> {
-  if (!ensureVapid()) return { ok: false, error: "не заданы ключи VAPID на сервере" };
+  const vapid = vapidStatus();
+  if (!vapid.ok) return { ok: false, error: vapid.error };
   if (subs.length === 0) return { ok: false, error: "нет подключённых устройств" };
 
   let sent = 0;
@@ -72,8 +92,15 @@ async function pushToUser(subs: Sub[], payload: string): Promise<DeliveryResult>
       await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
       sent += 1;
     } catch (e) {
-      const err = e as { statusCode?: number; body?: string };
-      lastError = `${err.statusCode ?? "сбой"}: ${String(err.body ?? "").slice(0, 120)}`;
+      const err = e as { statusCode?: number; body?: string; message?: string };
+      const detail = String(err.body || err.message || "").slice(0, 120);
+      // 403 от службы push почти всегда значит, что ключи VAPID на хостинге
+      // сменились после того, как устройство подписалось. Лечится только
+      // повторным подключением устройства — пишем это прямо.
+      lastError =
+        err.statusCode === 403
+          ? `403 — ключи VAPID сменились, подключите устройство заново (${detail})`
+          : `${err.statusCode ?? "исключение"}: ${detail}`;
       // 404/410 — подписка отозвана браузером, хранить её незачем.
       if (err.statusCode === 404 || err.statusCode === 410) {
         await prisma.pushSubscription.delete({ where: { id: s.id } }).catch(() => {});
@@ -138,9 +165,11 @@ export async function notifyStaff(input: NotifyInput): Promise<{ created: number
     } else if (dbError) {
       result = { ok: false, error: `база недоступна — ${dbError}` };
     } else {
-      result = await pushToUser(subsByUser.get(staffUserId) ?? [], payload).catch(() => ({
+      // Настоящий текст ошибки, а не «сбой отправки»: обобщённая формулировка
+      // ровно один раз уже стоила нескольких дней поиска причины.
+      result = await pushToUser(subsByUser.get(staffUserId) ?? [], payload).catch((e) => ({
         ok: false,
-        error: "сбой отправки",
+        error: `сбой отправки — ${String((e as Error)?.message ?? e).slice(0, 120)}`,
       }));
     }
     if (result.ok) pushed += 1;

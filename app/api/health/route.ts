@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { vapidPublicKey, vapidStatus } from "@/lib/server/notify";
 
 /**
  * Проверка окружения. Отдаёт только факт «переменная задана», без значений —
@@ -39,6 +40,20 @@ export async function GET() {
     переопределеноПеременной: Boolean(process.env.ROUTER_AI_MODEL || process.env.ROUTER_AI_BOT_MODEL),
   };
 
+  /**
+   * Проверка ключей push. Одного факта «переменная задана» мало: ключ может
+   * быть задан и при этом не подходить — тогда отправка падает на каждом
+   * событии, а выглядит это как «push просто не приходит».
+   */
+  const vapid = vapidStatus();
+  const push = {
+    ключиРабочие: vapid.ok,
+    ошибка: vapid.error,
+    открытыйКлючСовпадаетСКлиентским:
+      Boolean(process.env.NEXT_PUBLIC_VAPID_PUBLIC) &&
+      process.env.NEXT_PUBLIC_VAPID_PUBLIC === vapidPublicKey(),
+  };
+
   let db: Record<string, number | string> = { ok: "нет связи" };
   try {
     const [knowledge, pushSubs, staff, conversations] = await Promise.all([
@@ -70,7 +85,13 @@ export async function GET() {
   // Подсказки: что именно сломается при пустой переменной.
   const warnings: string[] = [];
   if (!env.ROUTER_AI) warnings.push("Нет ROUTER_AI — ассистент не может отвечать своими словами и зовёт человека");
-  if (!env.VAPID_PRIVATE || !env.VAPID_PUBLIC) warnings.push("Нет ключей VAPID — push-уведомления не отправляются");
+  if (!push.ключиРабочие) warnings.push(`Push не отправляется: ${vapid.error}`);
+  if (push.ключиРабочие && !push.открытыйКлючСовпадаетСКлиентским) {
+    warnings.push(
+      "NEXT_PUBLIC_VAPID_PUBLIC не совпадает с VAPID_PUBLIC — браузер подписывается одним ключом, " +
+        "а сервер отправляет другим. Push будет отклоняться с ошибкой 403.",
+    );
+  }
   if (!env.SESSION_SECRET) warnings.push("Нет SESSION_SECRET — вход в систему не работает");
   if (!env.TELEGRAM_WEBHOOK_SECRET) warnings.push("Нет TELEGRAM_WEBHOOK_SECRET — вебхук бота отключён");
   if (typeof db.knowledgeEntries === "number" && db.knowledgeEntries === 0) {
@@ -84,5 +105,5 @@ export async function GET() {
     );
   }
 
-  return NextResponse.json({ ok: warnings.length === 0, env, models, db, warnings });
+  return NextResponse.json({ ok: warnings.length === 0, env, push, models, db, warnings });
 }
