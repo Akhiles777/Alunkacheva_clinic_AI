@@ -11,7 +11,8 @@ import {
   type Role,
   type RolePermissionRow,
 } from "@/lib/permissions";
-import type { Permission as DbPermission } from "@/generated/prisma/enums";
+import type { Permission as DbPermission, ServiceKind } from "@/generated/prisma/enums";
+import { calcPayroll, type PayrollResult } from "@/lib/payroll/calc";
 
 /**
  * Карточка сотрудника: персональные права и его работа в цифрах.
@@ -72,8 +73,19 @@ export interface StaffMetrics {
   lastVisitAt: string | null;
 }
 
+export interface PayrollView extends PayrollResult {
+  hourlyRate: number;
+  perProcedureRate: number;
+  procedureKind: ServiceKind | null;
+  procedures: number;
+  /** Период расчёта — текущий календарный месяц. */
+  periodLabel: string;
+}
+
 export interface StaffMemberView {
   id: string;
+  /** Id карточки специалиста: к ней привязаны ставки и выплаты. */
+  staffId: string | null;
   name: string;
   email: string;
   role: Role;
@@ -84,6 +96,8 @@ export interface StaffMemberView {
   createdAt: string;
   permissions: StaffPermissionRow[];
   metrics: StaffMetrics;
+  /** null — у сотрудника нет карточки специалиста, считать нечего. */
+  payroll: PayrollView | null;
 }
 
 const PERIOD_DAYS = 90;
@@ -203,6 +217,103 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
   };
 }
 
+/**
+ * Зарплата за текущий месяц. Часы берём по состоявшимся визитам, выплаты — по
+ * отмеченным выдачам. Выплаты за процедуры вычитаются из начисленного: они
+ * аванс, а не добавка (в этом и была ошибка прежней программы клиники).
+ */
+async function buildPayroll(companyId: string, staffId: string | null): Promise<PayrollView | null> {
+  if (!staffId) return null;
+
+  const now = new Date();
+  const from = new Date(now.getFullYear(), now.getMonth(), 1);
+  const to = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+  const [rate, visits, payouts] = await Promise.all([
+    prisma.staffRate.findUnique({
+      where: { staffId },
+      select: { hourlyRate: true, perProcedureRate: true, procedureKind: true },
+    }),
+    prisma.appointment.findMany({
+      where: { companyId, staffId, deletedAt: null, status: "ARRIVED", startAt: { gte: from, lt: to } },
+      select: { durationMin: true, primaryService: { select: { kind: true } } },
+    }),
+    prisma.payrollPayout.aggregate({
+      where: { companyId, staffId, paidAt: { gte: from, lt: to } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const hourlyRate = Number(rate?.hourlyRate ?? 0);
+  const perProcedureRate = Number(rate?.perProcedureRate ?? 0);
+  const procedureKind = rate?.procedureKind ?? null;
+
+  const workedMinutes = visits.reduce((sum, v) => sum + v.durationMin, 0);
+  const procedures = procedureKind
+    ? visits.filter((v) => v.primaryService?.kind === procedureKind).length
+    : 0;
+  const paidSum = payouts._sum.amount === null ? null : Number(payouts._sum.amount);
+
+  const result = calcPayroll({ workedMinutes, hourlyRate, procedures, perProcedureRate, paidOut: paidSum });
+  return {
+    ...result,
+    hourlyRate,
+    perProcedureRate,
+    procedureKind,
+    procedures,
+    periodLabel: new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(now),
+  };
+}
+
+/** Ставки сотрудника. Меняет тот, кто ведёт настройки. */
+export async function saveStaffRate(
+  staffId: string,
+  input: { hourlyRate: number; perProcedureRate: number; procedureKind: ServiceKind | null },
+): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  await prisma.staffRate.upsert({
+    where: { staffId },
+    update: {
+      hourlyRate: input.hourlyRate,
+      perProcedureRate: input.perProcedureRate,
+      procedureKind: input.procedureKind,
+    },
+    create: {
+      companyId: session.companyId,
+      staffId,
+      hourlyRate: input.hourlyRate,
+      perProcedureRate: input.perProcedureRate,
+      procedureKind: input.procedureKind,
+    },
+  });
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "staff_rate",
+    entityId: staffId,
+    meta: { ...input },
+  });
+}
+
+/** Отметить выдачу денег сотруднику в смену. */
+export async function addPayout(staffId: string, amount: number, reason: string | null): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error("Сумма должна быть больше нуля");
+  await prisma.payrollPayout.create({
+    data: {
+      companyId: session.companyId,
+      staffId,
+      amount,
+      paidAt: new Date(),
+      reason: reason?.trim() || null,
+      createdById: session.userId,
+    },
+  });
+}
+
 export async function getStaffMember(id: string): Promise<StaffMemberView | null> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
@@ -243,6 +354,7 @@ export async function getStaffMember(id: string): Promise<StaffMemberView | null
 
   return {
     id: user.id,
+    staffId: user.staffId,
     name: user.name,
     email: user.email,
     role: user.role as Role,
@@ -253,6 +365,7 @@ export async function getStaffMember(id: string): Promise<StaffMemberView | null
     createdAt: user.createdAt.toISOString(),
     permissions,
     metrics: await buildMetrics(session.companyId, user.staffId),
+    payroll: await buildPayroll(session.companyId, user.staffId),
   };
 }
 

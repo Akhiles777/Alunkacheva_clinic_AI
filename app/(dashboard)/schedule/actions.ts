@@ -74,6 +74,7 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     isFirstVisit: r.isFirstVisit,
     price: Number(r.revenue),
     note: r.note,
+    bookedByName: r.bookedByName,
   }));
 }
 
@@ -106,6 +107,7 @@ export interface CreateApptInput {
   status: Appt["status"];
   price?: number;
   note?: string | null;
+  bookedByName?: string | null;
 }
 
 /** Цены услуг из настроек (для формы записи). */
@@ -149,6 +151,7 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
       companyId: co,
       // Локальная запись до синка с YCLIENTS — синтетический recordId.
       yclientsRecordId: 700_000_000 + Math.floor(Math.random() * 99_999_999),
+      bookedByName: input.bookedByName?.trim() || null,
       patientId,
       staffId: staff.id,
       roomId: room.id,

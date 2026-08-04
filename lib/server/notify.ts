@@ -2,6 +2,7 @@ import webpush from "web-push";
 import { prisma } from "@/lib/db";
 import { CLINIC_MAIL_DOMAIN, CLINIC_NAME } from "@/lib/brand";
 import type { NotificationKind } from "@/generated/prisma/enums";
+import { DEFAULT_QUIET, shouldPushNow, type QuietSettings } from "./notify-window";
 
 /**
  * Уведомления сотрудникам: строка в базе плюс push на устройство.
@@ -38,6 +39,8 @@ export interface NotifyInput {
   body: string;
   url: string;
   entityId?: string;
+  /** Начало текста сообщения — только для колокольчика, не для push. */
+  preview?: string;
 }
 
 /** Разослать push по всем подпискам получателей. Мёртвые подписки удаляем. */
@@ -82,10 +85,19 @@ export async function notifyStaff(input: NotifyInput): Promise<{ created: number
         body: input.body,
         url: input.url,
         entityId: input.entityId ?? null,
+        preview: input.preview?.slice(0, 200) ?? null,
       })),
     });
   } catch {
     return { created: 0, pushed: 0 };
+  }
+
+  // Уведомление уже создано и лежит в колокольчике. Дальше решаем только,
+  // будить ли телефон прямо сейчас: в воскресенье и ночью несрочное копится
+  // до смены (§4.9, пожелание заказчика).
+  const quiet = await loadQuietSettings(input.companyId);
+  if (!shouldPushNow({ kind: input.kind, at: new Date(), settings: quiet })) {
+    return { created: recipients.length, pushed: 0 };
   }
 
   const payload = JSON.stringify({
@@ -95,6 +107,30 @@ export async function notifyStaff(input: NotifyInput): Promise<{ created: number
   });
   const pushed = await pushTo(input.companyId, recipients, payload).catch(() => 0);
   return { created: recipients.length, pushed };
+}
+
+/** Настройки тихих часов из БД; нет строки — берём разумные значения. */
+async function loadQuietSettings(companyId: string): Promise<QuietSettings> {
+  try {
+    const rows = await prisma.setting.findMany({
+      where: {
+        companyId,
+        key: { in: ["notifications.batchWeekdays", "notifications.quietFrom", "notifications.quietTo"] },
+      },
+      select: { key: true, value: true },
+    });
+    const byKey = new Map(rows.map((r) => [r.key, r.value]));
+    const batch = byKey.get("notifications.batchWeekdays");
+    const from = byKey.get("notifications.quietFrom");
+    const to = byKey.get("notifications.quietTo");
+    return {
+      batchWeekdays: Array.isArray(batch) ? (batch as number[]) : DEFAULT_QUIET.batchWeekdays,
+      quietFrom: typeof from === "number" ? from : DEFAULT_QUIET.quietFrom,
+      quietTo: typeof to === "number" ? to : DEFAULT_QUIET.quietTo,
+    };
+  } catch {
+    return DEFAULT_QUIET;
+  }
 }
 
 /** Сотрудники, которым положено знать о пациентских каналах. Врачи — нет (§9). */

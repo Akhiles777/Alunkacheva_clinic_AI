@@ -16,6 +16,8 @@ export interface NotificationItem {
   url: string;
   urgent: boolean;
   createdAt: string;
+  /** Начало сообщения — чтобы понять суть, не открывая диалог. */
+  preview: string | null;
 }
 
 const URGENT_KINDS = new Set(["ESCALATION", "PATIENT_MESSAGE"]);
@@ -28,7 +30,7 @@ export async function getNotifications(): Promise<NotificationItem[]> {
     where: { companyId: session.companyId, staffUserId: session.userId, readAt: null },
     orderBy: { createdAt: "desc" },
     take: 30,
-    select: { id: true, kind: true, title: true, body: true, url: true, createdAt: true },
+    select: { id: true, kind: true, title: true, body: true, url: true, createdAt: true, preview: true },
   });
 
   return rows.map((r) => ({
@@ -38,6 +40,7 @@ export async function getNotifications(): Promise<NotificationItem[]> {
     url: r.url,
     urgent: URGENT_KINDS.has(r.kind),
     createdAt: r.createdAt.toISOString(),
+    preview: r.preview,
   }));
 }
 

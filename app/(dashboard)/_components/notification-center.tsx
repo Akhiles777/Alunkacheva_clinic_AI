@@ -142,6 +142,9 @@ export function NotificationCenter({ align = "right" }: { align?: "left" | "righ
                         <span className="min-w-0">
                           <span className="block font-medium">{n.title}</span>
                           <span className="text-text-muted block text-xs">{n.text}</span>
+                          {n.preview ? (
+                            <span className="text-text-subtle mt-0.5 block text-xs italic">«{n.preview}»</span>
+                          ) : null}
                         </span>
                       </Link>
                       <button

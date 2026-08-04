@@ -6,11 +6,14 @@ import { formatMoney } from "@/lib/format";
 import type { Permission } from "@/lib/permissions";
 import { Group } from "../../_components/ui";
 import {
+  addPayout,
   saveStaffPermissions,
+  saveStaffRate,
   type PermissionSetting,
   type StaffMemberView,
   type WeekRow,
 } from "./actions";
+import type { ServiceKind } from "@/generated/prisma/enums";
 
 const ROLE_LABEL: Record<string, string> = {
   OWNER: "Владелец",
@@ -90,6 +93,147 @@ function WeeksChart({ weeks }: { weeks: WeekRow[] }) {
         ))}
       </div>
     </div>
+  );
+}
+
+const PROCEDURE_KINDS: { value: ServiceKind | ""; label: string }[] = [
+  { value: "", label: "нет выплат за процедуру" },
+  { value: "IV_THERAPY", label: "IV-терапия (ВВП)" },
+  { value: "OSTEOPATHY", label: "Остеопатия" },
+  { value: "BIOFEEDBACK", label: "БОС-терапия" },
+  { value: "NEUROMEDITATION", label: "Нейромедитация" },
+  { value: "LAB", label: "Анализы" },
+];
+
+/**
+ * Оплата труда за месяц. Выплаты за процедуры вычитаются из начисленного —
+ * это аванс, выданный в смену, а не добавка сверх часов.
+ */
+function PayrollBlock({ member }: { member: StaffMemberView }) {
+  const p = member.payroll!;
+  const [hourly, setHourly] = useState(String(p.hourlyRate));
+  const [perProc, setPerProc] = useState(String(p.perProcedureRate));
+  const [kind, setKind] = useState<ServiceKind | "">(p.procedureKind ?? "");
+  const [payout, setPayout] = useState("");
+  const [saved, setSaved] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+
+  // Ставки и выплаты привязаны к карточке специалиста: без неё считать нечего.
+  if (!member.staffId) return null;
+
+  return (
+    <Group
+      title="Оплата труда"
+      hint={`${p.periodLabel} · выплаты за процедуры идут в счёт часов, а не сверх них`}
+    >
+      {error ? <p className="text-accent-text text-sm">{error}</p> : null}
+
+      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
+        <Tile label="Часы" value={p.hours.toFixed(1)} />
+        <Tile label="Начислено" value={formatMoney(p.accrued)} hint={`${p.hourlyRate} ₽/час`} />
+        <Tile label="Выдано в смены" value={formatMoney(p.paidOut)} hint={`процедур ${p.procedures}`} />
+        <Tile label="К выплате" value={formatMoney(p.remainder)} hint="начислено − выдано" />
+      </div>
+
+      {p.advanceMismatch !== 0 ? (
+        <p className="text-text-muted mt-1 text-xs">
+          Факт выдачи отличается от ожидаемого на {formatMoney(p.advanceMismatch)} — проверьте,
+          все ли выдачи отмечены.
+        </p>
+      ) : null}
+
+      <div className="border-border-soft mt-4 grid grid-cols-[1fr_1fr_1.4fr] items-end gap-2.5 border-t pt-4 max-md:grid-cols-1">
+        <label className="flex flex-col gap-1">
+          <span className="text-text-subtle text-2xs">Ставка за час, ₽</span>
+          <input
+            value={hourly}
+            onChange={(e) => setHourly(e.target.value)}
+            inputMode="decimal"
+            className="border-border-input bg-surface rounded-md border px-3 py-2 text-sm outline-none"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-text-subtle text-2xs">За процедуру, ₽</span>
+          <input
+            value={perProc}
+            onChange={(e) => setPerProc(e.target.value)}
+            inputMode="decimal"
+            className="border-border-input bg-surface rounded-md border px-3 py-2 text-sm outline-none"
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-text-subtle text-2xs">Какая услуга считается процедурой</span>
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as ServiceKind | "")}
+            className="border-border-input bg-surface rounded-md border px-2.5 py-2 text-sm outline-none"
+          >
+            {PROCEDURE_KINDS.map((k) => (
+              <option key={k.value} value={k.value}>
+                {k.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2.5">
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() =>
+            start(async () => {
+              try {
+                await saveStaffRate(member.staffId!, {
+                  hourlyRate: Number(hourly) || 0,
+                  perProcedureRate: Number(perProc) || 0,
+                  procedureKind: kind || null,
+                });
+                setSaved("Ставки сохранены");
+                setError(null);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "Не удалось сохранить");
+              }
+            })
+          }
+          className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
+        >
+          Сохранить ставки
+        </button>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-text-subtle text-2xs">Выдано на руки, ₽</span>
+          <input
+            value={payout}
+            onChange={(e) => setPayout(e.target.value)}
+            inputMode="decimal"
+            placeholder="например, 500"
+            className="border-border-input bg-surface w-36 rounded-md border px-3 py-2 text-sm outline-none"
+          />
+        </label>
+        <button
+          type="button"
+          disabled={pending || !payout.trim()}
+          onClick={() =>
+            start(async () => {
+              try {
+                await addPayout(member.staffId!, Number(payout), "выдано в смену");
+                setPayout("");
+                setSaved("Выдача отмечена — обновите страницу");
+                setError(null);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "Не удалось отметить");
+              }
+            })
+          }
+          className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-2 text-sm disabled:opacity-45"
+        >
+          Отметить выдачу
+        </button>
+        {saved && !pending ? <span className="text-text-muted text-sm">{saved}</span> : null}
+      </div>
+    </Group>
   );
 }
 
@@ -222,6 +366,8 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
           {saved && !pending ? <span className="text-text-muted text-sm">Сохранено</span> : null}
         </div>
       </Group>
+
+      {member.payroll ? <PayrollBlock member={member} /> : null}
 
       <Group
         title="Работа в цифрах"

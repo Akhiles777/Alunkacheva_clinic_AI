@@ -88,6 +88,12 @@ export interface Appt {
   price?: number;
   /** «Дополнительно»: отзыв клиента, проблема, примечание. Анализируется ИИ. */
   note?: string | null;
+  /**
+   * Кто записал, если это не сам посетитель: родитель записывает ребёнка,
+   * супруг — супругу. Администратору важно знать, кому звонить, а на приём
+   * придёт другой человек.
+   */
+  bookedByName?: string | null;
 }
 export interface Visit {
   id: string;
@@ -894,6 +900,7 @@ export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { 
     status: appt.status,
     price: appt.price,
     note: appt.note,
+    bookedByName: appt.bookedByName,
   }).catch(() => {});
   return appt.id;
 }

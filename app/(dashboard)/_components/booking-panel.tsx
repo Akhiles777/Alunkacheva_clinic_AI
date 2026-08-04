@@ -92,6 +92,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   const [prices, setPrices] = useState<Record<string, number>>({});
   const [price, setPrice] = useState<string>("");
   const [note, setNote] = useState("");
+  const [bookedBy, setBookedBy] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -151,6 +152,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
         status: "planned",
         price: price.trim() === "" ? defaultPrice : Number(price),
         note: note.trim() || null,
+        bookedByName: bookedBy.trim() || null,
       });
       setBooked({ time: formatMinute(selected.startMinute), room: ROOM_NAME[selected.roomId] });
       setCheck("created");
@@ -274,6 +276,16 @@ function BookingInner({ onClose }: { onClose: () => void }) {
             />
             <span className="text-text-subtle text-sm">₽</span>
           </div>
+
+          <div className="text-text-subtle mt-5 mb-2 text-2xs">
+            Записывает другой человек · родитель за ребёнка, супруг за супругу
+          </div>
+          <input
+            value={bookedBy}
+            onChange={(e) => setBookedBy(e.target.value)}
+            placeholder="Необязательно. Имя и телефон того, кто записывает."
+            className="border-border-input bg-surface placeholder:text-text-subtle w-full rounded-md border px-3 py-2 text-sm outline-none"
+          />
 
           <div className="text-text-subtle mt-5 mb-2 text-2xs">Дополнительно · отзыв, проблема, примечание</div>
           <textarea

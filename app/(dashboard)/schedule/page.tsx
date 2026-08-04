@@ -93,6 +93,11 @@ function ApptCard({ appt }: { appt: Appt }) {
       <div className="text-text-subtle truncate text-xs">
         {appt.service} · {appt.doctor}
       </div>
+      {appt.bookedByName ? (
+        // Кто записал, если на приём придёт другой человек: администратору
+        // нужно знать, кому звонить при переносе.
+        <div className="text-text-subtle truncate text-2xs">записал(а): {appt.bookedByName}</div>
+      ) : null}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {!done ? (
           <>

@@ -469,6 +469,7 @@ export async function sendInternalMessage(input: {
     kind: "CHAT_MESSAGE",
     title: `Сообщение от ${me?.name ?? "коллеги"}`,
     body: kind === "VOICE" ? "Голосовое сообщение" : "Новое сообщение в чате сотрудников",
+    preview: kind === "VOICE" ? undefined : body,
     url: "/chat",
     entityId: input.roomId,
   });

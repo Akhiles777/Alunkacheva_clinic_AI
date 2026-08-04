@@ -262,6 +262,8 @@ model Company {
   rolePermissions     RolePermission[]
   userPermissions     UserPermission[]
   notifications       Notification[]
+  staffRates          StaffRate[]
+  payrollPayouts      PayrollPayout[]
 
   @@map("companies")
 }
@@ -489,6 +491,10 @@ model Appointment {
   /// Patient; сотрудник-оформитель — bookedBy StaffUser. Оба необязательны.
   bookedByPatientId   String?
   bookedByStaffUserId String?
+  /// Кто записал, если это не сам посетитель и его нет в базе (родитель
+  /// записывает ребёнка, супруг — супругу). Администратору важно видеть, с кем
+  /// связываться, а на приём придёт другой человек.
+  bookedByName        String?
 
   startAt     DateTime @db.Timestamptz(3)
   /// Материализован: загрузка кабинета считается пересечением интервалов,
@@ -673,6 +679,8 @@ model Staff {
   defaultRoom  Room?         @relation("StaffDefaultRoom", fields: [defaultRoomId], references: [id], onDelete: SetNull)
   appointments Appointment[]
   user         StaffUser?
+  rate         StaffRate?
+  payouts      PayrollPayout[]
 
   @@unique([companyId, yclientsStaffId])
   @@index([companyId, isActive])
@@ -777,6 +785,7 @@ model StaffUser {
   subscriptions           PushSubscription[]
   permissions             UserPermission[]
   notifications           Notification[]
+  payrollPayouts          PayrollPayout[]
   conversations           Conversation[]
   approvedMessages        Message[]          @relation("MessageApprovedBy")
   acknowledgedEscalations Escalation[]       @relation("EscalationAcknowledgedBy")
@@ -892,6 +901,10 @@ model Notification {
   url         String
   /// Источник события (сообщение, диалог, визит) — чтобы не плодить дубли.
   entityId    String?
+  /// Начало текста сообщения. Показывается ТОЛЬКО в приложении, за паролем:
+  /// администратор просил видеть суть, не открывая диалог. В push не уходит —
+  /// там оно всплыло бы на заблокированном экране (§7).
+  preview     String?
 
   readAt    DateTime? @db.Timestamptz(3)
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
@@ -902,6 +915,51 @@ model Notification {
   @@index([staffUserId, readAt, createdAt])
   @@index([companyId, createdAt])
   @@map("notifications")
+}
+
+/// Ставки оплаты труда сотрудника. Заведены отдельно от Staff: ставка меняется
+/// во времени и относится к расчётам, а не к карточке специалиста.
+model StaffRate {
+  id        String  @id @default(cuid())
+  companyId String
+  staffId   String  @unique
+  /// Почасовая ставка.
+  hourlyRate       Decimal @default(0) @db.Decimal(12, 2)
+  /// Выплата за процедуру, которую сотрудник получает в конце смены.
+  perProcedureRate Decimal @default(0) @db.Decimal(12, 2)
+  /// Какие услуги считаются «процедурой» для этой выплаты.
+  procedureKind    ServiceKind?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@map("staff_rates")
+}
+
+/// Деньги, выданные сотруднику на руки до конца месяца (в смену за процедуры).
+/// Это аванс в счёт начисленного, а не добавка сверху: в конце месяца сумма
+/// вычитается из начисленного по часам.
+model PayrollPayout {
+  id        String   @id @default(cuid())
+  companyId String
+  staffId   String
+  amount    Decimal  @db.Decimal(12, 2)
+  paidAt    DateTime @db.Timestamptz(3)
+  reason    String?
+  createdById String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  staff     Staff      @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  createdBy StaffUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, staffId, paidAt])
+  @@map("payroll_payouts")
 }
 
 model PushSubscription {
