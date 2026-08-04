@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { can } from "@/lib/server/authz";
 import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/enums";
 
 /**
@@ -23,10 +24,39 @@ export interface PatientRecord {
   relations: { id: string; relatedPatientId: string; kind: PatientRelationKind }[];
 }
 
+/**
+ * Ограничение выборки для тех, кому не выдано право видеть чужих пациентов.
+ *
+ * Право настраивается по каждому сотруднику, но выборка его не спрашивала:
+ * врач получал всю базу клиники целиком, включая пациентов, которых никогда
+ * не вёл. Для медицинских данных это прямое нарушение §7 — доступ должен быть
+ * ролевым, а просмотр карточки фиксироваться в аудите.
+ *
+ * Без права сотрудник видит только тех, у кого есть визит к нему. Не привязан
+ * к специалисту — не видит никого: это честнее, чем показать всех.
+ */
+async function patientScope(session: {
+  companyId: string;
+  userId: string | null;
+  role: Parameters<typeof can>[0]["role"];
+}): Promise<{ appointments?: { some: { staffId: string } } } | null> {
+  if (await can(session, "VIEW_OTHER_PATIENTS")) return {};
+  const user = session.userId
+    ? await prisma.staffUser.findUnique({
+        where: { id: session.userId },
+        select: { staffId: true },
+      })
+    : null;
+  if (!user?.staffId) return null;
+  return { appointments: { some: { staffId: user.staffId } } };
+}
+
 export async function getPatientRecords(): Promise<PatientRecord[]> {
   const session = await getSession();
+  const scope = await patientScope(session);
+  if (!scope) return [];
   const patients = await prisma.patient.findMany({
-    where: { companyId: session.companyId, deletedAt: null },
+    where: { companyId: session.companyId, deletedAt: null, ...scope },
     orderBy: { createdAt: "asc" },
     include: {
       source: { select: { title: true } },
