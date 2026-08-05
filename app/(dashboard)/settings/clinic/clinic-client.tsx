@@ -4,6 +4,21 @@ import { useState, useTransition } from "react";
 import { Field, Group, SaveBar, TextInput, TimeInput, Toggle } from "../_components/ui";
 import { saveClinicSettings, type ClinicData } from "./actions";
 
+/** Минуты от полуночи ↔ «ЧЧ:ММ» для полей времени. */
+function minutesToTime(value: number): string {
+  return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+function timeToMinutes(value: string): number {
+  const [h, m] = value.split(":").map(Number);
+  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : 0;
+}
+/** Завтрашняя дата — разумное начальное значение нового исключения. */
+function tomorrowIso(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 const TIMEZONES = [
   "Europe/Kaliningrad",
   "Europe/Moscow",
@@ -45,6 +60,9 @@ export function ClinicClient({ initial }: { initial: ClinicData }) {
   }
   function patchDay(weekday: number, next: Partial<ClinicData["schedule"][number]>) {
     patch({ schedule: form.schedule.map((d) => (d.weekday === weekday ? { ...d, ...next } : d)) });
+  }
+  function patchException(id: string, next: Partial<ClinicData["exceptions"][number]>) {
+    patch({ exceptions: form.exceptions.map((e) => (e.id === id ? { ...e, ...next } : e)) });
   }
 
   return (
@@ -121,21 +139,66 @@ export function ClinicClient({ initial }: { initial: ClinicData }) {
         </div>
       </Group>
 
-      <Group title="Исключения" hint="праздники, санитарные и короткие дни">
+      <Group title="Исключения" hint="праздники, санитарные и короткие дни — клиника в эти дни не предлагает окна">
         {form.exceptions.length === 0 ? (
           <p className="text-text-subtle text-sm">Исключений нет.</p>
         ) : (
           <ul className="flex flex-col gap-2">
             {form.exceptions.map((ex) => (
-              <li key={ex.id} className="flex items-center gap-3">
-                <span className="num text-text-muted w-24 flex-none text-sm">{ex.date}</span>
-                <span className="flex-1 text-sm">{ex.label}</span>
-                <span className="text-text-subtle text-xs">{ex.closed ? "закрыто" : "короткий день"}</span>
+              <li
+                key={ex.id}
+                className="border-border-soft flex flex-wrap items-center gap-2.5 rounded-lg border p-3"
+              >
+                <input
+                  type="date"
+                  value={ex.date}
+                  onChange={(e) => patchException(ex.id, { date: e.target.value })}
+                  className="border-border-input bg-surface num rounded-md border px-2.5 py-1.5 text-sm outline-none"
+                />
+                <input
+                  value={ex.label}
+                  onChange={(e) => patchException(ex.id, { label: e.target.value })}
+                  placeholder="Название: Новогодние, санитарный день"
+                  className="border-border-input bg-surface min-w-40 flex-1 rounded-md border px-2.5 py-1.5 text-sm outline-none"
+                />
+                <div className="flex flex-none overflow-hidden rounded-md border border-[color:var(--border-input)]">
+                  {([true, false] as const).map((closed) => (
+                    <button
+                      key={String(closed)}
+                      type="button"
+                      onClick={() => patchException(ex.id, { closed })}
+                      className={`px-2.5 py-1.5 text-2xs ${
+                        ex.closed === closed
+                          ? "bg-accent text-accent-contrast font-medium"
+                          : "text-text-muted hover:bg-hover"
+                      }`}
+                    >
+                      {closed ? "закрыто" : "короткий день"}
+                    </button>
+                  ))}
+                </div>
+                {!ex.closed ? (
+                  <div className="flex flex-none items-center gap-1.5">
+                    <input
+                      type="time"
+                      value={minutesToTime(ex.startMinute)}
+                      onChange={(e) => patchException(ex.id, { startMinute: timeToMinutes(e.target.value) })}
+                      className="border-border-input bg-surface num rounded-md border px-2 py-1.5 text-sm outline-none"
+                    />
+                    <span className="text-text-subtle text-xs">—</span>
+                    <input
+                      type="time"
+                      value={minutesToTime(ex.endMinute)}
+                      onChange={(e) => patchException(ex.id, { endMinute: timeToMinutes(e.target.value) })}
+                      className="border-border-input bg-surface num rounded-md border px-2 py-1.5 text-sm outline-none"
+                    />
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => patch({ exceptions: form.exceptions.filter((e) => e.id !== ex.id) })}
-                  className="text-text-subtle hover:text-text text-sm"
-                  aria-label={`Удалить ${ex.label}`}
+                  className="text-text-subtle hover:text-text flex-none text-sm"
+                  aria-label={`Удалить ${ex.label || ex.date}`}
                 >
                   ×
                 </button>
@@ -149,7 +212,16 @@ export function ClinicClient({ initial }: { initial: ClinicData }) {
             patch({
               exceptions: [
                 ...form.exceptions,
-                { id: `e${Date.now()}`, date: "2026-01-01", label: "Новый день", closed: true },
+                {
+                  // Новая строка — на завтра: дата, которую точно нужно
+                  // поправить, лучше прошлогодней заглушки.
+                  id: `new-${Date.now()}`,
+                  date: tomorrowIso(),
+                  label: "",
+                  closed: true,
+                  startMinute: 9 * 60,
+                  endMinute: 21 * 60,
+                },
               ],
             })
           }

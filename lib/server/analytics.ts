@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { buildFunnel } from "@/lib/metrics/funnel";
 import { busyMinutes, freeGaps, occupancyRate, type Interval } from "@/lib/metrics/occupancy";
 import { averageCheck, withSourceShares, withStaffShares } from "@/lib/metrics/summary";
+import { closedDatesBetween } from "@/lib/server/clinic-day";
 import type {
   DashboardMetrics,
   PeriodKey,
@@ -64,12 +65,20 @@ function endOfToday(now: Date): Date {
   return end;
 }
 
-/** Рабочих дней в периоде: клиника не работает по воскресеньям. */
-function workingDaysBetween(from: Date, to: Date): number {
+/**
+ * Рабочих дней в периоде: клиника не работает по воскресеньям и в дни, которые
+ * отмечены исключением как закрытые (праздник, санитарный день).
+ *
+ * Без учёта исключений праздники попадали в знаменатель загрузки, и она
+ * занижалась ровно на эти дни — кабинеты выглядели простаивающими, хотя
+ * клиника была закрыта.
+ */
+function workingDaysBetween(from: Date, to: Date, closed?: Set<string>): number {
   let count = 0;
   const cursor = new Date(from);
   while (cursor < to) {
-    if (cursor.getDay() !== 0) count += 1;
+    const key = cursor.toISOString().slice(0, 10);
+    if (cursor.getDay() !== 0 && !closed?.has(key)) count += 1;
     cursor.setDate(cursor.getDate() + 1);
   }
   return count;
@@ -91,7 +100,7 @@ export async function getDashboardMetricsDb(
   const to = endOfToday(now);
   const from = new Date(now.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
 
-  const [appts, conversations, newPatients, rooms, sources] = await Promise.all([
+  const [appts, conversations, newPatients, rooms, sources, closed] = await Promise.all([
     prisma.appointment.findMany({
       where: { companyId, deletedAt: null, startAt: { gte: from, lt: to } },
       select: {
@@ -129,6 +138,7 @@ export async function getDashboardMetricsDb(
       orderBy: { sortOrder: "asc" },
       select: { id: true, code: true, title: true },
     }),
+    closedDatesBetween(companyId, from, to),
   ]);
 
   const booked = appts.filter((a) => a.status !== "CANCELLED");
@@ -177,7 +187,7 @@ export async function getDashboardMetricsDb(
       label: PERIOD_LABEL[period],
       from: from.toISOString(),
       to: to.toISOString(),
-      workingDays: Math.max(1, workingDaysBetween(from, now)),
+      workingDays: Math.max(1, workingDaysBetween(from, now, closed)),
     },
     funnel,
     funnelSteps: buildFunnel(funnel),
@@ -197,7 +207,7 @@ export async function getDashboardMetricsDb(
       returned: arrived.length - first - courseSession,
       total: arrived.length,
     },
-    rooms: buildRoomDays(rooms, booked, from, to),
+    rooms: buildRoomDays(rooms, booked, from, to, closed),
     sources: withSourceShares(sourceStats),
     staff: withStaffShares(staffStats).sort((a, b) => b.revenue - a.revenue),
     updatedAt: now.toISOString(),
@@ -237,10 +247,11 @@ function buildRoomDays(
   appts: ApptRow[],
   from: Date,
   to: Date,
+  closed: Set<string>,
 ): RoomDay[] {
   const days = appts.map((a) => isoDate(a.startAt));
   const shownDate = days.length > 0 ? days[days.length - 1] : isoDate(to);
-  const workingDays = Math.max(1, workingDaysBetween(from, to));
+  const workingDays = Math.max(1, workingDaysBetween(from, to, closed));
 
   return rooms.map((room) => {
     const ofRoom = appts.filter((a) => a.roomId === room.id);
@@ -298,7 +309,10 @@ export async function getServicesLoadDb(
   const now = new Date();
   const to = endOfToday(now);
   const from = new Date(now.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
-  const workingDays = Math.max(1, workingDaysBetween(from, now));
+  const workingDays = Math.max(
+    1,
+    workingDaysBetween(from, now, await closedDatesBetween(companyId, from, to)),
+  );
 
   const services = await prisma.service.findMany({
     where: { companyId, isActive: true },

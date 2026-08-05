@@ -5,9 +5,11 @@ import { addAppt, getDb, useDb } from "@/app/_data/store";
 import { formatMinute, freeGaps } from "@/lib/metrics/occupancy";
 import { CLINIC_DAY, durationLabel, hasConflict, roomIntervals } from "@/lib/schedule";
 import {
+  getClinicDayToday,
   getServicesForBooking,
   getSpecialistsForBooking,
   searchPatientsForBooking,
+  type ClinicDayView,
   type PatientOption,
   type ServiceOption,
   type SpecialistOption,
@@ -88,6 +90,9 @@ export function BookingPanel() {
 function BookingInner({ onClose }: { onClose: () => void }) {
   const db = useDb();
   const [services, setServices] = useState<ServiceOption[]>([]);
+  // Рабочее окно клиники на сегодня: в праздник и в укороченный день оно
+  // другое, и свободные окна обязаны это учитывать.
+  const [clinicDay, setClinicDay] = useState<ClinicDayView | null>(null);
   const [serviceKey, setServiceKey] = useState<string | null>(null);
   const [windowId, setWindowId] = useState<string | null>(null);
   const [patient, setPatient] = useState("");
@@ -112,6 +117,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     getServicesForBooking().then(setServices).catch(() => {});
+    getClinicDayToday().then(setClinicDay).catch(() => {});
     getSpecialistsForBooking().then(setSpecialists).catch(() => {});
     return () => {
       if (timer.current) clearTimeout(timer.current);
@@ -143,8 +149,12 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   const windows: WindowOption[] = useMemo(() => {
     if (!service) return [];
     if (!service.roomKey) return [];
+    if (clinicDay?.closed) return [];
     const roomKey = service.roomKey;
-    const gaps = freeGaps(roomIntervals(db.appointments, roomKey), CLINIC_DAY, service.durationMin);
+    const day = clinicDay
+      ? { startMinute: clinicDay.startMinute, endMinute: clinicDay.endMinute }
+      : CLINIC_DAY;
+    const gaps = freeGaps(roomIntervals(db.appointments, roomKey), day, service.durationMin);
     return gaps.map((g) => ({
       id: `${roomKey}-${g.startMinute}`,
       roomId: roomKey,
@@ -154,7 +164,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
       dir: service.title.split(",")[0],
       dur: durationLabel(g.durationMin),
     }));
-  }, [service, db.appointments]);
+  }, [service, db.appointments, clinicDay]);
 
   const selected = windows.find((w) => w.id === windowId) ?? null;
 
@@ -274,7 +284,12 @@ function BookingInner({ onClose }: { onClose: () => void }) {
           <div className="text-text-subtle mt-5 mb-2 text-2xs">
             Свободное окно{service?.roomName ? ` · ${service.roomName}` : ""}
           </div>
-          {!service ? (
+          {clinicDay?.closed ? (
+            <p className="text-text-subtle text-sm">
+              Сегодня клиника не работает{clinicDay.label ? ` — ${clinicDay.label}` : ""}. Запись на
+              этот день не оформляется; исключения задаются в настройках клиники.
+            </p>
+          ) : !service ? (
             <p className="text-text-subtle text-sm">Сначала выберите услугу.</p>
           ) : !service.roomKey ? (
             <p className="text-text-subtle text-sm">

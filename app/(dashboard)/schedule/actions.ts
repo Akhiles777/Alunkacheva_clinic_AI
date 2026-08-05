@@ -6,6 +6,7 @@ import { normalizePhone } from "@/lib/phone";
 import type { Appt } from "@/app/_data/store";
 import type { AppointmentStatus } from "@/generated/prisma/enums";
 import { todayRangeMoscow } from "@/lib/schedule";
+import { clinicDayFor } from "@/lib/server/clinic-day";
 
 /**
  * Расписание/«Сегодня» из ЕДИНОГО источника — проекции Appointment в БД (та же,
@@ -379,4 +380,29 @@ export async function getServicesForBooking(): Promise<ServiceOption[]> {
       roomName: room?.name ?? null,
     };
   });
+}
+
+/**
+ * Рабочее окно клиники на сегодня с учётом исключений.
+ *
+ * Нужно и форме записи, и экрану «Сегодня»: в праздник свободных окон быть
+ * не должно, в укороченный день их меньше. Раньше и там и там стояло
+ * жёсткое 9:00–21:00, поэтому исключения ни на что не влияли.
+ */
+export interface ClinicDayView {
+  closed: boolean;
+  startMinute: number;
+  endMinute: number;
+  label: string | null;
+}
+
+export async function getClinicDayToday(): Promise<ClinicDayView> {
+  const session = await getSession();
+  const day = await clinicDayFor(session.companyId, new Date());
+  return {
+    closed: day.window === null,
+    startMinute: day.window?.startMinute ?? 0,
+    endMinute: day.window?.endMinute ?? 0,
+    label: day.label,
+  };
 }

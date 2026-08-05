@@ -14,6 +14,7 @@ import { ROOM_SOURCE_LABEL } from "@/lib/rooms";
 import { formatMoney, formatNumber } from "@/lib/format";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { buildCabinets, buildFreeWindows, dateLabelInTz, nowMinuteInTz } from "@/lib/schedule";
+import { getClinicDayToday, type ClinicDayView } from "../schedule/actions";
 
 /**
  * «Сегодня» из ЕДИНОГО источника — стора db.appointments (как страница
@@ -41,9 +42,20 @@ export function TodayClient() {
       clearInterval(t);
     };
   }, []);
+  // Исключения расписания (праздник, санитарный день) приходят с сервера:
+  // они меняют и полосу кабинетов, и список свободных окон.
+  const [clinicDay, setClinicDay] = useState<ClinicDayView | null>(null);
+  useEffect(() => {
+    getClinicDayToday().then(setClinicDay).catch(() => {});
+  }, []);
+
   const date = dateLabelInTz();
-  const cabinets = buildCabinets(db.appointments, nowMinute);
-  const freeWindows = buildFreeWindows(db.appointments, nowMinute);
+  // Рабочее окно дня — с учётом исключений: в праздник свободных окон нет.
+  const day = clinicDay && !clinicDay.closed
+    ? { startMinute: clinicDay.startMinute, endMinute: clinicDay.endMinute }
+    : undefined;
+  const cabinets = buildCabinets(db.appointments, nowMinute, day);
+  const freeWindows = clinicDay?.closed ? [] : buildFreeWindows(db.appointments, nowMinute, day);
 
   const scheduled = db.appointments.length;
   const firstVisits = db.appointments.filter((a) => a.isFirstVisit).length;
@@ -116,7 +128,18 @@ export function TodayClient() {
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Сегодня</h1>
-            <p className="text-text-muted mt-1 text-xs">{date} · смена Ирины</p>
+            <p className="text-text-muted mt-1 text-xs">
+              {date}
+              {clinicDay?.closed ? (
+                <span className="text-accent-text ml-2 font-medium">
+                  клиника не работает{clinicDay.label ? ` · ${clinicDay.label}` : ""}
+                </span>
+              ) : clinicDay && clinicDay.label ? (
+                <span className="text-accent-text ml-2">
+                  {clinicDay.label} · до {formatMinute(clinicDay.endMinute)}
+                </span>
+              ) : null}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <SearchTrigger className="w-[260px] max-md:hidden" />
