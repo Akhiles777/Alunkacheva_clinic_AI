@@ -10,6 +10,33 @@ export interface AuditDisplayRow {
   actor: string;
   action: string;
   target: string;
+  /** Откуда сделано: устройство и адрес. «—», если запись старая. */
+  device: string;
+  ip: string;
+}
+
+/** Узнаваемое имя устройства из user-agent: без версий и служебных строк. */
+function deviceLabel(agent: string | null): string {
+  if (!agent) return "—";
+  const browser = /Firefox/i.test(agent)
+    ? "Firefox"
+    : /Edg/i.test(agent)
+      ? "Edge"
+      : /Chrome|CriOS/i.test(agent)
+        ? "Chrome"
+        : /Safari/i.test(agent)
+          ? "Safari"
+          : "Браузер";
+  const os = /iPhone|iPad/i.test(agent)
+    ? "iPhone"
+    : /Android/i.test(agent)
+      ? "Android"
+      : /Macintosh/i.test(agent)
+        ? "Mac"
+        : /Windows/i.test(agent)
+          ? "Windows"
+          : "";
+  return os ? `${browser} · ${os}` : browser;
 }
 
 const ACTION_LABEL: Record<string, string> = {
@@ -38,11 +65,18 @@ const ENTITY_LABEL: Record<string, string> = {
   "role-matrix": "Матрица прав",
 };
 
+/**
+ * Время — в зоне клиники, а не сервера. Без указания зоны формат брал
+ * настройку хостинга (на Vercel это UTC), и действие, сделанное в 10:36 по
+ * Москве, показывалось как «07:36» — владелец искал, кто работал в системе
+ * в семь утра.
+ */
 const fmt = new Intl.DateTimeFormat("ru-RU", {
   day: "numeric",
   month: "long",
   hour: "2-digit",
   minute: "2-digit",
+  timeZone: "Europe/Moscow",
 });
 
 export async function getAuditLog(): Promise<AuditDisplayRow[]> {
@@ -53,7 +87,7 @@ export async function getAuditLog(): Promise<AuditDisplayRow[]> {
     where: { companyId: session.companyId },
     orderBy: { createdAt: "desc" },
     take: 200,
-    include: { actor: { select: { name: true } } },
+    include: { actor: { select: { name: true, login: true } } },
   });
 
   return rows.map((r) => {
@@ -62,9 +96,11 @@ export async function getAuditLog(): Promise<AuditDisplayRow[]> {
     return {
       id: r.id,
       at: fmt.format(r.createdAt),
-      actor: r.actor?.name ?? "Система",
+      actor: r.actor ? `${r.actor.name} (${r.actor.login})` : "Система",
       action: ACTION_LABEL[r.action] ?? r.action,
       target,
+      device: deviceLabel(r.userAgent),
+      ip: r.ip ?? "—",
     };
   });
 }

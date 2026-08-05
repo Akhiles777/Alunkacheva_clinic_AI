@@ -1,16 +1,23 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { PatientCardBody } from "../../_components/patient-card";
 import { PatientAnalyticsPanel } from "../patient-analytics-panel";
 import { findPatient, useDb } from "@/app/_data/store";
+import { logPatientView } from "../actions";
 
 export default function PatientPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   useDb(); // подписка на стор — карточка обновляется при правках
   const patient = findPatient(id);
+
+  // Просмотр медицинской карточки фиксируется в журнале (§7).
+  useEffect(() => {
+    if (id) void logPatientView(id).catch(() => {});
+  }, [id]);
 
   return (
     <>

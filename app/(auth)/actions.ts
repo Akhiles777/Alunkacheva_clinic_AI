@@ -5,6 +5,8 @@ import { prisma } from "@/lib/db";
 import { hashPassword, LOGIN_RE, normalizeLogin, SESSION_COOKIE, signSession, verifyPassword } from "@/lib/auth";
 import { appRoleOf, type AppRole } from "@/lib/roles";
 import type { StaffRole } from "@/generated/prisma/enums";
+import { writeAudit } from "@/lib/server/audit";
+import { getSessionOrNull } from "@/lib/server/session";
 
 /**
  * Вход и регистрация. Входа «без пароля» нет: прежняя кнопка «Войти как
@@ -97,9 +99,26 @@ export async function loginUser(input: { login: string; password: string }): Pro
   }
   await prisma.staffUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   await setSession(user.id, cid, user.role);
+  // Вход фиксируем в журнале: без него нельзя ответить, кто и с какого
+  // устройства работал в системе — а это первый вопрос при разборе.
+  await writeAudit({
+    companyId: cid,
+    actorId: user.id,
+    action: "LOGIN",
+    entityType: "session",
+  }).catch(() => {});
   return { ok: true, role: appRoleOf(user.role) };
 }
 
 export async function logoutUser(): Promise<void> {
+  const session = await getSessionOrNull();
+  if (session?.userId) {
+    await writeAudit({
+      companyId: session.companyId,
+      actorId: session.userId,
+      action: "LOGOUT",
+      entityType: "session",
+    }).catch(() => {});
+  }
   (await cookies()).delete(SESSION_COOKIE);
 }

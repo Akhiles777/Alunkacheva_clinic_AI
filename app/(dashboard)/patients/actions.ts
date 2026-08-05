@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
+import { writeAudit } from "@/lib/server/audit";
 import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/enums";
 
 /**
@@ -245,4 +246,41 @@ export async function addRelationDb(input: {
 export async function removeRelationDb(relationId: string): Promise<void> {
   const session = await getSession();
   await prisma.patientRelation.deleteMany({ where: { id: relationId, companyId: session.companyId } });
+}
+
+/**
+ * Отметить просмотр карточки пациента.
+ *
+ * §7 прямо требует аудит-лог на просмотр карточки: медицинские данные, и
+ * должно быть видно, кто их открывал. В журнале не было ни одной такой
+ * записи — только изменения настроек.
+ *
+ * Пишем не чаще раза в час на пациента: карточка перерисовывается при каждой
+ * правке, и без этого журнал забился бы одинаковыми строками, в которых
+ * ничего не найти.
+ */
+export async function logPatientView(patientId: string): Promise<void> {
+  const session = await getSession();
+  if (!session.userId) return;
+
+  const hourAgo = new Date(Date.now() - 3600_000);
+  const recent = await prisma.auditLog.findFirst({
+    where: {
+      companyId: session.companyId,
+      actorId: session.userId,
+      action: "PATIENT_VIEW",
+      entityId: patientId,
+      createdAt: { gte: hourAgo },
+    },
+    select: { id: true },
+  });
+  if (recent) return;
+
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "PATIENT_VIEW",
+    entityType: "patient",
+    entityId: patientId,
+  }).catch(() => {});
 }

@@ -55,6 +55,7 @@ export function AuditClient({ rows }: { rows: AuditDisplayRow[] }) {
                 <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Сотрудник</th>
                 <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Действие</th>
                 <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Объект</th>
+                <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Откуда</th>
               </tr>
             </thead>
             <tbody>
@@ -64,6 +65,10 @@ export function AuditClient({ rows }: { rows: AuditDisplayRow[] }) {
                   <td className="px-4 py-2.5">{r.actor}</td>
                   <td className="px-4 py-2.5">{r.action}</td>
                   <td className="text-text-muted px-4 py-2.5">{r.target}</td>
+                  <td className="text-text-subtle px-4 py-2.5 whitespace-nowrap">
+                    {r.device}
+                    {r.ip !== "—" ? <span className="num ml-2 text-2xs">{r.ip}</span> : null}
+                  </td>
                 </tr>
               ))}
             </tbody>
