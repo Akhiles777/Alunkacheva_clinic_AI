@@ -57,6 +57,13 @@ function isoDate(at: Date, tz = "Europe/Moscow"): string {
   }).format(at);
 }
 
+/** Конец текущих суток в зоне клиники: граница отчётного окна. */
+function endOfToday(now: Date): Date {
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
 /** Рабочих дней в периоде: клиника не работает по воскресеньям. */
 function workingDaysBetween(from: Date, to: Date): number {
   let count = 0;
@@ -73,13 +80,16 @@ export async function getDashboardMetricsDb(
   period: PeriodKey,
 ): Promise<DashboardMetrics> {
   /**
-   * Период всегда заканчивается «сейчас»: записи вперёд в отчёт о прошедшем
-   * не попадают. Без верхней границы будущие визиты считались состоявшимися
-   * приёмами — из-за этого у специалиста выходило 214 приёмов там, где
-   * состоялось 126.
+   * Границы периода — по дате визита, а состоявшееся — по статусу.
+   *
+   * Верхняя граница «сейчас» отсекала визиты, которые администратор уже
+   * отметил как состоявшиеся, но время которых по расписанию ещё не прошло:
+   * отметка «пришёл» не меняла отчёт. Поэтому окно доходит до конца текущих
+   * суток, а план от факта отделяет статус.
    */
-  const to = new Date();
-  const from = new Date(to.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
+  const now = new Date();
+  const to = endOfToday(now);
+  const from = new Date(now.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
 
   const [appts, conversations, newPatients, rooms, sources] = await Promise.all([
     prisma.appointment.findMany({
@@ -167,7 +177,7 @@ export async function getDashboardMetricsDb(
       label: PERIOD_LABEL[period],
       from: from.toISOString(),
       to: to.toISOString(),
-      workingDays: Math.max(1, workingDaysBetween(from, to)),
+      workingDays: Math.max(1, workingDaysBetween(from, now)),
     },
     funnel,
     funnelSteps: buildFunnel(funnel),
@@ -190,7 +200,7 @@ export async function getDashboardMetricsDb(
     rooms: buildRoomDays(rooms, booked, from, to),
     sources: withSourceShares(sourceStats),
     staff: withStaffShares(staffStats).sort((a, b) => b.revenue - a.revenue),
-    updatedAt: to.toISOString(),
+    updatedAt: now.toISOString(),
   };
 }
 
@@ -284,9 +294,11 @@ export async function getServicesLoadDb(
   companyId: string,
   period: PeriodKey,
 ): Promise<ServiceLoadRow[]> {
-  const to = new Date();
-  const from = new Date(to.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
-  const workingDays = Math.max(1, workingDaysBetween(from, to));
+  // Те же границы, что и в основном отчёте: окно до конца текущих суток.
+  const now = new Date();
+  const to = endOfToday(now);
+  const from = new Date(now.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
+  const workingDays = Math.max(1, workingDaysBetween(from, now));
 
   const services = await prisma.service.findMany({
     where: { companyId, isActive: true },

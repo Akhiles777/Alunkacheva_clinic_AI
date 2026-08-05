@@ -164,18 +164,20 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
   if (!staffId) return empty;
 
   /**
-   * Окно периода закрыто с обеих сторон.
+   * Состоявшееся определяем по статусу, а не по времени.
    *
-   * Верхней границы не было, и после появления записей вперёд будущие визиты
-   * попадали в «за последние 90 дней» как уже состоявшиеся приёмы: у одного
-   * специалиста выходило 214 приёмов там, где состоялось 126. Статистика
-   * прошедшего периода не должна включать то, что ещё не произошло.
+   * Сначала здесь не было верхней границы, и будущие записи считались
+   * приёмами: у специалиста выходило 214 приёмов там, где состоялось 126.
+   * Границу «только прошедшее» ставить тоже нельзя: администратор отмечает
+   * «пришёл» в момент приёма, когда визит по расписанию ещё не закончился, —
+   * и отметка не меняла ничего. Правильный признак один: ARRIVED и NO_SHOW —
+   * это уже случившийся исход, CREATED и CONFIRMED — план.
    */
   const now = new Date();
   const since = new Date(now.getTime() - PERIOD_DAYS * 24 * 3600 * 1000);
   const [rows, clinicRevenue, upcomingRows] = await Promise.all([
     prisma.appointment.findMany({
-      where: { companyId, deletedAt: null, staffId, startAt: { gte: since, lt: now } },
+      where: { companyId, deletedAt: null, staffId, startAt: { gte: since } },
       select: {
         startAt: true,
         durationMin: true,
@@ -188,7 +190,7 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
       orderBy: { startAt: "asc" },
     }),
     prisma.appointment.aggregate({
-      where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since, lt: now } },
+      where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since } },
       _sum: { revenue: true },
     }),
     prisma.appointment.findMany({
@@ -196,7 +198,8 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
         companyId,
         deletedAt: null,
         staffId,
-        status: { not: "CANCELLED" },
+        // План — это то, у чего исход ещё не отмечен.
+        status: { in: ["CREATED", "CONFIRMED"] },
         startAt: { gte: now },
       },
       orderBy: { startAt: "asc" },

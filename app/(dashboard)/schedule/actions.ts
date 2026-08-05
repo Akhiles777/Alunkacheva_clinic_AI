@@ -92,11 +92,38 @@ export async function setApptNoteDb(id: string, note: string): Promise<void> {
   });
 }
 
+/**
+ * Отметить исход визита.
+ *
+ * Вместе со статусом ведём выручку. Раньше отметка «пришёл» меняла только
+ * статус: визит попадал в число пришедших с нулевой ценой, из-за чего выручка
+ * не росла, а средний чек падал. Цену берём из услуги — ту же, что показана
+ * в записи; уже проставленную вручную не трогаем.
+ *
+ * Неявка и отмена обнуляют выручку: денег по ним нет.
+ */
 export async function setApptStatusDb(id: string, status: Appt["status"]): Promise<void> {
   const session = await getSession();
+  const row = await prisma.appointment.findFirst({
+    where: { id, companyId: session.companyId },
+    select: { revenue: true, primaryService: { select: { price: true } } },
+  });
+  if (!row) return;
+
+  const current = Number(row.revenue);
+  const servicePrice = Number(row.primaryService?.price ?? 0);
+  const revenue =
+    status === "arrived" ? (current > 0 ? current : servicePrice) : status === "no_show" ? 0 : current;
+
   await prisma.appointment.updateMany({
     where: { id, companyId: session.companyId },
-    data: { status: TO_DB[status], attendanceRaw: status === "arrived" ? 1 : status === "no_show" ? -1 : null },
+    data: {
+      status: TO_DB[status],
+      attendanceRaw: status === "arrived" ? 1 : status === "no_show" ? -1 : null,
+      revenue,
+      paidAmount: status === "arrived" ? revenue : 0,
+      isPaid: status === "arrived" && revenue > 0,
+    },
   });
 }
 
