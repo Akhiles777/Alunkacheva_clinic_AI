@@ -113,6 +113,12 @@ export interface CreateApptInput {
   id: string;
   roomId: string; // room-1/2/3
   doctor: string;
+  /**
+   * Специалист выбран явно в форме. Раньше его искали по первому слову имени
+   * («Левин А. И.» → startsWith «Левин»), и два однофамильца отдали бы запись
+   * не тому. Имя оставляем для показа, решение принимаем по id.
+   */
+  staffId?: string | null;
   service: string;
   patientId: string | null;
   patientName: string;
@@ -142,7 +148,9 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
 
   const roomNum = input.roomId.replace("room-", "");
   const [staff, room, service] = await Promise.all([
-    prisma.staff.findFirst({ where: { companyId: co, deletedAt: null, name: { startsWith: input.doctor.split(/\s/)[0] } }, select: { id: true } }),
+    input.staffId
+      ? prisma.staff.findFirst({ where: { id: input.staffId, companyId: co, deletedAt: null }, select: { id: true } })
+      : prisma.staff.findFirst({ where: { companyId: co, deletedAt: null, name: { startsWith: input.doctor.split(/\s/)[0] } }, select: { id: true } }),
     prisma.room.findFirst({ where: { companyId: co, name: { startsWith: `Кабинет ${roomNum}` } }, select: { id: true } }),
     input.service
       ? prisma.service.findFirst({ where: { companyId: co, title: input.service }, select: { id: true } })
@@ -224,4 +232,87 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
       updatedAtYclients: startAt,
     },
   });
+}
+
+// ─────────────────────────────────────────────── справочники для формы записи
+
+/**
+ * Пациент для формы записи. Раньше имя вводилось текстом и запись уходила
+ * с patientId = null: одноимённые люди сливались в одного, а опечатка в
+ * фамилии заводила ещё одну карточку. Теперь администратор выбирает человека
+ * из базы, а завести нового по-прежнему можно — просто это отдельное решение.
+ */
+export interface PatientOption {
+  id: string;
+  name: string;
+  phone: string | null;
+  /** Сколько визитов уже было — помогает отличить тёзок. */
+  visits: number;
+}
+
+export async function searchPatientsForBooking(query: string): Promise<PatientOption[]> {
+  const session = await getSession();
+  const q = query.trim();
+  const digits = q.replace(/\D/g, "");
+
+  const rows = await prisma.patient.findMany({
+    where: {
+      companyId: session.companyId,
+      deletedAt: null,
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" as const } },
+              ...(digits.length >= 3
+                ? [{ phones: { some: { phone: { contains: digits } } } }]
+                : []),
+            ],
+          }
+        : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    take: 12,
+    select: {
+      id: true,
+      name: true,
+      phones: { where: { isPrimary: true }, select: { phone: true }, take: 1 },
+      _count: { select: { appointments: true } },
+    },
+  });
+
+  return rows.map((p) => ({
+    id: p.id,
+    name: p.name ?? "Без имени",
+    phone: p.phones[0]?.phone ?? null,
+    visits: p._count.appointments,
+  }));
+}
+
+/** Специалист для формы записи: список живой, из базы, а не зашитый в код. */
+export interface SpecialistOption {
+  id: string;
+  name: string;
+  specialty: string | null;
+  /** Кабинет по умолчанию — им подставляем специалиста под выбранную услугу. */
+  roomKey: string | null;
+}
+
+export async function getSpecialistsForBooking(): Promise<SpecialistOption[]> {
+  const session = await getSession();
+  const rows = await prisma.staff.findMany({
+    where: { companyId: session.companyId, deletedAt: null, isActive: true },
+    orderBy: { sortOrder: "asc" },
+    select: {
+      id: true,
+      name: true,
+      specialty: true,
+      defaultRoom: { select: { name: true } },
+    },
+  });
+  return rows.map((s) => ({
+    id: s.id,
+    name: s.name,
+    specialty: s.specialty,
+    roomKey: s.defaultRoom ? ROOM_KEY(s.defaultRoom.name) : null,
+  }));
 }

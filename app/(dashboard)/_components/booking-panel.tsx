@@ -4,7 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { addAppt, getDb, useDb } from "@/app/_data/store";
 import { formatMinute, freeGaps } from "@/lib/metrics/occupancy";
 import { CLINIC_DAY, durationLabel, hasConflict, roomIntervals } from "@/lib/schedule";
-import { getServicePrices } from "../schedule/actions";
+import {
+  getServicePrices,
+  getSpecialistsForBooking,
+  searchPatientsForBooking,
+  type PatientOption,
+  type SpecialistOption,
+} from "../schedule/actions";
+import { Picker, type PickerItem } from "./picker";
 
 /**
  * Панель записи. Свободные окна считаются из ЕДИНОГО источника (стор
@@ -26,15 +33,23 @@ interface ServiceDef {
   title: string;
   durationMin: number;
   roomId: string;
-  doctor: string;
 }
 const SERVICES: ServiceDef[] = [
-  { key: "osteo", title: "Остеопатия, приём", durationMin: 60, roomId: "room-3", doctor: "Левин А." },
-  { key: "iv", title: "IV-терапия, капельница", durationMin: 90, roomId: "room-1", doctor: "Соколова Е." },
-  { key: "bos", title: "БОС-терапия, сеанс", durationMin: 40, roomId: "room-2", doctor: "Мороз Д." },
-  { key: "neuro", title: "Нейромедитация", durationMin: 30, roomId: "room-2", doctor: "Мороз Д." },
-  { key: "lab", title: "Забор анализов", durationMin: 15, roomId: "room-1", doctor: "Литвинова О. А." },
+  { key: "osteo", title: "Остеопатия, приём", durationMin: 60, roomId: "room-3" },
+  { key: "iv", title: "IV-терапия, капельница", durationMin: 90, roomId: "room-1" },
+  { key: "bos", title: "БОС-терапия, сеанс", durationMin: 40, roomId: "room-2" },
+  { key: "neuro", title: "Нейромедитация", durationMin: 30, roomId: "room-2" },
+  { key: "lab", title: "Забор анализов", durationMin: 15, roomId: "room-1" },
 ];
+
+function toPatientItem(p: PatientOption): PickerItem {
+  const parts = [p.phone, p.visits > 0 ? `визитов ${p.visits}` : "новый"].filter(Boolean);
+  return { id: p.id, title: p.name, subtitle: parts.join(" · ") };
+}
+
+function toStaffItem(s: SpecialistOption): PickerItem {
+  return { id: s.id, title: s.name, subtitle: s.specialty };
+}
 
 interface WindowOption {
   id: string;
@@ -87,6 +102,18 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   const [serviceKey, setServiceKey] = useState<string | null>(null);
   const [windowId, setWindowId] = useState<string | null>(null);
   const [patient, setPatient] = useState("");
+  /**
+   * Выбранный из базы пациент. Пока он не выбран, имя в поле — это заявка
+   * завести нового: так администратор всегда видит, свяжется запись с
+   * существующей карточкой или появится ещё одна.
+   */
+  const [patientPicked, setPatientPicked] = useState<PatientOption | null>(null);
+  const [patientFound, setPatientFound] = useState<PatientOption[]>([]);
+  const [patientLoading, setPatientLoading] = useState(false);
+
+  const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
+  const [staffPicked, setStaffPicked] = useState<SpecialistOption | null>(null);
+  const [staffQuery, setStaffQuery] = useState("");
   const [check, setCheck] = useState<Check>("idle");
   const [booked, setBooked] = useState<{ time: string; room: string } | null>(null);
   const [prices, setPrices] = useState<Record<string, number>>({});
@@ -97,10 +124,28 @@ function BookingInner({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     getServicePrices().then(setPrices).catch(() => {});
+    getSpecialistsForBooking().then(setSpecialists).catch(() => {});
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
   }, []);
+
+  /**
+   * Поиск пациента с задержкой: администратор печатает быстро, и запрос на
+   * каждую букву только мешает. Пустая строка тоже ищет — показываем последних
+   * заведённых, чтобы список не был пустым до первого символа.
+   */
+  useEffect(() => {
+    if (patientPicked) return;
+    setPatientLoading(true);
+    const t = setTimeout(() => {
+      searchPatientsForBooking(patient)
+        .then(setPatientFound)
+        .catch(() => setPatientFound([]))
+        .finally(() => setPatientLoading(false));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [patient, patientPicked]);
 
   const service = SERVICES.find((s) => s.key === serviceKey) ?? null;
   // Цена по умолчанию — из настроек услуги; администратор может изменить.
@@ -122,10 +167,28 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   }, [service, db.appointments]);
 
   const selected = windows.find((w) => w.id === windowId) ?? null;
-  const ready = service && selected && patient.trim().length > 1;
+
+  /**
+   * Специалисты, подходящие услуге: сначала закреплённые за её кабинетом.
+   * Остальных не прячем — подменить коллегу на смене дело обычное, и форма
+   * не должна этому мешать.
+   */
+  const staffOptions: SpecialistOption[] = useMemo(() => {
+    const q = staffQuery.trim().toLowerCase();
+    const matched = specialists.filter(
+      (s) => !q || s.name.toLowerCase().includes(q) || (s.specialty ?? "").toLowerCase().includes(q),
+    );
+    if (!service) return matched;
+    return [...matched].sort((a, b) => {
+      const own = (s: SpecialistOption) => (s.roomKey === service.roomId ? 0 : 1);
+      return own(a) - own(b);
+    });
+  }, [specialists, staffQuery, service]);
+
+  const ready = service && selected && staffPicked && (patientPicked || patient.trim().length > 1);
 
   function verifyAndBook() {
-    if (!service || !selected) return;
+    if (!service || !selected || !staffPicked) return;
     setCheck("checking");
     if (timer.current) clearTimeout(timer.current);
     // Перепроверка занятости по свежему состоянию (модель запроса в YCLIENTS).
@@ -143,10 +206,11 @@ function BookingInner({ onClose }: { onClose: () => void }) {
       addAppt({
         roomId: selected.roomId,
         roomName: ROOM_NAME[selected.roomId],
-        doctor: service.doctor,
+        doctor: staffPicked.name,
+        staffId: staffPicked.id,
         service: service.title,
-        patientId: null,
-        patientName: patient.trim(),
+        patientId: patientPicked?.id ?? null,
+        patientName: (patientPicked?.name ?? patient).trim(),
         startMinute: selected.startMinute,
         durationMin: selected.durationMin,
         status: "planned",
@@ -196,6 +260,11 @@ function BookingInner({ onClose }: { onClose: () => void }) {
                   setWindowId(null);
                   setCheck("idle");
                   setPrice(String(prices[s.title] ?? ""));
+                  // Подставляем специалиста этого кабинета — обычный случай.
+                  // Выбор остаётся за администратором: сменщиков меняют часто.
+                  const own = specialists.filter((sp) => sp.roomKey === s.roomId);
+                  setStaffPicked(own.length === 1 ? own[0] : null);
+                  setStaffQuery("");
                 }}
                 className={`rounded-md border px-2.5 py-1.5 text-sm ${
                   serviceKey === s.key
@@ -249,15 +318,61 @@ function BookingInner({ onClose }: { onClose: () => void }) {
             </ul>
           )}
 
-          <div className="text-text-subtle mt-5 mb-2 text-2xs">Пациент</div>
-          <input
-            value={patient}
-            onChange={(e) => {
-              setPatient(e.target.value);
+          <Picker
+            label="Пациент"
+            placeholder="Начните вводить имя или телефон"
+            loading={patientLoading}
+            query={patient}
+            items={patientFound.map(toPatientItem)}
+            selected={patientPicked ? toPatientItem(patientPicked) : null}
+            onQuery={(v) => {
+              setPatient(v);
               setCheck("idle");
             }}
-            placeholder="Имя или телефон"
-            className="border-border-input bg-surface placeholder:text-text-subtle w-full rounded-md border px-3 py-2 text-sm outline-none"
+            onSelect={(item) => {
+              const found = patientFound.find((p) => p.id === item.id) ?? null;
+              setPatientPicked(found);
+              setCheck("idle");
+            }}
+            onClear={() => {
+              setPatientPicked(null);
+              setPatient("");
+            }}
+            emptyHint="В базе никого не нашли"
+            footer={
+              patient.trim().length > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => setPatientPicked(null)}
+                  className="hover:bg-hover w-full px-3 py-2 text-left text-sm"
+                >
+                  Записать как нового: <span className="font-medium">{patient.trim()}</span>
+                </button>
+              ) : null
+            }
+          />
+          {!patientPicked && patient.trim().length > 1 ? (
+            <p className="text-text-subtle mt-1.5 text-xs">
+              Пациент не выбран из базы — будет заведена новая карточка.
+            </p>
+          ) : null}
+
+          <Picker
+            label="Специалист"
+            placeholder="Начните вводить фамилию"
+            query={staffQuery}
+            items={staffOptions.map(toStaffItem)}
+            selected={staffPicked ? toStaffItem(staffPicked) : null}
+            onQuery={setStaffQuery}
+            onSelect={(item) => {
+              setStaffPicked(specialists.find((s) => s.id === item.id) ?? null);
+              setCheck("idle");
+            }}
+            onClear={() => {
+              setStaffPicked(null);
+              setStaffQuery("");
+            }}
+            emptyHint="Такого специалиста нет"
           />
 
           <div className="text-text-subtle mt-5 mb-2 text-2xs">

@@ -79,6 +79,11 @@ export interface Appt {
   roomId: string;
   roomName: string;
   doctor: string;
+  /**
+   * Специалист, выбранный в форме. Имя показываем, а связываем по id: тёзок и
+   * однофамильцев по имени не различить.
+   */
+  staffId?: string | null;
   service: string;
   patientId: string | null;
   patientName: string;
@@ -757,6 +762,7 @@ export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { 
     id: appt.id,
     roomId: appt.roomId,
     doctor: appt.doctor,
+    staffId: appt.staffId ?? null,
     service: appt.service,
     patientId: appt.patientId,
     patientName: appt.patientName,
