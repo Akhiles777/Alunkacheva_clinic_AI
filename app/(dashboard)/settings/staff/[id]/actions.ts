@@ -153,10 +153,19 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
   };
   if (!staffId) return empty;
 
-  const since = new Date(Date.now() - PERIOD_DAYS * 24 * 3600 * 1000);
+  /**
+   * Окно периода закрыто с обеих сторон.
+   *
+   * Верхней границы не было, и после появления записей вперёд будущие визиты
+   * попадали в «за последние 90 дней» как уже состоявшиеся приёмы: у одного
+   * специалиста выходило 214 приёмов там, где состоялось 126. Статистика
+   * прошедшего периода не должна включать то, что ещё не произошло.
+   */
+  const now = new Date();
+  const since = new Date(now.getTime() - PERIOD_DAYS * 24 * 3600 * 1000);
   const [rows, clinicRevenue] = await Promise.all([
     prisma.appointment.findMany({
-      where: { companyId, deletedAt: null, staffId, startAt: { gte: since } },
+      where: { companyId, deletedAt: null, staffId, startAt: { gte: since, lt: now } },
       select: {
         startAt: true,
         durationMin: true,
@@ -169,7 +178,7 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
       orderBy: { startAt: "asc" },
     }),
     prisma.appointment.aggregate({
-      where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since } },
+      where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since, lt: now } },
       _sum: { revenue: true },
     }),
   ]);
@@ -210,7 +219,10 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
   return {
     hasSpecialist: true,
     periodDays: PERIOD_DAYS,
-    appts: rows.length,
+    // «Приёмы» — состоявшиеся исходы плюс неявки, без отменённых (§8:
+    // записавшиеся — это визиты со статусом ≠ CANCELLED). Отменённые
+    // показываем отдельной подписью, а не подмешиваем в общее число.
+    appts: settled,
     arrived: arrivedRows.length,
     noShow,
     cancelled,

@@ -200,7 +200,8 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
   await requirePermission(session, "VIEW_REVENUE");
   const since = new Date(Date.now() - 8 * 7 * 24 * 3600 * 1000);
   const rows = await prisma.appointment.findMany({
-    where: { companyId: session.companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since } },
+    // Верхняя граница обязательна: без неё в динамику попадали будущие недели.
+    where: { companyId: session.companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since, lt: new Date() } },
     select: { startAt: true, revenue: true, patientId: true },
   });
 

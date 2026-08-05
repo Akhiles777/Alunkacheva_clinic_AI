@@ -10,6 +10,11 @@
 
 export type PeriodKey = "week" | "month" | "quarter";
 
+/** Разбор периода из адресной строки: чужое значение до расчёта не доходит. */
+export function isPeriodKey(value: unknown): value is PeriodKey {
+  return value === "week" || value === "month" || value === "quarter";
+}
+
 export interface PeriodInfo {
   key: PeriodKey;
   label: string;

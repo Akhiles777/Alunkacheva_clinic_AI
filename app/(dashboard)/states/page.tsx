@@ -1,11 +1,18 @@
 import { CabinetCard } from "../_components/cabinet-card";
 import { FreeWindows } from "../_components/free-windows";
 import { AttentionList, InquiryList } from "../_components/today-lists";
+import { notFound } from "next/navigation";
 import { getToday, type CabinetNow, type FreeWindowRow } from "@/app/_data/today";
 
 /**
  * Витрина граничных состояний — служебный экран визуальной проверки.
- * Фикстуры здесь: это визуальный слой, `lib/metrics` и моки он не трогает.
+ * Фикстуры здесь намеренные: экран показывает, как выглядят пустой день,
+ * переполненный день и крупные числа.
+ *
+ * В рабочей сборке страница закрыта. Она не в меню, но открывается по адресу,
+ * и её выдуманные суммы (в том числе средний чек 6140 ₽) заказчик принимал за
+ * настоящие показатели клиники. Данные, которые нельзя ни с чем сверить, не
+ * должны быть доступны на боевом стенде.
  */
 export const metadata = { title: "Состояния" };
 
@@ -66,6 +73,7 @@ function Case({
 }
 
 export default function StatesPage() {
+  if (process.env.NODE_ENV === "production") notFound();
   return (
     <div className="flex-1 overflow-auto px-7 py-8 max-md:px-5">
       <header className="mb-9">

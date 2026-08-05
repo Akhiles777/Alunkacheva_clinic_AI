@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { getDashboardMetrics, isPeriodKey } from "@/lib/mock-metrics";
-import { servicesLoad } from "@/app/_data/analytics";
+import { getDashboardMetricsDb, getServicesLoadDb } from "@/lib/server/analytics";
+import { getSession } from "@/lib/server/session";
 import { formatDuration, formatMoney, formatMoneyPrecise, formatNumber, formatPercent } from "@/lib/format";
-import type { PeriodKey } from "@/lib/metrics/types";
+import { isPeriodKey, type PeriodKey } from "@/lib/metrics/types";
 
 export const metadata = { title: "Отчёты" };
 
@@ -54,7 +54,11 @@ export default async function AnalyticsPage({
   const rawTab = Array.isArray(sp.tab) ? sp.tab[0] : sp.tab;
   const tab = TABS.some((t) => t.id === rawTab) ? (rawTab as string) : "funnel";
 
-  const m = await getDashboardMetrics(period);
+  const session = await getSession();
+  const [m, servicesLoad] = await Promise.all([
+    getDashboardMetricsDb(session.companyId, period),
+    getServicesLoadDb(session.companyId, period),
+  ]);
   const q = (t: string, p: PeriodKey) => `/analytics?tab=${t}&period=${p}`;
 
   return (
@@ -208,7 +212,7 @@ export default async function AnalyticsPage({
           {tab === "services" ? (
             <Card title="Загрузка по услугам" hint="основной разрез: занято / доступно в кабинетах услуги">
               <ul className="flex flex-col gap-3.5">
-                {servicesLoad(period).map((s) => (
+                {servicesLoad.map((s) => (
                   <li key={s.title}>
                     <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
                       <span className="text-sm">{s.title}</span>
