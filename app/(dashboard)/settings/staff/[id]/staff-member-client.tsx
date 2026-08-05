@@ -437,7 +437,7 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
 
       <Group
         title="Работа в цифрах"
-        hint={`за последние ${m.periodDays} дней · считается по визитам, отменённые не портят явку`}
+        hint={`итоги — за последние ${m.periodDays} дней; «запланировано» — записи вперёд`}
       >
         {!m.hasSpecialist ? (
           <p className="text-text-subtle text-sm">
@@ -450,6 +450,20 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
               <Tile label="Выручка" value={formatMoney(m.revenue)} hint={`${m.revenueSharePct}% клиники`} />
               <Tile label="Средний чек" value={formatMoney(m.avgCheck)} />
               <Tile label="Приёмов" value={m.appts} hint={`пришли ${m.arrived}`} />
+              <Tile
+                label="Запланировано"
+                value={m.upcoming}
+                hint={
+                  m.nextVisitAt
+                    ? `ближайший ${new Intl.DateTimeFormat("ru-RU", {
+                        day: "numeric",
+                        month: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }).format(new Date(m.nextVisitAt))}`
+                    : "записей вперёд нет"
+                }
+              />
               <Tile label="Часы" value={m.hours.toFixed(1)} />
               <Tile label="Явка" value={`${m.arrivalRatePct}%`} hint={`неявок ${m.noShow}`} />
               <Tile label="Неявки" value={`${m.noShowRatePct}%`} hint={`отмен ${m.cancelled}`} />

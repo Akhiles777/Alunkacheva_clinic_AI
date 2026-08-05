@@ -55,6 +55,14 @@ export interface StaffMetrics {
   hasSpecialist: boolean;
   periodDays: number;
   appts: number;
+  /**
+   * Записи вперёд: их ещё не было, поэтому в показателях прошедшего периода
+   * им не место, но и потеряться они не должны. Без этого числа новая запись
+   * никак не отражалась на карточке специалиста — экран выглядел мёртвым.
+   */
+  upcoming: number;
+  /** Ближайший визит — чтобы «запланировано» не было абстракцией. */
+  nextVisitAt: string | null;
   arrived: number;
   noShow: number;
   cancelled: number;
@@ -135,6 +143,8 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
     hasSpecialist: false,
     periodDays: PERIOD_DAYS,
     appts: 0,
+    upcoming: 0,
+    nextVisitAt: null,
     arrived: 0,
     noShow: 0,
     cancelled: 0,
@@ -163,7 +173,7 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
    */
   const now = new Date();
   const since = new Date(now.getTime() - PERIOD_DAYS * 24 * 3600 * 1000);
-  const [rows, clinicRevenue] = await Promise.all([
+  const [rows, clinicRevenue, upcomingRows] = await Promise.all([
     prisma.appointment.findMany({
       where: { companyId, deletedAt: null, staffId, startAt: { gte: since, lt: now } },
       select: {
@@ -180,6 +190,17 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
     prisma.appointment.aggregate({
       where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since, lt: now } },
       _sum: { revenue: true },
+    }),
+    prisma.appointment.findMany({
+      where: {
+        companyId,
+        deletedAt: null,
+        staffId,
+        status: { not: "CANCELLED" },
+        startAt: { gte: now },
+      },
+      orderBy: { startAt: "asc" },
+      select: { startAt: true },
     }),
   ]);
 
@@ -223,6 +244,8 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
     // записавшиеся — это визиты со статусом ≠ CANCELLED). Отменённые
     // показываем отдельной подписью, а не подмешиваем в общее число.
     appts: settled,
+    upcoming: upcomingRows.length,
+    nextVisitAt: upcomingRows[0]?.startAt.toISOString() ?? null,
     arrived: arrivedRows.length,
     noShow,
     cancelled,
