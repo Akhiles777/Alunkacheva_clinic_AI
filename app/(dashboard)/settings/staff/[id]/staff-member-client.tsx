@@ -7,6 +7,7 @@ import type { Permission } from "@/lib/permissions";
 import { Group } from "../../_components/ui";
 import {
   addPayout,
+  removePayout,
   saveStaffPermissions,
   saveStaffRate,
   type PermissionSetting,
@@ -110,7 +111,9 @@ const PROCEDURE_KINDS: { value: ServiceKind | ""; label: string }[] = [
  * это аванс, выданный в смену, а не добавка сверх часов.
  */
 function PayrollBlock({ member }: { member: StaffMemberView }) {
-  const p = member.payroll!;
+  // Расчёт держим в состоянии: после отметки или отмены выдачи он приходит с
+  // сервера пересчитанным, и экран больше не просит «обновите страницу».
+  const [p, setP] = useState(member.payroll!);
   const [hourly, setHourly] = useState(String(p.hourlyRate));
   const [perProc, setPerProc] = useState(String(p.perProcedureRate));
   const [kind, setKind] = useState<ServiceKind | "">(p.procedureKind ?? "");
@@ -134,6 +137,54 @@ function PayrollBlock({ member }: { member: StaffMemberView }) {
         <Tile label="Начислено" value={formatMoney(p.accrued)} hint={`${p.hourlyRate} ₽/час`} />
         <Tile label="Выдано в смены" value={formatMoney(p.paidOut)} hint={`процедур ${p.procedures}`} />
         <Tile label="К выплате" value={formatMoney(p.remainder)} hint="начислено − выдано" />
+      </div>
+
+      <div className="border-border-soft mt-3 border-t pt-3">
+        <div className="text-text-subtle mb-2 text-2xs">Выдачи за {p.periodLabel}</div>
+        {p.payouts.length === 0 ? (
+          <p className="text-text-subtle text-sm">
+            Выдач не отмечено. Пока их нет, в «Выдано в смены» показана ожидаемая сумма по числу
+            процедур — отмечайте выдачи, чтобы остаток считался по факту.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1.5">
+            {p.payouts.map((row) => (
+              <li
+                key={row.id}
+                className="border-border-soft flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+              >
+                <span className="min-w-0">
+                  <span className="num text-sm">{formatMoney(row.amount)}</span>
+                  <span className="text-text-subtle ml-2 text-xs">
+                    {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(
+                      new Date(row.paidAt),
+                    )}
+                    {row.reason ? ` · ${row.reason}` : ""}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() =>
+                    start(async () => {
+                      try {
+                        const fresh = await removePayout(row.id);
+                        if (fresh) setP(fresh);
+                        setSaved("Выдача отменена");
+                        setError(null);
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : "Не удалось отменить");
+                      }
+                    })
+                  }
+                  className="text-text-subtle hover:text-text flex-none text-xs disabled:opacity-45"
+                >
+                  отменить
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {p.advanceMismatch !== 0 ? (
@@ -185,11 +236,12 @@ function PayrollBlock({ member }: { member: StaffMemberView }) {
           onClick={() =>
             start(async () => {
               try {
-                await saveStaffRate(member.staffId!, {
+                const fresh = await saveStaffRate(member.staffId!, {
                   hourlyRate: Number(hourly) || 0,
                   perProcedureRate: Number(perProc) || 0,
                   procedureKind: kind || null,
                 });
+                if (fresh) setP(fresh);
                 setSaved("Ставки сохранены");
                 setError(null);
               } catch (e) {
@@ -218,9 +270,10 @@ function PayrollBlock({ member }: { member: StaffMemberView }) {
           onClick={() =>
             start(async () => {
               try {
-                await addPayout(member.staffId!, Number(payout), "выдано в смену");
+                const fresh = await addPayout(member.staffId!, Number(payout), "выдано в смену");
+                if (fresh) setP(fresh);
                 setPayout("");
-                setSaved("Выдача отмечена — обновите страницу");
+                setSaved("Выдача отмечена");
                 setError(null);
               } catch (e) {
                 setError(e instanceof Error ? e.message : "Не удалось отметить");

@@ -73,6 +73,13 @@ export interface StaffMetrics {
   lastVisitAt: string | null;
 }
 
+export interface PayoutRow {
+  id: string;
+  amount: number;
+  reason: string | null;
+  paidAt: string;
+}
+
 export interface PayrollView extends PayrollResult {
   hourlyRate: number;
   perProcedureRate: number;
@@ -80,6 +87,11 @@ export interface PayrollView extends PayrollResult {
   procedures: number;
   /** Период расчёта — текущий календарный месяц. */
   periodLabel: string;
+  /**
+   * Выдачи за период — списком. Итоговая сумма без расшифровки не поддаётся
+   * проверке: именно поэтому заказчик не мог понять, откуда берётся остаток.
+   */
+  payouts: PayoutRow[];
 }
 
 export interface StaffMemberView {
@@ -244,9 +256,10 @@ async function buildPayroll(companyId: string, staffId: string | null): Promise<
       where: { companyId, staffId, deletedAt: null, status: "ARRIVED", startAt: { gte: from, lt: to } },
       select: { durationMin: true, primaryService: { select: { kind: true } } },
     }),
-    prisma.payrollPayout.aggregate({
+    prisma.payrollPayout.findMany({
       where: { companyId, staffId, paidAt: { gte: from, lt: to } },
-      _sum: { amount: true },
+      orderBy: { paidAt: "desc" },
+      select: { id: true, amount: true, reason: true, paidAt: true },
     }),
   ]);
 
@@ -258,7 +271,9 @@ async function buildPayroll(companyId: string, staffId: string | null): Promise<
   const procedures = procedureKind
     ? visits.filter((v) => v.primaryService?.kind === procedureKind).length
     : 0;
-  const paidSum = payouts._sum.amount === null ? null : Number(payouts._sum.amount);
+  // null — выдач не отмечали вовсе: тогда расчёт покажет ожидаемую сумму, а не
+  // ноль, иначе остаток был бы завышен на всю выданную наличность.
+  const paidSum = payouts.length === 0 ? null : payouts.reduce((sum, p) => sum + Number(p.amount), 0);
 
   const result = calcPayroll({ workedMinutes, hourlyRate, procedures, perProcedureRate, paidOut: paidSum });
   return {
@@ -268,6 +283,12 @@ async function buildPayroll(companyId: string, staffId: string | null): Promise<
     procedureKind,
     procedures,
     periodLabel: new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(now),
+    payouts: payouts.map((p) => ({
+      id: p.id,
+      amount: Number(p.amount),
+      reason: p.reason,
+      paidAt: p.paidAt.toISOString(),
+    })),
   };
 }
 
@@ -275,9 +296,16 @@ async function buildPayroll(companyId: string, staffId: string | null): Promise<
 export async function saveStaffRate(
   staffId: string,
   input: { hourlyRate: number; perProcedureRate: number; procedureKind: ServiceKind | null },
-): Promise<void> {
+): Promise<PayrollView | null> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
+  await assertOwnStaff(session.companyId, staffId);
+  if (!Number.isFinite(input.hourlyRate) || input.hourlyRate < 0) {
+    throw new Error("Ставка за час должна быть числом не меньше нуля");
+  }
+  if (!Number.isFinite(input.perProcedureRate) || input.perProcedureRate < 0) {
+    throw new Error("Ставка за процедуру должна быть числом не меньше нуля");
+  }
   await prisma.staffRate.upsert({
     where: { staffId },
     update: {
@@ -301,12 +329,39 @@ export async function saveStaffRate(
     entityId: staffId,
     meta: { ...input },
   });
+  // Возвращаем пересчитанный блок: смена ставки меняет и начисленное, и
+  // остаток, и держать на экране прежние цифры нельзя.
+  return buildPayroll(session.companyId, staffId);
 }
 
-/** Отметить выдачу денег сотруднику в смену. */
-export async function addPayout(staffId: string, amount: number, reason: string | null): Promise<void> {
+/**
+ * Специалист принадлежит этой клинике. Ставки и выплаты — деньги, и брать
+ * идентификатор из формы на веру нельзя: без проверки можно было записать
+ * выплату специалисту чужой компании.
+ */
+async function assertOwnStaff(companyId: string, staffId: string): Promise<void> {
+  const staff = await prisma.staff.findFirst({
+    where: { id: staffId, companyId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!staff) throw new Error("Специалист не найден");
+}
+
+/**
+ * Отметить выдачу денег сотруднику в смену.
+ *
+ * Возвращает пересчитанный блок оплаты: раньше действие ничего не отдавало, и
+ * экран просил «обновите страницу» — администратор не видел результата и мог
+ * отметить выдачу дважды.
+ */
+export async function addPayout(
+  staffId: string,
+  amount: number,
+  reason: string | null,
+): Promise<PayrollView | null> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
+  await assertOwnStaff(session.companyId, staffId);
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("Сумма должна быть больше нуля");
   await prisma.payrollPayout.create({
     data: {
@@ -318,6 +373,43 @@ export async function addPayout(staffId: string, amount: number, reason: string 
       createdById: session.userId,
     },
   });
+  // Выдача денег — событие для аудита не меньше, чем правка настроек.
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "payroll_payout",
+    entityId: staffId,
+    meta: { amount, reason: reason ?? null },
+  });
+  return buildPayroll(session.companyId, staffId);
+}
+
+/**
+ * Отменить ошибочную выдачу.
+ *
+ * Без этого опечатка в сумме («5000» вместо «500») навсегда искажала остаток
+ * к выплате, и исправить его было нечем — ровно та ситуация, из-за которой
+ * заказчик не понимал, откуда берётся итог.
+ */
+export async function removePayout(payoutId: string): Promise<PayrollView | null> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  const row = await prisma.payrollPayout.findFirst({
+    where: { id: payoutId, companyId: session.companyId },
+    select: { id: true, staffId: true, amount: true },
+  });
+  if (!row) return null;
+  await prisma.payrollPayout.delete({ where: { id: row.id } });
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "payroll_payout_removed",
+    entityId: row.staffId,
+    meta: { amount: Number(row.amount) },
+  });
+  return buildPayroll(session.companyId, row.staffId);
 }
 
 /**

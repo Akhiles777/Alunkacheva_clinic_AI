@@ -5,10 +5,11 @@ import { addAppt, getDb, useDb } from "@/app/_data/store";
 import { formatMinute, freeGaps } from "@/lib/metrics/occupancy";
 import { CLINIC_DAY, durationLabel, hasConflict, roomIntervals } from "@/lib/schedule";
 import {
-  getServicePrices,
+  getServicesForBooking,
   getSpecialistsForBooking,
   searchPatientsForBooking,
   type PatientOption,
+  type ServiceOption,
   type SpecialistOption,
 } from "../schedule/actions";
 import { Picker, type PickerItem } from "./picker";
@@ -22,25 +23,12 @@ import { Picker, type PickerItem } from "./picker";
  */
 type Check = "idle" | "checking" | "created" | "taken";
 
+/** Запасные названия кабинетов: используются, только если у услуги не указан кабинет. */
 const ROOM_NAME: Record<string, string> = {
   "room-1": "Кабинет 1 · процедурный",
   "room-2": "Кабинет 2 · БОС",
   "room-3": "Кабинет 3 · остеопат",
 };
-
-interface ServiceDef {
-  key: string;
-  title: string;
-  durationMin: number;
-  roomId: string;
-}
-const SERVICES: ServiceDef[] = [
-  { key: "osteo", title: "Остеопатия, приём", durationMin: 60, roomId: "room-3" },
-  { key: "iv", title: "IV-терапия, капельница", durationMin: 90, roomId: "room-1" },
-  { key: "bos", title: "БОС-терапия, сеанс", durationMin: 40, roomId: "room-2" },
-  { key: "neuro", title: "Нейромедитация", durationMin: 30, roomId: "room-2" },
-  { key: "lab", title: "Забор анализов", durationMin: 15, roomId: "room-1" },
-];
 
 function toPatientItem(p: PatientOption): PickerItem {
   const parts = [p.phone, p.visits > 0 ? `визитов ${p.visits}` : "новый"].filter(Boolean);
@@ -99,6 +87,7 @@ export function BookingPanel() {
 
 function BookingInner({ onClose }: { onClose: () => void }) {
   const db = useDb();
+  const [services, setServices] = useState<ServiceOption[]>([]);
   const [serviceKey, setServiceKey] = useState<string | null>(null);
   const [windowId, setWindowId] = useState<string | null>(null);
   const [patient, setPatient] = useState("");
@@ -116,14 +105,13 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   const [staffQuery, setStaffQuery] = useState("");
   const [check, setCheck] = useState<Check>("idle");
   const [booked, setBooked] = useState<{ time: string; room: string } | null>(null);
-  const [prices, setPrices] = useState<Record<string, number>>({});
   const [price, setPrice] = useState<string>("");
   const [note, setNote] = useState("");
   const [bookedBy, setBookedBy] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    getServicePrices().then(setPrices).catch(() => {});
+    getServicesForBooking().then(setServices).catch(() => {});
     getSpecialistsForBooking().then(setSpecialists).catch(() => {});
     return () => {
       if (timer.current) clearTimeout(timer.current);
@@ -147,20 +135,22 @@ function BookingInner({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(t);
   }, [patient, patientPicked]);
 
-  const service = SERVICES.find((s) => s.key === serviceKey) ?? null;
+  const service = services.find((s) => s.id === serviceKey) ?? null;
   // Цена по умолчанию — из настроек услуги; администратор может изменить.
-  const defaultPrice = service ? (prices[service.title] ?? 0) : 0;
+  const defaultPrice = service?.price ?? 0;
 
   // Реальные свободные окна выбранной услуги в её кабинете — из стора.
   const windows: WindowOption[] = useMemo(() => {
     if (!service) return [];
-    const gaps = freeGaps(roomIntervals(db.appointments, service.roomId), CLINIC_DAY, service.durationMin);
+    if (!service.roomKey) return [];
+    const roomKey = service.roomKey;
+    const gaps = freeGaps(roomIntervals(db.appointments, roomKey), CLINIC_DAY, service.durationMin);
     return gaps.map((g) => ({
-      id: `${service.roomId}-${g.startMinute}`,
-      roomId: service.roomId,
+      id: `${roomKey}-${g.startMinute}`,
+      roomId: roomKey,
       startMinute: g.startMinute,
       durationMin: service.durationMin,
-      cab: ROOM_NAME[service.roomId],
+      cab: service.roomName ?? ROOM_NAME[roomKey],
       dir: service.title.split(",")[0],
       dur: durationLabel(g.durationMin),
     }));
@@ -180,7 +170,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
     );
     if (!service) return matched;
     return [...matched].sort((a, b) => {
-      const own = (s: SpecialistOption) => (s.roomKey === service.roomId ? 0 : 1);
+      const own = (s: SpecialistOption) => (s.roomKey === service.roomKey ? 0 : 1);
       return own(a) - own(b);
     });
   }, [specialists, staffQuery, service]);
@@ -205,7 +195,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
       }
       addAppt({
         roomId: selected.roomId,
-        roomName: ROOM_NAME[selected.roomId],
+        roomName: service.roomName ?? ROOM_NAME[selected.roomId],
         doctor: staffPicked.name,
         staffId: staffPicked.id,
         service: service.title,
@@ -218,7 +208,10 @@ function BookingInner({ onClose }: { onClose: () => void }) {
         note: note.trim() || null,
         bookedByName: bookedBy.trim() || null,
       });
-      setBooked({ time: formatMinute(selected.startMinute), room: ROOM_NAME[selected.roomId] });
+      setBooked({
+        time: formatMinute(selected.startMinute),
+        room: service.roomName ?? ROOM_NAME[selected.roomId],
+      });
       setCheck("created");
     }, 700);
   }
@@ -251,40 +244,46 @@ function BookingInner({ onClose }: { onClose: () => void }) {
         <div className="flex-1 overflow-auto px-5 py-4">
           <div className="text-text-subtle mb-2 text-2xs">Услуга</div>
           <div className="flex flex-wrap gap-1.5">
-            {SERVICES.map((s) => (
+            {services.map((s) => (
               <button
-                key={s.key}
+                key={s.id}
                 type="button"
                 onClick={() => {
-                  setServiceKey(s.key);
+                  setServiceKey(s.id);
                   setWindowId(null);
                   setCheck("idle");
-                  setPrice(String(prices[s.title] ?? ""));
+                  setPrice(String(s.price || ""));
                   // Подставляем специалиста этого кабинета — обычный случай.
                   // Выбор остаётся за администратором: сменщиков меняют часто.
-                  const own = specialists.filter((sp) => sp.roomKey === s.roomId);
+                  const own = specialists.filter((sp) => sp.roomKey === s.roomKey);
                   setStaffPicked(own.length === 1 ? own[0] : null);
                   setStaffQuery("");
                 }}
                 className={`rounded-md border px-2.5 py-1.5 text-sm ${
-                  serviceKey === s.key
+                  serviceKey === s.id
                     ? "border-accent-border bg-accent-tint text-accent-text font-medium"
                     : "border-border text-text-muted hover:bg-hover"
                 }`}
               >
-                {s.title.split(",")[0]}
+                {s.title}
+                <span className="text-text-subtle ml-1.5 text-xs">{s.durationMin} мин</span>
               </button>
             ))}
           </div>
 
           <div className="text-text-subtle mt-5 mb-2 text-2xs">
-            Свободное окно{service ? ` · ${ROOM_NAME[service.roomId]}` : ""}
+            Свободное окно{service?.roomName ? ` · ${service.roomName}` : ""}
           </div>
           {!service ? (
             <p className="text-text-subtle text-sm">Сначала выберите услугу.</p>
+          ) : !service.roomKey ? (
+            <p className="text-text-subtle text-sm">
+              У услуги «{service.title}» не указан кабинет — задайте его в настройках услуг, иначе
+              свободные окна считать не из чего.
+            </p>
           ) : windows.length === 0 ? (
             <p className="text-text-subtle text-sm">
-              В {ROOM_NAME[service.roomId]} нет свободного окна на {service.durationMin} мин до конца дня.
+              В {service.roomName} нет свободного окна на {service.durationMin} мин до конца дня.
             </p>
           ) : (
             <ul className="border-border overflow-hidden rounded-lg border">

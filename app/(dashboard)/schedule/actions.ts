@@ -130,18 +130,6 @@ export interface CreateApptInput {
   bookedByName?: string | null;
 }
 
-/** Цены услуг из настроек (для формы записи). */
-export async function getServicePrices(): Promise<Record<string, number>> {
-  const session = await getSession();
-  const rows = await prisma.service.findMany({
-    where: { companyId: session.companyId, isActive: true },
-    select: { title: true, price: true },
-  });
-  const map: Record<string, number> = {};
-  for (const r of rows) map[r.title] = Number(r.price);
-  return map;
-}
-
 export async function createAppointmentDb(input: CreateApptInput): Promise<void> {
   const session = await getSession();
   const co = session.companyId;
@@ -315,4 +303,53 @@ export async function getSpecialistsForBooking(): Promise<SpecialistOption[]> {
     specialty: s.specialty,
     roomKey: s.defaultRoom ? ROOM_KEY(s.defaultRoom.name) : null,
   }));
+}
+
+/**
+ * Услуги для формы записи — из настроек клиники, а не из списка в коде.
+ *
+ * Пять услуг были записаны прямо в компоненте вместе с врачами и кабинетами.
+ * Клиника завела восемь — три просто не появлялись в форме, а изменение цены
+ * или длительности в настройках на запись не влияло.
+ *
+ * Кабинет берём первый из привязанных: по нему считаются свободные окна.
+ * Услуга без кабинета возвращается с roomKey = null — форма честно скажет,
+ * что окна посчитать не из чего, вместо того чтобы подставить чужой кабинет.
+ */
+export interface ServiceOption {
+  id: string;
+  title: string;
+  durationMin: number;
+  price: number;
+  roomKey: string | null;
+  roomName: string | null;
+}
+
+export async function getServicesForBooking(): Promise<ServiceOption[]> {
+  const session = await getSession();
+  const rows = await prisma.service.findMany({
+    where: { companyId: session.companyId, isActive: true },
+    orderBy: { title: "asc" },
+    select: {
+      id: true,
+      title: true,
+      durationMin: true,
+      price: true,
+      rooms: {
+        select: { room: { select: { name: true, sortOrder: true } } },
+      },
+    },
+  });
+
+  return rows.map((s) => {
+    const room = [...s.rooms].sort((a, b) => a.room.sortOrder - b.room.sortOrder)[0]?.room ?? null;
+    return {
+      id: s.id,
+      title: s.title,
+      durationMin: s.durationMin,
+      price: Number(s.price),
+      roomKey: room ? ROOM_KEY(room.name) : null,
+      roomName: room?.name ?? null,
+    };
+  });
 }
