@@ -98,6 +98,12 @@ export interface StaffMemberView {
   metrics: StaffMetrics;
   /** null — у сотрудника нет карточки специалиста, считать нечего. */
   payroll: PayrollView | null;
+  /**
+   * Есть ли у человека вход в систему. Медсёстры и часть специалистов заведены
+   * без учётной записи — им нечего настраивать в правах, но ставки и расчёт
+   * зарплаты нужны так же, как всем остальным.
+   */
+  hasAccount: boolean;
 }
 
 const PERIOD_DAYS = 90;
@@ -314,9 +320,57 @@ export async function addPayout(staffId: string, amount: number, reason: string 
   });
 }
 
+/**
+ * Карточка специалиста без учётной записи.
+ *
+ * Раньше карточка открывалась только для тех, у кого есть логин, — а ставки и
+ * расчёт зарплаты живут именно в ней. Медсёстры заведены как специалисты без
+ * входа, поэтому задать им 180 ₽/час и 500 ₽ за процедуру было физически
+ * негде, хотя расчёт работал. Идентификатор такой строки — "staff-<id>",
+ * ровно как в списке сотрудников.
+ */
+async function getSpecialistCard(
+  companyId: string,
+  staffId: string,
+): Promise<StaffMemberView | null> {
+  const staff = await prisma.staff.findFirst({
+    where: { id: staffId, companyId, deletedAt: null },
+    select: {
+      id: true,
+      name: true,
+      specialty: true,
+      isActive: true,
+      createdAt: true,
+      defaultRoom: { select: { name: true } },
+    },
+  });
+  if (!staff) return null;
+
+  return {
+    id: `staff-${staff.id}`,
+    staffId: staff.id,
+    name: staff.name,
+    login: "",
+    role: "DOCTOR",
+    isActive: staff.isActive,
+    specialty: staff.specialty,
+    roomName: staff.defaultRoom?.name ?? null,
+    lastLoginAt: null,
+    createdAt: staff.createdAt.toISOString(),
+    permissions: [],
+    metrics: await buildMetrics(companyId, staff.id),
+    payroll: await buildPayroll(companyId, staff.id),
+    hasAccount: false,
+  };
+}
+
 export async function getStaffMember(id: string): Promise<StaffMemberView | null> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
+
+  if (id.startsWith("staff-")) {
+    return getSpecialistCard(session.companyId, id.slice("staff-".length));
+  }
 
   const user = await prisma.staffUser.findFirst({
     where: { id, companyId: session.companyId, deletedAt: null },
@@ -366,6 +420,7 @@ export async function getStaffMember(id: string): Promise<StaffMemberView | null
     permissions,
     metrics: await buildMetrics(session.companyId, user.staffId),
     payroll: await buildPayroll(session.companyId, user.staffId),
+    hasAccount: true,
   };
 }
 

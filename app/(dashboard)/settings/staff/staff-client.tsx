@@ -127,11 +127,18 @@ export function StaffClient({
                         нет доступа{acc.visits ? ` · визитов ${acc.visits}` : ""}
                       </span>
                     ) : null}
-                    {!isNew && acc.hasLogin ? (
+                    {/* Карточка нужна и специалисту без входа: в ней ставки и
+                        расчёт зарплаты. Раньше ссылка была только у тех, у
+                        кого есть логин, и медсёстрам задать ставку было негде. */}
+                    {!isNew ? (
                       <Link
                         href={`/settings/staff/${acc.id}`}
                         className="text-accent-text text-2xs hover:underline"
-                        title="Права доступа и метрики сотрудника"
+                        title={
+                          acc.hasLogin
+                            ? "Права доступа, метрики и оплата труда"
+                            : "Метрики и оплата труда"
+                        }
                       >
                         карточка
                       </Link>

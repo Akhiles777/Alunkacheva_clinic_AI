@@ -284,6 +284,16 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
         </span>
       </div>
 
+      {/* Специалисту без входа нечего показывать про логин и права: у него их
+          нет. Ставки и расчёт зарплаты ниже — они от учётной записи не зависят. */}
+      {!member.hasAccount ? (
+        <Group title="Учётная запись" hint="специалист работает в расписании, входа в систему у него нет">
+          <p className="text-text-subtle text-sm">
+            Чтобы выдать доступ, задайте логин и пароль в общем списке сотрудников. Ставки и
+            расчёт зарплаты ниже работают и без входа.
+          </p>
+        </Group>
+      ) : (
       <Group title="Учётная запись" hint="логин и роль меняются в общем списке сотрудников">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm max-md:grid-cols-1">
           <div className="flex justify-between gap-3">
@@ -302,7 +312,9 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
           </div>
         </dl>
       </Group>
+      )}
 
+      {member.hasAccount ? (
       <Group
         title="Права доступа"
         hint="настраиваются лично для этого сотрудника; «как у роли» — наследует общую матрицу"
@@ -366,6 +378,7 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
           {saved && !pending ? <span className="text-text-muted text-sm">Сохранено</span> : null}
         </div>
       </Group>
+      ) : null}
 
       {member.payroll ? <PayrollBlock member={member} /> : null}
 
