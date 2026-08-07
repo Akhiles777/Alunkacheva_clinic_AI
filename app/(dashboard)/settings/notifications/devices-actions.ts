@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { deviceLabel } from "@/lib/user-agent";
 
 /**
  * Устройства, на которые приходят push. Раньше в этом разделе был нарисован
@@ -15,29 +16,6 @@ export interface DeviceRow {
   isCurrent: boolean;
 }
 
-/** Узнаваемое имя устройства из user-agent: без версий и служебных строк. */
-function deviceTitle(agent: string | null): string {
-  if (!agent) return "Неизвестное устройство";
-  const browser = /Firefox/i.test(agent)
-    ? "Firefox"
-    : /Edg/i.test(agent)
-      ? "Edge"
-      : /Chrome|CriOS/i.test(agent)
-        ? "Chrome"
-        : /Safari/i.test(agent)
-          ? "Safari"
-          : "Браузер";
-  const os = /iPhone|iPad/i.test(agent)
-    ? "iPhone"
-    : /Android/i.test(agent)
-      ? "Android"
-      : /Macintosh/i.test(agent)
-        ? "Mac"
-        : /Windows/i.test(agent)
-          ? "Windows"
-          : "";
-  return os ? `${browser} · ${os}` : browser;
-}
 
 export async function getDevices(currentEndpoint?: string): Promise<DeviceRow[]> {
   const session = await getSession();
@@ -49,7 +27,7 @@ export async function getDevices(currentEndpoint?: string): Promise<DeviceRow[]>
   });
   return rows.map((r) => ({
     id: r.id,
-    title: deviceTitle(r.userAgent),
+    title: deviceLabel(r.userAgent),
     addedAt: new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(r.createdAt),
     isCurrent: currentEndpoint ? r.endpoint === currentEndpoint : false,
   }));

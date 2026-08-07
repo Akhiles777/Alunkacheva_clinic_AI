@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
+import { deviceLabel, osVersion } from "@/lib/user-agent";
 
 export interface AuditDisplayRow {
   id: string;
@@ -15,29 +16,6 @@ export interface AuditDisplayRow {
   ip: string;
 }
 
-/** Узнаваемое имя устройства из user-agent: без версий и служебных строк. */
-function deviceLabel(agent: string | null): string {
-  if (!agent) return "—";
-  const browser = /Firefox/i.test(agent)
-    ? "Firefox"
-    : /Edg/i.test(agent)
-      ? "Edge"
-      : /Chrome|CriOS/i.test(agent)
-        ? "Chrome"
-        : /Safari/i.test(agent)
-          ? "Safari"
-          : "Браузер";
-  const os = /iPhone|iPad/i.test(agent)
-    ? "iPhone"
-    : /Android/i.test(agent)
-      ? "Android"
-      : /Macintosh/i.test(agent)
-        ? "Mac"
-        : /Windows/i.test(agent)
-          ? "Windows"
-          : "";
-  return os ? `${browser} · ${os}` : browser;
-}
 
 const ACTION_LABEL: Record<string, string> = {
   LOGIN: "Вход",
@@ -99,7 +77,7 @@ export async function getAuditLog(): Promise<AuditDisplayRow[]> {
       actor: r.actor ? `${r.actor.name} (${r.actor.login})` : "Система",
       action: ACTION_LABEL[r.action] ?? r.action,
       target,
-      device: deviceLabel(r.userAgent),
+      device: [deviceLabel(r.userAgent), osVersion(r.userAgent)].filter(Boolean).join(" · "),
       ip: r.ip ?? "—",
     };
   });
