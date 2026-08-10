@@ -5,6 +5,8 @@ import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
+import { HANDOVER_REPLY, promisesBooking } from "./booking-promise";
+import { medical, personalTopic, scheduleTopic, wantsHuman } from "./triggers";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 
 /**
@@ -39,41 +41,6 @@ export function humanTakeoverUntil(from: Date = new Date()): Date {
   return new Date(from.getTime() + HUMAN_TAKEOVER_HOURS * 3600 * 1000);
 }
 
-/**
- * Расписание — зона администратора. Сюда же отмены и переносы: заказчик хочет
- * держать эти решения за человеком.
- */
-const SCHEDULE_PATTERNS = [
-  /запиш|записать|записаться|запись\b/i, /свободн/i, /окошк|окно\b|окна\b/i,
-  /перенест|перенос/i, /отменит|отмена записи|отменить запись/i,
-  /когда можно прийти|на какое время/i,
-];
-
-/**
- * Личное: жалобы и вопросы про конкретного пациента. Всегда человеку — здесь
- * и врачебная тайна, и репутационный риск.
- */
-const PERSONAL_PATTERNS = [
-  /жалоб/i, /претенз/i, /вернуть деньги|возврат/i, /юрист/i, /врач ошибс/i,
-  /мой визит|моя запись|мои записи/i, /мой анализ|мои анализ/i,
-];
-
-/**
- * Медицинские темы. Отвечаем на них ТОЛЬКО дословной справкой клиники; если
- * подходящей записи нет — человеку.
- */
-const MEDICAL_PATTERNS = [
-  /симптом/i, /диагноз/i, /болит|боль\b|болел/i, /лечени[ея]/i, /назнач/i,
-  /дозировк|доза\b/i, /противопоказан/i, /анализ[ыа]?\s+показал/i, /побочн/i,
-  /таблетк|препарат|лекарств/i, /беременн/i, /температур/i, /давлени[ея]/i,
-  /подготов|готовит/i, /можно ли мне\b/i, /опасно ли/i, /вредно ли/i,
-];
-
-const HUMAN_PATTERNS = [
-  /админист/i, /оператор/i, /человек[а-я]*\b/i, /žив|живой/i, /менеджер/i, /жалоб/i,
-  /вернуть деньги|возврат/i, /юрист/i, /врач ошибс/i,
-];
-
 export interface AgentReply {
   text: string;
   buttons?: { text: string; data: string }[];
@@ -88,18 +55,6 @@ export interface AgentContext {
   displayName?: string | null;
 }
 
-function medical(text: string): boolean {
-  return MEDICAL_PATTERNS.some((re) => re.test(text));
-}
-function scheduleTopic(text: string): boolean {
-  return SCHEDULE_PATTERNS.some((re) => re.test(text));
-}
-function personalTopic(text: string): boolean {
-  return PERSONAL_PATTERNS.some((re) => re.test(text));
-}
-function wantsHuman(text: string): boolean {
-  return HUMAN_PATTERNS.some((re) => re.test(text));
-}
 
 // ─────────────────────────────────────────────── диалог
 
@@ -475,6 +430,16 @@ export async function handlePatientMessage(
       text: `${context}\n\nЕсли нужен другой ответ — передал(а) администратору, он подключится здесь же.`,
       buttons: mainMenu(),
     });
+  }
+
+  /**
+   * Последняя проверка перед отправкой: модель могла пообещать записать,
+   * хотя расписанием агент не распоряжается (§6). Такой ответ не отправляем —
+   * пациент, которому пообещали запись, придёт к закрытой двери.
+   */
+  if (promisesBooking(answer)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
+    return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
   }
 
   return respond(ctx, conversation.id, { text: answer, buttons: mainMenu() });
