@@ -19,16 +19,41 @@ export interface ApprovedTemplate {
   body: string;
 }
 
-export async function getApprovedTemplates(): Promise<ApprovedTemplate[]> {
+/** Быстрые ответы по умолчанию — те же, что предлагает раздел «Шаблоны». */
+const DEFAULT_QUICK_REPLIES = [
+  "Здравствуйте! Чем можем помочь?",
+  "Подскажите ваш телефон для записи.",
+  "Спасибо за обращение, хорошего дня!",
+];
+
+export interface InboxTemplates {
+  approved: ApprovedTemplate[];
+  /** Кнопки над полем ввода: вставляют текст, не отправляют его. */
+  quickReplies: string[];
+}
+
+/**
+ * Шаблоны и быстрые ответы для инбокса — из сохранённых настроек.
+ *
+ * Быстрые ответы были зашиты прямо в компоненте инбокса тремя строками:
+ * раздел «Шаблоны» их сохранял, а диалог продолжал показывать свои. Человек
+ * добавлял ответ и не понимал, куда тот делся.
+ */
+export async function getInboxTemplates(): Promise<InboxTemplates> {
   const session = await getSession();
   const row = await prisma.setting.findUnique({
     where: { companyId_key: { companyId: session.companyId, key: "templates" } },
   });
-  const stored = row?.value as { templates?: TemplateItem[] } | null;
+  const stored = row?.value as { templates?: TemplateItem[]; quickReplies?: string[] } | null;
   const templates = stored?.templates ?? settingsStore.templates;
-  return templates
-    .filter((t) => t.status === "approved")
-    .map((t) => ({ id: t.id, title: t.title, body: t.body }));
+  const quick = stored?.quickReplies?.filter((q) => q.trim().length > 0);
+
+  return {
+    approved: templates
+      .filter((t) => t.status === "approved")
+      .map((t) => ({ id: t.id, title: t.title, body: t.body })),
+    quickReplies: quick && quick.length > 0 ? quick : DEFAULT_QUICK_REPLIES,
+  };
 }
 
 /**

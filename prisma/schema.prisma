@@ -341,6 +341,13 @@ model Conversation {
   /// Отдельно от lastMessageAt: граница обращения считается по сообщениям
   /// пациента, ответы бота новое обращение не открывают.
   lastPatientMessageAt DateTime? @db.Timestamptz(3)
+  /// Когда агент запросил согласие на обработку ПДн (§7). Спрашиваем один раз
+  /// за диалог: повторять при каждом сообщении нельзя.
+  consentAskedAt       DateTime? @db.Timestamptz(3)
+  /// Когда пациент согласился. Карточки пациента в этот момент может ещё не
+  /// быть, поэтому факт живёт на диалоге и переносится в PatientConsent,
+  /// как только карточка появится.
+  consentGrantedAt     DateTime? @db.Timestamptz(3)
   closedAt             DateTime? @db.Timestamptz(3)
   unreadCount          Int       @default(0)
 

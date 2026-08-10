@@ -18,7 +18,7 @@ import {
   useDb,
   type Dialog,
 } from "@/app/_data/store";
-import { getApprovedTemplates, getConversations, type ApprovedTemplate } from "./actions";
+import { getConversations, getInboxTemplates, type ApprovedTemplate } from "./actions";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { ContactPanel } from "./contact-panel";
 import { PatientCardBody } from "../_components/patient-card";
@@ -29,12 +29,6 @@ const NOTE_SHORT: Record<string, string> = {
   ATTENTION: "внимание",
   CUSTOM: "заметка",
 };
-
-const QUICK_REPLIES = [
-  "Здравствуйте! Чем можем помочь?",
-  "Подскажите ваш телефон для записи.",
-  "Спасибо за обращение, хорошего дня!",
-];
 
 function DialogRow({
   dialog,
@@ -114,6 +108,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
   const [sendError, setSendError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
+  const [quickReplies, setQuickReplies] = useState<string[]>([]);
 
   /**
    * Открыли переписку — сразу к последнему сообщению. Читают всегда конец, а
@@ -130,8 +125,12 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
   useEffect(() => {
     let alive = true;
-    getApprovedTemplates().then((t) => {
-      if (alive) setApprovedTemplates(t);
+    // Шаблоны и быстрые ответы приходят из раздела «Шаблоны»: раньше быстрые
+    // ответы были зашиты в этом файле и настройки на них не влияли.
+    getInboxTemplates().then((t) => {
+      if (!alive) return;
+      setApprovedTemplates(t.approved);
+      setQuickReplies(t.quickReplies);
     });
     return () => {
       alive = false;
@@ -262,7 +261,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
       {dialog.windowOpen ? (
         <div className="border-border flex-none border-t px-5 py-3">
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {QUICK_REPLIES.map((q) => (
+            {quickReplies.map((q) => (
               <button
                 key={q}
                 type="button"

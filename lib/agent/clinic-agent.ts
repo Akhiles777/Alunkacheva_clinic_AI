@@ -7,6 +7,13 @@ import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { HANDOVER_REPLY, promisesBooking } from "./booking-promise";
 import { medical, personalTopic, scheduleTopic, wantsHuman } from "./triggers";
+import {
+  CONSENT_ACCEPT,
+  CONSENT_DECLINE,
+  consentRequestFor,
+  grantConsent,
+  materializeConsent,
+} from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 
 /**
@@ -344,6 +351,15 @@ export async function handlePatientMessage(
     externalId: input.externalId,
   });
 
+  /**
+   * Согласие на обработку ПДн — до всего остального (§7). Спрашиваем один раз
+   * за диалог; пока клиника не завела текст согласия, вопрос не задаётся.
+   */
+  const consent = await consentRequestFor(ctx.companyId, conversation.id);
+  if (consent) {
+    return respond(ctx, conversation.id, { text: consent.text, buttons: consent.buttons });
+  }
+
   const settings = await assistantMode(ctx.companyId);
 
   // Режим «выключен»: агент молчит полностью, диалог ведёт человек.
@@ -456,6 +472,23 @@ function mainMenu() {
 }
 
 async function handleCallback(ctx: AgentContext, conversationId: string, data: string): Promise<AgentReply> {
+  if (data === CONSENT_ACCEPT) {
+    await grantConsent(ctx.companyId, conversationId);
+    return respond(ctx, conversationId, {
+      text: "Спасибо. Чем можем помочь?",
+      buttons: mainMenu(),
+    });
+  }
+  if (data === CONSENT_DECLINE) {
+    // Без согласия обрабатывать обращение нельзя — зовём человека, он решит,
+    // как быть: по телефону согласие тоже можно взять.
+    await escalate(ctx.companyId, conversationId, "PATIENT_REQUEST", "Пациент не дал согласие на обработку ПДн").catch(() => {});
+    return respond(ctx, conversationId, {
+      text:
+        "Хорошо. Без согласия на обработку персональных данных мы не сможем вести переписку — " +
+        "передал(а) администратору, он свяжется с вами.",
+    });
+  }
   if (data === "prices") {
     const services = await getServices(ctx.companyId);
     const lines = services.map((s) => `• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
@@ -538,6 +571,8 @@ async function attachPhone(ctx: AgentContext, conversationId: string, rawPhone: 
     patientId = created.id;
   }
   await prisma.conversation.update({ where: { id: conversationId }, data: { patientId } });
+  // Согласие могли дать до появления карточки — переносим его в карточку.
+  await materializeConsent(ctx.companyId, patientId, conversationId).catch(() => {});
   await escalate(ctx.companyId, conversationId, "PATIENT_REQUEST", "Пациент оставил номер для записи").catch(() => {});
   return { text: "Спасибо, передал(а) номер администратору — он свяжется и подберёт время." };
 }
