@@ -37,6 +37,8 @@ export function StaffClient({
   const [matrix, setMatrix] = useState<RoleMatrix>(initialMatrix);
   const [accError, setAccError] = useState<string | null>(null);
   const [accSaved, setAccSaved] = useState(false);
+  /** Что именно произошло при сохранении: удаление должно быть подтверждено. */
+  const [accNotice, setAccNotice] = useState<string | null>(null);
   const [matrixSaved, setMatrixSaved] = useState(false);
   const [pending, start] = useTransition();
 
@@ -78,6 +80,7 @@ export function StaffClient({
         setAccounts(fresh.accounts);
         setSpecialistOptions(fresh.specialistOptions);
         setAccSaved(true);
+        setAccNotice(fresh.notice ?? null);
         setAccError(null);
       } catch (e) {
         setAccError(e instanceof Error ? e.message : "Не удалось сохранить");
@@ -249,7 +252,9 @@ export function StaffClient({
           >
             {pending ? "Сохраняем…" : "Сохранить"}
           </button>
-          {accSaved && !pending ? <span className="text-text-muted text-sm">Сохранено</span> : null}
+          {accSaved && !pending ? (
+            <span className="text-text-muted text-sm">{accNotice ?? "Сохранено"}</span>
+          ) : null}
         </div>
       </Group>
 

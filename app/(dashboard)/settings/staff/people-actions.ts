@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
 import { hashPassword, INVITE_PENDING, LOGIN_RE, normalizeLogin } from "@/lib/auth";
 import type { StaffRole } from "@/generated/prisma/enums";
+import type { Prisma } from "@/generated/prisma/client";
 
 /**
  * Сотрудники клиники — ровно один список. Учётная запись (StaffUser) первична:
@@ -48,6 +49,8 @@ export interface AccountRow {
 }
 
 export interface StaffPeople {
+  /** Что произошло при последнем сохранении — показываем рядом с «Сохранено». */
+  notice?: string;
   accounts: AccountRow[];
   roomOptions: { id: string; label: string }[];
   /**
@@ -57,6 +60,31 @@ export interface StaffPeople {
    * карточкой, и расписание показывало бы двух одинаковых людей.
    */
   specialistOptions: { id: string; name: string; specialty: string | null; takenBy: string | null }[];
+}
+
+/**
+ * Отменить будущие записи уволенного специалиста.
+ *
+ * Прошедшие визиты не трогаем — это история клиники и её выручка. А вот
+ * будущие состояться уже не могут: оставлять их значит показывать в
+ * расписании приёмы у человека, которого в клинике нет.
+ */
+async function cancelUpcoming(
+  tx: Prisma.TransactionClient,
+  companyId: string,
+  staffId: string,
+): Promise<number> {
+  const res = await tx.appointment.updateMany({
+    where: {
+      companyId,
+      staffId,
+      deletedAt: null,
+      status: { in: ["CREATED", "CONFIRMED"] },
+      startAt: { gte: new Date() },
+    },
+    data: { status: "CANCELLED" },
+  });
+  return res.count;
 }
 
 /** У врача есть карточка специалиста; у остальных ролей её быть не должно. */
@@ -214,12 +242,33 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
     where: { companyId: session.companyId, deletedAt: null },
     select: { id: true, staffId: true },
   });
-  // Удаляем только настоящие учётки: строки специалистов учётками не являются.
   const kept = new Set(
     rows.filter((r) => !r.id.startsWith("new-") && !r.id.startsWith("staff-")).map((r) => r.id),
   );
   const toDelete = existing.filter((e) => !kept.has(e.id));
 
+  /**
+   * Специалисты без учётной записи удалялись только с экрана.
+   *
+   * Удаление касалось лишь строк StaffUser, а специалист без входа — это
+   * строка Staff. Крестик срабатывал, список перерисовывался — и после
+   * сохранения человек возвращался: сервер его удаление просто не замечал.
+   * Именно так вели себя все шесть демонстрационных специалистов, ни одного
+   * из них убрать было нельзя.
+   */
+  const keptStaffIds = new Set(rows.map((r) => r.staffId).filter((id): id is string => Boolean(id)));
+  const liveStaff = await prisma.staff.findMany({
+    where: { companyId: session.companyId, deletedAt: null },
+    select: { id: true, name: true, user: { select: { id: true, deletedAt: true } } },
+  });
+  const staffToDelete = liveStaff.filter(
+    (s) =>
+      !keptStaffIds.has(s.id) &&
+      // Специалиста, за которым стоит живая учётка, удаляет она сама выше.
+      !(s.user && s.user.deletedAt === null && kept.has(s.user.id)),
+  );
+
+  let cancelled = 0;
   await prisma.$transaction(async (tx) => {
     // Удаление учётки уводит вместе с ней и карточку специалиста — иначе врач
     // остаётся в расписании после того, как его убрали из сотрудников.
@@ -233,7 +282,16 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
           where: { id: del.staffId },
           data: { deletedAt: new Date(), isActive: false, defaultRoomId: null },
         });
+        cancelled += await cancelUpcoming(tx, session.companyId, del.staffId);
       }
+    }
+
+    for (const del of staffToDelete) {
+      await tx.staff.update({
+        where: { id: del.id },
+        data: { deletedAt: new Date(), isActive: false, defaultRoomId: null },
+      });
+      cancelled += await cancelUpcoming(tx, session.companyId, del.id);
     }
 
     for (let i = 0; i < rows.length; i++) {
@@ -321,8 +379,19 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
     actorId: session.userId,
     action: "SETTINGS_UPDATE",
     entityType: "accounts",
-    meta: { count: rows.length, deleted: toDelete.length },
+    meta: {
+      count: rows.length,
+      deleted: toDelete.length,
+      specialistsDeleted: staffToDelete.length,
+      appointmentsCancelled: cancelled,
+    },
   });
 
-  return getStaffPeople();
+  const removed = toDelete.length + staffToDelete.length;
+  const notice =
+    removed > 0
+      ? `Удалено сотрудников: ${removed}` +
+        (cancelled > 0 ? `; отменено будущих записей: ${cancelled}` : "")
+      : undefined;
+  return { ...(await getStaffPeople()), notice };
 }
