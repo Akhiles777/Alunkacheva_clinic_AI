@@ -90,12 +90,18 @@ async function main() {
 
   const sources = await prisma.source.findMany({ where: { companyId }, select: { id: true } });
 
-  // Чистим прошлый прогон. Удаляем и старые локальные визиты: они остались от
-  // прежнего набора данных, где остеопат «ставил капельницы», и в отчётах
-  // такие строки выглядят как ошибка платформы. Визиты, приехавшие из YCLIENTS
-  // (у их специалиста есть yclientsStaffId), не трогаем — это не наши данные.
+  /**
+   * Чистим прошлый прогон — только свои строки.
+   *
+   * Раньше удалялись все визиты, у чьего специалиста нет идентификатора
+   * YCLIENTS, то есть вообще все локальные — включая записи, созданные
+   * клиникой вручную. Прогон демо-данных стирал реальную работу.
+   */
   await prisma.appointment.deleteMany({
-    where: { companyId, staff: { yclientsStaffId: null } },
+    where: {
+      companyId,
+      OR: [{ id: { startsWith: "demo_appt_" } }, { staffId: { startsWith: "demo_stf_" } }],
+    },
   });
   await prisma.patientPhone.deleteMany({ where: { companyId, id: { startsWith: "demo_ph_" } } });
   await prisma.patient.deleteMany({ where: { companyId, id: { startsWith: "demo_pat_" } } });
@@ -144,18 +150,37 @@ async function main() {
     staffIds.set(s.key, id);
   }
 
-  // Специалисты вне списка — наследие прежних наборов. Прячем, чтобы в
-  // расписании и в выборе врача не оставалось лишних имён.
+  /**
+   * Прежние демонстрационные специалисты убираются, чтобы в расписании не
+   * оставалось лишних имён от старых наборов.
+   *
+   * Трогаем ТОЛЬКО своих — тех, чей идентификатор начинается с demo_stf_.
+   * Раньше условие было обратным: скрывалось всё, чего нет в списке сида, и
+   * под раздачу попал специалист, заведённый клиникой вручную. Человек
+   * пропадал из списка сотрудников без всяких следов, а причина выглядела как
+   * баг платформы.
+   */
   const keepIds = [...staffIds.values()];
-  await prisma.staffUser.updateMany({
-    where: { companyId, staffId: { notIn: keepIds }, staff: { yclientsStaffId: null } },
-    data: { staffId: null },
+  const stale = await prisma.staff.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      id: { startsWith: "demo_stf_", notIn: keepIds },
+    },
+    select: { id: true },
   });
-  const hidden = await prisma.staff.updateMany({
-    where: { companyId, deletedAt: null, yclientsStaffId: null, id: { notIn: keepIds } },
-    data: { deletedAt: new Date(), isActive: false, defaultRoomId: null },
-  });
-  if (hidden.count > 0) console.log(`скрыто лишних специалистов: ${hidden.count}`);
+  if (stale.length > 0) {
+    const staleIds = stale.map((s) => s.id);
+    await prisma.staffUser.updateMany({
+      where: { companyId, staffId: { in: staleIds } },
+      data: { staffId: null },
+    });
+    await prisma.staff.updateMany({
+      where: { id: { in: staleIds } },
+      data: { deletedAt: new Date(), isActive: false, defaultRoomId: null },
+    });
+    console.log(`убрано прежних демонстрационных специалистов: ${stale.length}`);
+  }
 
   // ── пациенты
   const patientIds: string[] = [];
