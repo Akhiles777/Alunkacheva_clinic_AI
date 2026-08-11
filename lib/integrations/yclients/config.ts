@@ -32,6 +32,12 @@ export const RATE_LIMIT = {
 } as const;
 
 /** Пути API. company_id подставляется из кредов на месте вызова. */
+/**
+ * На сколько лет назад забираем историю при первой выгрузке. Без неё метрики
+ * «новые пациенты» и «первичный/повторный» врут весь первый месяц (§5).
+ */
+export const HISTORY_YEARS = Number(process.env.YCLIENTS_HISTORY_YEARS ?? 2);
+
 export const ENDPOINTS = {
   services: (companyId: string) => `/company/${companyId}/services`,
   staff: (companyId: string) => `/company/${companyId}/staff`,

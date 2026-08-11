@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/db";
 import { getYclientsClient, type YclientsClientHandle } from "./client";
-import { markFailed, markOk, markRunning } from "./sync-cursor";
+import { markFailed, markOk, markRunning, readCursor } from "./sync-cursor";
+import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
+import { HISTORY_YEARS } from "./config";
 import {
   mapClient,
   mapRecord,
@@ -108,108 +110,207 @@ export async function syncResources(companyId: string, client: YclientsClientHan
 }
 
 export async function syncClients(companyId: string, client: YclientsClientHandle): Promise<number> {
-  const dtos = await client.get<YclientsClient[]>(client.endpoints.clients(client.creds.companyId));
-  for (const dto of dtos) {
-    const c = mapClient(dto);
-    // yclientsId — nullable-unique: findFirst + create/update вместо upsert.
-    const found = await prisma.patient.findFirst({
-      where: { companyId, yclientsId: c.yclientsId },
-      select: { id: true },
+  let page = 1;
+  let fetched = 0;
+
+  /**
+   * Клиенты забираются постранично. Раньше бралась одна страница: у клиники с
+   * тысячей карточек импортировалась первая сотня, и «новые пациенты» считались
+   * по неполной базе.
+   */
+  for (;;) {
+    const res = await client.getPage<YclientsClient[]>(client.endpoints.clients(client.creds.companyId), {
+      page,
+      count: PAGE_SIZE,
     });
-    const patient = found
-      ? await prisma.patient.update({ where: { id: found.id }, data: { name: c.name } })
-      : await prisma.patient.create({
-          data: { companyId, yclientsId: c.yclientsId, name: c.name, firstSeenAt: new Date() },
-        });
-    // Телефон — по нормализованному E.164, без дублей.
-    if (c.phoneE164) {
-      const exists = await prisma.patientPhone.findFirst({
-        where: { companyId, patientId: patient.id, phone: c.phoneE164 },
-        select: { id: true },
-      });
-      if (!exists) {
-        const hasPrimary = await prisma.patientPhone.count({ where: { patientId: patient.id, isPrimary: true } });
-        await prisma.patientPhone.create({
-          data: { companyId, patientId: patient.id, phone: c.phoneE164, isPrimary: hasPrimary === 0 },
-        });
-      }
+    const dtos = res.data ?? [];
+    for (const dto of dtos) {
+      await upsertClient(companyId, dto);
     }
+    fetched += dtos.length;
+    if (!hasNextPage({ received: dtos.length, pageSize: PAGE_SIZE, fetchedSoFar: fetched, totalCount: res.totalCount, page })) {
+      break;
+    }
+    page += 1;
   }
-  return dtos.length;
+  return fetched;
 }
 
-export async function syncRecords(companyId: string, client: YclientsClientHandle): Promise<number> {
-  const dtos = await client.get<YclientsRecord[]>(client.endpoints.records(client.creds.companyId));
-  let written = 0;
-  for (const dto of dtos) {
-    const r = mapRecord(dto);
-
-    // Разрешение внешних ключей проекции. Запись без пациента/персонала пропускаем
-    // (patientId и staffId в Appointment обязательны).
-    const staff = await prisma.staff.findFirst({
-      where: { companyId, yclientsStaffId: r.yclientsStaffId },
+async function upsertClient(companyId: string, dto: YclientsClient): Promise<void> {
+  const c = mapClient(dto);
+  // yclientsId — nullable-unique: findFirst + create/update вместо upsert.
+  const found = await prisma.patient.findFirst({
+    where: { companyId, yclientsId: c.yclientsId },
+    select: { id: true },
+  });
+  const patient = found
+    ? await prisma.patient.update({ where: { id: found.id }, data: { name: c.name } })
+    : await prisma.patient.create({
+        data: { companyId, yclientsId: c.yclientsId, name: c.name, firstSeenAt: new Date() },
+      });
+  // Телефон — по нормализованному E.164, без дублей.
+  if (c.phoneE164) {
+    const exists = await prisma.patientPhone.findFirst({
+      where: { companyId, patientId: patient.id, phone: c.phoneE164 },
       select: { id: true },
     });
-    if (!staff) continue;
+    if (!exists) {
+      const hasPrimary = await prisma.patientPhone.count({ where: { patientId: patient.id, isPrimary: true } });
+      await prisma.patientPhone.create({
+        data: { companyId, patientId: patient.id, phone: c.phoneE164, isPrimary: hasPrimary === 0 },
+      });
+    }
+  }
+}
 
-    const patient = dto.client?.id
-      ? await prisma.patient.findFirst({ where: { companyId, yclientsId: dto.client.id }, select: { id: true } })
-      : r.clientPhoneE164
-        ? await prisma.patientPhone
-            .findFirst({ where: { companyId, phone: r.clientPhoneE164 }, select: { patientId: true } })
-            .then((p) => (p ? { id: p.patientId } : null))
-        : null;
-    if (!patient) continue;
+/**
+ * Записи (приёмы).
+ *
+ * Три вещи, которых раньше не было и без которых выгрузка неполная:
+ *
+ *  1. Диапазон дат. Без start_date/end_date YCLIENTS отдаёт узкое окно по
+ *     умолчанию — истории мы не получали вовсе, а «первичный/повторный»
+ *     считался по огрызку.
+ *  2. Постраничность внутри окна: в месяце у работающей клиники записей
+ *     больше, чем помещается на страницу.
+ *  3. Инкрементальность. Первый прогон идёт на HISTORY_YEARS назад, дальше —
+ *     только с последней успешной синхронизации, иначе каждый запуск тянет
+ *     всё заново и упирается в лимит запросов.
+ */
+export async function syncRecords(companyId: string, client: YclientsClientHandle): Promise<number> {
+  const cursor = await readCursor(companyId, "RECORDS");
+  const now = new Date();
+  // Запас назад от последней синхронизации: запись могли изменить задним
+  // числом, и без перекрытия такое изменение мы бы не увидели.
+  const OVERLAP_DAYS = 7;
+  const from = cursor?.lastSyncedAt
+    ? new Date(cursor.lastSyncedAt.getTime() - OVERLAP_DAYS * 24 * 3600 * 1000)
+    : new Date(Date.UTC(now.getUTCFullYear() - HISTORY_YEARS, now.getUTCMonth(), 1));
+  // Вперёд берём будущие записи: расписание на месяцы вперёд — это тоже данные.
+  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 3, 1));
 
-    const room = r.yclientsResourceId
-      ? await prisma.room.findFirst({
-          where: { companyId, yclientsResourceId: r.yclientsResourceId },
-          select: { id: true },
-        })
-      : null;
-    const primaryService = r.yclientsServiceIds[0]
-      ? await prisma.service.findFirst({
-          where: { companyId, yclientsServiceId: r.yclientsServiceIds[0] },
-          select: { id: true },
-        })
-      : null;
-
-    const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
-    await prisma.appointment.upsert({
-      where: { companyId_yclientsRecordId: { companyId, yclientsRecordId: r.yclientsRecordId } },
-      update: {
-        staffId: staff.id,
-        patientId: patient.id,
-        roomId: room?.id ?? null,
-        primaryServiceId: primaryService?.id ?? null,
-        startAt: r.startAt,
-        endAt,
-        durationMin: r.durationMin,
-        status: r.status,
-        attendanceRaw: dto.visit_attendance ?? null,
-        revenue: r.revenue,
-        updatedAtYclients: r.startAt,
-      },
-      create: {
-        companyId,
-        yclientsRecordId: r.yclientsRecordId,
-        staffId: staff.id,
-        patientId: patient.id,
-        roomId: room?.id ?? null,
-        primaryServiceId: primaryService?.id ?? null,
-        startAt: r.startAt,
-        endAt,
-        durationMin: r.durationMin,
-        status: r.status,
-        attendanceRaw: dto.visit_attendance ?? null,
-        revenue: r.revenue,
-        createdAtYclients: r.startAt,
-        updatedAtYclients: r.startAt,
-      },
-    });
-    written += 1;
+  let written = 0;
+  for (const window of monthWindows(from, to)) {
+    written += await syncRecordsWindow(companyId, client, window.from, window.to);
   }
   return written;
+}
+
+async function syncRecordsWindow(
+  companyId: string,
+  client: YclientsClientHandle,
+  from: Date,
+  to: Date,
+): Promise<number> {
+  let page = 1;
+  let fetched = 0;
+  let written = 0;
+
+  for (;;) {
+    const res = await client.getPage<YclientsRecord[]>(client.endpoints.records(client.creds.companyId), {
+      start_date: apiDate(from),
+      end_date: apiDate(to),
+      page,
+      count: PAGE_SIZE,
+    });
+    const dtos = res.data ?? [];
+    for (const dto of dtos) {
+      if (await upsertRecord(companyId, dto)) written += 1;
+    }
+    fetched += dtos.length;
+    if (!hasNextPage({ received: dtos.length, pageSize: PAGE_SIZE, fetchedSoFar: fetched, totalCount: res.totalCount, page })) {
+      break;
+    }
+    page += 1;
+  }
+  return written;
+}
+
+/**
+ * Одна запись в проекцию. Возвращает false, если записать не удалось —
+ * например, не нашёлся специалист или пациент: в Appointment это обязательные
+ * связи, а выдумывать их нельзя.
+ */
+async function upsertRecord(companyId: string, dto: YclientsRecord): Promise<boolean> {
+  const r = mapRecord(dto);
+
+  /**
+   * Удалённую в YCLIENTS запись помечаем удалённой и у себя. Раньше такие
+   * записи оставались в проекции навсегда: администратор удалял приём там, а в
+   * отчётах он продолжал числиться и портил выручку с загрузкой.
+   */
+  if (dto.deleted) {
+    await prisma.appointment.updateMany({
+      where: { companyId, yclientsRecordId: r.yclientsRecordId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+    return false;
+  }
+
+  const staff = await prisma.staff.findFirst({
+    where: { companyId, yclientsStaffId: r.yclientsStaffId },
+    select: { id: true },
+  });
+  if (!staff) return false;
+
+  const patient = dto.client?.id
+    ? await prisma.patient.findFirst({ where: { companyId, yclientsId: dto.client.id }, select: { id: true } })
+    : r.clientPhoneE164
+      ? await prisma.patientPhone
+          .findFirst({ where: { companyId, phone: r.clientPhoneE164 }, select: { patientId: true } })
+          .then((p) => (p ? { id: p.patientId } : null))
+      : null;
+  if (!patient) return false;
+
+  const room = r.yclientsResourceId
+    ? await prisma.room.findFirst({
+        where: { companyId, yclientsResourceId: r.yclientsResourceId },
+        select: { id: true },
+      })
+    : null;
+  const primaryService = r.yclientsServiceIds[0]
+    ? await prisma.service.findFirst({
+        where: { companyId, yclientsServiceId: r.yclientsServiceIds[0] },
+        select: { id: true },
+      })
+    : null;
+
+  const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
+  await prisma.appointment.upsert({
+    where: { companyId_yclientsRecordId: { companyId, yclientsRecordId: r.yclientsRecordId } },
+    update: {
+      staffId: staff.id,
+      patientId: patient.id,
+      roomId: room?.id ?? null,
+      primaryServiceId: primaryService?.id ?? null,
+      startAt: r.startAt,
+      endAt,
+      durationMin: r.durationMin,
+      status: r.status,
+      attendanceRaw: dto.visit_attendance ?? null,
+      revenue: r.revenue,
+      // Запись могли вернуть из удалённых — снимаем отметку.
+      deletedAt: null,
+      updatedAtYclients: r.startAt,
+    },
+    create: {
+      companyId,
+      yclientsRecordId: r.yclientsRecordId,
+      staffId: staff.id,
+      patientId: patient.id,
+      roomId: room?.id ?? null,
+      primaryServiceId: primaryService?.id ?? null,
+      startAt: r.startAt,
+      endAt,
+      durationMin: r.durationMin,
+      status: r.status,
+      attendanceRaw: dto.visit_attendance ?? null,
+      revenue: r.revenue,
+      createdAtYclients: r.startAt,
+      updatedAtYclients: r.startAt,
+    },
+  });
+  return true;
 }
 
 // TODO(этап 1): syncCourses (абонементы БОС + ручные IV-курсы, §3.5) и

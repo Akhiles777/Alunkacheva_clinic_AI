@@ -57,9 +57,20 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** Ответ вместе с метаданными: total_count нужен постраничной выгрузке. */
+export interface YclientsPage<T> {
+  data: T;
+  totalCount: number | null;
+}
+
 export interface YclientsClientHandle {
   creds: YclientsCredentials;
   get<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T>;
+  /** То же, но с meta: без total_count нельзя понять, есть ли ещё страницы. */
+  getPage<T>(
+    path: string,
+    query?: Record<string, string | number | undefined>,
+  ): Promise<YclientsPage<T>>;
   endpoints: typeof ENDPOINTS;
 }
 
@@ -73,18 +84,30 @@ export async function getYclientsClient(companyId: string): Promise<YclientsClie
   if (!loaded) return null;
   const creds: YclientsCredentials = loaded;
 
-  async function get<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
+  function buildUrl(path: string, query?: Record<string, string | number | undefined>): string {
     const url = new URL(YCLIENTS_BASE_URL + path);
     for (const [k, v] of Object.entries(query ?? {})) {
       if (v !== undefined) url.searchParams.set(k, String(v));
     }
-    return enqueue(() => request<T>(url.toString(), creds));
+    return url.toString();
   }
 
-  return { creds, get, endpoints: ENDPOINTS };
+  async function get<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
+    const page = await enqueue(() => request<T>(buildUrl(path, query), creds));
+    return page.data;
+  }
+
+  async function getPage<T>(
+    path: string,
+    query?: Record<string, string | number | undefined>,
+  ): Promise<YclientsPage<T>> {
+    return enqueue(() => request<T>(buildUrl(path, query), creds));
+  }
+
+  return { creds, get, getPage, endpoints: ENDPOINTS };
 }
 
-async function request<T>(url: string, creds: YclientsCredentials): Promise<T> {
+async function request<T>(url: string, creds: YclientsCredentials): Promise<YclientsPage<T>> {
   let attempt = 0;
   for (;;) {
     let res: Response;
@@ -121,10 +144,13 @@ async function request<T>(url: string, creds: YclientsCredentials): Promise<T> {
     }
 
     const body = (await res.json()) as YclientsEnvelope<T> | T;
-    // Ответы v2 приходят в конверте { success, data }.
+    // Ответы v2 приходят в конверте { success, data, meta }. total_count есть
+    // не везде — постраничная выгрузка не должна на него полагаться.
     if (body && typeof body === "object" && "data" in (body as object)) {
-      return (body as YclientsEnvelope<T>).data;
+      const envelope = body as YclientsEnvelope<T>;
+      const total = envelope.meta?.total_count ?? envelope.meta?.count ?? null;
+      return { data: envelope.data, totalCount: typeof total === "number" ? total : null };
     }
-    return body as T;
+    return { data: body as T, totalCount: null };
   }
 }
