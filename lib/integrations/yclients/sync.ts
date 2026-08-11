@@ -136,7 +136,7 @@ export async function syncClients(companyId: string, client: YclientsClientHandl
   return fetched;
 }
 
-async function upsertClient(companyId: string, dto: YclientsClient): Promise<void> {
+export async function upsertClient(companyId: string, dto: YclientsClient): Promise<void> {
   const c = mapClient(dto);
   // yclientsId — nullable-unique: findFirst + create/update вместо upsert.
   const found = await prisma.patient.findFirst({
@@ -231,7 +231,7 @@ async function syncRecordsWindow(
  * например, не нашёлся специалист или пациент: в Appointment это обязательные
  * связи, а выдумывать их нельзя.
  */
-async function upsertRecord(companyId: string, dto: YclientsRecord): Promise<boolean> {
+export async function upsertRecord(companyId: string, dto: YclientsRecord): Promise<boolean> {
   const r = mapRecord(dto);
 
   /**
