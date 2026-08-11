@@ -17,31 +17,16 @@ const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1"
  */
 const MODEL = process.env.ROUTER_AI_MODEL || "anthropic/claude-sonnet-4.5";
 
-import { CLINIC_NAME } from "@/lib/brand";
+import { getSession } from "@/lib/server/session";
+import { can } from "@/lib/server/authz";
+import { personaFor } from "@/lib/assistant/personas";
 
-const SYSTEM_PROMPT = [
-  `Ты — ассистент-аналитик CRM частной клиники «${CLINIC_NAME}».`,
-  "У тебя доступ ТОЛЬКО НА ЧТЕНИЕ к аналитической выжимке базы (она в сообщении пользователя).",
-  "Отвечай кратко, по-русски, опираясь СТРОГО на эти данные — не выдумывай цифры и факты.",
-  "Не давай медицинских советов, не обсуждай диагнозы, симптомы и лечение — это не твоя зона.",
-  "Если данных для ответа нет — честно скажи об этом.",
-].join(" ");
-
-const OWNER_PROMPT = [
-  `Ты — бизнес-аналитик владельца частной клиники «${CLINIC_NAME}».`,
-  "Анализируешь данные ниже (только чтение): загрузку кабинетов и сотрудников, выручку и средний чек,",
-  "воронку, удержание и курсы, неявки.",
-  "Опирайся на КОНКРЕТНЫЕ ЦИФРЫ из данных, ищи первопричину, а не симптом. Не выдумывай значения.",
-  // Длина — главный источник расхода. Раньше промпт требовал «глубокий
-  // непшаблонный анализ», и модель писала эссе на любой вопрос, даже простой.
-  "ОТВЕЧАЙ КОРОТКО: по умолчанию 3–5 предложений, строго по заданному вопросу.",
-  "Разворачивай подробно ТОЛЬКО если человек прямо просит: «подробнее», «разбери», «дай гипотезы».",
-  "Не пересказывай данные, которые и так видны на экране, и не перечисляй всё подряд — отвечай на спрошенное.",
-  "Пиши связным текстом без таблиц и разметки. Не давай медицинских советов и не обсуждай диагнозы/лечение.",
-].join(" ");
-
-const PERSONAS = { assistant: SYSTEM_PROMPT, owner: OWNER_PROMPT } as const;
-export type AiPersona = keyof typeof PERSONAS;
+/**
+ * Ассистент говорит от роли вошедшего сотрудника. Роль берём из сессии, а не
+ * из аргумента: клиент мог бы попросить чужую роль, а вместе с ней и чужой
+ * взгляд на данные.
+ */
+export type AiPersona = "auto" | "owner";
 
 export interface AiResult {
   text: string | null;
@@ -57,11 +42,17 @@ export async function askAI(
   question: string,
   context: string,
   history: AiTurn[] = [],
-  persona: AiPersona = "assistant",
+  persona: AiPersona = "auto",
 ): Promise<AiResult> {
   const key = process.env.ROUTER_AI;
   if (!key) return { text: null, error: "not_configured" };
-  const systemPrompt = PERSONAS[persona] ?? SYSTEM_PROMPT;
+
+  const session = await getSession();
+  const canSeeRevenue = await can(session, "VIEW_REVENUE");
+  // «owner» — отдельный экран кабинета владельца; там роль задана самим
+  // разделом, но право на выручку всё равно проверяем.
+  const role = persona === "owner" ? "OWNER" : session.role;
+  const systemPrompt = personaFor(role, canSeeRevenue);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 40_000);
