@@ -1,0 +1,198 @@
+"use client";
+
+import { useEffect, useState, useTransition } from "react";
+import { Group } from "../_components/ui";
+import {
+  getYclientsState,
+  retryPending,
+  runYclientsReconcile,
+  runYclientsSync,
+  type RunResult,
+  type YclientsState,
+} from "./yclients-actions";
+import type { ReconcileReport } from "@/lib/integrations/yclients/reconcile";
+
+/**
+ * Синхронизация с YCLIENTS: запуск выгрузки, состояние по сущностям и сверка.
+ *
+ * Сверка — не украшение. Утверждать «выгрузка полная» можно только показав
+ * сравнение: пропущенная страница или неудачный диапазон дат выглядят точно
+ * так же, как успешный прогон.
+ */
+export function YclientsBlock() {
+  const [state, setState] = useState<YclientsState | null>(null);
+  const [result, setResult] = useState<RunResult | null>(null);
+  const [report, setReport] = useState<ReconcileReport | null>(null);
+  const [pending, start] = useTransition();
+
+  const load = () => getYclientsState().then(setState).catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (!state) {
+    return (
+      <Group title="Синхронизация с YCLIENTS" hint="выгрузка данных и сверка">
+        <p className="text-text-subtle text-sm">Загружаем состояние…</p>
+      </Group>
+    );
+  }
+
+  const blocked = !state.enabled || !state.configured;
+
+  return (
+    <Group
+      title="Синхронизация с YCLIENTS"
+      hint="YCLIENTS — источник истины по расписанию, записям и выручке"
+    >
+      {!state.enabled ? (
+        <p className="text-text-muted text-sm">
+          Интеграция выключена. Чтобы включить, задайте на хостинге{" "}
+          <span className="num">YCLIENTS_ENABLED=true</span> — до этого ни одного обращения к их API
+          не происходит.
+        </p>
+      ) : null}
+      {state.enabled && !state.configured ? (
+        <p className="text-accent-text text-sm">
+          Не заданы ключи: нужны партнёрский токен, пользовательский токен и ID филиала — выше в
+          этом разделе.
+        </p>
+      ) : null}
+
+      <div className="border-border overflow-hidden rounded-lg border">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className="border-border bg-surface border-b text-left">
+              <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Данные</th>
+              <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Состояние</th>
+              <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Последняя выгрузка</th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.cursors.map((c) => (
+              <tr key={c.entity} className="border-border-soft border-b last:border-b-0">
+                <td className="px-3 py-2">{c.label}</td>
+                <td className="px-3 py-2">
+                  {c.status}
+                  {c.error ? <span className="text-accent-text block text-xs">{c.error}</span> : null}
+                </td>
+                <td className="text-text-muted px-3 py-2 whitespace-nowrap">
+                  {c.lastSyncedAt ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {state.notPushed > 0 || state.conflicts > 0 ? (
+        <p className="text-text-muted text-sm">
+          Визитов, не отправленных в YCLIENTS: <b className="num text-text">{state.notPushed}</b>
+          {state.conflicts > 0 ? (
+            <>
+              {" · "}
+              <span className="text-accent-text">
+                слот занят у {state.conflicts} — их нужно перенести вручную
+              </span>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-2.5">
+        <button
+          type="button"
+          disabled={pending || blocked}
+          onClick={() =>
+            start(async () => {
+              setReport(null);
+              setResult(await runYclientsSync());
+              await load();
+            })
+          }
+          className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
+        >
+          {pending ? "Выполняем…" : "Выгрузить данные"}
+        </button>
+        <button
+          type="button"
+          disabled={pending || blocked}
+          onClick={() =>
+            start(async () => {
+              setResult(null);
+              setReport(await runYclientsReconcile());
+            })
+          }
+          className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-2 text-sm disabled:opacity-45"
+        >
+          Сверить с YCLIENTS
+        </button>
+        {state.notPushed > 0 ? (
+          <button
+            type="button"
+            disabled={pending || blocked}
+            onClick={() =>
+              start(async () => {
+                setResult(await retryPending());
+                await load();
+              })
+            }
+            className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-2 text-sm disabled:opacity-45"
+          >
+            Отправить незагруженные визиты
+          </button>
+        ) : null}
+      </div>
+
+      {result ? (
+        <p className={`text-sm ${result.ok ? "text-text-muted" : "text-accent-text"}`}>
+          {result.message}
+          {result.counts
+            ? ` ${Object.entries(result.counts)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(", ")}`
+            : ""}
+        </p>
+      ) : null}
+
+      {report ? <ReportView report={report} /> : null}
+    </Group>
+  );
+}
+
+function ReportView({ report }: { report: ReconcileReport }) {
+  if (report.skipped) {
+    return <p className="text-text-subtle text-sm">Сверять нечего: интеграция выключена или нет ключей.</p>;
+  }
+
+  return (
+    <div className="border-border-soft mt-1 rounded-lg border p-3">
+      <p className={`text-sm font-medium ${report.ok ? "" : "text-accent-text"}`}>
+        {report.ok ? "Расхождений нет" : "Есть расхождения"}
+      </p>
+      <ul className="mt-2 flex flex-col gap-1.5">
+        {report.entities.map((e) => (
+          <li key={e.entity} className="text-sm">
+            <span className="inline-block w-32">{e.entity}</span>
+            <span className="num text-text-muted">
+              в YCLIENTS {e.remote} · у нас {e.local}
+            </span>
+            {e.note ? <span className="text-accent-text ml-2 text-xs">{e.note}</span> : null}
+            {!e.ok && !e.note ? (
+              <span className="text-accent-text ml-2 text-xs">
+                {e.missingLocally.length > 0 ? `не доехало: ${e.missingLocally.join(", ")}` : ""}
+                {e.staleLocally.length > 0 ? ` лишнее у нас: ${e.staleLocally.join(", ")}` : ""}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {report.notPushed > 0 ? (
+        <p className="text-text-muted mt-2 text-xs">
+          Не отправлено в YCLIENTS визитов: {report.notPushed}
+          {report.conflicts > 0 ? `, из них со слотом, который занят: ${report.conflicts}` : ""}
+        </p>
+      ) : null}
+    </div>
+  );
+}

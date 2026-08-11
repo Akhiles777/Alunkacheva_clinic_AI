@@ -1,6 +1,7 @@
 import { SettingsHeader } from "../_components/ui";
 import { getIntegrations } from "./actions";
 import { IntegrationsClient } from "./integrations-client";
+import { YclientsBlock } from "./yclients-block";
 
 /**
  * Интеграции — первый серверный срез: данные читаются из БД (таблица
@@ -17,7 +18,10 @@ export default async function IntegrationsSettingsPage() {
         description="YCLIENTS, Instagram, WhatsApp: статус соединения и проверка связи. Все значения хранятся зашифрованными в базе и показываются маской — полностью не отображаются никогда."
       />
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
-        <IntegrationsClient initial={blocks} />
+        <div className="flex max-w-[760px] flex-col gap-5">
+          <IntegrationsClient initial={blocks} />
+          <YclientsBlock />
+        </div>
       </div>
     </>
   );
