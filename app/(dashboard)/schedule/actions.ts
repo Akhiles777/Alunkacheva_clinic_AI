@@ -7,6 +7,7 @@ import type { Appt } from "@/app/_data/store";
 import type { AppointmentStatus } from "@/generated/prisma/enums";
 import { todayRangeMoscow } from "@/lib/schedule";
 import { clinicDayFor } from "@/lib/server/clinic-day";
+import { pushAppointment } from "@/lib/integrations/yclients/write-back";
 
 /**
  * Расписание/«Сегодня» из ЕДИНОГО источника — проекции Appointment в БД (та же,
@@ -228,8 +229,9 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
     data: {
       id: input.id,
       companyId: co,
-      // Локальная запись до синка с YCLIENTS — синтетический recordId.
-      yclientsRecordId: 700_000_000 + Math.floor(Math.random() * 99_999_999),
+      // Номер записи проставит YCLIENTS при отправке; случайный локальный
+      // номер столкнулся бы с настоящим при выгрузке и перезаписал чужой визит.
+      yclientsRecordId: null,
       bookedByName: input.bookedByName?.trim() || null,
       bookedByPatientId: bookedById,
       patientId,
@@ -246,8 +248,18 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
       note: input.note?.trim() || null,
       createdAtYclients: startAt,
       updatedAtYclients: startAt,
+      // Ждёт отправки в YCLIENTS. Пока интеграция выключена, отправка сразу
+      // вернёт «локальный визит» и пометит его честно.
+      syncState: "PENDING",
     },
   });
+
+  /**
+   * Отправляем сразу, не дожидаясь синхронизации: администратор должен
+   * увидеть конфликт слота сейчас, а не через час. Ошибка отправки не должна
+   * ронять создание — визит у нас уже есть, состояние отправки записано.
+   */
+  await pushAppointment(co, input.id).catch(() => {});
 }
 
 // ─────────────────────────────────────────────── справочники для формы записи

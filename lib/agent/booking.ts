@@ -247,16 +247,12 @@ export async function createBooking(input: {
       `);
       if (clash.length > 0) return null;
 
-      const maxRecord = await tx.appointment.aggregate({
-        where: { companyId: input.companyId },
-        _max: { yclientsRecordId: true },
-      });
-
       return tx.appointment.create({
         data: {
           companyId: input.companyId,
-          // Пока YCLIENTS выключен, номер записи локальный и продолжает ряд.
-          yclientsRecordId: (maxRecord._max.yclientsRecordId ?? 0) + 1,
+          // Номер записи проставит YCLIENTS при отправке. Свой выдумывать
+          // нельзя: он столкнётся с настоящим при выгрузке.
+          yclientsRecordId: null,
           patientId: input.patientId,
           staffId: staff.id,
           roomId: staff.defaultRoomId,

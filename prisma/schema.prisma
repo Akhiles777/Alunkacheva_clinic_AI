@@ -182,6 +182,20 @@ enum SyncEntity {
   TRANSACTIONS
 }
 
+/// Состояние обратной записи визита в YCLIENTS (§2).
+enum ApptSyncState {
+  /// Интеграция выключена — визит живёт только у нас, это нормально.
+  LOCAL_ONLY
+  /// Ждёт отправки в YCLIENTS.
+  PENDING
+  /// Записан в YCLIENTS, идентификатор проставлен.
+  SYNCED
+  /// YCLIENTS отказал: слот занят. Требует решения человека.
+  CONFLICT
+  /// Другая ошибка отправки — повторяем.
+  FAILED
+}
+
 enum SyncStatus {
   IDLE
   RUNNING
@@ -488,7 +502,10 @@ model Escalation {
 model Appointment {
   id               String  @id @default(cuid())
   companyId        String
-  yclientsRecordId Int
+  /// Идентификатор записи в YCLIENTS. NULL — визит создан у нас и туда ещё
+  /// не отправлен. Выдумывать значение нельзя: локальные номера сталкивались
+  /// бы с настоящими при выгрузке и перезаписывали чужие визиты.
+  yclientsRecordId Int?
   yclientsVisitId  Int?
   patientId        String
   staffId          String
@@ -542,6 +559,14 @@ model Appointment {
   /// отбрасывается — события приходят не по порядку.
   updatedAtYclients DateTime  @db.Timestamptz(3)
   cancelledAt       DateTime? @db.Timestamptz(3)
+
+  /// Обратная запись в YCLIENTS (§2): состояние, последняя ошибка и число
+  /// попыток. Без этого сбой отправки был бы невидим — визит есть у нас, в
+  /// YCLIENTS его нет, и слот считается свободным обеими сторонами.
+  syncState    ApptSyncState @default(LOCAL_ONLY)
+  syncError    String?
+  syncAttempts Int           @default(0)
+  lastSyncAt   DateTime?     @db.Timestamptz(3)
 
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)

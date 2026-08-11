@@ -71,6 +71,8 @@ export interface YclientsClientHandle {
     path: string,
     query?: Record<string, string | number | undefined>,
   ): Promise<YclientsPage<T>>;
+  /** Запись в YCLIENTS: создание, изменение и удаление визита (§2). */
+  send<T>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T>;
   endpoints: typeof ENDPOINTS;
 }
 
@@ -104,21 +106,35 @@ export async function getYclientsClient(companyId: string): Promise<YclientsClie
     return enqueue(() => request<T>(buildUrl(path, query), creds));
   }
 
-  return { creds, get, getPage, endpoints: ENDPOINTS };
+  async function send<T>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+    const page = await enqueue(() => request<T>(buildUrl(path), creds, { method, body }));
+    return page.data;
+  }
+
+  return { creds, get, getPage, send, endpoints: ENDPOINTS };
 }
 
-async function request<T>(url: string, creds: YclientsCredentials): Promise<YclientsPage<T>> {
+async function request<T>(
+  url: string,
+  creds: YclientsCredentials,
+  write?: { method: "POST" | "PUT" | "DELETE"; body?: unknown },
+): Promise<YclientsPage<T>> {
   let attempt = 0;
   for (;;) {
     let res: Response;
     try {
       res = await fetch(url, {
+        method: write?.method ?? "GET",
         headers: {
           Accept: YCLIENTS_ACCEPT,
           Authorization: authHeader(creds),
+          ...(write?.body !== undefined ? { "Content-Type": "application/json" } : {}),
         },
+        body: write?.body !== undefined ? JSON.stringify(write.body) : undefined,
       });
     } catch (e) {
+      // Сетевой сбой при записи: неизвестно, дошёл ли запрос. Повторять нельзя.
+      if (write) throw new YclientsApiError(`Сеть недоступна: ${(e as Error).message}`, 0);
       if (attempt < RATE_LIMIT.maxRetries) {
         await sleep(RATE_LIMIT.baseDelayMs * 2 ** attempt);
         attempt += 1;
@@ -127,7 +143,14 @@ async function request<T>(url: string, creds: YclientsCredentials): Promise<Ycli
       throw new YclientsApiError(`Сеть недоступна: ${(e as Error).message}`, 0);
     }
 
-    if (res.status === 429 || res.status >= 500) {
+    /**
+     * Повторяем только безопасные случаи. Запись повторять на таймауте нельзя
+     * вслепую: визит мог быть создан, и второй заход сделал бы дубль в чужом
+     * расписании. Для записи повторяем лишь 429 — там сервер явно просит
+     * подождать и заведомо ничего не выполнил.
+     */
+    const retryable = write ? res.status === 429 : res.status === 429 || res.status >= 500;
+    if (retryable) {
       if (attempt < RATE_LIMIT.maxRetries) {
         const retryAfter = Number(res.headers.get("retry-after"));
         const delay = Number.isFinite(retryAfter) && retryAfter > 0

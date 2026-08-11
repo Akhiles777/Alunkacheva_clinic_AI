@@ -271,7 +271,8 @@ async function main() {
         rows.push({
           id: `demo_appt_${index}`,
           companyId,
-          yclientsRecordId: 900000 + index,
+          // Демонстрационные визиты в YCLIENTS не существуют.
+          yclientsRecordId: null,
           patientId,
           staffId,
           roomId: roomId(key),

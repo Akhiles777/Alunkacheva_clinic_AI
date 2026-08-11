@@ -3,6 +3,7 @@ import { getYclientsClient, type YclientsClientHandle } from "./client";
 import { markFailed, markOk, markRunning, readCursor } from "./sync-cursor";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
 import { HISTORY_YEARS } from "./config";
+import { pushPendingAppointments } from "./write-back";
 import {
   mapClient,
   mapRecord,
@@ -47,6 +48,19 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
   counts.resources = await run("RESOURCES", () => syncResources(companyId, client), errors, companyId);
   counts.clients = await run("CLIENTS", () => syncClients(companyId, client), errors, companyId);
   counts.records = await run("RECORDS", () => syncRecords(companyId, client), errors, companyId);
+
+  /**
+   * После приёма данных отправляем своё. Порядок важен: сначала забираем
+   * чужие записи, потом отдаём свои — так поиск уже созданной записи видит
+   * актуальное расписание и не создаёт дубль.
+   */
+  const pushed = await pushPendingAppointments(companyId);
+  if (pushed.conflicts > 0) {
+    errors.push(`Не удалось отправить в YCLIENTS: слот занят у ${pushed.conflicts} визитов`);
+  }
+  if (pushed.failed > 0) {
+    errors.push(`Не удалось отправить в YCLIENTS: ${pushed.failed} визитов`);
+  }
 
   return { skipped: false, counts, errors };
 }
