@@ -263,6 +263,7 @@ export function AssistantClient({
           type="button"
           onClick={() => {
             const item = newKnowledgeItem();
+            setQuery("");
             setKnowledge((items) => [
               ...items,
               // Новая запись сразу включена: выключенная по умолчанию — ловушка.
