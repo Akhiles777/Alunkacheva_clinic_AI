@@ -85,3 +85,25 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
 
   return getKnowledge();
 }
+
+export async function deleteKnowledge(id: string): Promise<KnowledgeItem[]> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+
+  const result = await prisma.knowledgeEntry.deleteMany({
+    where: { id, companyId: session.companyId },
+  });
+
+  if (result.count === 0) throw new Error("Запись базы знаний не найдена");
+
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "knowledge",
+    entityId: id,
+    meta: { deleted: 1 },
+  });
+
+  return getKnowledge();
+}

@@ -5,6 +5,7 @@ import { settingsStore, type KnowledgeItem } from "@/app/_data/settings";
 import {
   Field,
   Group,
+  Modal,
   SaveBar,
   Segmented,
   Textarea,
@@ -12,7 +13,7 @@ import {
   Toggle,
 } from "../_components/ui";
 import { saveSection } from "../blob-actions";
-import { saveKnowledge } from "./actions";
+import { deleteKnowledge, saveKnowledge } from "./actions";
 
 type AssistantConfig = typeof settingsStore.assistant;
 
@@ -46,6 +47,12 @@ export function AssistantClient({
   const [query, setQuery] = useState("");
   const [stopDraft, setStopDraft] = useState("");
   const [dirtyKnowledgeIds, setDirtyKnowledgeIds] = useState<Set<string>>(() => new Set());
+  const [persistedKnowledgeIds, setPersistedKnowledgeIds] = useState<Set<string>>(
+    () => new Set(initial.knowledge.map((item) => item.id)),
+  );
+  const [deleteTarget, setDeleteTarget] = useState<KnowledgeItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -65,6 +72,43 @@ export function AssistantClient({
   function patchKnowledge(id: string, next: Partial<KnowledgeItem>) {
     setKnowledge((ks) => ks.map((k) => (k.id === id ? { ...k, ...next } : k)));
     setDirtyKnowledgeIds((ids) => new Set(ids).add(id));
+  }
+
+  function removeDraft(id: string) {
+    setKnowledge((ks) => ks.filter((k) => k.id !== id));
+    setDirtyKnowledgeIds((ids) => {
+      const next = new Set(ids);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  async function confirmDeleteKnowledge() {
+    if (!deleteTarget) return;
+    setDeleteError(null);
+    if (!persistedKnowledgeIds.has(deleteTarget.id)) {
+      removeDraft(deleteTarget.id);
+      setDeleteTarget(null);
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      const nextKnowledge = await deleteKnowledge(deleteTarget.id);
+      setKnowledge(nextKnowledge);
+      setPersistedKnowledgeIds(new Set(nextKnowledge.map((item) => item.id)));
+      setDirtyKnowledgeIds((ids) => {
+        const next = new Set(ids);
+        next.delete(deleteTarget.id);
+        return next;
+      });
+      setDeleteTarget(null);
+    } catch (e) {
+      console.error(e);
+      setDeleteError("Не удалось удалить запись. Обновите страницу и попробуйте ещё раз.");
+    } finally {
+      setIsDeleting(false);
+    }
   }
 
   return (
@@ -185,6 +229,17 @@ export function AssistantClient({
                       onChange={(v) => patchKnowledge(k.id, { isActive: v })}
                       label={`${k.topic} активна`}
                     />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeleteTarget(k);
+                        setDeleteError(null);
+                      }}
+                      aria-label={`Удалить запись ${k.topic || "без темы"}`}
+                      className="text-text-subtle hover:text-accent-text flex h-9 w-9 items-center justify-center text-sm"
+                    >
+                      ×
+                    </button>
                   </div>
                 </div>
                 <TextInput
@@ -232,12 +287,56 @@ export function AssistantClient({
             await saveSection("assistant", { assistant });
             if (dirtyKnowledgeIds.size > 0) {
               const changedKnowledge = knowledge.filter((item) => dirtyKnowledgeIds.has(item.id));
-              setKnowledge(await saveKnowledge(changedKnowledge));
+              const nextKnowledge = await saveKnowledge(changedKnowledge);
+              setKnowledge(nextKnowledge);
+              setPersistedKnowledgeIds(new Set(nextKnowledge.map((item) => item.id)));
               setDirtyKnowledgeIds(new Set());
             }
           }}
         />
       </div>
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => {
+          if (!isDeleting) {
+            setDeleteTarget(null);
+            setDeleteError(null);
+          }
+        }}
+        title="Удалить запись"
+        description="Запись будет безвозвратно удалена из базы знаний и больше не будет доступна ассистенту."
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteTarget(null);
+                setDeleteError(null);
+              }}
+              disabled={isDeleting}
+              className="border-border text-text-muted hover:bg-hover rounded-md border px-3.5 py-2 text-sm disabled:opacity-45"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={confirmDeleteKnowledge}
+              disabled={isDeleting}
+              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3.5 py-2 text-sm font-medium disabled:opacity-45"
+            >
+              {isDeleting ? "Удаляем…" : "Удалить"}
+            </button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-2">
+          <p className="text-text-muted text-sm leading-relaxed">
+            {deleteTarget?.topic ? `Тема: ${deleteTarget.topic}` : "Эта запись ещё без темы."}
+          </p>
+          {deleteError ? <p className="text-accent-text text-sm">{deleteError}</p> : null}
+        </div>
+      </Modal>
     </div>
   );
 }
