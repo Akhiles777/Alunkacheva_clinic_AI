@@ -55,16 +55,8 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
     select: { id: true },
   });
   const existingIds = new Set(existing.map((e) => e.id));
-  const kept = new Set(items.map((k) => k.id).filter((id) => existingIds.has(id)));
 
   await prisma.$transaction(async (tx) => {
-    // Удалённые в интерфейсе строки убираем и из базы: знание, которого нет в
-    // списке, не должно продолжать звучать в ответах пациенту.
-    const toDelete = existing.filter((e) => !kept.has(e.id)).map((e) => e.id);
-    if (toDelete.length) {
-      await tx.knowledgeEntry.deleteMany({ where: { id: { in: toDelete } } });
-    }
-
     for (const k of items) {
       const data = {
         topic: k.topic.trim(),

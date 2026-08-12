@@ -196,22 +196,28 @@ export function SaveBar({
   onSave,
   error,
 }: {
-  onSave: () => void;
+  onSave: () => void | Promise<void>;
   error?: string | null;
 }) {
-  const [state, setState] = useState<"idle" | "saved">("idle");
+  const [state, setState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
 
   return (
     <div className="flex items-center gap-3 pt-1">
       <button
         type="button"
-        onClick={() => {
+        onClick={async () => {
           if (error) return;
-          onSave();
-          setState("saved");
-          setTimeout(() => setState("idle"), 2000);
+          setState("saving");
+          try {
+            await onSave();
+            setState("saved");
+            setTimeout(() => setState("idle"), 2000);
+          } catch (e) {
+            console.error(e);
+            setState("failed");
+          }
         }}
-        disabled={Boolean(error)}
+        disabled={Boolean(error) || state === "saving"}
         className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-45"
       >
         Сохранить
@@ -220,6 +226,10 @@ export function SaveBar({
         <span className="text-accent-text text-sm">{error}</span>
       ) : state === "saved" ? (
         <span className="text-text-muted text-sm">Сохранено</span>
+      ) : state === "saving" ? (
+        <span className="text-text-muted text-sm">Сохраняем…</span>
+      ) : state === "failed" ? (
+        <span className="text-accent-text text-sm">Не удалось сохранить. Обновите страницу и попробуйте ещё раз.</span>
       ) : null}
     </div>
   );

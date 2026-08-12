@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState } from "react";
 import { settingsStore, type KnowledgeItem } from "@/app/_data/settings";
 import {
   Field,
@@ -21,6 +21,15 @@ export interface AssistantData {
   knowledge: KnowledgeItem[];
 }
 
+function newKnowledgeItem(): KnowledgeItem {
+  const id =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `k${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  return { id, topic: "", question: "", answer: "", serviceId: null, isActive: true };
+}
+
 export function AssistantClient({
   initial,
   serviceOptions,
@@ -36,7 +45,7 @@ export function AssistantClient({
   );
   const [query, setQuery] = useState("");
   const [stopDraft, setStopDraft] = useState("");
-  const [isPending, startTransition] = useTransition();
+  const [dirtyKnowledgeIds, setDirtyKnowledgeIds] = useState<Set<string>>(() => new Set());
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -55,6 +64,7 @@ export function AssistantClient({
 
   function patchKnowledge(id: string, next: Partial<KnowledgeItem>) {
     setKnowledge((ks) => ks.map((k) => (k.id === id ? { ...k, ...next } : k)));
+    setDirtyKnowledgeIds((ids) => new Set(ids).add(id));
   }
 
   return (
@@ -196,15 +206,17 @@ export function AssistantClient({
         </ul>
         <button
           type="button"
-          onClick={() =>
-            setKnowledge([
-              ...knowledge,
+          onClick={() => {
+            const item = newKnowledgeItem();
+            setKnowledge((items) => [
+              ...items,
               // Новая запись сразу включена: выключенная по умолчанию — ловушка.
               // Администратор заполнял ответ, сохранял и не понимал, почему
               // ассистент про него не знает.
-              { id: `k${Date.now()}`, topic: "", question: "", answer: "", serviceId: null, isActive: true },
-            ])
-          }
+              item,
+            ]);
+            setDirtyKnowledgeIds((ids) => new Set(ids).add(item.id));
+          }}
           className="border-border text-text-muted hover:bg-hover self-start rounded-md border px-3 py-1.5 text-sm"
         >
           + Добавить запись
@@ -214,16 +226,17 @@ export function AssistantClient({
       <div className="flex items-center gap-3">
         <SaveBar
           error={error}
-          onSave={() => {
-            startTransition(async () => {
-              // Конфигурацию и знания сохраняем в их настоящие места: поведение — в
-              // настройку, тексты — в таблицу, которую читает агент.
-              await saveSection("assistant", { assistant });
-              setKnowledge(await saveKnowledge(knowledge));
-            });
+          onSave={async () => {
+            // Конфигурацию и знания сохраняем в их настоящие места: поведение — в
+            // настройку, тексты — в таблицу, которую читает агент.
+            await saveSection("assistant", { assistant });
+            if (dirtyKnowledgeIds.size > 0) {
+              const changedKnowledge = knowledge.filter((item) => dirtyKnowledgeIds.has(item.id));
+              setKnowledge(await saveKnowledge(changedKnowledge));
+              setDirtyKnowledgeIds(new Set());
+            }
           }}
         />
-        {isPending ? <span className="text-text-subtle text-sm">сохраняем…</span> : null}
       </div>
     </div>
   );
