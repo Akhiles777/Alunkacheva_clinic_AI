@@ -17,6 +17,7 @@ import {
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
+import { alreadyGreeted, alreadySaid } from "./repetition";
 
 /**
  * Агент пациентского канала.
@@ -361,20 +362,36 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
  * пациенту, но не сохраняла его: в инбоксе диалог выглядел как молчание бота,
  * а администратор не понимал, что уже было сказано.
  */
+/**
+ * Разметка в текст мессенджера.
+ *
+ * Клиника набирает справочник в редакторе и ставит списки звёздочками. В
+ * мессенджере звёздочка так и остаётся звёздочкой: пациент видит «* взрослый
+ * приём» и решает, что сообщение сломалось. Меняем только маркер списка —
+ * сами слова клиники не трогаем.
+ */
+function forMessenger(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => line.replace(/^(\s*)[*+]\s+/, "$1• "))
+    .join("\n");
+}
+
 async function respond(
   ctx: AgentContext,
   conversationId: string,
   reply: AgentReply,
 ): Promise<AgentReply> {
+  const text = forMessenger(reply.text);
   await saveMessage({
     companyId: ctx.companyId,
     conversationId,
     channel: ctx.channel,
     direction: "OUT",
     authorType: "BOT",
-    body: reply.text,
+    body: text,
   });
-  return reply;
+  return { ...reply, text };
 }
 
 // ─────────────────────────────────────────────── обработка
@@ -562,6 +579,15 @@ export async function handlePatientMessage(
    * словами — это первое, что видит пациент.
    */
   if (/^\/start\b/.test(text) || isGreeting(text)) {
+    /**
+     * Здороваемся один раз за диалог. Пациент, поздоровавшийся посреди
+     * разговора, не хочет услышать «Здравствуйте! Чем могу помочь?» заново —
+     * это первый признак того, что собеседник не помнит предыдущих реплик.
+     */
+    const said = await recentTurns(conversation.id);
+    if (alreadyGreeted(said)) {
+      return respond(ctx, conversation.id, { text: "Слушаю вас.", buttons: mainMenu() });
+    }
     const hello =
       settings.greeting.trim() ||
       `Здравствуйте! Это клиника «${CLINIC_NAME}». Расскажу про услуги, цены, адрес, часы работы, ` +
@@ -612,7 +638,20 @@ export async function handlePatientMessage(
     if (scheduleTopic(text)) {
       await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
     }
-    return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
+
+    /**
+     * Тот же блок второй раз не отправляем.
+     *
+     * Дословный ответ справочника — правило (§6.1), и для медицинских тем оно
+     * не обсуждается: там мы уже вышли выше. Но на организационном вопросе
+     * повтор слово в слово выглядит как заевшая пластинка — пациент
+     * переспросил уточнение, а получил ту же простыню. В этом случае отдаём
+     * найденную запись модели: факты те же, ответ — на заданный вопрос.
+     */
+    const said = await recentTurns(conversation.id);
+    if (!alreadySaid(said, exact!.row.answer)) {
+      return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
+    }
   }
 
   // Расписание — зона администратора (решение заказчика). Сюда попадаем
