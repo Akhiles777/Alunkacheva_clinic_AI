@@ -19,7 +19,9 @@ describe("объяснение ответов YCLIENTS", () => {
     const r = await fetchUserToken("плохой", "login", "pass");
     expect(r.ok).toBe(false);
     expect(r.error).toContain("не узнаёт партнёрский токен");
-    expect(r.error).toContain("активировано");
+    // Подсказка про опечатку: на боевом токене ноль однажды прочитали как
+    // букву O, и ответ был неотличим от несуществующего партнёра.
+    expect(r.error).toContain("ноль и буква O");
   });
 
   it("отсутствие токена ведёт к нужному действию", async () => {
