@@ -35,6 +35,22 @@ ENV NEXT_PUBLIC_VAPID_PUBLIC=${NEXT_PUBLIC_VAPID_PUBLIC}
 RUN npm run build
 
 
+# Стадия миграций.
+#
+# Отдельная от рантайма намеренно. Prisma CLI — инструмент разработки: ему нужны
+# prisma.config.ts (в схеме адреса базы нет, он приходит оттуда), tsx для сида и
+# весь пакет зависимостей CLI. Прежде миграции пытались идти из тощего образа с
+# вручную отобранными папками node_modules, и обе опоры отсутствовали: CLI падал
+# на `Cannot find module 'effect'`, а до подключения к базе дело не доходило.
+# Итог на сервере — база без единой таблицы и «A server error occurred» на любой
+# странице. Здесь окружение полное, потому что этот контейнер разовый: он
+# отрабатывает и завершается, в приложение эти килобайты не попадают.
+FROM builder AS migrate
+WORKDIR /app
+ENV NODE_ENV=production
+CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed"]
+
+
 FROM node:22-alpine AS runner
 WORKDIR /app
 RUN apk add --no-cache libc6-compat
@@ -52,13 +68,13 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Схема, миграции и клиент Prisma: нужны, чтобы накатывать миграции из этого
-# же образа и чтобы рантайм нашёл сгенерированный клиент.
-COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+# Клиент Prisma для рантайма. Самого CLI здесь нет: миграции накатывает стадия
+# migrate, а неполная его копия только создавала видимость, что из этого образа
+# можно что-то мигрировать.
+COPY --from=builder --chown=nextjs:nodejs /app/prisma/schema.prisma ./prisma/schema.prisma
 COPY --from=builder --chown=nextjs:nodejs /app/generated ./generated
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
 
 USER nextjs
 EXPOSE 3000

@@ -69,7 +69,16 @@ export async function answerLLM(
   history: Turn[] = [],
 ): Promise<string | null> {
   const key = process.env.ROUTER_AI;
-  if (!key) return null;
+  if (!key) {
+    /**
+     * Без ключа ассистент не отвечает вообще: каждый вопрос уходит человеку, и
+     * со стороны это выглядит как «бот сломался». Именно так и случилось после
+     * переезда на сервер — в окружении осталось пустое значение из образца.
+     * Пишем в журнал при каждом обращении: молчать об этом нельзя.
+     */
+    console.error("[agent] не задан ROUTER_AI — ассистент не может отвечать, всё уходит человеку");
+    return null;
+  }
 
   try {
     const res = await fetch(`${BASE_URL}/chat/completions`, {

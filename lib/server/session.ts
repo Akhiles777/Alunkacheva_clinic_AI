@@ -29,7 +29,18 @@ export async function getSession(): Promise<Session> {
 
   const company = await prisma.company.findFirst({ orderBy: { createdAt: "asc" } });
   if (!company) {
-    throw new Error("Компания не найдена — выполните `prisma db seed`");
+    /**
+     * Клиники в базе нет — значит начальные данные не заводились.
+     *
+     * Раньше здесь бросалось исключение, и любая страница отвечала «A server
+     * error occurred» с непонятным кодом. На свежем сервере это первое, что
+     * видит человек после развёртывания, и понять из этого нечего. Бросаем
+     * ошибку с текстом, который прямо говорит, что делать: экран покажет его
+     * вместо безымянного сбоя.
+     */
+    throw new Error(
+      "База пуста: не заведена клиника. Выполните на сервере `docker compose run --rm migrate npx prisma db seed`",
+    );
   }
   return { companyId: company.id, userId: null, role: "OWNER" };
 }

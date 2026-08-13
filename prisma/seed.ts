@@ -94,7 +94,30 @@ const SETTINGS: { key: string; value: unknown }[] = [
   { key: "notifications.batchWeekdays", value: [7] },
 ];
 
+/**
+ * Первый ли это запуск.
+ *
+ * Сид переписывает цены услуг и часы работы значениями-заготовками. На пустой
+ * базе это ровно то, что нужно; на работающей клинике — откат правок, которые
+ * администратор внёс руками. Поэтому на непустой базе сид не делает ничего:
+ * его задача — довести новый сервер до состояния, в котором в него можно
+ * войти, а не поддерживать справочники в «эталонном» виде.
+ *
+ * Флаг SEED_FORCE=true снимает защиту — на случай, когда справочники нужно
+ * вернуть к исходным намеренно.
+ */
+async function isFirstRun(): Promise<boolean> {
+  if (process.env.SEED_FORCE === "true") return true;
+  const companies = await prisma.company.count();
+  return companies === 0;
+}
+
 async function main() {
+  if (!(await isFirstRun())) {
+    console.log("seed: база уже заполнена — пропускаем (SEED_FORCE=true чтобы выполнить принудительно)");
+    return;
+  }
+
   const yclientsId = Number(process.env.CLINIC_YCLIENTS_COMPANY_ID ?? 0);
 
   const company = await prisma.company.upsert({

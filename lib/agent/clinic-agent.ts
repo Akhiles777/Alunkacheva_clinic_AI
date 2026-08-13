@@ -248,6 +248,17 @@ const KNOWLEDGE_IN_PROMPT = 8;
  */
 const KNOWLEDGE_CHARS_BUDGET = 8000;
 
+/**
+ * Бюджет, когда подбор ничего не нашёл.
+ *
+ * Замер на боевом провайдере: справка в 26 000 знаков обрабатывается за 2.8 с —
+ * столько же, сколько 2 000. То есть длина справки на скорость почти не влияет,
+ * и жёстко резать её на непонятом вопросе незачем: восемь записей по алфавиту
+ * ответа не дадут, и ассистент промолчит там, где мог бы помочь. Тратим больше
+ * токенов ровно там, где иначе не ответим вовсе.
+ */
+const KNOWLEDGE_CHARS_FALLBACK = 20000;
+
 async function clinicContext(companyId: string, question?: string): Promise<string> {
   const [services, knowledge, schedule] = await Promise.all([
     getServices(companyId),
@@ -299,24 +310,29 @@ function pickRelevant(
     : [];
 
   /**
-   * Ничего не подошло — берём начало справочника, но НЕ весь.
+   * Ничего не подошло — отдаём справочник целиком, ограничив лишь объёмом.
    *
-   * Раньше здесь возвращался весь список: «пусть у модели будет хоть что-то».
-   * На приветствии «Добрый день» подбор не находит ничего, и в промпт уходили
-   * все шесть десятков записей — двадцать шесть килобайт. Модель не
-   * укладывалась в срок ожидания, запрос обрывался по таймауту, и запасной
-   * путь вываливал пациенту весь справочник простынёй. Здоровое поведение —
-   * ограниченная выжимка: на приветствие ответить хватит, а вопрос по теме
-   * подбор и так найдёт.
+   * Здесь стоял жёсткий предел в восемь записей, поставленный после случая,
+   * когда пациент на «Добрый день» получил весь справочник простынёй. Предел
+   * был лишним: тот случай вызвала не длина справки, а запасной путь, который
+   * при неудачном ответе модели печатал пациенту сам контекст промпта. Его и
+   * починили — теперь неудача ведёт к передаче человеку.
+   *
+   * Замер на боевом провайдере: 2 000 знаков — 3.4 с, 26 000 знаков — 2.8 с.
+   * Длина справки на срок ответа не влияет, а вот восемь записей по алфавиту
+   * вместо нужной означают «не знаю» там, где ответ в справочнике есть.
    */
-  const chosen = byScore.length > 0 ? byScore : rows;
+  const matched = byScore.length > 0;
+  const chosen = matched ? byScore : rows;
+  const budget = matched ? KNOWLEDGE_CHARS_BUDGET : KNOWLEDGE_CHARS_FALLBACK;
+  const limit = matched ? KNOWLEDGE_IN_PROMPT : rows.length;
 
   const result: { topic: string; question: string; answer: string }[] = [];
   let chars = 0;
   for (const row of chosen) {
-    if (result.length >= KNOWLEDGE_IN_PROMPT) break;
+    if (result.length >= limit) break;
     const size = row.topic.length + row.answer.length;
-    if (chars + size > KNOWLEDGE_CHARS_BUDGET && result.length > 0) break;
+    if (chars + size > budget && result.length > 0) break;
     result.push(row);
     chars += size;
   }
