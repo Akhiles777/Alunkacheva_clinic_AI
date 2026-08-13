@@ -90,7 +90,13 @@ export async function purgeDemoData(confirmation: string): Promise<PurgePreview>
     await tx.dailyRevenueRollup.deleteMany({ where: { companyId } });
     await tx.dailyRoomLoadRollup.deleteMany({ where: { companyId } });
     await tx.dailyServiceLoadRollup.deleteMany({ where: { companyId } });
-  });
+  },
+    // Запас по времени: значение по умолчанию — пять секунд, а каждый запрос
+    // к удалённой базе идёт сотни миллисекунд. Очистка затрагивает больше
+    // десятка таблиц и не уложилась бы в этот срок — откатилась бы целиком,
+    // и кнопка выглядела бы неработающей.
+    { timeout: 120_000, maxWait: 10_000 },
+  );
 
   await writeAudit({
     companyId,

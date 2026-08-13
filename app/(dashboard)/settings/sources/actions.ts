@@ -105,7 +105,13 @@ export async function saveSources(rows: SourceRow[]): Promise<SourceRow[]> {
         await tx.source.update({ where: { id: r.id }, data });
       }
     }
-  });
+  },
+    // Запас по времени: значение по умолчанию — пять секунд, а каждый запрос
+    // к удалённой базе идёт сотни миллисекунд. Сохранение источников
+    // обрывалось бы на середине, и человек видел бы, что записалась только
+    // часть. Так уже случилось с базой знаний ассистента.
+    { timeout: 120_000, maxWait: 10_000 },
+  );
 
   await writeAudit({
     companyId: session.companyId,
