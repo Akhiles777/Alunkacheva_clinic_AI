@@ -14,12 +14,18 @@ import {
 } from "../_components/ui";
 import { saveSection } from "../blob-actions";
 import { deleteKnowledge, saveKnowledge } from "./actions";
+import { mergeKeepingOrder } from "@/lib/merge-list";
 
 type AssistantConfig = typeof settingsStore.assistant;
 
 export interface AssistantData {
   assistant: AssistantConfig;
   knowledge: KnowledgeItem[];
+}
+
+/** Ключ, по которому запись узнаётся независимо от идентификатора. */
+function keyOf(k: KnowledgeItem): string {
+  return `${k.topic.trim().toLowerCase()}\u0000${k.question.trim().toLowerCase()}`;
 }
 
 function newKnowledgeItem(): KnowledgeItem {
@@ -138,9 +144,19 @@ export function AssistantClient({
     );
   }, [knowledge, query]);
 
-  const error = knowledge.some((k) => k.isActive && k.answer.trim().length === 0)
-    ? "У активной записи базы знаний должен быть ответ"
-    : null;
+  /**
+   * Проверяем до отправки и называем строку. Сервер отвергает запись без темы,
+   * но раньше это выяснялось уже после нажатия: сохранение падало целиком, а
+   * на экране появлялось «Не удалось сохранить» — человек считал, что запись
+   * потерялась.
+   */
+  const noTopic = knowledge.find((k) => !k.topic.trim());
+  const noAnswer = knowledge.find((k) => k.isActive && k.answer.trim().length === 0);
+  const error = noTopic
+    ? `Заполните тему у записи${noTopic.question.trim() ? ` «${noTopic.question.trim().slice(0, 40)}»` : " без темы"}`
+    : noAnswer
+      ? `У активной записи «${noAnswer.topic.trim()}» должен быть ответ`
+      : null;
 
   /**
    * Ссылки на обработчики держим постоянными: memo на строке списка не даст
@@ -325,9 +341,15 @@ export function AssistantClient({
             await saveSection("assistant", { assistant });
             if (dirtyKnowledgeIds.size > 0) {
               const changedKnowledge = knowledge.filter((item) => dirtyKnowledgeIds.has(item.id));
-              const nextKnowledge = await saveKnowledge(changedKnowledge);
-              setKnowledge(nextKnowledge);
-              setPersistedKnowledgeIds(new Set(nextKnowledge.map((item) => item.id)));
+              const saved = await saveKnowledge(changedKnowledge);
+              /**
+               * Порядок на экране сохраняем свой. Сервер отдаёт список по
+               * алфавиту, и добавленная в конец запись после сохранения
+               * уезжала в середину шести десятков строк — выглядело так,
+               * будто она потерялась.
+               */
+              setKnowledge((current) => mergeKeepingOrder(current, saved, keyOf));
+              setPersistedKnowledgeIds(new Set(saved.map((item) => item.id)));
               setDirtyKnowledgeIds(new Set());
             }
           }}

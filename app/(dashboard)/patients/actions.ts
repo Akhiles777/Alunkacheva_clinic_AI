@@ -95,6 +95,53 @@ export async function getPatientRecords(): Promise<PatientRecord[]> {
   }));
 }
 
+/**
+ * Одна карточка по идентификатору.
+ *
+ * Клиентский стор наполняется один раз при загрузке дашборда, поэтому пациент,
+ * заведённый после — из диалога, ботом или выгрузкой YCLIENTS, — в нём
+ * отсутствует, и карточка открывалась с надписью «пациент не найден». Экран
+ * догружает её этим действием.
+ */
+export async function getPatientRecord(id: string): Promise<PatientRecord | null> {
+  const session = await getSession();
+  const scope = await patientScope(session);
+  if (!scope) return null;
+
+  const p = await prisma.patient.findFirst({
+    where: { id, companyId: session.companyId, deletedAt: null, ...scope },
+    include: {
+      source: { select: { title: true } },
+      phones: { orderBy: { createdAt: "asc" } },
+      notes: { orderBy: { createdAt: "asc" } },
+      relationsOut: true,
+    },
+  });
+  if (!p) return null;
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  return {
+    id: p.id,
+    name: p.name ?? "",
+    source: p.source?.title ?? null,
+    firstSeenToday: p.firstSeenAt >= startOfToday,
+    phones: p.phones.map((ph) => ({
+      id: ph.id,
+      e164: ph.phone,
+      label: ph.label,
+      isPrimary: ph.isPrimary,
+      whatsapp: ph.usedForWhatsapp,
+    })),
+    notes: p.notes.map((n) => ({ id: n.id, kind: n.kind, text: n.text, resolved: n.resolvedAt !== null })),
+    relations: p.relationsOut.map((r) => ({
+      id: r.id,
+      relatedPatientId: r.relatedPatientId,
+      kind: r.kind,
+    })),
+  };
+}
+
 async function sourceIdByTitle(companyId: string, title: string | null | undefined) {
   if (!title) return null;
   const s = await prisma.source.findFirst({ where: { companyId, title }, select: { id: true } });

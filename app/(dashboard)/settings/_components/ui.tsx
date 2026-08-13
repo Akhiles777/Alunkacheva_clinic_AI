@@ -200,6 +200,12 @@ export function SaveBar({
   error?: string | null;
 }) {
   const [state, setState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  /**
+   * Причина отказа с сервера. Раньше она уходила только в консоль, а человек
+   * видел «Не удалось сохранить, обновите страницу» — и решал, что запись
+   * пропала. На деле сервер отвечал по делу: «У записи должна быть тема».
+   */
+  const [reason, setReason] = useState<string | null>(null);
 
   return (
     <div className="flex items-center gap-3 pt-1">
@@ -208,12 +214,13 @@ export function SaveBar({
         onClick={async () => {
           if (error) return;
           setState("saving");
+          setReason(null);
           try {
             await onSave();
             setState("saved");
             setTimeout(() => setState("idle"), 2000);
           } catch (e) {
-            console.error(e);
+            setReason(e instanceof Error ? e.message : null);
             setState("failed");
           }
         }}
@@ -229,7 +236,9 @@ export function SaveBar({
       ) : state === "saving" ? (
         <span className="text-text-muted text-sm">Сохраняем…</span>
       ) : state === "failed" ? (
-        <span className="text-accent-text text-sm">Не удалось сохранить. Обновите страницу и попробуйте ещё раз.</span>
+        <span className="text-accent-text text-sm">
+          {reason ?? "Не удалось сохранить. Обновите страницу и попробуйте ещё раз."}
+        </span>
       ) : null}
     </div>
   );
