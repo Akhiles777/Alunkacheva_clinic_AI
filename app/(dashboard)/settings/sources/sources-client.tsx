@@ -14,6 +14,8 @@ const SOURCE_KINDS: { value: SourceRow["kind"]; label: string }[] = [
 
 export function SourcesClient({ initial }: { initial: SourceRow[] }) {
   const [rows, setRows] = useState<SourceRow[]>(initial);
+  /** Что было на экране при загрузке: удалять можно только это. */
+  const [knownIds] = useState(() => initial.map((r) => r.id));
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -62,7 +64,7 @@ export function SourcesClient({ initial }: { initial: SourceRow[] }) {
     }
     startTransition(async () => {
       try {
-        setRows(await saveSources(rows));
+        setRows(await saveSources(rows, knownIds));
         setSavedAt(true);
         setError(null);
       } catch (e) {

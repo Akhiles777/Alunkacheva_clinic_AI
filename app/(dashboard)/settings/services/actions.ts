@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
+import { idsToDelete } from "@/lib/server/list-save";
 import type { ServiceKind } from "@/generated/prisma/enums";
 
 /**
@@ -61,7 +62,11 @@ export async function getServices(): Promise<ServicesPayload> {
   };
 }
 
-export async function saveServices(rows: ServiceRow[]): Promise<ServicesPayload> {
+export async function saveServices(
+  rows: ServiceRow[],
+  /** Идентификаторы, которые экран получил при загрузке (см. idsToDelete). */
+  knownIds?: string[],
+): Promise<ServicesPayload> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
 
@@ -80,8 +85,16 @@ export async function saveServices(rows: ServiceRow[]): Promise<ServicesPayload>
     where: { companyId: session.companyId },
     select: { id: true, title: true },
   });
-  const keptIds = new Set(rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id));
-  const toDelete = existing.filter((e) => !keptIds.has(e.id));
+  const submitted = rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id);
+  /**
+   * Удаляем только то, что было на экране при его загрузке и не вернулось.
+   * Услуги, приехавшие из YCLIENTS уже после, сохранение со старой вкладки
+   * снести не должно.
+   */
+  const removable = new Set(
+    idsToDelete({ existing: existing.map((e) => e.id), submitted, known: knownIds }),
+  );
+  const toDelete = existing.filter((e) => removable.has(e.id));
 
   for (const del of toDelete) {
     const [visits, courses] = await Promise.all([

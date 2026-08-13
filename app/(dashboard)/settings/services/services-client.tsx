@@ -30,6 +30,8 @@ function blankService(): ServiceRow {
 
 export function ServicesClient({ initial }: { initial: ServicesPayload }) {
   const [services, setServices] = useState<ServiceRow[]>(initial.services);
+  /** Что было на экране при загрузке: удалять можно только это. */
+  const [knownIds] = useState(() => initial.services.map((s) => s.id));
   const { roomOptions } = initial;
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -67,7 +69,7 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
   function save() {
     startTransition(async () => {
       try {
-        const res = await saveServices(services);
+        const res = await saveServices(services, knownIds);
         setServices(res.services);
         setSaved(true);
         setError(null);

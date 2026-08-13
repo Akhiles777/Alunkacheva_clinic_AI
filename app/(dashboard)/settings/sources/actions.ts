@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
+import { idsToDelete } from "@/lib/server/list-save";
 import type { SourceKind } from "@/generated/prisma/enums";
 
 /**
@@ -44,7 +45,11 @@ export async function getSources(): Promise<SourceRow[]> {
   }));
 }
 
-export async function saveSources(rows: SourceRow[]): Promise<SourceRow[]> {
+export async function saveSources(
+  rows: SourceRow[],
+  /** Идентификаторы, которые экран получил при загрузке (см. idsToDelete). */
+  knownIds?: string[],
+): Promise<SourceRow[]> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
 
@@ -56,8 +61,12 @@ export async function saveSources(rows: SourceRow[]): Promise<SourceRow[]> {
     where: { companyId: session.companyId },
     select: { id: true, code: true, title: true },
   });
-  const keptIds = new Set(rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id));
-  const toDelete = existing.filter((e) => !keptIds.has(e.id));
+  const submitted = rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id);
+  // Удаляем только то, что человек видел и убрал, — см. idsToDelete.
+  const removable = new Set(
+    idsToDelete({ existing: existing.map((e) => e.id), submitted, known: knownIds }),
+  );
+  const toDelete = existing.filter((e) => removable.has(e.id));
 
   // Защита: нельзя удалить источник с историей.
   for (const del of toDelete) {
