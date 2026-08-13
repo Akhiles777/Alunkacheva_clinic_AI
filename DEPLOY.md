@@ -356,6 +356,17 @@ pm2 startup    # выполнить команду, которую он напе
 ### nginx
 
 ```nginx
+# В http-контексте (например, /etc/nginx/conf.d/upgrade_map.conf).
+#
+# Заголовок Connection: upgrade нельзя ставить всем запросам подряд. Обычная
+# навигация так ещё проходит, а POST — а формы входа и сохранения это именно
+# POST — сервер получает помеченным как попытка смены протокола и обрывает.
+# Снаружи выглядит так, что страница открывается, а кнопка её ломает.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     server_name ВАШ_ДОМЕН;
     listen 443 ssl;
@@ -365,7 +376,7 @@ server {
         proxy_pass http://127.0.0.1:3001;   # тот же порт, что PORT в .env
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
         # Без X-Forwarded-Host и X-Forwarded-Proto Next считает себя другим
         # доменом и отклоняет server actions — форма входа перестаёт работать.
