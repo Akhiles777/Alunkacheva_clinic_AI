@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { attachmentsFrom } from "./attachments";
-import { messageBody, needsHuman, mediaReply } from "@/lib/agent/attachments";
+import { messageBody, needsHuman } from "@/lib/agent/attachments";
 
 describe("вложения Telegram", () => {
   it("голосовое распознаётся и не теряется", () => {
@@ -82,11 +82,5 @@ describe("кого зовём на вложение", () => {
   it("стикер человека не требует", () => {
     // Стикер — не обращение, дёргать администратора незачем.
     expect(needsHuman(attachmentsFrom({ sticker: { file_id: "s", emoji: "👍" } }))).toBe(false);
-  });
-
-  it("ответ пациенту честный: не притворяемся, что послушали", () => {
-    const reply = mediaReply(attachmentsFrom({ voice: { file_id: "v" } }));
-    expect(reply).toContain("администратор");
-    expect(reply).toContain("голосовое");
   });
 });

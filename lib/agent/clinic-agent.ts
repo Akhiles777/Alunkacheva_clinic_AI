@@ -16,7 +16,7 @@ import {
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
-import { mediaReply, messageBody, needsHuman, type IncomingAttachment } from "./attachments";
+import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 
 /**
  * Агент пациентского канала.
@@ -518,7 +518,13 @@ export async function handlePatientMessage(
       "PATIENT_REQUEST",
       `Пациент прислал ${attachments.map((a) => a.label).join(", ")}`,
     ).catch(() => {});
-    return respond(ctx, conversation.id, { text: mediaReply(attachments) });
+    /**
+     * Пациенту не отвечаем ничего. Служебное «передал администратору» — это
+     * шум: человек написал живому собеседнику, а получает отчёт о внутренней
+     * маршрутизации. Уведомление ушло сотруднику, диалог перешёл под его
+     * контроль — дальше говорит он.
+     */
+    return null;
   }
 
   const settings = await assistantMode(ctx.companyId);

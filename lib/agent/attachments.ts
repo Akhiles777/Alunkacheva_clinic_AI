@@ -87,15 +87,3 @@ export function needsHuman(attachments: IncomingAttachment[]): boolean {
   // Стикер — не обращение, отвечать на него человеку незачем.
   return attachments.some((a) => a.kind !== "sticker");
 }
-
-/** Ответ пациенту на вложение. Честный: мы не притворяемся, что посмотрели. */
-export function mediaReply(attachments: IncomingAttachment[]): string {
-  const kinds = new Set(attachments.map((a) => a.kind));
-  if (kinds.has("voice") || kinds.has("audio")) {
-    return "Получили ваше голосовое сообщение — его послушает администратор и ответит здесь же.";
-  }
-  if (kinds.has("photo") || kinds.has("document") || kinds.has("video")) {
-    return "Получили ваш файл — администратор посмотрит и ответит здесь же.";
-  }
-  return "Получили ваше сообщение — администратор посмотрит и ответит здесь же.";
-}
