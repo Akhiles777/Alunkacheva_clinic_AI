@@ -20,6 +20,13 @@ const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1"
 const MODEL = process.env.ROUTER_AI_BOT_MODEL || process.env.ROUTER_AI_MODEL || "anthropic/claude-haiku-4.5";
 
 /**
+ * Сколько ждём модель. На бессерверном хостинге предел был жёстким (у Vercel
+ * на Hobby десять секунд), на своём сервере запас можно дать больше — но не
+ * бесконечный: мессенджер повторит доставку, и пациент получит два ответа.
+ */
+const TIMEOUT_MS = Number(process.env.ROUTER_AI_TIMEOUT_MS ?? 20_000);
+
+/**
  * Правила поведения из §6: зона агента — справочные вопросы, расписанием он
  * не распоряжается.
  *
@@ -80,15 +87,42 @@ export async function answerLLM(
           { role: "user", content: question },
         ],
       }),
-      // Вебхук должен уложиться в лимит serverless-функции (на Hobby 10 с),
-      // иначе Telegram не дождётся ответа и пришлёт сообщение повторно.
-      signal: AbortSignal.timeout(8_000),
+      // Вебхук должен уложиться в срок ожидания мессенджера, иначе он
+      // пришлёт сообщение повторно и пациент получит два ответа.
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const text = json.choices?.[0]?.message?.content?.trim();
-    return text && text.length > 0 ? text : null;
-  } catch {
+
+    if (!res.ok) {
+      /**
+       * Причину видно в журнале сервера. Раньше отказ молча превращался в
+       * null, и на экране это выглядело как «ассистент вдруг перестал
+       * отвечать» — ровно так же, как когда-то молчали push-уведомления.
+       */
+      const body = await res.text().catch(() => "");
+      console.error(`[agent] модель ответила ${res.status}: ${body.slice(0, 200)}`);
+      return null;
+    }
+
+    const json = (await res.json()) as {
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
+    };
+    const choice = json.choices?.[0];
+    const text = choice?.message?.content?.trim();
+    if (!text) {
+      console.error(
+        `[agent] модель вернула пустой ответ (finish_reason: ${choice?.finish_reason ?? "нет"}), ` +
+          `длина справки ${clinicContext.length} знаков`,
+      );
+      return null;
+    }
+    return text;
+  } catch (e) {
+    const name = (e as Error)?.name;
+    console.error(
+      name === "TimeoutError"
+        ? `[agent] модель не ответила за ${TIMEOUT_MS} мс, длина справки ${clinicContext.length} знаков`
+        : `[agent] сбой обращения к модели: ${String((e as Error)?.message ?? e).slice(0, 200)}`,
+    );
     return null;
   }
 }

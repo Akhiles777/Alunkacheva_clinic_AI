@@ -239,6 +239,15 @@ function hitsStopWord(text: string, stopWords: string[]): boolean {
  */
 const KNOWLEDGE_IN_PROMPT = 8;
 
+/**
+ * Предел справки в промпте по объёму, а не только по числу записей.
+ *
+ * Ограничения по количеству мало: записи бывают по полторы тысячи знаков.
+ * Восемь таких — уже двенадцать килобайт, и модель отвечает медленнее, чем
+ * ждёт вебхук. На бюджете в восемь тысяч знаков ответ укладывается в срок.
+ */
+const KNOWLEDGE_CHARS_BUDGET = 8000;
+
 async function clinicContext(companyId: string, question?: string): Promise<string> {
   const [services, knowledge, schedule] = await Promise.all([
     getServices(companyId),
@@ -281,31 +290,39 @@ function pickRelevant(
   rows: { topic: string; question: string; answer: string }[],
   question?: string,
 ): { topic: string; question: string; answer: string }[] {
-  if (!question || rows.length <= KNOWLEDGE_IN_PROMPT) return rows;
-
-  const scored = rows
-    .map((row) => ({ row, score: matchKnowledge(question, [row])?.score ?? 0 }))
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, KNOWLEDGE_IN_PROMPT)
-    .map((x) => x.row);
+  const byScore = question
+    ? rows
+        .map((row) => ({ row, score: matchKnowledge(question, [row])?.score ?? 0 }))
+        .sort((a, b) => b.score - a.score)
+        .filter((x) => x.score > 0)
+        .map((x) => x.row)
+    : [];
 
   /**
-   * Ничего не подошло — отдаём справочник целиком.
+   * Ничего не подошло — берём начало справочника, но НЕ весь.
    *
-   * Подбор по словам неизбежно промахивается: «как можно платить» не находит
-   * «Как можно оплатить», потому что приставка меняет начало слова. Отдать в
-   * таком случае первые попавшиеся записи — значит молча лишить пациента
-   * готового ответа ради экономии на модели. Экономия того не стоит.
+   * Раньше здесь возвращался весь список: «пусть у модели будет хоть что-то».
+   * На приветствии «Добрый день» подбор не находит ничего, и в промпт уходили
+   * все шесть десятков записей — двадцать шесть килобайт. Модель не
+   * укладывалась в срок ожидания, запрос обрывался по таймауту, и запасной
+   * путь вываливал пациенту весь справочник простынёй. Здоровое поведение —
+   * ограниченная выжимка: на приветствие ответить хватит, а вопрос по теме
+   * подбор и так найдёт.
    */
-  return scored.length > 0 ? scored : rows;
+  const chosen = byScore.length > 0 ? byScore : rows;
+
+  const result: { topic: string; question: string; answer: string }[] = [];
+  let chars = 0;
+  for (const row of chosen) {
+    if (result.length >= KNOWLEDGE_IN_PROMPT) break;
+    const size = row.topic.length + row.answer.length;
+    if (chars + size > KNOWLEDGE_CHARS_BUDGET && result.length > 0) break;
+    result.push(row);
+    chars += size;
+  }
+  return result;
 }
 
-/**
- * Последние реплики диалога для модели. Без них ассистент отвечал на каждое
- * сообщение как на первое и терял нить: «а сколько это стоит?» после вопроса
- * об услуге он уже не понимал.
- */
 async function recentTurns(conversationId: string): Promise<Turn[]> {
   const rows = await prisma.message.findMany({
     where: { conversationId, deletedAt: null, isDraft: false },
@@ -490,11 +507,18 @@ export async function handlePatientMessage(
   const context = await clinicContext(ctx.companyId, text);
   const answer = await answerLLM(text, context, await recentTurns(conversation.id));
   if (!answer) {
-    // Модель недоступна или молчит. Не бросаем пациента: отдаём то, что знаем
-    // наверняка — услуги, цены и часы, — и зовём человека.
-    await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Нет ответа в справке клиники").catch(() => {});
+    /**
+     * Модель недоступна или молчит. Раньше сюда отдавалась вся справка
+     * клиники — и пациент получал простыню на двадцать шесть тысяч знаков:
+     * весь прайс, часы работы и каждую запись справочника разом, в ответ на
+     * «Добрый день». Это выглядит как поломка и отпугивает сильнее молчания.
+     *
+     * Отвечаем коротко и зовём человека. Справку пациент получит по конкретному
+     * вопросу, а не свалкой.
+     */
+    await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Ассистент не смог ответить").catch(() => {});
     return respond(ctx, conversation.id, {
-      text: `${context}\n\nЕсли нужен другой ответ — передал(а) администратору, он подключится здесь же.`,
+      text: "Секунду, передаю ваш вопрос администратору — он ответит здесь же.",
       buttons: mainMenu(),
     });
   }
