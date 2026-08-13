@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { absoluteUrl } from "@/lib/server/app-url";
 
 /**
  * Согласие на обработку персональных данных в мессенджере (§7).
@@ -42,9 +43,19 @@ export async function consentRequestFor(
     orderBy: { createdAt: "desc" },
     select: { policyUrl: true },
   });
-  // Текст согласия не заведён — молчим. Показывать пустую ссылку хуже, чем не
-  // спрашивать: администратор увидит пустой раздел в настройках и заполнит.
-  if (!doc?.policyUrl) return null;
+
+  /**
+   * Куда вести пациента за текстом.
+   *
+   * Своя страница /policy — основной вариант: документ лежит в платформе и
+   * открывается всегда. Раньше здесь была только ссылка из настроек, обычно на
+   * файлообменник, и при её отсутствии агент вопрос о согласии просто не
+   * задавал. То есть переписка велась без согласия — а это ровно то, чего
+   * §7 не допускает. Ссылка клиники, если она задана, остаётся главной: она
+   * могла вести на подписанный документ.
+   */
+  const policyUrl = doc?.policyUrl?.trim() || absoluteUrl("/policy");
+  if (!policyUrl) return null;
 
   await prisma.conversation.update({
     where: { id: conversationId },
@@ -55,7 +66,7 @@ export async function consentRequestFor(
     text:
       "Прежде чем продолжить: чтобы отвечать на вопросы и записывать вас на приём, " +
       "нам нужно ваше согласие на обработку персональных данных.\n" +
-      `Политика: ${doc.policyUrl}`,
+      `Политика: ${policyUrl}`,
     buttons: [
       { text: "Согласен(на)", data: CONSENT_ACCEPT },
       { text: "Не сейчас", data: CONSENT_DECLINE },
