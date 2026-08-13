@@ -13,7 +13,7 @@
     "contrast": "node contrast-check.mjs",
     "db:deploy": "prisma migrate deploy",
     "db:seed:demo": "tsx prisma/seed-demo.ts",
-    "deploy": "prisma migrate deploy && npm run build && npm run pm2:restart",
+    "deploy": "bash deploy/pm2-deploy.sh",
     "pm2:restart": "pm2 delete clinic 2>/dev/null || true; pm2 start ecosystem.config.cjs --update-env && pm2 save"
   },
   "dependencies": {
