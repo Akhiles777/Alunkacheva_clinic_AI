@@ -66,7 +66,13 @@ export async function getYclientsState(): Promise<YclientsState> {
 
   const [cursors, creds, notPushed, conflicts] = await Promise.all([
     prisma.syncCursor.findMany({ where: { companyId } }),
-    prisma.credential.count({ where: { companyId, provider: "YCLIENTS" } }),
+    /**
+     * Провайдер в таблице Credential — обычная строка в нижнем регистре, как
+     * её пишет раздел «Интеграции». Здесь стояло «YCLIENTS», и подсчёт всегда
+     * давал ноль: экран сообщал «не заданы ключи» при заполненных ключах, а
+     * кнопки выгрузки и сверки оставались заблокированными навсегда.
+     */
+    prisma.credential.count({ where: { companyId, provider: "yclients" } }),
     prisma.appointment.count({
       where: { companyId, deletedAt: null, yclientsRecordId: null, startAt: { gte: new Date() } },
     }),

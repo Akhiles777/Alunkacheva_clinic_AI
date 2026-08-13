@@ -118,7 +118,7 @@ async function main() {
   const serviceIdByYclients = new Map<number, string>();
   for (const service of SERVICES) {
     const data = {
-      yclientsServiceId: service.yclientsServiceId,
+      // Идентификатор YCLIENTS остаётся пустым: см. пояснение ниже.
       title: service.title,
       kind: service.kind,
       price: service.price,
@@ -127,20 +127,32 @@ async function main() {
       defaultSessions: service.defaultSessions,
       stalledAfterDays: service.stalledAfterDays,
     };
-    const created = await prisma.service.upsert({
-      where: {
-        companyId_yclientsServiceId: { companyId: company.id, yclientsServiceId: service.yclientsServiceId },
-      },
-      update: {
-        title: data.title,
-        price: data.price,
-        durationMin: data.durationMin,
-        isCourse: data.isCourse,
-        defaultSessions: data.defaultSessions,
-        stalledAfterDays: data.stalledAfterDays,
-      },
-      create: { ...data, companyId: company.id },
+    /**
+     * Идентификатор YCLIENTS локальным строкам не присваиваем.
+     *
+     * Раньше сид проставлял выдуманные номера (1001, 2001…). Последствий два,
+     * и оба вскрываются уже после подключения: сверка вечно показывает
+     * расхождение — «у них 8, у нас 16», — а если в настоящем YCLIENTS
+     * найдётся услуга с таким же номером, выгрузка молча перезапишет ею
+     * услугу клиники. Пустой идентификатор означает честное «в YCLIENTS этой
+     * строки пока нет»; связь появится при выгрузке.
+     */
+    const existing = await prisma.service.findFirst({
+      where: { companyId: company.id, title: data.title },
+      select: { id: true },
     });
+    const created = existing
+      ? await prisma.service.update({
+          where: { id: existing.id },
+          data: {
+            price: data.price,
+            durationMin: data.durationMin,
+            isCourse: data.isCourse,
+            defaultSessions: data.defaultSessions,
+            stalledAfterDays: data.stalledAfterDays,
+          },
+        })
+      : await prisma.service.create({ data: { ...data, companyId: company.id } });
     serviceIdByYclients.set(service.yclientsServiceId, created.id);
   }
 
@@ -156,19 +168,25 @@ async function main() {
 
   // Кабинеты + их часы (совпадают с клиникой) + привязка услуг.
   const roomIdByKey = new Map<string, string>();
-  for (const [index, room] of ROOMS.entries()) {
-    const yclientsResourceId = 900 + index;
-    const created = await prisma.room.upsert({
-      where: { companyId_yclientsResourceId: { companyId: company.id, yclientsResourceId } },
-      update: { name: room.name, direction: room.direction, sortOrder: room.sortOrder },
-      create: {
-        name: room.name,
-        direction: room.direction,
-        sortOrder: room.sortOrder,
-        yclientsResourceId,
-        companyId: company.id,
-      },
+  for (const room of ROOMS) {
+    // Идентификатор ресурса YCLIENTS не выдумываем — см. пояснение у услуг.
+    const existingRoom = await prisma.room.findFirst({
+      where: { companyId: company.id, name: room.name },
+      select: { id: true },
     });
+    const created = existingRoom
+      ? await prisma.room.update({
+          where: { id: existingRoom.id },
+          data: { direction: room.direction, sortOrder: room.sortOrder },
+        })
+      : await prisma.room.create({
+          data: {
+            name: room.name,
+            direction: room.direction,
+            sortOrder: room.sortOrder,
+            companyId: company.id,
+          },
+        });
     roomIdByKey.set(room.key, created.id);
 
     for (let weekday = 1; weekday <= 6; weekday++) {

@@ -102,8 +102,9 @@ A-записью на адрес сервера. Порты 80 и 443 откры
 **1. Сгенерируйте секреты.** Каждый — своей командой, не переиспользуя:
 
 ```bash
-openssl rand -base64 48          # SESSION_SECRET
-openssl rand -base64 48          # CREDENTIAL_MASTER_KEY
+openssl rand -base64 32          # SESSION_SECRET
+openssl rand -base64 32          # CREDENTIAL_MASTER_KEY — ровно 32 байта, иначе
+                                 # приложение откажется шифровать ключи интеграций
 openssl rand -base64 32          # POSTGRES_PASSWORD
 npx web-push generate-vapid-keys # VAPID_PUBLIC и VAPID_PRIVATE
 ```
