@@ -432,7 +432,7 @@ type RecordRow =
  * а обращения к базе группируются пачками. Иначе на визит приходилось пять
  * запросов, и выгрузка истории занимала часы.
  */
-function buildRecordRow(
+export function buildRecordRow(
   companyId: string,
   dto: YclientsRecord,
   lookups: SyncLookups,
