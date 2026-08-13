@@ -12,7 +12,8 @@
     "db:seed": "prisma db seed",
     "contrast": "node contrast-check.mjs",
     "db:deploy": "prisma migrate deploy",
-    "db:seed:demo": "tsx prisma/seed-demo.ts"
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
+    "deploy": "prisma migrate deploy && npm run build && pm2 startOrRestart ecosystem.config.cjs --update-env"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.0",
