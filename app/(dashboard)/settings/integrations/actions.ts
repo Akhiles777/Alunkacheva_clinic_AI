@@ -131,6 +131,29 @@ async function secret(companyId: string, provider: ProviderId, keyName: string):
   }
 }
 
+/**
+ * Привязка клиники к филиалу YCLIENTS.
+ *
+ * Мало сохранить номер филиала в ключах: вебхуки YCLIENTS приходят с
+ * company_id, и клиника ищется по полю Company.yclientsId. Пока там стоит
+ * временное значение из начальных данных, каждое событие отлетает с «unknown
+ * company» — синхронизация выглядит настроенной и при этом не работает.
+ * Заметить это можно было бы только по молчащему расписанию.
+ */
+async function bindBranch(companyId: string, branchId: number): Promise<string | null> {
+  const taken = await prisma.company.findFirst({
+    where: { yclientsId: branchId, id: { not: companyId } },
+    select: { id: true },
+  });
+  if (taken) {
+    // Номер филиала уникален по всей базе: две клиники на один филиал означали
+    // бы, что записи из YCLIENTS поедут в обе.
+    return "Этот филиал уже привязан к другой клинике в базе";
+  }
+  await prisma.company.update({ where: { id: companyId }, data: { yclientsId: branchId } });
+  return null;
+}
+
 async function put(companyId: string, provider: ProviderId, keyName: string, value: string) {
   const valueEncrypted = encryptSecret(value);
   await prisma.credential.upsert({
@@ -200,11 +223,14 @@ export async function connectYclients(login: string, password: string): Promise<
    * здесь означает выгрузку из чужой клиники.
    */
   if (branches.branches.length === 1) {
-    await put(session.companyId, "yclients", "company_id", String(branches.branches[0].id));
+    const only = branches.branches[0];
+    await put(session.companyId, "yclients", "company_id", String(only.id));
+    const bindError = await bindBranch(session.companyId, only.id);
     return {
-      ok: true,
+      ok: !bindError,
+      error: bindError ?? undefined,
       branches: branches.branches,
-      selectedBranchId: branches.branches[0].id,
+      selectedBranchId: bindError ? undefined : only.id,
       view: await view(),
     };
   }
@@ -216,6 +242,7 @@ export async function selectYclientsBranch(branchId: number): Promise<Integratio
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
   await put(session.companyId, "yclients", "company_id", String(branchId));
+  await bindBranch(session.companyId, branchId);
   await writeAudit({
     companyId: session.companyId,
     actorId: session.userId,

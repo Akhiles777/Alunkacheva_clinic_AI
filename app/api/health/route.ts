@@ -27,6 +27,9 @@ export async function GET() {
     WHATSAPP_ENABLED: process.env.WHATSAPP_ENABLED === "true",
     GREEN_API_WEBHOOK_SECRET: Boolean(process.env.GREEN_API_WEBHOOK_SECRET),
     TELEGRAM_WEBHOOK_SECRET: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
+    YCLIENTS_ENABLED: process.env.YCLIENTS_ENABLED === "true",
+    YCLIENTS_WEBHOOK_SECRET: Boolean(process.env.YCLIENTS_WEBHOOK_SECRET),
+    DOMAIN: Boolean(process.env.DOMAIN),
   };
 
   /**
@@ -62,11 +65,15 @@ export async function GET() {
 
   let db: Record<string, number | string> = { ok: "нет связи" };
   try {
-    const [knowledge, pushSubs, staff, conversations] = await Promise.all([
+    const [knowledge, pushSubs, staff, conversations, companies] = await Promise.all([
       prisma.knowledgeEntry.count({ where: { isActive: true } }),
       prisma.pushSubscription.count(),
       prisma.staffUser.count({ where: { deletedAt: null } }),
       prisma.conversation.count(),
+      prisma.company.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { id: true, yclientsId: true },
+      }),
     ]);
     // Последние неудачи доставки: сразу видно, почему push не дошёл.
     const failed = await prisma.notification.findMany({
@@ -76,6 +83,8 @@ export async function GET() {
       select: { kind: true, pushError: true, createdAt: true, staffUser: { select: { login: true } } },
     });
     db = {
+      клиник: companies.length,
+      филиалYclients: companies[0]?.yclientsId ?? 0,
       knowledgeEntries: knowledge,
       pushSubscriptions: pushSubs,
       staffUsers: staff,
@@ -119,6 +128,36 @@ export async function GET() {
   }
   if (typeof db.knowledgeEntries === "number" && db.knowledgeEntries === 0) {
     warnings.push("База знаний пуста — ассистенту нечем отвечать про адрес, подготовку и условия");
+  }
+
+  /**
+   * Готовность к работе с YCLIENTS. Проверяем то, что молча ломает
+   * синхронизацию: без секрета вебхук закрыт, без домена ссылки в переписке
+   * бесполезны, а несколько клиник в базе означают, что события могут уехать
+   * не туда.
+   */
+  if (env.YCLIENTS_ENABLED && !env.YCLIENTS_WEBHOOK_SECRET) {
+    warnings.push(
+      "YCLIENTS включён, но нет YCLIENTS_WEBHOOK_SECRET — вебхук закрыт, изменения из YCLIENTS не дойдут",
+    );
+  }
+  if (!env.DOMAIN) {
+    warnings.push(
+      "Не задан DOMAIN — ссылка на согласие в переписке с пациентом не соберётся, " +
+        "и server actions могут отклоняться за прокси",
+    );
+  }
+  if (typeof db.клиник === "number" && db.клиник > 1) {
+    warnings.push(
+      `Клиник в базе ${db.клиник}. Платформа работает с самой ранней; лишняя запись помешает ` +
+        "разобрать вебхуки YCLIENTS — их филиал ищется по клинике.",
+    );
+  }
+  if (env.YCLIENTS_ENABLED && typeof db.филиалYclients === "number" && db.филиалYclients < 100) {
+    warnings.push(
+      "Филиал YCLIENTS не привязан к клинике (стоит временный номер) — вебхуки будут отлетать " +
+        "с «unknown company». Подключите YCLIENTS в разделе «Интеграции».",
+    );
   }
 
   if (process.env.ROUTER_AI_MODEL?.includes("opus")) {

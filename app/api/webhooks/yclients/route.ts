@@ -60,18 +60,41 @@ export async function POST(req: Request) {
   return NextResponse.json({ accepted: events.length, ...outcomes });
 }
 
-/** Наш companyId по идентификатору филиала YCLIENTS из события. */
+/**
+ * Наш companyId по идентификатору филиала YCLIENTS из события.
+ *
+ * Прежде при отсутствии company_id требовалась ровно одна клиника в базе. На
+ * боевой базе их оказалось две — настоящая и пустой дубль, оставшийся от
+ * ранней настройки, — и все такие события отлетали бы с «unknown company».
+ * Синхронизация при этом выглядит настроенной: ключи заданы, проверка связи
+ * зелёная, а расписание молчит.
+ *
+ * Поэтому лишняя пустая запись больше не ломает приём. Двусмысленность
+ * остаётся ошибкой: если привязанных к YCLIENTS клиник несколько, угадывать
+ * нельзя — записи уехали бы не туда.
+ */
 async function resolveCompany(external: number | string | undefined): Promise<string | null> {
-  if (external === undefined) {
-    // Событие без company_id: если филиал в базе один, ошибиться негде.
-    const only = await prisma.company.findMany({ select: { id: true }, take: 2 });
-    return only.length === 1 ? only[0].id : null;
+  if (external !== undefined) {
+    const yclientsId = Number(external);
+    if (!Number.isFinite(yclientsId)) return null;
+    const company = await prisma.company.findFirst({ where: { yclientsId }, select: { id: true } });
+    return company?.id ?? null;
   }
-  const yclientsId = Number(external);
-  if (!Number.isFinite(yclientsId)) return null;
-  const company = await prisma.company.findFirst({
-    where: { yclientsId },
+
+  /**
+   * Событие без company_id. Берём клинику, привязанную к настоящему филиалу:
+   * временные номера из начальных данных лежат ниже ста, настоящие
+   * идентификаторы YCLIENTS — заметно выше.
+   */
+  const bound = await prisma.company.findMany({
+    where: { yclientsId: { gte: 100 } },
     select: { id: true },
+    take: 2,
   });
-  return company?.id ?? null;
+  if (bound.length === 1) return bound[0].id;
+  if (bound.length > 1) return null;
+
+  // Ни одна клиника не привязана — тогда работает прежнее правило.
+  const any = await prisma.company.findMany({ select: { id: true }, take: 2 });
+  return any.length === 1 ? any[0].id : null;
 }
