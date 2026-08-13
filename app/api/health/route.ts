@@ -24,6 +24,8 @@ export async function GET() {
     VAPID_PRIVATE: Boolean(process.env.VAPID_PRIVATE),
     NEXT_PUBLIC_VAPID_PUBLIC: Boolean(process.env.NEXT_PUBLIC_VAPID_PUBLIC),
     TELEGRAM_BOT_TOKEN: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+    WHATSAPP_ENABLED: process.env.WHATSAPP_ENABLED === "true",
+    GREEN_API_WEBHOOK_SECRET: Boolean(process.env.GREEN_API_WEBHOOK_SECRET),
     TELEGRAM_WEBHOOK_SECRET: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
   };
 
@@ -110,6 +112,11 @@ export async function GET() {
   }
   if (!env.SESSION_SECRET) warnings.push("Нет SESSION_SECRET — вход в систему не работает");
   if (!env.TELEGRAM_WEBHOOK_SECRET) warnings.push("Нет TELEGRAM_WEBHOOK_SECRET — вебхук бота отключён");
+  if (env.WHATSAPP_ENABLED && !env.GREEN_API_WEBHOOK_SECRET) {
+    warnings.push(
+      "WhatsApp включён, но нет GREEN_API_WEBHOOK_SECRET — вебхук закрыт, сообщения пациентов не дойдут",
+    );
+  }
   if (typeof db.knowledgeEntries === "number" && db.knowledgeEntries === 0) {
     warnings.push("База знаний пуста — ассистенту нечем отвечать про адрес, подготовку и условия");
   }

@@ -55,9 +55,15 @@ export interface AgentReply {
   askPhone?: boolean;
 }
 
+/**
+ * Канал пациента. Бизнес-логика агента от него не зависит (§5): различаются
+ * только доставка и кнопки, а правила ответа одни и те же.
+ */
+export type AgentChannel = "TELEGRAM" | "WHATSAPP";
+
 export interface AgentContext {
   companyId: string;
-  channel: "TELEGRAM";
+  channel: AgentChannel;
   externalUserId: string;
   displayName?: string | null;
 }
@@ -81,8 +87,10 @@ async function loadConversation(ctx: AgentContext) {
     return existing;
   }
 
+  // Источник обращения — по каналу: иначе вся воронка считала бы, что все
+  // пациенты пришли из Telegram, и разрез по источникам врал бы (§8).
   const source = await prisma.source.findFirst({
-    where: { companyId: ctx.companyId, code: "telegram" },
+    where: { companyId: ctx.companyId, code: ctx.channel.toLowerCase() },
     select: { id: true },
   });
   return prisma.conversation.create({
@@ -102,7 +110,7 @@ async function loadConversation(ctx: AgentContext) {
 async function saveMessage(input: {
   companyId: string;
   conversationId: string;
-  channel: "TELEGRAM";
+  channel: AgentChannel;
   direction: "IN" | "OUT";
   authorType: "PATIENT" | "BOT" | "STAFF";
   body: string;
@@ -324,7 +332,7 @@ async function respond(
   await saveMessage({
     companyId: ctx.companyId,
     conversationId,
-    channel: "TELEGRAM",
+    channel: ctx.channel,
     direction: "OUT",
     authorType: "BOT",
     body: reply.text,
@@ -350,7 +358,7 @@ export async function handlePatientMessage(
       await saveMessage({
         companyId: ctx.companyId,
         conversationId: conversation.id,
-        channel: "TELEGRAM",
+        channel: ctx.channel,
         direction: "IN",
         authorType: "PATIENT",
         body: input.text,
@@ -387,7 +395,7 @@ export async function handlePatientMessage(
   await saveMessage({
     companyId: ctx.companyId,
     conversationId: conversation.id,
-    channel: "TELEGRAM",
+    channel: ctx.channel,
     direction: "IN",
     authorType: "PATIENT",
     body: text,

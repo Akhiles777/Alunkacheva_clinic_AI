@@ -28,7 +28,14 @@ const PROVIDERS: {
     ],
   },
   { provider: "instagram", title: "Instagram", fields: [{ keyName: "page_token", label: "Токен страницы" }] },
-  { provider: "whatsapp", title: "WhatsApp", fields: [{ keyName: "api_key", label: "Ключ API" }] },
+  {
+    provider: "whatsapp",
+    title: "WhatsApp (Green API)",
+    fields: [
+      { keyName: "id_instance", label: "idInstance" },
+      { keyName: "api_token", label: "apiTokenInstance" },
+    ],
+  },
 ];
 
 export interface IntegrationView {

@@ -6,6 +6,7 @@ import { can } from "@/lib/server/authz";
 import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
+import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 
@@ -249,6 +250,16 @@ export async function sendMessageDb(
       externalId = res.externalId;
     } else {
       failure = "Telegram не принял сообщение. Проверьте настройки бота.";
+    }
+  } else if (conv.channel === "WHATSAPP") {
+    const res = await sendWhatsapp(session.companyId, conv.externalUserId, body);
+    if (res.ok) {
+      delivered = true;
+      externalId = res.externalId ?? null;
+    } else {
+      // Причина от провайдера показывается как есть: «нет WhatsApp у номера»
+      // и «номер не привязан» требуют разных действий от администратора.
+      failure = `WhatsApp: ${res.error ?? "сообщение не отправлено"}`;
     }
   } else {
     failure = "Канал ещё не подключён — сообщение сохранено, но пациенту не ушло.";
