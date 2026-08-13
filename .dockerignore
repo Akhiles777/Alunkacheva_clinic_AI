@@ -1,0 +1,11 @@
+# В образ не должно попасть ничего лишнего — и тем более секретов.
+node_modules
+.next
+.git
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+docs
+generated

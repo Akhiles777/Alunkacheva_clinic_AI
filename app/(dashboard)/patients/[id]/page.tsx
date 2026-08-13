@@ -22,12 +22,11 @@ export default function PatientPage() {
    * экран показывал «такого пациента нет» для только что созданной карточки.
    * Догружаем её с сервера и лишь потом судим.
    */
-  const [lookup, setLookup] = useState<"idle" | "loading" | "missing">("idle");
+  const [lookup, setLookup] = useState<"searching" | "missing">("searching");
 
   useEffect(() => {
     if (!id || patient) return;
     let alive = true;
-    setLookup("loading");
     getPatientRecord(id)
       .then((record) => {
         if (!alive) return;

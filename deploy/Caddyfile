@@ -1,0 +1,48 @@
+# Обратный прокси и TLS.
+#
+# Сертификат Let's Encrypt Caddy получает и продлевает сам. На боевом контуре
+# с медицинскими данными открытый HTTP недопустим (§7), поэтому HTTP только
+# перенаправляет на HTTPS — это Caddy делает по умолчанию.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Заголовки безопасности. Платформа отдаёт медицинские данные, и лишний
+	# способ их утащить создавать незачем.
+	header {
+		# Браузер запоминает, что сюда ходят только по HTTPS.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Содержимое не встраивается в чужие страницы: защита от кликджекинга
+		# на кнопках вроде «удалить пациента».
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Камера, микрофон и геопозиция платформе не нужны.
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# Вебхуки провайдеров: тела небольшие, но пусть будет явный предел —
+	# чужой запрос на сотню мегабайт не должен занимать память.
+	request_body {
+		max_size 10MB
+	}
+
+	reverse_proxy app:3000 {
+		# Реальный адрес клиента нужен журналу доступа: без него в аудите
+		# окажется адрес самого прокси.
+		header_up X-Real-IP {remote_host}
+		health_uri /api/ping
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		# Тела запросов в журнал не пишем: там переписка с пациентами (§7).
+		format json
+	}
+}

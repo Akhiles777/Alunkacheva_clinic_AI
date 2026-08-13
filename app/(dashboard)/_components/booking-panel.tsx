@@ -131,8 +131,10 @@ function BookingInner({ onClose }: { onClose: () => void }) {
    */
   useEffect(() => {
     if (patientPicked) return;
-    setPatientLoading(true);
+    // Отметку «ищем» ставим вместе с запросом, а не в теле эффекта: иначе
+    // каждый набранный символ вызывает лишнюю перерисовку до всякого поиска.
     const t = setTimeout(() => {
+      setPatientLoading(true);
       searchPatientsForBooking(patient)
         .then(setPatientFound)
         .catch(() => setPatientFound([]))
