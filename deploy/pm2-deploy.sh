@@ -33,6 +33,14 @@ if [ ! -d "$BUILD_DIR" ]; then
   exit 1
 fi
 
+# Next дописывает в tsconfig.json пути с типами своего каталога сборки. На
+# сервере это делает дерево грязным, и следующий `git pull` упирается в
+# локальные изменения файла, который никто не трогал руками. Возвращаем как в
+# репозитории: нужные пути там уже прописаны.
+if git -C . diff --quiet -- tsconfig.json 2>/dev/null; then :; else
+  git -C . checkout -- tsconfig.json 2>/dev/null || true
+fi
+
 echo "── подмена сборки ──"
 rm -rf "$PREV_DIR"
 [ -d "$LIVE_DIR" ] && mv "$LIVE_DIR" "$PREV_DIR"
