@@ -152,29 +152,72 @@ export async function syncClients(companyId: string, client: YclientsClientHandl
 
 export async function upsertClient(companyId: string, dto: YclientsClient): Promise<void> {
   const c = mapClient(dto);
-  // yclientsId — nullable-unique: findFirst + create/update вместо upsert.
-  const found = await prisma.patient.findFirst({
-    where: { companyId, yclientsId: c.yclientsId },
-    select: { id: true },
-  });
-  const patient = found
-    ? await prisma.patient.update({ where: { id: found.id }, data: { name: c.name } })
-    : await prisma.patient.create({
-        data: { companyId, yclientsId: c.yclientsId, name: c.name, firstSeenAt: new Date() },
-      });
-  // Телефон — по нормализованному E.164, без дублей.
-  if (c.phoneE164) {
-    const exists = await prisma.patientPhone.findFirst({
-      where: { companyId, patientId: patient.id, phone: c.phoneE164 },
+
+  /**
+   * Пациента ищем сначала по идентификатору YCLIENTS, потом по телефону.
+   *
+   * Телефон — единственный надёжный ключ сопоставления (§4). Прежний порядок
+   * искал только по идентификатору, а телефон проверял в пределах уже
+   * найденной карточки: клиент, заведённый до интеграции вручную, при выгрузке
+   * получал вторую карточку с тем же номером. Дальше визиты распределялись
+   * между двумя карточками произвольно — какую вернёт запрос, к той и
+   * привяжутся, — и история пациента разъезжалась.
+   */
+  let patientId: string | null =
+    (await prisma.patient.findFirst({
+      where: { companyId, yclientsId: c.yclientsId },
       select: { id: true },
+    }))?.id ?? null;
+
+  if (!patientId && c.phoneE164) {
+    const byPhone = await prisma.patientPhone.findFirst({
+      where: { companyId, phone: c.phoneE164 },
+      select: { patientId: true },
     });
-    if (!exists) {
-      const hasPrimary = await prisma.patientPhone.count({ where: { patientId: patient.id, isPrimary: true } });
-      await prisma.patientPhone.create({
-        data: { companyId, patientId: patient.id, phone: c.phoneE164, isPrimary: hasPrimary === 0 },
-      });
+    if (byPhone) {
+      patientId = byPhone.patientId;
+      // Нашли по телефону — закрепляем за карточкой идентификатор YCLIENTS,
+      // чтобы дальше сопоставление шло по нему напрямую.
+      await prisma.patient
+        .update({ where: { id: patientId }, data: { yclientsId: c.yclientsId } })
+        .catch(() => {});
     }
   }
+
+  if (patientId) {
+    // Имя из YCLIENTS не затирает заполненное локально пустым значением.
+    if (c.name) await prisma.patient.update({ where: { id: patientId }, data: { name: c.name } });
+  } else {
+    patientId = (
+      await prisma.patient.create({
+        data: { companyId, yclientsId: c.yclientsId, name: c.name, firstSeenAt: new Date() },
+        select: { id: true },
+      })
+    ).id;
+  }
+
+  if (!c.phoneE164) return;
+
+  /**
+   * Телефон проверяем по клинике целиком, а не по карточке: один номер не
+   * может принадлежать двум пациентам, иначе теряется смысл сопоставления.
+   */
+  const existingPhone = await prisma.patientPhone.findFirst({
+    where: { companyId, phone: c.phoneE164 },
+    select: { id: true, patientId: true },
+  });
+  if (existingPhone) return;
+
+  const hasPrimary = await prisma.patientPhone.count({
+    where: { patientId, isPrimary: true },
+  });
+  await prisma.patientPhone
+    .create({
+      data: { companyId, patientId, phone: c.phoneE164, isPrimary: hasPrimary === 0 },
+    })
+    // Гонка при параллельной выгрузке: номер мог появиться между проверкой и
+    // вставкой. Уникальный индекс её останавливает, и это не ошибка синка.
+    .catch(() => {});
 }
 
 /**

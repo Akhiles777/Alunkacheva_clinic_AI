@@ -1285,6 +1285,11 @@ model PatientPhone {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
+  /// Номер принадлежит ровно одному пациенту: телефон — единственный надёжный
+  /// ключ сопоставления (§4). Без этого ограничения выгрузка из YCLIENTS
+  /// заводила вторую карточку с тем же номером, и визиты распределялись между
+  /// ними произвольно.
+  @@unique([companyId, phone])
   @@index([companyId, phone])
   @@index([patientId])
   @@map("patient_phones")

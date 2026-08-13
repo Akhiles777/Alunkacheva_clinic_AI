@@ -26,7 +26,12 @@ export async function recordCall(
   input: RecordCallInput,
 ): Promise<{ patientId: string | null; matched: boolean }> {
   const session = await getSession();
-  const e164 = normalizePhone(input.phone) ?? input.phone.trim();
+  /**
+   * Неразобранный номер не сохраняем: он не совпадёт ни с одним другим
+   * написанием того же телефона, и пациент раздвоится (§4).
+   */
+  const e164 = normalizePhone(input.phone);
+  if (!e164) throw new Error("Не удалось разобрать номер телефона");
 
   // Матчинг пациента по номеру.
   const existingPhone = await prisma.patientPhone.findFirst({

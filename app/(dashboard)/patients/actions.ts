@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
+import { normalizePhone } from "@/lib/phone";
 import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/enums";
 
 /**
@@ -109,6 +110,27 @@ export async function createPatient(input: {
 }): Promise<void> {
   const session = await getSession();
   const sourceId = await sourceIdByTitle(session.companyId, input.source);
+
+  /**
+   * Телефон нормализуем на сервере (§4). Раньше это делал только экран, а
+   * сервер принимал присланное как есть: «+7 (999) 123-45-67» и
+   * «+79991234567» ложились как разные номера, и ни уникальность, ни
+   * сопоставление пациентов уже не работали.
+   */
+  const phoneE164 = input.e164 ? normalizePhone(input.e164) : null;
+  if (input.e164 && !phoneE164) throw new Error("Не удалось разобрать номер телефона");
+  if (phoneE164) {
+    const taken = await prisma.patientPhone.findFirst({
+      where: { companyId: session.companyId, phone: phoneE164 },
+      select: { patient: { select: { name: true } } },
+    });
+    if (taken) {
+      throw new Error(
+        `Этот номер уже записан на пациента «${taken.patient?.name ?? "без имени"}».`,
+      );
+    }
+  }
+
   await prisma.patient.create({
     data: {
       id: input.id,
@@ -117,8 +139,8 @@ export async function createPatient(input: {
       firstSeenAt: new Date(),
       sourceId,
       phones:
-        input.e164 && input.phoneId
-          ? { create: { id: input.phoneId, companyId: session.companyId, phone: input.e164, isPrimary: true } }
+        phoneE164 && input.phoneId
+          ? { create: { id: input.phoneId, companyId: session.companyId, phone: phoneE164, isPrimary: true } }
           : undefined,
     },
   });
@@ -147,12 +169,34 @@ export async function addPhoneDb(input: {
   isPrimary: boolean;
 }): Promise<void> {
   const session = await getSession();
+
+  const e164 = normalizePhone(input.e164);
+  if (!e164) throw new Error("Не удалось разобрать номер телефона");
+
+  /**
+   * Номер принадлежит ровно одному пациенту (§4): по телефону мы сопоставляем
+   * людей, и один номер на двух карточках означает, что визиты и переписка
+   * начнут распределяться между ними произвольно. Проверяем заранее, чтобы
+   * показать понятную причину вместо ошибки базы.
+   */
+  const taken = await prisma.patientPhone.findFirst({
+    where: { companyId: session.companyId, phone: e164 },
+    select: { patientId: true, patient: { select: { name: true } } },
+  });
+  if (taken) {
+    if (taken.patientId === input.patientId) return;
+    throw new Error(
+      `Этот номер уже записан на пациента «${taken.patient?.name ?? "без имени"}». ` +
+        "Один номер может принадлежать только одному человеку.",
+    );
+  }
+
   await prisma.patientPhone.create({
     data: {
       id: input.id,
       companyId: session.companyId,
       patientId: input.patientId,
-      phone: input.e164,
+      phone: e164,
       isPrimary: input.isPrimary,
     },
   });
