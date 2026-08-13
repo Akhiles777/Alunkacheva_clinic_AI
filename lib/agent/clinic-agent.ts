@@ -15,6 +15,7 @@ import {
   materializeConsent,
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
+import { consentFromText, menuActionFromText, supportsButtons } from "./text-actions";
 
 /**
  * Агент пациентского канала.
@@ -441,8 +442,45 @@ export async function handlePatientMessage(
    */
   const consent = await consentRequestFor(ctx.companyId, conversation.id);
   if (consent) {
-    return respond(ctx, conversation.id, { text: consent.text, buttons: consent.buttons });
+    return respond(ctx, conversation.id, {
+      text: consent.text + consentHint(ctx.channel),
+      buttons: consent.buttons,
+    });
   }
+
+  /**
+   * Ответ на вопрос о согласии словами.
+   *
+   * В WhatsApp кнопок нет, и до этой ветки согласие там нельзя было дать
+   * вообще: вопрос задавался, ответить на него было нечем, а следующее
+   * сообщение шло дальше как ни в чём не бывало. То есть переписка с
+   * медицинской клиникой велась без зафиксированного согласия — прямое
+   * нарушение §7.
+   *
+   * Слова принимаем только пока согласие ждём. Вне этого «да» в переписке
+   * значит что угодно, и засчитать его за согласие было бы подлогом.
+   */
+  if (conversation.consentAskedAt && !conversation.consentGrantedAt) {
+    const answer = consentFromText(text);
+    if (answer) return handleCallback(ctx, conversation.id, answer);
+
+    // Не поняли ответ. Просьбу позвать человека пропускаем: запирать пациента
+    // в вопросе о согласии, когда он просит администратора, — жестоко и
+    // бессмысленно, человек и возьмёт согласие голосом.
+    if (!wantsHuman(text)) {
+      return respond(ctx, conversation.id, {
+        text: `Нужно ваше согласие на обработку персональных данных.${consentHint(ctx.channel)}`,
+        buttons: consentButtons(),
+      });
+    }
+  }
+
+  /**
+   * Пункт меню, набранный текстом. В канале без кнопок подсказки уходят
+   * строками, и пациент отвечает на них словами — «цены», «адрес».
+   */
+  const menu = menuActionFromText(text);
+  if (menu) return handleCallback(ctx, conversation.id, menu);
 
   const settings = await assistantMode(ctx.companyId);
 
@@ -550,6 +588,21 @@ export async function handlePatientMessage(
   }
 
   return respond(ctx, conversation.id, { text: answer, buttons: mainMenu() });
+}
+
+/**
+ * Как отвечать на вопрос о согласии. В канале с кнопками подсказка не нужна —
+ * там они видны; в остальных без неё непонятно, что вообще делать.
+ */
+function consentHint(channel: AgentChannel): string {
+  return supportsButtons(channel) ? "" : "\nОтветьте «Да» или «Нет».";
+}
+
+function consentButtons() {
+  return [
+    { text: "Согласен(на)", data: CONSENT_ACCEPT },
+    { text: "Не сейчас", data: CONSENT_DECLINE },
+  ];
 }
 
 function mainMenu() {
