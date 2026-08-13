@@ -95,8 +95,11 @@ describe("что обрабатывать нельзя", () => {
   });
 
   it("собственное исходящее не считается сообщением пациента", () => {
+    // Ни то, что отправила платформа, ни то, что администратор набрал на
+    // телефоне, не должно попасть к агенту как вопрос пациента: он ответил бы
+    // на собственную же реплику и ушёл во второй круг.
     for (const t of ["outgoingMessageReceived", "outgoingAPIMessageReceived"]) {
-      expect(parseWebhook(incoming({ typeWebhook: t })).kind, t).toBe("ignored");
+      expect(parseWebhook(incoming({ typeWebhook: t })).kind, t).not.toBe("message");
     }
   });
 
@@ -161,5 +164,47 @@ describe("секрет вебхука", () => {
     expect(verifyWebhookSecret("другой")).toBe(false);
     expect(verifyWebhookSecret(null)).toBe(false);
     delete process.env.GREEN_API_WEBHOOK_SECRET;
+  });
+});
+
+describe("ответ администратора с телефона", () => {
+  it("сообщение с телефона распознаётся как исходящее, а не выбрасывается", () => {
+    // Прежде оно выбрасывалось вместе с нашим эхом: человек уже разговаривал
+    // с пациентом, а бот об этом не знал и отвечал поверх него (§6.4).
+    const e = parseWebhook(
+      incoming({
+        typeWebhook: "outgoingMessageReceived",
+        idMessage: "OUT1",
+        messageData: { typeMessage: "textMessage", textMessageData: { textMessage: "Здравствуйте, записываю вас" } },
+      }),
+    );
+    expect(e.kind).toBe("outgoing");
+    if (e.kind !== "outgoing") return;
+    expect(e.text).toBe("Здравствуйте, записываю вас");
+    expect(e.externalId).toBe("OUT1");
+  });
+
+  it("наше собственное отправленное через API по-прежнему игнорируется", () => {
+    // Платформа уже сохранила его при отправке; второй раз записывать нельзя.
+    const e = parseWebhook(
+      incoming({
+        typeWebhook: "outgoingAPIMessageReceived",
+        idMessage: "API1",
+        messageData: { typeMessage: "textMessage", textMessageData: { textMessage: "ответ бота" } },
+      }),
+    );
+    expect(e.kind).toBe("ignored");
+  });
+
+  it("исходящее в группу не заводит переписку", () => {
+    const e = parseWebhook(
+      incoming({
+        typeWebhook: "outgoingMessageReceived",
+        idMessage: "OUT2",
+        senderData: { chatId: "79991234567-1@g.us" },
+        messageData: { typeMessage: "textMessage", textMessageData: { textMessage: "всем привет" } },
+      }),
+    );
+    expect(e.kind).toBe("ignored");
   });
 });

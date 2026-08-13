@@ -4,6 +4,8 @@ import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { isWhatsappEnabled } from "@/lib/integrations/whatsapp/config";
 import { parseWebhook, verifyWebhookSecret } from "@/lib/integrations/whatsapp/webhook";
 import { sendText } from "@/lib/integrations/whatsapp/green-api";
+import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
+import { messageBody } from "@/lib/agent/attachments";
 
 /**
  * Вебхук WhatsApp (Green API).
@@ -43,7 +45,7 @@ export async function POST(req: Request) {
 
   const event = parseWebhook(body);
 
-  if (event.kind !== "message") {
+  if (event.kind !== "message" && event.kind !== "outgoing") {
     /**
      * Статусы доставки, эхо собственных сообщений, смена состояния инстанса и
      * звонки. Их достаточно подтвердить: заводить на них переписку нельзя.
@@ -73,6 +75,48 @@ export async function POST(req: Request) {
     select: { id: true },
   });
   if (seen) return NextResponse.json({ ok: true, duplicate: true });
+
+  /**
+   * Администратор ответил пациенту прямо в WhatsApp на телефоне.
+   *
+   * Сохраняем его сообщение в переписку и переводим диалог под управление
+   * человека: бот замолкает на те же 12 часов, что и после ответа из инбокса
+   * (§6.4). Без этого получалось, что человек уже разговаривает с пациентом,
+   * а бот отвечает поверх него — и оба выглядят несогласованно.
+   */
+  if (event.kind === "outgoing") {
+    const conv = await prisma.conversation.findFirst({
+      where: { companyId, channel: "WHATSAPP", externalUserId: event.chatId },
+      select: { id: true },
+    });
+    // Нет диалога — значит переписку начал сам администратор, и первое
+    // сообщение пациента ещё не приходило. Заводить диалог здесь не нужно:
+    // он появится, когда пациент ответит.
+    if (!conv) return NextResponse.json({ ok: true, ignored: "нет диалога" });
+
+    await prisma.message.create({
+      data: {
+        companyId,
+        conversationId: conv.id,
+        channel: "WHATSAPP",
+        direction: "OUT",
+        authorType: "STAFF",
+        body: messageBody(event.text, event.attachments).slice(0, 4000),
+        externalId: event.externalId,
+        status: "SENT",
+        sentAt: new Date(),
+      },
+    });
+    await prisma.conversation.update({
+      where: { id: conv.id },
+      data: {
+        status: "HUMAN_TAKEOVER",
+        botPausedUntil: humanTakeoverUntil(),
+        lastMessageAt: new Date(),
+      },
+    });
+    return NextResponse.json({ ok: true, kind: "outgoing", takeover: true });
+  }
 
   try {
     const reply = await handlePatientMessage(

@@ -74,6 +74,19 @@ export type ParsedEvent =
       /** Файлы сообщения: по ним администратор откроет голосовое или снимок. */
       attachments: IncomingAttachment[];
     }
+  /**
+   * Наше же исходящее, но отправленное не платформой: администратор ответил
+   * пациенту прямо в WhatsApp на телефоне. Такое сообщение надо сохранить и
+   * замолчать боту — иначе он продолжит говорить поверх живого человека.
+   */
+  | {
+      kind: "outgoing";
+      externalId: string;
+      chatId: string;
+      phoneE164: string | null;
+      text: string;
+      attachments: IncomingAttachment[];
+    }
   | { kind: "status"; externalId: string; status: string }
   | { kind: "state"; state: string }
   | { kind: "ignored"; reason: string };
@@ -107,13 +120,21 @@ export function parseWebhook(raw: unknown): ParsedEvent {
       return parseMessage(e);
 
     /**
-     * Наши же исходящие, вернувшиеся эхом. Сохранять их как сообщение
-     * пациента нельзя: агент увидел бы собственный ответ как новый вопрос и
-     * ушёл во второй круг.
+     * Отправленное нами же через API: платформа уже сохранила это сообщение
+     * при отправке. Второй раз записывать нельзя, а принять за вопрос
+     * пациента — тем более: агент ушёл бы во второй круг.
      */
-    case "outgoingMessageReceived":
     case "outgoingAPIMessageReceived":
       return { kind: "ignored", reason: "собственное исходящее сообщение" };
+
+    /**
+     * Отправленное с телефона. Это ответ администратора, набранный прямо в
+     * WhatsApp, а не через платформу. Прежде оно выбрасывалось вместе с нашим
+     * эхом — и получалось, что человек уже разговаривает с пациентом, а бот
+     * об этом не знает и продолжает отвечать поверх него (§6.4).
+     */
+    case "outgoingMessageReceived":
+      return parseOutgoing(e);
 
     case "outgoingMessageStatus":
       return e.idMessage
@@ -133,6 +154,20 @@ export function parseWebhook(raw: unknown): ParsedEvent {
     default:
       return { kind: "ignored", reason: `неизвестный тип: ${e.typeWebhook}` };
   }
+}
+
+/** Ответ администратора, набранный в WhatsApp на телефоне. */
+function parseOutgoing(e: GreenWebhook): ParsedEvent {
+  const inner = parseMessage(e);
+  if (inner.kind !== "message") return inner;
+  return {
+    kind: "outgoing",
+    externalId: inner.externalId,
+    chatId: inner.chatId,
+    phoneE164: inner.phoneE164,
+    text: inner.text,
+    attachments: inner.attachments,
+  };
 }
 
 function parseMessage(e: GreenWebhook): ParsedEvent {
