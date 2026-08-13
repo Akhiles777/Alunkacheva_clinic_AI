@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isGroupChat, phoneFromChatId } from "./chat-id";
+import { KIND_LABEL, type AttachmentKind, type IncomingAttachment } from "@/lib/agent/attachments";
 
 /**
  * Разбор вебхуков Green API.
@@ -33,7 +34,12 @@ const MessageData = z.object({
     .partial()
     .optional(),
   fileMessageData: z
-    .object({ downloadUrl: z.string(), caption: z.string(), fileName: z.string() })
+    .object({
+      downloadUrl: z.string(),
+      caption: z.string(),
+      fileName: z.string(),
+      mimeType: z.string(),
+    })
     .partial()
     .optional(),
   locationMessageData: z.object({ nameLocation: z.string() }).partial().optional(),
@@ -65,21 +71,30 @@ export type ParsedEvent =
       text: string;
       /** Не текст: фото, голосовое, документ, геометка, контакт. */
       isMedia: boolean;
+      /** Файлы сообщения: по ним администратор откроет голосовое или снимок. */
+      attachments: IncomingAttachment[];
     }
   | { kind: "status"; externalId: string; status: string }
   | { kind: "state"; state: string }
   | { kind: "ignored"; reason: string };
 
-/** Подписи вместо содержимого для нетекстовых сообщений. */
-const MEDIA_LABEL: Record<string, string> = {
-  imageMessage: "прислал изображение",
-  videoMessage: "прислал видео",
-  documentMessage: "прислал документ",
-  audioMessage: "прислал голосовое сообщение",
-  stickerMessage: "прислал стикер",
-  locationMessage: "прислал геопозицию",
-  contactMessage: "прислал контакт",
-  pollMessage: "прислал опрос",
+/**
+ * Типы Green API → наши виды вложений.
+ *
+ * Раньше здесь были только подписи, а ссылка на файл выбрасывалась: в
+ * переписке появлялось «[прислал голосовое сообщение]», и послушать его было
+ * нечем. Теперь тип нужен и для подписи, и для того, чтобы открыть файл.
+ */
+const KIND_BY_TYPE: Record<string, AttachmentKind> = {
+  imageMessage: "photo",
+  videoMessage: "video",
+  documentMessage: "document",
+  audioMessage: "voice",
+  voiceMessage: "voice",
+  pttMessage: "voice",
+  stickerMessage: "sticker",
+  locationMessage: "location",
+  contactMessage: "contact",
 };
 
 export function parseWebhook(raw: unknown): ParsedEvent {
@@ -138,15 +153,32 @@ function parseMessage(e: GreenWebhook): ParsedEvent {
     e.messageData?.fileMessageData?.caption ??
     "";
 
-  const mediaLabel = MEDIA_LABEL[type];
-  const isMedia = Boolean(mediaLabel) || (type !== "textMessage" && type !== "extendedTextMessage");
+  const kind = KIND_BY_TYPE[type];
+  const isMedia = Boolean(kind) || (type !== "textMessage" && type !== "extendedTextMessage");
+
+  const attachments: IncomingAttachment[] = [];
+  if (isMedia) {
+    const file = e.messageData?.fileMessageData;
+    const at: AttachmentKind = kind ?? "other";
+    attachments.push({
+      kind: at,
+      label: KIND_LABEL[at],
+      // Ссылка Green API долгоживущая и токена не содержит — храним как есть.
+      // Нет ссылки (геопозиция, контакт) — остаётся одна подпись.
+      source: file?.downloadUrl ? { provider: "WHATSAPP", url: file.downloadUrl } : { provider: "NONE" },
+      mimeType: file?.mimeType,
+      fileName: file?.fileName,
+    });
+  }
 
   /**
    * У нетекстового сообщения показываем подпись, а не пустую строку: пустое
    * сообщение в переписке выглядит как сбой платформы, хотя пациент просто
    * прислал фотографию.
    */
-  const body = text.trim() || (isMedia ? `[${mediaLabel ?? "прислал вложение"}]` : "");
+  const caption = text.trim();
+  const marks = attachments.map((a) => `[${a.label}]`).join(" ");
+  const body = caption && marks ? `${marks} ${caption}` : caption || marks;
   if (!body) return { kind: "ignored", reason: "пустое сообщение" };
 
   return {
@@ -157,6 +189,7 @@ function parseMessage(e: GreenWebhook): ParsedEvent {
     senderName: e.senderData?.senderName?.trim() || null,
     text: body.slice(0, 4000),
     isMedia,
+    attachments,
   };
 }
 

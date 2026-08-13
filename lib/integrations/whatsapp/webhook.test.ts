@@ -48,16 +48,38 @@ describe("разбор входящего сообщения", () => {
     expect(e.kind).toBe("message");
     if (e.kind !== "message") return;
     expect(e.isMedia).toBe(true);
-    expect(e.text).toContain("изображение");
+    expect(e.text).toContain("фотография");
   });
 
-  it("подпись к файлу важнее ярлыка", () => {
+  it("подпись пациента остаётся, пометка о файле добавляется", () => {
+    // Раньше оставалась только подпись, и по переписке нельзя было понять,
+    // что к сообщению приложен файл: администратор читал «Вот мой анализ» и
+    // не знал, что есть снимок, который надо открыть.
     const e = parseWebhook(
       incoming({
         messageData: { typeMessage: "imageMessage", fileMessageData: { caption: "Вот мой анализ" } },
       }),
     );
-    expect(e.kind === "message" && e.text).toBe("Вот мой анализ");
+    expect(e.kind === "message" && e.text).toBe("[фотография] Вот мой анализ");
+  });
+
+  it("ссылка на файл сохраняется — иначе голосовое нечем послушать", () => {
+    const e = parseWebhook(
+      incoming({
+        messageData: {
+          typeMessage: "audioMessage",
+          fileMessageData: { downloadUrl: "https://media.green-api.com/f/1.ogg", mimeType: "audio/ogg" },
+        },
+      }),
+    );
+    expect(e.kind).toBe("message");
+    if (e.kind !== "message") return;
+    expect(e.attachments).toHaveLength(1);
+    expect(e.attachments[0].kind).toBe("voice");
+    expect(e.attachments[0].source).toEqual({
+      provider: "WHATSAPP",
+      url: "https://media.green-api.com/f/1.ogg",
+    });
   });
 });
 

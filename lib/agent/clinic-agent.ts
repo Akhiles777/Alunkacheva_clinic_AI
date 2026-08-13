@@ -16,6 +16,7 @@ import {
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
+import { mediaReply, messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 
 /**
  * Агент пациентского канала.
@@ -116,6 +117,7 @@ async function saveMessage(input: {
   authorType: "PATIENT" | "BOT" | "STAFF";
   body: string;
   externalId?: string | null;
+  attachments?: IncomingAttachment[];
 }) {
   await prisma.message.create({
     data: {
@@ -126,6 +128,7 @@ async function saveMessage(input: {
       authorType: input.authorType,
       body: input.body.slice(0, 4000),
       externalId: input.externalId ?? null,
+      attachments: input.attachments?.length ? (input.attachments as unknown as object[]) : undefined,
     },
   });
   await prisma.conversation.update({
@@ -378,9 +381,18 @@ async function respond(
 
 export async function handlePatientMessage(
   ctx: AgentContext,
-  input: { text?: string; phone?: string; callbackData?: string; externalId?: string },
+  input: {
+    text?: string;
+    phone?: string;
+    callbackData?: string;
+    externalId?: string;
+    /** Голосовые, фото, видео, документы — см. lib/agent/attachments.ts. */
+    attachments?: IncomingAttachment[];
+  },
 ): Promise<AgentReply | null> {
   const conversation = await loadConversation(ctx);
+  const attachments = input.attachments ?? [];
+  const channelName = ctx.channel === "WHATSAPP" ? "WhatsApp" : "Telegram";
 
   // Правило 4: после ручного ответа сотрудника агент молчит.
   const paused =
@@ -388,15 +400,17 @@ export async function handlePatientMessage(
     conversation.botPausedUntil !== null &&
     conversation.botPausedUntil > new Date();
   if (paused) {
-    if (input.text) {
+    const pausedBody = messageBody(input.text ?? "", attachments);
+    if (pausedBody) {
       await saveMessage({
         companyId: ctx.companyId,
         conversationId: conversation.id,
         channel: ctx.channel,
         direction: "IN",
         authorType: "PATIENT",
-        body: input.text,
+        body: pausedBody,
         externalId: input.externalId,
+        attachments,
       });
       await notifyStaff({
         companyId: ctx.companyId,
@@ -405,7 +419,7 @@ export async function handlePatientMessage(
         title: "Новое сообщение от пациента",
         // Без служебных пояснений про агента: сотруднику важно, что пациент
         // написал и ждёт ответа, а не в каком режиме сейчас бот.
-        body: "Пациент написал в Telegram",
+        body: `Пациент написал в ${channelName}`,
         url: "/inbox",
         entityId: conversation.id,
       });
@@ -424,7 +438,13 @@ export async function handlePatientMessage(
   }
 
   const text = (input.text ?? "").trim();
-  if (!text) return null;
+  /**
+   * Тело сообщения складывается из подписи пациента и пометок о вложениях.
+   * Пустым оно бывает только у по-настоящему пустого update — раньше сюда же
+   * попадали все голосовые и фотографии, и обращение терялось молча.
+   */
+  const body = messageBody(text, attachments);
+  if (!body) return null;
 
   await saveMessage({
     companyId: ctx.companyId,
@@ -432,8 +452,9 @@ export async function handlePatientMessage(
     channel: ctx.channel,
     direction: "IN",
     authorType: "PATIENT",
-    body: text,
+    body,
     externalId: input.externalId,
+    attachments,
   });
 
   /**
@@ -481,6 +502,24 @@ export async function handlePatientMessage(
    */
   const menu = menuActionFromText(text);
   if (menu) return handleCallback(ctx, conversation.id, menu);
+
+  /**
+   * Вложение — сразу человеку.
+   *
+   * Ассистент читает текст: послушать голосовое или разглядеть направление на
+   * фотографии он не может. Ответить на непрочитанное — худший исход: пациент
+   * получит бодрый ответ не по делу и решит, что его не читают. Проверка идёт
+   * до настроек ассистента: увидеть файл человек должен в любом режиме.
+   */
+  if (attachments.length && needsHuman(attachments)) {
+    await escalate(
+      ctx.companyId,
+      conversation.id,
+      "PATIENT_REQUEST",
+      `Пациент прислал ${attachments.map((a) => a.label).join(", ")}`,
+    ).catch(() => {});
+    return respond(ctx, conversation.id, { text: mediaReply(attachments) });
+  }
 
   const settings = await assistantMode(ctx.companyId);
 

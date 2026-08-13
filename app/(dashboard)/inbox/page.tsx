@@ -18,10 +18,79 @@ import {
   useDb,
   type Dialog,
 } from "@/app/_data/store";
-import { getConversations, getInboxTemplates, type ApprovedTemplate } from "./actions";
+import {
+  getConversations,
+  getInboxTemplates,
+  type ApprovedTemplate,
+  type DialogAttachmentRecord,
+} from "./actions";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { ContactPanel } from "./contact-panel";
 import { PatientCardBody } from "../_components/patient-card";
+
+/**
+ * Вложение пациента в переписке.
+ *
+ * Голосовое и видео показываем проигрывателем прямо в диалоге: администратор
+ * не должен скачивать файл, чтобы понять, о чём речь, — он отвечает быстро и
+ * много. Фотографию направления показываем сразу по той же причине.
+ *
+ * Файлы идут через /api/media: прямая ссылка провайдера открыта любому, кто
+ * её увидел, а голосовое пациента — сведения о факте обращения за помощью.
+ */
+function Attachment({ a }: { a: DialogAttachmentRecord }) {
+  // Файла нет — геопозиция или контакт. Осталась подпись, и это правильно:
+  // пустое место выглядело бы как несработавшая загрузка.
+  if (!a.href) {
+    return <div className="text-text-muted text-2xs">{a.label}</div>;
+  }
+
+  if (a.kind === "voice" || a.kind === "audio") {
+    return (
+      <div>
+        <audio controls preload="none" src={a.href} className="w-full max-w-[260px]" />
+        {a.durationSec ? (
+          <div className="text-text-subtle num text-2xs">{formatDuration(a.durationSec)}</div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (a.kind === "photo") {
+    return (
+      <a href={a.href} target="_blank" rel="noreferrer">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={a.href}
+          alt={a.label}
+          loading="lazy"
+          className="border-border max-h-56 rounded-lg border object-cover"
+        />
+      </a>
+    );
+  }
+
+  if (a.kind === "video") {
+    return <video controls preload="none" src={a.href} className="max-h-56 w-full rounded-lg" />;
+  }
+
+  return (
+    <a
+      href={a.href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-accent-text hover:underline text-2xs"
+    >
+      {a.fileName || a.label}
+    </a>
+  );
+}
+
+function formatDuration(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
 
 const NOTE_SHORT: Record<string, string> = {
   NO_CONSENT: "нет согласия",
@@ -211,6 +280,13 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                     }`}
                   >
                     {m.text}
+                    {m.attachments.length ? (
+                      <div className="mt-2 flex flex-col gap-2">
+                        {m.attachments.map((a, i) => (
+                          <Attachment key={`${m.id}-${i}`} a={a} />
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <div className={`num text-text-subtle mt-1 text-2xs ${mine ? "text-right" : ""}`}>
                     {m.from === "bot" ? "агент · " : m.from === "staff" ? "вы · " : ""}

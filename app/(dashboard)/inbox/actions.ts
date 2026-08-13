@@ -68,11 +68,63 @@ export async function getInboxTemplates(): Promise<InboxTemplates> {
 export type DialogChannel = "instagram" | "whatsapp" | "telegram";
 export type DialogStatus = "bot" | "escalated" | "human" | "closed";
 
+/**
+ * Вложение в переписке. Ссылка ведёт на /api/media, а не на файл провайдера:
+ * прямая ссылка на голосовое пациента открыта любому, кто её увидел, а это
+ * сведения о факте обращения за помощью (§7).
+ */
+export interface DialogAttachmentRecord {
+  kind: string;
+  label: string;
+  /** Пусто, если файла нет: геопозиция, контакт. */
+  href: string | null;
+  mimeType?: string;
+  fileName?: string;
+  durationSec?: number;
+}
+
 export interface DialogMessageRecord {
   id: string;
   from: "patient" | "bot" | "staff";
   text: string;
   at: string;
+  attachments: DialogAttachmentRecord[];
+}
+
+/** Вложения из JSON-поля сообщения в вид, пригодный для показа. */
+function attachmentsOf(raw: unknown): DialogAttachmentRecord[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DialogAttachmentRecord[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const a = item as {
+      kind?: unknown;
+      label?: unknown;
+      mimeType?: unknown;
+      fileName?: unknown;
+      durationSec?: unknown;
+      source?: { provider?: unknown; fileId?: unknown; url?: unknown };
+    };
+    if (typeof a.kind !== "string" || typeof a.label !== "string") continue;
+
+    let href: string | null = null;
+    const p = a.source?.provider;
+    if (p === "TELEGRAM" && typeof a.source?.fileId === "string") {
+      href = `/api/media?provider=TELEGRAM&ref=${encodeURIComponent(a.source.fileId)}`;
+    } else if (p === "WHATSAPP" && typeof a.source?.url === "string") {
+      href = `/api/media?provider=WHATSAPP&ref=${encodeURIComponent(a.source.url)}`;
+    }
+
+    out.push({
+      kind: a.kind,
+      label: a.label,
+      href,
+      mimeType: typeof a.mimeType === "string" ? a.mimeType : undefined,
+      fileName: typeof a.fileName === "string" ? a.fileName : undefined,
+      durationSec: typeof a.durationSec === "number" ? a.durationSec : undefined,
+    });
+  }
+  return out;
 }
 export interface DialogRecord {
   id: string;
@@ -174,6 +226,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
       from: m.authorType === "PATIENT" ? "patient" : m.authorType === "BOT" ? "bot" : "staff",
       text: m.body,
       at: atLabel(m.createdAt),
+      attachments: attachmentsOf(m.attachments),
     }));
     const last = ordered[ordered.length - 1];
     // Ждёт ответа, если последним написал пациент и диалог не закрыт.

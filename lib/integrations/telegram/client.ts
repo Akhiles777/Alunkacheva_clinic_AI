@@ -39,6 +39,22 @@ async function call<T>(method: string, body: unknown): Promise<T | null> {
   }
 }
 
+/**
+ * Ссылка на файл пациента.
+ *
+ * Живёт около часа и содержит токен бота, поэтому её нельзя ни сохранять в
+ * базу, ни отдавать в браузер: по такой ссылке открывается доступ ко всей
+ * переписке клиники. Вызывается только из /api/media, который скачивает файл
+ * на сервере и отдаёт вошедшему сотруднику.
+ */
+export async function fileLink(fileId: string): Promise<string | null> {
+  const t = token();
+  if (!t) return null;
+  const file = await call<{ file_path?: string }>("getFile", { file_id: fileId });
+  if (!file?.file_path) return null;
+  return `${API}/file/bot${t}/${file.file_path}`;
+}
+
 /** Разбивка кнопок по рядам: длинные подписи — по одной в ряд. */
 function keyboard(buttons: InlineButton[] | undefined) {
   if (!buttons || buttons.length === 0) return undefined;

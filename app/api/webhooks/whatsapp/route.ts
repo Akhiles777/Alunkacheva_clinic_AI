@@ -82,7 +82,7 @@ export async function POST(req: Request) {
         externalUserId: event.chatId,
         displayName: event.senderName,
       },
-      { text: event.text, externalId: event.externalId },
+      { text: event.text, externalId: event.externalId, attachments: event.attachments },
     );
 
     if (reply?.text) {

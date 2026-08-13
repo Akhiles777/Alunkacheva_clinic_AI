@@ -110,11 +110,23 @@ export interface Visit {
   status: "arrived" | "no_show" | "cancelled" | "planned";
   amount: number;
 }
+/** Вложение сообщения: голосовое, фотография, документ. */
+export interface MessageAttachment {
+  kind: string;
+  label: string;
+  /** Адрес в /api/media; пусто у геопозиции и контакта — файла нет. */
+  href: string | null;
+  mimeType?: string;
+  fileName?: string;
+  durationSec?: number;
+}
+
 export interface Message {
   id: string;
   from: "patient" | "staff" | "bot";
   text: string;
   at: string;
+  attachments: MessageAttachment[];
 }
 export interface CallRecord {
   id: string;
@@ -313,7 +325,13 @@ export function hydrateDialogs(records: DialogRecord[]) {
   const byId = new Map(db.dialogs.map((d) => [d.id, d]));
   const dialogs: Dialog[] = records.map((r) => {
     const existing = byId.get(r.id);
-    const messages: Message[] = r.messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.at }));
+    const messages: Message[] = r.messages.map((m) => ({
+      id: m.id,
+      from: m.from,
+      text: m.text,
+      at: m.at,
+      attachments: m.attachments ?? [],
+    }));
     return {
       id: r.id,
       name: r.name ?? existing?.name ?? "Без имени",
@@ -588,7 +606,8 @@ function replaceDialog(id: string, fn: (d: Dialog) => Dialog) {
 export function sendMessage(dialogId: string, text: string): Promise<{ ok: boolean; error?: string }> {
   const t = text.trim();
   if (!t) return Promise.resolve({ ok: false, error: "Пустое сообщение" });
-  const msg: Message = { id: uid("m"), from: "staff", text: t, at: "сейчас" };
+  // Сотрудник отправляет текст: вложения из интерфейса пока не отправляются.
+  const msg: Message = { id: uid("m"), from: "staff", text: t, at: "сейчас", attachments: [] };
   replaceDialog(dialogId, (d) => ({
     ...d,
     messages: [...d.messages, msg],
@@ -633,7 +652,7 @@ export function startDialog(input: {
     unread: false,
     windowOpen: true,
     windowMinutesLeft: null,
-    messages: [{ id: messageId, from: "staff", text: input.message, at: "сейчас" }],
+    messages: [{ id: messageId, from: "staff", text: input.message, at: "сейчас", attachments: [] }],
   };
   commit({ ...db, dialogs: [dialog, ...db.dialogs] });
   void startDialogDb({
