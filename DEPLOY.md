@@ -304,6 +304,13 @@ nginx.
 не применились», хотя применились. Порт задаётся в `.env` переменной `PORT`, и
 он же должен стоять в конфиге nginx.
 
+**Домен в сборке.** Переменная `DOMAIN` (без `https://`) должна быть в `.env`
+до сборки. Формы входа и сохранения — это server actions, то есть POST на тот
+же адрес; Next сверяет заголовок `Origin` с тем, за какой домен он себя
+считает, и при расхождении отклоняет запрос. Снаружи это выглядит так, что
+страница открывается, а любая кнопка её ломает. В конфиге nginx по той же
+причине обязательны `Host`, `X-Forwarded-Host` и `X-Forwarded-Proto`.
+
 **Чем запускать.** Только `next start` — это делает `ecosystem.config.cjs`.
 Запуск `.next/standalone/server.js` напрямую не годится:
 
@@ -360,6 +367,9 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
+        # Без X-Forwarded-Host и X-Forwarded-Proto Next считает себя другим
+        # доменом и отклоняет server actions — форма входа перестаёт работать.
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
