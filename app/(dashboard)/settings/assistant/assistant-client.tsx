@@ -59,16 +59,22 @@ const KnowledgeRow = memo(function KnowledgeRow({
   const k = item;
   return (
     <li className="border-border-soft rounded-lg border p-3">
-      <div className="flex items-center gap-3">
+      {/*
+        Ряд переносится на узком экране. Прежде здесь было четыре элемента в
+        одну строку без переноса: поле темы, список услуг с длинными
+        названиями, переключатель и кнопка. На телефоне ряд оказывался шире
+        экрана, и вся страница начинала ездить по горизонтали.
+      */}
+      <div className="flex flex-wrap items-center gap-3">
         <TextInput
           value={k.topic}
           onChange={(e) => onPatch(k.id, { topic: e.target.value })}
-          className="max-w-[220px] py-1.5 font-medium"
+          className="min-w-[160px] flex-1 py-1.5 font-medium sm:max-w-[220px] sm:flex-none"
         />
         <select
           value={k.serviceId ?? ""}
           onChange={(e) => onPatch(k.id, { serviceId: e.target.value || null })}
-          className="border-border-input bg-surface ml-auto rounded-md border px-2.5 py-1.5 text-sm outline-none"
+          className="border-border-input bg-surface min-w-0 max-w-full rounded-md border px-2.5 py-1.5 text-sm outline-none sm:ml-auto"
         >
           <option value="">без услуги</option>
           {serviceOptions.map((s) => (

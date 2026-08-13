@@ -116,7 +116,7 @@ export function PatientCardBody({
         <SectionLabel>Телефоны</SectionLabel>
         <ul className="flex flex-col gap-1.5">
           {patient.phones.map((ph) => (
-            <li key={ph.id} className="flex items-center gap-2">
+            <li key={ph.id} className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 disabled={!editable}
@@ -254,7 +254,7 @@ export function PatientCardBody({
             {patient.relations.map((r) => {
               const rel = findPatient(r.relatedPatientId);
               return (
-                <li key={r.id} className="flex items-center gap-2">
+                <li key={r.id} className="flex flex-wrap items-center gap-2">
                   <span className="text-text-subtle flex-none text-2xs">{RELATION_LABEL[r.kind]}</span>
                   <Link
                     href={`/patients/${r.relatedPatientId}`}

@@ -60,29 +60,32 @@ export function YclientsBlock() {
       ) : null}
 
       <div className="border-border overflow-hidden rounded-lg border">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-border bg-surface border-b text-left">
-              <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Данные</th>
-              <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Состояние</th>
-              <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Последняя выгрузка</th>
-            </tr>
-          </thead>
-          <tbody>
-            {state.cursors.map((c) => (
-              <tr key={c.entity} className="border-border-soft border-b last:border-b-0">
-                <td className="px-3 py-2">{c.label}</td>
-                <td className="px-3 py-2">
-                  {c.status}
-                  {c.error ? <span className="text-accent-text block text-xs">{c.error}</span> : null}
-                </td>
-                <td className="text-text-muted px-3 py-2 whitespace-nowrap">
-                  {c.lastSyncedAt ?? "—"}
-                </td>
+        {/* Таблица шире телефона: прокручиваем её саму, а не всю страницу. */}
+        <div className="-mx-1 overflow-x-auto px-1">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-border bg-surface border-b text-left">
+                <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Данные</th>
+                <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Состояние</th>
+                <th className="text-text-subtle px-3 py-2 text-2xs font-normal">Последняя выгрузка</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {state.cursors.map((c) => (
+                <tr key={c.entity} className="border-border-soft border-b last:border-b-0">
+                  <td className="px-3 py-2">{c.label}</td>
+                  <td className="px-3 py-2">
+                    {c.status}
+                    {c.error ? <span className="text-accent-text block text-xs">{c.error}</span> : null}
+                  </td>
+                  <td className="text-text-muted px-3 py-2 whitespace-nowrap">
+                    {c.lastSyncedAt ?? "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {state.notPushed > 0 || state.conflicts > 0 ? (

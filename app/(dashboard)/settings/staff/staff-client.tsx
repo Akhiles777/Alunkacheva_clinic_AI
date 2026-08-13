@@ -282,36 +282,39 @@ export function StaffClient({
         </div>
 
         <div className="-mx-1 px-1 max-md:hidden">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr>
-                <th className="text-text-subtle py-2 pr-3 text-left text-2xs font-normal">Право</th>
-                {ROLES.map((r) => (
-                  <th key={r} className="text-text-subtle px-2 py-2 text-center text-2xs font-normal">
-                    {ROLE_LABEL[r]}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {PERMISSIONS.map((perm) => (
-                <tr key={perm} className="border-border-soft border-t">
-                  <td className="py-2.5 pr-3 text-sm">{PERMISSION_LABEL[perm]}</td>
-                  {ROLES.map((role) => (
-                    <td key={role} className="px-2 py-2.5 text-center">
-                      <div className="inline-flex">
-                        <Toggle
-                          checked={matrix[role].includes(perm)}
-                          onChange={() => togglePerm(role, perm)}
-                          label={`${ROLE_LABEL[role]}: ${PERMISSION_LABEL[perm]}`}
-                        />
-                      </div>
-                    </td>
+          {/* Таблица шире телефона: прокручиваем её саму, а не всю страницу. */}
+          <div className="-mx-1 overflow-x-auto px-1">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr>
+                  <th className="text-text-subtle py-2 pr-3 text-left text-2xs font-normal">Право</th>
+                  {ROLES.map((r) => (
+                    <th key={r} className="text-text-subtle px-2 py-2 text-center text-2xs font-normal">
+                      {ROLE_LABEL[r]}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {PERMISSIONS.map((perm) => (
+                  <tr key={perm} className="border-border-soft border-t">
+                    <td className="py-2.5 pr-3 text-sm">{PERMISSION_LABEL[perm]}</td>
+                    {ROLES.map((role) => (
+                      <td key={role} className="px-2 py-2.5 text-center">
+                        <div className="inline-flex">
+                          <Toggle
+                            checked={matrix[role].includes(perm)}
+                            onChange={() => togglePerm(role, perm)}
+                            label={`${ROLE_LABEL[role]}: ${PERMISSION_LABEL[perm]}`}
+                          />
+                        </div>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <SaveBar

@@ -79,7 +79,9 @@ export function SourcesClient({ initial }: { initial: SourceRow[] }) {
       <Group>
         <ul className="flex flex-col gap-2">
           {rows.map((s, i) => (
-            <li key={s.id} className="flex items-center gap-2">
+            // Переносим на узком экране: шесть элементов в один ряд не влезают
+            // в телефон, и страница начинала ездить по горизонтали.
+            <li key={s.id} className="flex flex-wrap items-center gap-2">
               <div className="flex flex-none flex-col">
                 <button
                   type="button"
@@ -104,13 +106,13 @@ export function SourcesClient({ initial }: { initial: SourceRow[] }) {
               <TextInput
                 value={s.title}
                 onChange={(e) => patch(s.id, { title: e.target.value })}
-                className="flex-1"
+                className="min-w-[140px] flex-1"
               />
               <select
                 value={s.kind}
                 onChange={(e) => patch(s.id, { kind: e.target.value as SourceRow["kind"] })}
                 aria-label={`Тип источника ${s.title}`}
-                className="border-border-input bg-surface flex-none rounded-md border px-2.5 py-2 text-sm outline-none"
+                className="border-border-input bg-surface min-w-0 max-w-full rounded-md border px-2.5 py-2 text-sm outline-none"
               >
                 {SOURCE_KINDS.map((k) => (
                   <option key={k.value} value={k.value}>

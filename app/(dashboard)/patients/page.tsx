@@ -87,54 +87,57 @@ export default function PatientsPage() {
             </p>
           ) : (
             <div className="border-border overflow-hidden rounded-xl border">
-              <table className="w-full table-fixed border-collapse">
-                <thead>
-                  <tr className="border-border bg-surface border-b text-left">
-                    <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Пациент</th>
-                    <th className="text-text-subtle w-[30%] px-4 py-2.5 text-2xs font-normal max-md:hidden">Метки</th>
-                    <th className="text-text-subtle w-[20%] px-4 py-2.5 text-2xs font-normal max-lg:hidden">Источник</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((p) => {
-                    const tags = patientTags(p);
-                    return (
-                      <tr
-                        key={p.id}
-                        onClick={() => setSelected(p.id)}
-                        tabIndex={0}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") setSelected(p.id);
-                        }}
-                        className="border-border-soft hover:bg-hover cursor-pointer border-b last:border-b-0"
-                      >
-                        <td className="px-4 py-3 align-middle">
-                          <div className="truncate text-sm font-medium" title={p.name}>
-                            {p.name}
-                          </div>
-                          <div className="num text-text-subtle text-xs">
-                            {primaryPhone(p)?.pretty ?? "нет номера"}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 align-middle max-md:hidden">
-                          <div className="flex flex-wrap gap-1">
-                            {tags.length === 0 ? (
-                              <span className="text-text-subtle text-xs">—</span>
-                            ) : (
-                              tags.map((t) => (
-                                <span key={t} className="text-text-muted bg-chip rounded-sm px-2 py-0.5 text-2xs">
-                                  {t}
-                                </span>
-                              ))
-                            )}
-                          </div>
-                        </td>
-                        <td className="text-text-muted px-4 py-3 align-middle text-sm max-lg:hidden">{p.source}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              {/* Таблица шире телефона: прокручиваем её саму, а не всю страницу. */}
+              <div className="-mx-1 overflow-x-auto px-1">
+                <table className="w-full table-fixed border-collapse">
+                  <thead>
+                    <tr className="border-border bg-surface border-b text-left">
+                      <th className="text-text-subtle px-4 py-2.5 text-2xs font-normal">Пациент</th>
+                      <th className="text-text-subtle w-[30%] px-4 py-2.5 text-2xs font-normal max-md:hidden">Метки</th>
+                      <th className="text-text-subtle w-[20%] px-4 py-2.5 text-2xs font-normal max-lg:hidden">Источник</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((p) => {
+                      const tags = patientTags(p);
+                      return (
+                        <tr
+                          key={p.id}
+                          onClick={() => setSelected(p.id)}
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") setSelected(p.id);
+                          }}
+                          className="border-border-soft hover:bg-hover cursor-pointer border-b last:border-b-0"
+                        >
+                          <td className="px-4 py-3 align-middle">
+                            <div className="truncate text-sm font-medium" title={p.name}>
+                              {p.name}
+                            </div>
+                            <div className="num text-text-subtle text-xs">
+                              {primaryPhone(p)?.pretty ?? "нет номера"}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 align-middle max-md:hidden">
+                            <div className="flex flex-wrap gap-1">
+                              {tags.length === 0 ? (
+                                <span className="text-text-subtle text-xs">—</span>
+                              ) : (
+                                tags.map((t) => (
+                                  <span key={t} className="text-text-muted bg-chip rounded-sm px-2 py-0.5 text-2xs">
+                                    {t}
+                                  </span>
+                                ))
+                              )}
+                            </div>
+                          </td>
+                          <td className="text-text-muted px-4 py-3 align-middle text-sm max-lg:hidden">{p.source}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>

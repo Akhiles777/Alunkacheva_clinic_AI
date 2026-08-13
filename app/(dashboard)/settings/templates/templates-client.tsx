@@ -87,7 +87,7 @@ export function TemplatesClient({ initial }: { initial: TemplatesData }) {
       <Group title="Быстрые ответы" hint="для администратора, вставляются в поле ввода">
         <ul className="flex flex-col gap-2">
           {quickReplies.map((reply, i) => (
-            <li key={i} className="flex items-center gap-2">
+            <li key={i} className="flex flex-wrap items-center gap-2">
               <TextInput
                 value={reply}
                 onChange={(e) =>
