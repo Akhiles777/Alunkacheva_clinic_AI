@@ -29,10 +29,17 @@ export async function getKnowledge(): Promise<KnowledgeItem[]> {
   const session = await getSession();
   const rows = await prisma.knowledgeEntry.findMany({
     where: { companyId: session.companyId },
-    orderBy: { topic: "asc" },
+    // Устойчивый порядок: у записей с одинаковой темой он иначе прыгает при
+    // каждом сохранении, и строка «уезжает» из-под курсора.
+    orderBy: [{ topic: "asc" }, { createdAt: "asc" }],
     select: { id: true, topic: true, question: true, answer: true, serviceId: true, isActive: true },
   });
   return rows;
+}
+
+/** Ключ, по которому запись узнаётся независимо от идентификатора. */
+function naturalKey(topic: string, question: string): string {
+  return `${topic.trim().toLowerCase()}\u0000${question.trim().toLowerCase()}`;
 }
 
 export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeItem[]> {
@@ -46,41 +53,79 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
     }
   }
 
-  // Новизну строки определяем по факту наличия в базе, а не по префиксу id.
-  // Соглашение «новые начинаются с new-» уже подвело: экран заводит записи с
-  // id вида k1785..., и сохранение падало с попыткой обновить несуществующую
-  // строку. Проверка по базе не зависит от того, как экран назвал строку.
+  /**
+   * Внутри одной отправки записи с одинаковой темой и вопросом схлопываем:
+   * двойное нажатие или задвоившаяся строка на экране не должны превращаться
+   * в две строки в базе. Побеждает последняя — это то, что человек видит.
+   */
+  const deduped = new Map<string, KnowledgeItem>();
+  for (const k of items) deduped.set(naturalKey(k.topic, k.question), k);
+
+  /**
+   * Что считать новой записью.
+   *
+   * Раньше решал идентификатор, присланный экраном: не нашли в базе — создаём.
+   * Экран выдаёт новым строкам собственный идентификатор, и любое расхождение
+   * (устаревшее состояние, повторная отправка, вторая вкладка) порождало
+   * копию. На боевом стенде так набралось 417 записей при 66 уникальных.
+   *
+   * Теперь запись узнаётся по теме и вопросу — по тому, что видит человек.
+   * Идентификатор остаётся подсказкой: если он совпал, обновляем именно её,
+   * даже когда тему переименовали.
+   */
   const existing = await prisma.knowledgeEntry.findMany({
     where: { companyId: session.companyId },
-    select: { id: true },
+    select: { id: true, topic: true, question: true },
   });
-  const existingIds = new Set(existing.map((e) => e.id));
+  const byId = new Map(existing.map((e) => [e.id, e]));
+  const byKey = new Map(existing.map((e) => [naturalKey(e.topic, e.question), e.id]));
 
-  await prisma.$transaction(async (tx) => {
-    for (const k of items) {
-      const data = {
-        topic: k.topic.trim(),
-        question: k.question.trim(),
-        answer: k.answer.trim(),
-        serviceId: k.serviceId || null,
-        isActive: k.isActive,
-        updatedById: session.userId,
-      };
-      if (existingIds.has(k.id)) {
-        await tx.knowledgeEntry.update({ where: { id: k.id }, data });
-      } else {
-        // id, придуманный экраном, не сохраняем: пусть базa выдаст свой.
-        await tx.knowledgeEntry.create({ data: { companyId: session.companyId, ...data } });
+  const updates: { id: string; data: Record<string, unknown> }[] = [];
+  const creates: Record<string, unknown>[] = [];
+
+  for (const k of deduped.values()) {
+    const data = {
+      topic: k.topic.trim(),
+      question: k.question.trim(),
+      answer: k.answer.trim(),
+      serviceId: k.serviceId || null,
+      isActive: k.isActive,
+      updatedById: session.userId,
+    };
+    const targetId = byId.has(k.id) ? k.id : byKey.get(naturalKey(k.topic, k.question));
+    if (targetId) updates.push({ id: targetId, data });
+    else creates.push({ companyId: session.companyId, ...data });
+  }
+
+  /**
+   * Одна вставка на все новые строки вместо запроса на каждую. Прежний цикл
+   * с отдельным обращением к базе на запись работал около секунды на строку —
+   * на четырёх сотнях записей экран замирал на минуты, а транзакция рисковала
+   * упереться в таймаут.
+   */
+  await prisma.$transaction(
+    async (tx) => {
+      if (creates.length > 0) {
+        await tx.knowledgeEntry.createMany({ data: creates as never, skipDuplicates: true });
       }
-    }
-  });
+      for (const u of updates) {
+        await tx.knowledgeEntry.updateMany({
+          where: { id: u.id, companyId: session.companyId },
+          data: u.data,
+        });
+      }
+    },
+    // Правок может быть много: значение по умолчанию (5 с) обрывало сохранение
+    // на середине, и человек видел, что часть записей не сохранилась.
+    { timeout: 120_000, maxWait: 10_000 },
+  );
 
   await writeAudit({
     companyId: session.companyId,
     actorId: session.userId,
     action: "SETTINGS_UPDATE",
     entityType: "knowledge",
-    meta: { count: items.length },
+    meta: { updated: updates.length, created: creates.length },
   });
 
   return getKnowledge();

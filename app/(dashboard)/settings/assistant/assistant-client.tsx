@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { settingsStore, type KnowledgeItem } from "@/app/_data/settings";
 import {
   Field,
@@ -30,6 +30,79 @@ function newKnowledgeItem(): KnowledgeItem {
 
   return { id, topic: "", question: "", answer: "", serviceId: null, isActive: true };
 }
+
+
+/**
+ * Одна запись справочника.
+ *
+ * Вынесена в отдельный компонент под memo: без этого каждое нажатие клавиши
+ * перерисовывало весь список. На четырёх сотнях записей ввод шёл рывками —
+ * браузер успевал отрисовать не каждый символ.
+ */
+const KnowledgeRow = memo(function KnowledgeRow({
+  item,
+  serviceOptions,
+  onPatch,
+  onDelete,
+}: {
+  item: KnowledgeItem;
+  serviceOptions: { id: string; title: string }[];
+  onPatch: (id: string, next: Partial<KnowledgeItem>) => void;
+  onDelete: (item: KnowledgeItem) => void;
+}) {
+  const k = item;
+  return (
+    <li className="border-border-soft rounded-lg border p-3">
+      <div className="flex items-center gap-3">
+        <TextInput
+          value={k.topic}
+          onChange={(e) => onPatch(k.id, { topic: e.target.value })}
+          className="max-w-[220px] py-1.5 font-medium"
+        />
+        <select
+          value={k.serviceId ?? ""}
+          onChange={(e) => onPatch(k.id, { serviceId: e.target.value || null })}
+          className="border-border-input bg-surface ml-auto rounded-md border px-2.5 py-1.5 text-sm outline-none"
+        >
+          <option value="">без услуги</option>
+          {serviceOptions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.title}
+            </option>
+          ))}
+        </select>
+        <div className="flex items-center gap-1.5">
+          <Toggle
+            checked={k.isActive}
+            onChange={(v) => onPatch(k.id, { isActive: v })}
+            label={`${k.topic} активна`}
+          />
+          <button
+            type="button"
+            onClick={() => onDelete(k)}
+            aria-label={`Удалить запись ${k.topic || "без темы"}`}
+            className="text-text-subtle hover:text-accent-text flex h-9 w-9 items-center justify-center text-sm"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+      <TextInput
+        value={k.question}
+        onChange={(e) => onPatch(k.id, { question: e.target.value })}
+        placeholder="Вопрос пациента"
+        className="mt-2 py-1.5"
+      />
+      <Textarea
+        value={k.answer}
+        onChange={(e) => onPatch(k.id, { answer: e.target.value })}
+        placeholder="Ответ — дословно так, как отвечает ассистент"
+        rows={2}
+        className="mt-2"
+      />
+    </li>
+  );
+});
 
 export function AssistantClient({
   initial,
@@ -69,10 +142,19 @@ export function AssistantClient({
     ? "У активной записи базы знаний должен быть ответ"
     : null;
 
-  function patchKnowledge(id: string, next: Partial<KnowledgeItem>) {
+  /**
+   * Ссылки на обработчики держим постоянными: memo на строке списка не даст
+   * ничего, если при каждом нажатии в неё приходит новая функция.
+   */
+  const patchKnowledge = useCallback((id: string, next: Partial<KnowledgeItem>) => {
     setKnowledge((ks) => ks.map((k) => (k.id === id ? { ...k, ...next } : k)));
     setDirtyKnowledgeIds((ids) => new Set(ids).add(id));
-  }
+  }, []);
+
+  const requestDelete = useCallback((item: KnowledgeItem) => {
+    setDeleteTarget(item);
+    setDeleteError(null);
+  }, []);
 
   function removeDraft(id: string) {
     setKnowledge((ks) => ks.filter((k) => k.id !== id));
@@ -204,58 +286,13 @@ export function AssistantClient({
             <li className="text-text-subtle text-sm">Ничего не нашлось.</li>
           ) : (
             filtered.map((k) => (
-              <li key={k.id} className="border-border-soft rounded-lg border p-3">
-                <div className="flex items-center gap-3">
-                  <TextInput
-                    value={k.topic}
-                    onChange={(e) => patchKnowledge(k.id, { topic: e.target.value })}
-                    className="max-w-[220px] py-1.5 font-medium"
-                  />
-                  <select
-                    value={k.serviceId ?? ""}
-                    onChange={(e) => patchKnowledge(k.id, { serviceId: e.target.value || null })}
-                    className="border-border-input bg-surface ml-auto rounded-md border px-2.5 py-1.5 text-sm outline-none"
-                  >
-                    <option value="">без услуги</option>
-                    {serviceOptions.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.title}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="flex items-center gap-1.5">
-                    <Toggle
-                      checked={k.isActive}
-                      onChange={(v) => patchKnowledge(k.id, { isActive: v })}
-                      label={`${k.topic} активна`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDeleteTarget(k);
-                        setDeleteError(null);
-                      }}
-                      aria-label={`Удалить запись ${k.topic || "без темы"}`}
-                      className="text-text-subtle hover:text-accent-text flex h-9 w-9 items-center justify-center text-sm"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-                <TextInput
-                  value={k.question}
-                  onChange={(e) => patchKnowledge(k.id, { question: e.target.value })}
-                  placeholder="Вопрос пациента"
-                  className="mt-2 py-1.5"
-                />
-                <Textarea
-                  value={k.answer}
-                  onChange={(e) => patchKnowledge(k.id, { answer: e.target.value })}
-                  placeholder="Ответ — дословно так, как отвечает ассистент"
-                  rows={2}
-                  className="mt-2"
-                />
-              </li>
+              <KnowledgeRow
+                key={k.id}
+                item={k}
+                serviceOptions={serviceOptions}
+                onPatch={patchKnowledge}
+                onDelete={requestDelete}
+              />
             ))
           )}
         </ul>
