@@ -2,9 +2,139 @@
 
 import { useState, useTransition } from "react";
 import { Group } from "../_components/ui";
-import { checkConnection, saveCredential, type IntegrationView, type ProviderId } from "./actions";
+import {
+  checkConnection,
+  connectYclients,
+  saveCredential,
+  selectYclientsBranch,
+  type IntegrationView,
+  type ProviderId,
+} from "./actions";
 
 const WHATSAPP_PROVIDERS = ["Wazzup24", "Green API"];
+
+/**
+ * Подключение к YCLIENTS логином и паролем.
+ *
+ * Пользовательский токен YCLIENTS выдаёт только в обмен на учётные данные
+ * сотрудника. Раньше его получали запросом руками и вписывали в базу — теперь
+ * это делает платформа. Логин и пароль никуда не сохраняются: они нужны на
+ * один запрос и в браузере не остаются.
+ */
+function YclientsConnect({ onDone }: { onDone: (next: IntegrationView[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [branches, setBranches] = useState<{ id: number; title: string }[]>([]);
+  const [chosen, setChosen] = useState<number | null>(null);
+
+  async function connect() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await connectYclients(login, password);
+      onDone(res.view);
+      if (!res.ok) {
+        setError(res.error ?? "Не удалось подключиться");
+        return;
+      }
+      // Пароль в памяти держать незачем: он больше не понадобится.
+      setPassword("");
+      setBranches(res.branches ?? []);
+      setChosen(res.selectedBranchId ?? null);
+      if (res.error) setError(res.error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pick(id: number) {
+    setBusy(true);
+    try {
+      onDone(await selectYclientsBranch(id));
+      setChosen(id);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="border-border text-text hover:bg-hover self-start rounded-md border px-3 py-2 text-sm font-medium"
+      >
+        Подключить по логину и паролю
+      </button>
+    );
+  }
+
+  return (
+    <div className="border-border bg-raise flex flex-col gap-2.5 rounded-lg border p-3.5">
+      <p className="text-text-muted text-xs leading-snug">
+        Логин и пароль сотрудника YCLIENTS. Они нужны один раз, чтобы получить
+        пользовательский токен, и нигде не сохраняются.
+      </p>
+      <input
+        value={login}
+        onChange={(e) => setLogin(e.target.value)}
+        placeholder="Логин или телефон"
+        autoComplete="off"
+        className="border-border-input bg-surface w-full rounded-md border px-3 py-1.5 text-sm outline-none"
+      />
+      <input
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        type="password"
+        placeholder="Пароль"
+        autoComplete="off"
+        className="border-border-input bg-surface w-full rounded-md border px-3 py-1.5 text-sm outline-none"
+      />
+      {error ? <p className="text-danger-text text-xs">{error}</p> : null}
+      {branches.length > 1 ? (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-text-muted text-xs">Выберите филиал:</span>
+          {branches.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              onClick={() => pick(b.id)}
+              disabled={busy}
+              className={`rounded-md border px-3 py-1.5 text-left text-sm ${
+                chosen === b.id ? "border-accent bg-accent-tint" : "border-border hover:bg-hover"
+              }`}
+            >
+              {b.title}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {chosen !== null && branches.length <= 1 ? (
+        <p className="text-text-muted text-xs">Филиал определён автоматически.</p>
+      ) : null}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={connect}
+          disabled={busy}
+          className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-45"
+        >
+          {busy ? "Подключаем…" : "Подключить"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-1.5 text-sm"
+        >
+          Закрыть
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status: IntegrationView["status"] }) {
   if (status === "ok") {
@@ -30,11 +160,13 @@ function Block({
   block,
   onSave,
   onCheck,
+  onRefresh,
   pending,
 }: {
   block: IntegrationView;
   onSave: (keyName: string, value: string) => void;
   onCheck: () => void;
+  onRefresh: (next: IntegrationView[]) => void;
   pending: boolean;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
@@ -125,6 +257,8 @@ function Block({
         ))}
       </ul>
 
+      {block.provider === "yclients" ? <YclientsConnect onDone={onRefresh} /> : null}
+
       <div className="flex items-center gap-3 pt-1">
         <button
           type="button"
@@ -166,6 +300,7 @@ export function IntegrationsClient({ initial }: { initial: IntegrationView[] }) 
               setBlocks(await checkConnection(block.provider));
             });
           }}
+          onRefresh={setBlocks}
         />
       ))}
       <p className="text-text-subtle text-xs">
