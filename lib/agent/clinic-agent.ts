@@ -15,7 +15,7 @@ import {
   materializeConsent,
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
-import { consentFromText, menuActionFromText, supportsButtons } from "./text-actions";
+import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 
 /**
  * Агент пациентского канала.
@@ -505,27 +505,23 @@ export async function handlePatientMessage(
     });
   }
 
-  // Расписание — зона администратора (решение заказчика).
-  if (scheduleTopic(text)) {
-    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
-    return respond(ctx, conversation.id, {
-      text:
-        "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
-        "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.",
-      buttons: mainMenu(),
-    });
-  }
-
   if (personalTopic(text) || wantsHuman(text)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба").catch(() => {});
     return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
 
-  if (/^\/start\b/.test(text)) {
-    return respond(ctx, conversation.id, {
-      text: `Здравствуйте! Это клиника «${CLINIC_NAME}». Расскажу про услуги, цены, адрес, часы работы, подготовку к процедурам и условия отмены. Запись и переносы ведёт администратор — передам ему.`,
-      buttons: mainMenu(),
-    });
+  /**
+   * Приветствие. Клиника задаёт его в «Настройки → Ассистент», и до сих пор
+   * это поле было чистой декорацией: агент его не читал ни разу, а на «Добрый
+   * день» отвечал тем, что придумает модель. Здороваться клиника хочет своими
+   * словами — это первое, что видит пациент.
+   */
+  if (/^\/start\b/.test(text) || isGreeting(text)) {
+    const hello =
+      settings.greeting.trim() ||
+      `Здравствуйте! Это клиника «${CLINIC_NAME}». Расскажу про услуги, цены, адрес, часы работы, ` +
+        "подготовку к процедурам и условия отмены. Запись и переносы ведёт администратор — передам ему.";
+    return respond(ctx, conversation.id, { text: hello, buttons: mainMenu() });
   }
 
   const knowledgeRows = await prisma.knowledgeEntry.findMany({
@@ -551,11 +547,39 @@ export async function handlePatientMessage(
     });
   }
 
-  // Прочие организационные вопросы: сначала точная справка, иначе модель,
-  // ограниченная справочником и данными из базы.
+  /**
+   * Прочие организационные вопросы: сначала точная справка.
+   *
+   * Справочник проверяется РАНЬШЕ ветки про расписание намеренно. Прежде было
+   * наоборот, и на «Как записаться» пациент получал казённое «запись ведёт
+   * администратор» — хотя клиника завела на этот самый вопрос свой ответ и
+   * утвердила его. Наш текст перебивал текст клиники, а §6 требует ровно
+   * обратного: отвечаем тем, что клиника написала сама.
+   */
   const exact = matchKnowledge(text, knowledgeRows);
   if (confidentMatch(exact)) {
+    /**
+     * Ответ есть, но тема всё равно про запись — значит администратору нужно
+     * подключиться. Пациенту уходит текст клиники, человеку — уведомление.
+     * Одно другого не заменяет: справка объясняет порядок, время называет
+     * человек.
+     */
+    if (scheduleTopic(text)) {
+      await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
+    }
     return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
+  }
+
+  // Расписание — зона администратора (решение заказчика). Сюда попадаем
+  // только когда своего ответа у клиники нет.
+  if (scheduleTopic(text)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
+    return respond(ctx, conversation.id, {
+      text:
+        "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
+        "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.",
+      buttons: mainMenu(),
+    });
   }
 
   const context = await clinicContext(ctx.companyId, text);
@@ -618,8 +642,12 @@ function mainMenu() {
 async function handleCallback(ctx: AgentContext, conversationId: string, data: string): Promise<AgentReply> {
   if (data === CONSENT_ACCEPT) {
     await grantConsent(ctx.companyId, conversationId);
+    // Первая фраза после согласия — по сути и есть приветствие клиники: до
+    // этого пациент видел только юридический текст. Берём её из настроек,
+    // чтобы знакомство шло словами клиники, а не нашей заглушкой.
+    const { greeting } = await assistantMode(ctx.companyId);
     return respond(ctx, conversationId, {
-      text: "Спасибо. Чем можем помочь?",
+      text: greeting.trim() ? `Спасибо!\n\n${greeting.trim()}` : "Спасибо. Чем можем помочь?",
       buttons: mainMenu(),
     });
   }

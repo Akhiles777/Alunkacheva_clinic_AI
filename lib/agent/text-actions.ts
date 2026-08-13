@@ -129,3 +129,51 @@ function normalize(raw: string): string {
 function hit(text: string, phrase: string): boolean {
   return wordRe(phrase).test(text);
 }
+
+/**
+ * Приветствие и ничего больше.
+ *
+ * Нужно, чтобы на «Добрый день» ответить приветствием клиники из настроек, а
+ * не отправлять модель сочинять своё. Требуем, чтобы сообщение состояло из
+ * приветствия целиком: «Здравствуйте, а сколько стоит приём?» — это вопрос, и
+ * отвечать на него дежурной фразой было бы отпиской.
+ */
+const GREETINGS = [
+  "здравствуйте",
+  "здравствуй",
+  "добрый день",
+  "доброе утро",
+  "добрый вечер",
+  "доброй ночи",
+  "привет",
+  "приветствую",
+  "салам",
+  "салам алейкум",
+  "ассалам алейкум",
+  "ассаламу алейкум",
+  "hello",
+  "hi",
+];
+
+/** Вежливые довески, которые не делают приветствие вопросом. */
+const FILLER = ["пожалуйста", "скажите", "подскажите", "а", "и", "ну", "вам", "вас"];
+
+export function isGreeting(raw: string): boolean {
+  const text = normalize(raw);
+  if (!text) return false;
+
+  let rest = text;
+  let matched = false;
+  // Длинные приветствия убираем первыми: иначе «салам» съест «салам алейкум»
+  // и остаток «алейкум» будет принят за посторонние слова.
+  for (const g of [...GREETINGS].sort((a, b) => b.length - a.length)) {
+    if (wordRe(g).test(rest)) {
+      rest = rest.replace(wordRe(g), " ");
+      matched = true;
+    }
+  }
+  if (!matched) return false;
+
+  const leftovers = rest.split(/\s+/).filter((w) => w && !FILLER.includes(w));
+  return leftovers.length === 0;
+}

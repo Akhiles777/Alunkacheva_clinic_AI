@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { consentFromText, menuActionFromText, supportsButtons } from "./text-actions";
+import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 import { CONSENT_ACCEPT, CONSENT_DECLINE } from "./consent";
 
 describe("согласие словами", () => {
@@ -70,5 +70,31 @@ describe("кнопки по каналам", () => {
   it("в WhatsApp кнопок нет", () => {
     expect(supportsButtons("TELEGRAM")).toBe(true);
     expect(supportsButtons("WHATSAPP")).toBe(false);
+  });
+});
+
+describe("приветствие", () => {
+  it("узнаёт обычные приветствия", () => {
+    for (const t of ["Здравствуйте", "добрый день", "Доброе утро!", "Привет", "Салам алейкум", "Ассаламу алейкум"]) {
+      expect(isGreeting(t), t).toBe(true);
+    }
+  });
+
+  it("терпит вежливые довески", () => {
+    expect(isGreeting("Здравствуйте!")).toBe(true);
+    expect(isGreeting("Добрый день, подскажите пожалуйста")).toBe(true);
+  });
+
+  it("приветствие с вопросом — это вопрос", () => {
+    // Иначе на «Здравствуйте, сколько стоит приём» уйдёт дежурная фраза
+    // вместо ответа, и пациент решит, что его не читают.
+    expect(isGreeting("Здравствуйте, а сколько стоит приём?")).toBe(false);
+    expect(isGreeting("Добрый день! Хочу записаться")).toBe(false);
+    expect(isGreeting("Сколько стоит остеопатия?")).toBe(false);
+  });
+
+  it("пустое не приветствие", () => {
+    expect(isGreeting("")).toBe(false);
+    expect(isGreeting("...")).toBe(false);
   });
 });
