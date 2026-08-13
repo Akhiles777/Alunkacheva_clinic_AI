@@ -218,7 +218,20 @@ function hitsStopWord(text: string, stopWords: string[]): boolean {
 
 // ─────────────────────────────────────────────── справка из базы
 
-async function clinicContext(companyId: string): Promise<string> {
+/**
+ * Справка клиники для модели.
+ *
+ * Раньше в промпт уходил ВЕСЬ справочник: у клиники 62 записи по 400 с лишним
+ * символов — около 26 КБ на каждое сообщение пациента. Это и расход на модель,
+ * и задержка ответа, и лишний шум, в котором нужный абзац теряется. Причём
+ * растёт линейно: чем лучше клиника заполняет базу, тем дороже каждый ответ.
+ *
+ * Поэтому при заданном вопросе отбираем только подходящие записи. Без вопроса
+ * (приветствие, кнопки) отдаём короткий набор: услуги, часы, адрес.
+ */
+const KNOWLEDGE_IN_PROMPT = 8;
+
+async function clinicContext(companyId: string, question?: string): Promise<string> {
   const [services, knowledge, schedule] = await Promise.all([
     getServices(companyId),
     prisma.knowledgeEntry.findMany({
@@ -243,11 +256,41 @@ async function clinicContext(companyId: string): Promise<string> {
   for (const d of schedule) lines.push(`${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
   const closed = [1, 2, 3, 4, 5, 6, 7].filter((w) => !schedule.some((d) => d.weekday === w));
   if (closed.length) lines.push(`Выходной: ${closed.map((w) => days[w]).join(", ")}`);
-  if (knowledge.length) {
+  const relevant = pickRelevant(knowledge, question);
+  if (relevant.length) {
     lines.push("", "Справка клиники:");
-    for (const k of knowledge) lines.push(`${k.topic}: ${k.answer}`);
+    for (const k of relevant) lines.push(`${k.topic}: ${k.answer}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * Записи справочника, относящиеся к вопросу. Ранжируем тем же подбором, что
+ * отвечает дословно, — разница лишь в пороге: сюда берём и неуверенные
+ * совпадения, у модели есть контекст переписки, чтобы выбрать нужное.
+ */
+function pickRelevant(
+  rows: { topic: string; question: string; answer: string }[],
+  question?: string,
+): { topic: string; question: string; answer: string }[] {
+  if (!question || rows.length <= KNOWLEDGE_IN_PROMPT) return rows;
+
+  const scored = rows
+    .map((row) => ({ row, score: matchKnowledge(question, [row])?.score ?? 0 }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, KNOWLEDGE_IN_PROMPT)
+    .map((x) => x.row);
+
+  /**
+   * Ничего не подошло — отдаём справочник целиком.
+   *
+   * Подбор по словам неизбежно промахивается: «как можно платить» не находит
+   * «Как можно оплатить», потому что приставка меняет начало слова. Отдать в
+   * таком случае первые попавшиеся записи — значит молча лишить пациента
+   * готового ответа ради экономии на модели. Экономия того не стоит.
+   */
+  return scored.length > 0 ? scored : rows;
 }
 
 /**
@@ -436,7 +479,7 @@ export async function handlePatientMessage(
     return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
   }
 
-  const context = await clinicContext(ctx.companyId);
+  const context = await clinicContext(ctx.companyId, text);
   const answer = await answerLLM(text, context, await recentTurns(conversation.id));
   if (!answer) {
     // Модель недоступна или молчит. Не бросаем пациента: отдаём то, что знаем
