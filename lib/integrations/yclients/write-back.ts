@@ -256,3 +256,100 @@ export async function pushPendingAppointments(companyId: string): Promise<{
   }
   return { synced, conflicts, failed };
 }
+
+/**
+ * Перенос визита в YCLIENTS.
+ *
+ * Без этого перенос, сделанный администратором у нас, оставался только у нас:
+ * в YCLIENTS визит продолжал стоять на старом времени, старый слот считался
+ * занятым, а новый — свободным. Две системы расходились ровно в том, ради
+ * чего затевалась интеграция.
+ *
+ * Визит, которого в YCLIENTS нет (создан у нас и ещё не отправлен), просто
+ * уедет туда позже уже с новым временем — отправлять нечего.
+ */
+export async function pushReschedule(companyId: string, appointmentId: string): Promise<PushResult> {
+  return pushChange(companyId, appointmentId, async (client, appt) => {
+    await client.send("PUT", client.endpoints.record(client.creds.companyId, appt.yclientsRecordId!), {
+      staff_id: appt.staff?.yclientsStaffId ?? undefined,
+      datetime: appt.startAt.toISOString(),
+      seance_length: appt.durationMin * 60,
+      // Уведомления пациенту клиника рассылает из YCLIENTS по своим правилам.
+      send_sms: false,
+    });
+  });
+}
+
+/**
+ * Отмена визита в YCLIENTS.
+ *
+ * Отменённый у нас визит обязан освободить слот и там: иначе администратор
+ * видит занятое время, которого на самом деле нет, и не ставит туда пациента.
+ */
+export async function pushCancel(companyId: string, appointmentId: string): Promise<PushResult> {
+  return pushChange(companyId, appointmentId, async (client, appt) => {
+    await client.send("DELETE", client.endpoints.record(client.creds.companyId, appt.yclientsRecordId!));
+  });
+}
+
+/**
+ * Общая часть переноса и отмены: проверки, единая обработка отказов и
+ * запись результата на визит. Отдельно от создания — там своя логика поиска
+ * уже созданной записи.
+ */
+async function pushChange(
+  companyId: string,
+  appointmentId: string,
+  action: (
+    client: NonNullable<Awaited<ReturnType<typeof getYclientsClient>>>,
+    appt: {
+      yclientsRecordId: number | null;
+      startAt: Date;
+      durationMin: number;
+      staff: { yclientsStaffId: number | null } | null;
+    },
+  ) => Promise<void>,
+): Promise<PushResult> {
+  const appt = await prisma.appointment.findFirst({
+    where: { id: appointmentId, companyId },
+    select: {
+      yclientsRecordId: true,
+      startAt: true,
+      durationMin: true,
+      staff: { select: { yclientsStaffId: true } },
+    },
+  });
+  // Визита нет в YCLIENTS — синхронизировать нечего: он уедет туда позже уже
+  // в новом виде.
+  if (!appt?.yclientsRecordId) return { outcome: "skipped" };
+  if (!isYclientsEnabled()) return { outcome: "skipped", message: "Интеграция выключена" };
+
+  const client = await getYclientsClient(companyId);
+  if (!client) return { outcome: "skipped", message: "Не заданы ключи YCLIENTS" };
+
+  try {
+    await action(client, appt);
+    await mark(appointmentId, { syncState: "SYNCED", syncError: null, lastSyncAt: new Date() });
+    return { outcome: "synced" };
+  } catch (e) {
+    const err = e as YclientsApiError;
+    const message = err.message ?? "Не удалось изменить запись в YCLIENTS";
+
+    /**
+     * Отказ по существу: новое время занято или запись там уже удалена.
+     * Повторять бессмысленно — нужен человек, иначе расхождение так и
+     * останется незамеченным.
+     */
+    if (err.status === 409 || err.status === 422 || err.status === 404) {
+      await mark(appointmentId, {
+        syncState: "CONFLICT",
+        syncError: message.slice(0, 500),
+        lastSyncAt: new Date(),
+      });
+      return { outcome: "conflict", message };
+    }
+
+    await bumpAttempt(appointmentId, message);
+    return { outcome: "failed", message };
+  }
+}

@@ -7,7 +7,7 @@ import type { Appt } from "@/app/_data/store";
 import type { AppointmentStatus } from "@/generated/prisma/enums";
 import { todayRangeMoscow } from "@/lib/schedule";
 import { clinicDayFor } from "@/lib/server/clinic-day";
-import { pushAppointment } from "@/lib/integrations/yclients/write-back";
+import { pushAppointment, pushCancel, pushReschedule } from "@/lib/integrations/yclients/write-back";
 
 /**
  * Расписание/«Сегодня» из ЕДИНОГО источника — проекции Appointment в БД (та же,
@@ -129,6 +129,21 @@ export async function setApptStatusDb(id: string, status: Appt["status"]): Promi
   });
 }
 
+/**
+ * Отменить визит.
+ *
+ * Отдельным действием, а не статусом: отмена освобождает слот и должна дойти
+ * до YCLIENTS, иначе там время остаётся занятым и в него никого не поставят.
+ */
+export async function cancelApptDb(id: string): Promise<void> {
+  const session = await getSession();
+  await prisma.appointment.updateMany({
+    where: { id, companyId: session.companyId },
+    data: { status: "CANCELLED", cancelledAt: new Date(), revenue: 0, paidAmount: 0, isPaid: false },
+  });
+  await pushCancel(session.companyId, id).catch(() => {});
+}
+
 export async function rescheduleApptDb(id: string, startMinute: number): Promise<void> {
   const session = await getSession();
   const row = await prisma.appointment.findFirst({ where: { id, companyId: session.companyId }, select: { durationMin: true } });
@@ -136,6 +151,14 @@ export async function rescheduleApptDb(id: string, startMinute: number): Promise
   const startAt = startAtFromMinute(startMinute);
   const endAt = new Date(startAt.getTime() + row.durationMin * 60_000);
   await prisma.appointment.updateMany({ where: { id, companyId: session.companyId }, data: { startAt, endAt, updatedAtYclients: startAt } });
+
+  /**
+   * Переносим и в YCLIENTS. Без этого визит там остаётся на старом времени:
+   * старый слот числится занятым, новый — свободным, и администратор ставит
+   * туда второго пациента. Сбой отправки не откатывает перенос — он записан,
+   * а расхождение видно в состоянии визита и в сверке.
+   */
+  await pushReschedule(session.companyId, id).catch(() => {});
 }
 
 export interface CreateApptInput {

@@ -44,6 +44,8 @@ export const ENDPOINTS = {
   resources: (companyId: string) => `/company/${companyId}/resources`,
   /** Записи (приёмы) за период. */
   records: (companyId: string) => `/records/${companyId}`,
+  /** Одна запись: изменение и удаление при переносе и отмене у нас. */
+  record: (companyId: string, recordId: number) => `/record/${companyId}/${recordId}`,
   /** Клиенты филиала (постранично). */
   clients: (companyId: string) => `/company/${companyId}/clients/search`,
   /** Финансовые транзакции (выручка). */
