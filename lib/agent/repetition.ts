@@ -75,6 +75,9 @@ export function alreadyGreeted(history: Turn[], greeting?: string): boolean {
     if (t.role !== "assistant") return false;
     const said = normalize(t.content);
     if (ours && said.startsWith(ours)) return true;
-    return /^(здравствуйте|добрый день|доброе утро|добрый вечер|приветствую|привет)\b/.test(said);
+    // Граница слова через отсутствие следующей буквы: `\b` в JavaScript
+    // опирается на латинский `\w` и рядом с кириллицей не срабатывает вовсе —
+    // см. lib/agent/word-boundary.ts. Здесь на этом уже один раз обожглись.
+    return /^(здравствуйте|добрый день|доброе утро|добрый вечер|приветствую|привет)(?!\p{L})/u.test(said);
   });
 }
