@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { normalizePhone } from "@/lib/phone";
-import { notifyStaff, inboxRecipients } from "@/lib/server/notify";
+import { notifyStaff, inboxRecipients, escalationRecipients } from "@/lib/server/notify";
 import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
@@ -178,7 +178,8 @@ async function escalate(companyId: string, conversationId: string, reason: Escal
   }).catch(() => {});
   await notifyStaff({
     companyId,
-    recipientIds: await inboxRecipients(companyId),
+    // Вызов человека будит только администраторов: отвечать пациенту им.
+    recipientIds: await escalationRecipients(companyId),
     kind: "ESCALATION",
     title: "Диалог передан человеку",
     body: note,

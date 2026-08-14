@@ -106,15 +106,30 @@ export interface RunResult {
 }
 
 /**
- * Запустить выгрузку. Начальная и повторная — одна и та же операция: разница
- * только в курсорах, которые уже стоят.
+ * Запустить выгрузку.
+ *
+ * `full` сбрасывает отметки «докуда дошли» и тянет историю заново.
+ *
+ * Зачем это нужно отдельной кнопкой. Обычный прогон берёт визиты от последней
+ * успешной синхронизации, а историю за два года — только когда отметки нет
+ * вовсе. Если первая выгрузка прошла с ошибкой в разборе, но без исключения,
+ * отметка всё равно встаёт на «сейчас», и дальше каждый запуск забирает
+ * последнюю неделю. Внешне выглядит как «выгрузка прошла, а визитов нет» — и
+ * именно это случилось у клиники: из 3759 визитов доехал один, а повторные
+ * запуски ничего не меняли.
  */
-export async function runYclientsSync(): Promise<RunResult> {
+export async function runYclientsSync(full = false): Promise<RunResult> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
 
   if (!isYclientsEnabled()) {
     return { ok: false, message: "Интеграция выключена: задайте YCLIENTS_ENABLED=true на хостинге." };
+  }
+
+  if (full) {
+    // Сносим только отметки о ходе синхронизации. Сами данные остаются:
+    // выгрузка идёт по уникальным идентификаторам и дублей не создаёт.
+    await prisma.syncCursor.deleteMany({ where: { companyId: session.companyId } });
   }
 
   const res = await syncAll(session.companyId);
@@ -123,7 +138,7 @@ export async function runYclientsSync(): Promise<RunResult> {
     actorId: session.userId,
     action: "SETTINGS_UPDATE",
     entityType: "yclients_sync",
-    meta: { counts: res.counts, errors: res.errors.length },
+    meta: { counts: res.counts, errors: res.errors.length, full },
   });
 
   if (res.skipped) {
@@ -133,7 +148,9 @@ export async function runYclientsSync(): Promise<RunResult> {
     ok: res.errors.length === 0,
     message:
       res.errors.length === 0
-        ? "Выгрузка завершена."
+        ? full
+          ? "Полная выгрузка завершена: история загружена заново."
+          : "Выгрузка завершена."
         : `Выгрузка завершена с ошибками: ${res.errors.length}.`,
     counts: res.counts as Record<string, number>,
     errors: res.errors,

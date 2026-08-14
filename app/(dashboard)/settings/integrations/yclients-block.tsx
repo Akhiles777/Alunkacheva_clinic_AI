@@ -117,6 +117,27 @@ export function YclientsBlock() {
         >
           {pending ? "Выполняем…" : "Выгрузить данные"}
         </button>
+        {/*
+          Полная выгрузка отдельной кнопкой. Обычная берёт визиты от последней
+          успешной синхронизации; если первая прошла с изъяном, отметка всё
+          равно встаёт на «сейчас», и дальше приезжает только последняя
+          неделя. Снаружи это выглядит как «выгрузка прошла, а визитов нет».
+        */}
+        <button
+          type="button"
+          disabled={pending || blocked}
+          onClick={() =>
+            start(async () => {
+              setReport(null);
+              setResult(await runYclientsSync(true));
+              await load();
+            })
+          }
+          className="border-border text-text hover:bg-hover rounded-md border px-3 py-2 text-sm font-medium disabled:opacity-45"
+          title="Забрать историю заново, не полагаясь на отметки о прошлых выгрузках"
+        >
+          Полная выгрузка заново
+        </button>
         <button
           type="button"
           disabled={pending || blocked}

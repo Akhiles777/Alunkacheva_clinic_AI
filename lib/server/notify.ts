@@ -318,3 +318,23 @@ export async function inboxRecipients(companyId: string, exceptUserId?: string |
   });
   return users.map((u) => u.id);
 }
+
+/**
+ * Кому уходит вызов администратора.
+ *
+ * Только администраторам — решение заказчика. Прежде звонок из диалога будил
+ * заодно владельца и управляющего; на десятке обращений в день это
+ * превращается в поток, который перестают читать. Отвечает пациенту
+ * администратор, ему и уведомление.
+ *
+ * Если администраторов в клинике не заведено, уведомление всё же уходит
+ * остальным: молчание тут хуже лишнего звука — обращение просто потеряется.
+ */
+export async function escalationRecipients(companyId: string): Promise<string[]> {
+  const admins = await prisma.staffUser.findMany({
+    where: { companyId, deletedAt: null, isActive: true, role: "ADMIN" },
+    select: { id: true },
+  });
+  if (admins.length > 0) return admins.map((u) => u.id);
+  return inboxRecipients(companyId);
+}
