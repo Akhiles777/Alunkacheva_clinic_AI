@@ -184,6 +184,24 @@ const GREETINGS = [
 /** Вежливые довески, которые не делают приветствие вопросом. */
 const FILLER = ["пожалуйста", "скажите", "подскажите", "а", "и", "ну", "вам", "вас"];
 
+/**
+ * Каким именно приветствием поздоровался человек.
+ *
+ * Нужно, чтобы ответить тем же: на «салам алейкум» полагается «ва алейкум
+ * ассалам», на «доброе утро» — «доброе утро», и никак иначе. Дежурное
+ * «здравствуйте» на всё подряд читается как автоответчик.
+ *
+ * Возвращаем самое длинное совпадение: «салам» иначе съест «салам алейкум».
+ */
+export function greetingUsed(raw: string): string | null {
+  const text = normalize(raw);
+  if (!text) return null;
+  for (const g of [...GREETINGS].sort((a, b) => b.length - a.length)) {
+    if (wordRe(g).test(text)) return g;
+  }
+  return null;
+}
+
 export function isGreeting(raw: string): boolean {
   const text = normalize(raw);
   if (!text) return false;
