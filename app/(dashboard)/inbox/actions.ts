@@ -470,6 +470,9 @@ export async function startDialogDb(input: {
       channel,
       externalUserId: `local-${input.id}`,
       status: "HUMAN_TAKEOVER",
+      // Пауза агента вместе со статусом: без неё «ручной режим» был только
+      // подписью на экране, а бот продолжал отвечать в этом диалоге.
+      botPausedUntil: humanTakeoverUntil(now),
       startedAt: now,
       lastMessageAt: now,
       messages: {

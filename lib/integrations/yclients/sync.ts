@@ -4,7 +4,7 @@ import { getYclientsClient, type YclientsClientHandle } from "./client";
 import { markFailed, markOk, markRunning, readCursor } from "./sync-cursor";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
 import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
-import { recomputeVisitKinds } from "@/lib/metrics/recompute";
+import { backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { pushPendingAppointments } from "./write-back";
 import {
@@ -34,7 +34,7 @@ import type {
  */
 export interface SyncResult {
   skipped: boolean;
-  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds", number>>;
+  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms", number>>;
   errors: string[];
 }
 
@@ -63,6 +63,8 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
   try {
     const marked = await recomputeVisitKinds(companyId);
     counts.visitKinds = marked.updated;
+    // Кабинеты по специалистам: привязку могли задать уже после выгрузки.
+    counts.rooms = await backfillRooms(companyId);
   } catch (e) {
     errors.push(`VISIT_KINDS: ${(e as Error).message}`);
   }

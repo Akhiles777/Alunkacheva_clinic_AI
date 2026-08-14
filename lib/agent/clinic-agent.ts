@@ -420,11 +420,33 @@ export async function handlePatientMessage(
   const channelName =
     ctx.channel === "WHATSAPP" ? "WhatsApp" : ctx.channel === "INSTAGRAM" ? "Instagram" : "Telegram";
 
-  // Правило 4: после ручного ответа сотрудника агент молчит.
+  /**
+   * Когда агент молчит.
+   *
+   *   1. Сотрудник ответил вручную — пауза на 12 часов (§6.4).
+   *   2. Диалог передан человеку и эскалация ещё открыта.
+   *
+   * Второе правило добавлено по требованию заказчика: диалог, переданный
+   * администратору, ведёт администратор. Прежде агент продолжал отвечать
+   * поверх ожидающего человека — пациент видел двух собеседников сразу.
+   *
+   * Молчание не бесконечно: администратор возвращает диалог кнопкой «Вернуть
+   * агенту», и она же закрывает эскалацию. Сообщения пациента всё это время
+   * сохраняются и видны в инбоксе — потерять обращение нельзя.
+   */
+  const openEscalation =
+    conversation.status === "ESCALATED"
+      ? await prisma.escalation.findFirst({
+          where: { conversationId: conversation.id, status: { not: "RESOLVED" } },
+          select: { id: true },
+        })
+      : null;
+
   const paused =
-    conversation.status === "HUMAN_TAKEOVER" &&
-    conversation.botPausedUntil !== null &&
-    conversation.botPausedUntil > new Date();
+    (conversation.status === "HUMAN_TAKEOVER" &&
+      conversation.botPausedUntil !== null &&
+      conversation.botPausedUntil > new Date()) ||
+    openEscalation !== null;
   if (paused) {
     const pausedBody = messageBody(input.text ?? "", attachments);
     if (pausedBody) {

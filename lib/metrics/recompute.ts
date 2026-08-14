@@ -27,6 +27,34 @@ export interface RecomputeResult {
   updated: number;
 }
 
+/**
+ * Проставить кабинет визитам, у которых его нет, по кабинету специалиста.
+ *
+ * Клиника не ведёт кабинеты в YCLIENTS как ресурсы, поэтому в выгруженных
+ * записях кабинета нет вовсе. Привязку задаёт администратор в «Настройки →
+ * Сотрудники», но задать её он может уже после выгрузки — гонять всю историю
+ * заново ради одного поля незачем.
+ *
+ * Трогаем только визиты без кабинета: проставленный вручную или пришедший из
+ * YCLIENTS не перезаписываем.
+ */
+export async function backfillRooms(companyId: string): Promise<number> {
+  const staff = await prisma.staff.findMany({
+    where: { companyId, defaultRoomId: { not: null } },
+    select: { id: true, defaultRoomId: true },
+  });
+
+  let updated = 0;
+  for (const s of staff) {
+    const res = await prisma.appointment.updateMany({
+      where: { companyId, staffId: s.id, roomId: null, deletedAt: null },
+      data: { roomId: s.defaultRoomId },
+    });
+    updated += res.count;
+  }
+  return updated;
+}
+
 export async function recomputeVisitKinds(companyId: string): Promise<RecomputeResult> {
   const patients = await prisma.patient.findMany({
     where: { companyId, deletedAt: null },
