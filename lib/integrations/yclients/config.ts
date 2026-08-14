@@ -41,12 +41,25 @@ export const HISTORY_YEARS = Number(process.env.YCLIENTS_HISTORY_YEARS ?? 2);
 export const ENDPOINTS = {
   services: (companyId: string) => `/company/${companyId}/services`,
   staff: (companyId: string) => `/company/${companyId}/staff`,
-  resources: (companyId: string) => `/company/${companyId}/resources`,
+  /**
+   * Кабинеты (ресурсы).
+   *
+   * Путь именно такой, а не /company/{id}/resources: последний у YCLIENTS не
+   * существует и отвечает 404. Проверено на их API — несуществующий адрес
+   * даёт 404 «Произошла ошибка», существующий без пользовательского токена —
+   * 401 «Не указан идентификатор пользователя».
+   */
+  resources: (companyId: string) => `/resources/${companyId}`,
   /** Записи (приёмы) за период. */
   records: (companyId: string) => `/records/${companyId}`,
   /** Одна запись: изменение и удаление при переносе и отмене у нас. */
   record: (companyId: string, recordId: number) => `/record/${companyId}/${recordId}`,
-  /** Клиенты филиала (постранично). */
+  /**
+   * Клиенты филиала (постранично).
+   *
+   * Только POST: на GET этот адрес отвечает 405 Method Not Allowed. Страница
+   * и размер передаются в теле, а не в query.
+   */
   clients: (companyId: string) => `/company/${companyId}/clients/search`,
   /** Финансовые транзакции (выручка). */
   transactions: (companyId: string) => `/transactions/${companyId}`,

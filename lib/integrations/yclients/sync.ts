@@ -135,7 +135,9 @@ export async function syncClients(companyId: string, client: YclientsClientHandl
    * по неполной базе.
    */
   for (;;) {
-    const res = await client.getPage<YclientsClient[]>(client.endpoints.clients(client.creds.companyId), {
+    // Поиск клиентов у YCLIENTS работает только методом POST, страница и
+    // размер идут в теле: на GET адрес отвечает 405 Method Not Allowed.
+    const res = await client.postPage<YclientsClient[]>(client.endpoints.clients(client.creds.companyId), {
       page,
       count: PAGE_SIZE,
     });

@@ -82,19 +82,62 @@ function records(startDate: string, page: number, count: number) {
   });
 }
 
+/**
+ * Поддельный YCLIENTS.
+ *
+ * Важное про достоверность. Первая версия этого сервера повторяла мои же
+ * догадки об их API — и потому не поймала две настоящие ошибки: кабинеты
+ * запрашивались по несуществующему адресу /company/{id}/resources, а поиск
+ * клиентов уходил методом GET, на который YCLIENTS отвечает 405. Учения
+ * проходили, выгрузка у клиники падала.
+ *
+ * Теперь маршруты повторяют поведение, проверенное на боевом API:
+ *   • кабинеты — GET /resources/{id}; адрес /company/{id}/resources даёт 404;
+ *   • клиенты — только POST /company/{id}/clients/search, страница и размер
+ *     в теле; на GET отвечаем 405, как настоящий сервер.
+ */
 function start() {
   return createServer((req, res) => {
     requestCount += 1;
     const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
     const p = url.pathname;
     seenPaths.add(`${req.method} ${p.replace(/\d+/g, ":id")}`);
-    const page = Number(url.searchParams.get("page") ?? 1);
-    const count = Number(url.searchParams.get("count") ?? 200);
 
     const send = (data: unknown, total?: number) => {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ success: true, data, meta: total === undefined ? {} : { total_count: total } }));
     };
+    const fail = (code: number, message: string) => {
+      res.statusCode = code;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ success: false, data: null, meta: { message } }));
+    };
+
+    const readBody = (): Promise<Record<string, unknown>> =>
+      new Promise((resolve) => {
+        let raw = "";
+        req.on("data", (c) => (raw += c));
+        req.on("end", () => {
+          try {
+            resolve(JSON.parse(raw || "{}"));
+          } catch {
+            resolve({});
+          }
+        });
+      });
+
+    const qPage = Number(url.searchParams.get("page") ?? 1);
+    const qCount = Number(url.searchParams.get("count") ?? 200);
+
+    // Поиск клиентов: только POST, страница и размер в теле.
+    if (p.endsWith("/clients/search")) {
+      if (req.method !== "POST") return fail(405, "MethodNotAllowed");
+      return void readBody().then((body) => {
+        const page = Number(body.page ?? 1);
+        const count = Number(body.count ?? 200);
+        send(clients(page, count), CLIENT_COUNT);
+      });
+    }
 
     if (req.method === "POST" && p.startsWith("/records/")) return send({ id: 987654 });
     if (req.method === "PUT" && p.startsWith("/record/")) return send({ id: 987654 });
@@ -102,14 +145,14 @@ function start() {
 
     if (p.endsWith("/services")) return send(services());
     if (p.endsWith("/staff")) return send(staff());
-    if (p.endsWith("/resources")) return send(resources());
-    if (p.endsWith("/clients/search")) return send(clients(page, count), CLIENT_COUNT);
+    // Настоящий YCLIENTS отдаёт кабинеты только по /resources/{id}.
+    if (p.startsWith("/resources/")) return send(resources());
+    if (p.endsWith("/resources")) return fail(404, "Произошла ошибка");
     if (p.startsWith("/records/")) {
       const startDate = url.searchParams.get("start_date") ?? "2026-01-01";
-      return send(records(startDate, page, count), RECORDS_PER_MONTH);
+      return send(records(startDate, qPage, qCount), RECORDS_PER_MONTH);
     }
-    res.statusCode = 404;
-    res.end("{}");
+    return fail(404, "Произошла ошибка");
   }).listen(PORT);
 }
 

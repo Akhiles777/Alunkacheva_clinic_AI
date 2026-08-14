@@ -189,7 +189,9 @@ function reconcileClients(companyId: string, client: YclientsClientHandle) {
     const remoteIds: number[] = [];
     let page = 1;
     for (;;) {
-      const res = await client.getPage<YclientsClientDto[]>(
+      // Как и в выгрузке: поиск клиентов у YCLIENTS работает только методом
+      // POST, страница и размер идут в теле. На GET адрес отвечает 405.
+      const res = await client.postPage<YclientsClientDto[]>(
         client.endpoints.clients(client.creds.companyId),
         { page, count: PAGE_SIZE },
       );

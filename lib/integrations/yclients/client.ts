@@ -72,6 +72,7 @@ export interface YclientsClientHandle {
     query?: Record<string, string | number | undefined>,
   ): Promise<YclientsPage<T>>;
   /** Запись в YCLIENTS: создание, изменение и удаление визита (§2). */
+  postPage<T>(path: string, body: unknown): Promise<YclientsPage<T>>;
   send<T>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T>;
   endpoints: typeof ENDPOINTS;
 }
@@ -106,12 +107,21 @@ export async function getYclientsClient(companyId: string): Promise<YclientsClie
     return enqueue(() => request<T>(buildUrl(path, query), creds));
   }
 
+  /**
+   * Страница по POST. Нужна для поиска клиентов: YCLIENTS принимает его
+   * только методом POST, а страницу и размер ждёт в теле запроса. Обычный
+   * getPage там отвечает 405.
+   */
+  async function postPage<T>(path: string, body: unknown): Promise<YclientsPage<T>> {
+    return enqueue(() => request<T>(buildUrl(path), creds, { method: "POST", body }));
+  }
+
   async function send<T>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
     const page = await enqueue(() => request<T>(buildUrl(path), creds, { method, body }));
     return page.data;
   }
 
-  return { creds, get, getPage, send, endpoints: ENDPOINTS };
+  return { creds, get, getPage, postPage, send, endpoints: ENDPOINTS };
 }
 
 async function request<T>(
