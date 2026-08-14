@@ -19,8 +19,18 @@ import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/en
 /** Визит в карточке пациента. */
 export interface PatientVisitRecord {
   id: string;
-  /** Дата в виде «12 марта 2026» — карточку читает человек, а не машина. */
+  /** Дата в виде «12 марта 2026 г.» — её читает человек. */
   date: string;
+  /**
+   * Та же дата машинным форматом.
+   *
+   * Аналитика карточки прежде разбирала русскую подпись обратно в дату и
+   * спотыкалась о суффикс «г.»: визиты не разбирались, и панель показывала
+   * «0 из 7», прочерк в среднем интервале и в последнем визите при полной
+   * истории на экране. Дату нельзя передавать текстом и восстанавливать
+   * разбором — она передаётся как дата.
+   */
+  at: string;
   service: string;
   doctor: string;
   status: "arrived" | "no_show" | "cancelled" | "planned";
@@ -192,6 +202,7 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
     visits: p.appointments.map((a) => ({
       id: a.id,
       date: visitDate.format(a.startAt),
+      at: a.startAt.toISOString(),
       service: a.primaryService?.title ?? "—",
       doctor: a.staff?.name ?? "—",
       status: VISIT_STATUS_MAP[a.status] ?? "planned",

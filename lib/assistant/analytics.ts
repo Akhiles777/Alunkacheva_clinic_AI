@@ -44,8 +44,16 @@ const DAY = 24 * 60 * 60 * 1000;
 export function visitDates(patient: Patient, now = new Date()): Date[] {
   return patient.visits
     .filter((v) => v.status === "arrived")
-    .map((v) => parseRuDate(v.date, now))
-    .filter((d): d is Date => d !== null)
+    /**
+     * Машинная дата, если она есть, и только иначе — разбор подписи.
+     *
+     * Разбор подписи спотыкался о «26 августа 2026 г.»: суффикс «г.» не
+     * подходил под шаблон, визиты не разбирались, и панель показывала «0 из
+     * 7» при полной истории на экране. Демонстрационные записи в сторе
+     * подписями и остались, поэтому разбор сохранён как запасной путь.
+     */
+    .map((v) => (v.at ? new Date(v.at) : parseRuDate(v.date, now)))
+    .filter((d): d is Date => d !== null && !Number.isNaN(d.getTime()))
     .sort((a, b) => a.getTime() - b.getTime());
 }
 

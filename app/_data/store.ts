@@ -105,7 +105,10 @@ export interface Appt {
 }
 export interface Visit {
   id: string;
+  /** Подпись для человека: «12 марта 2026 г.». */
   date: string;
+  /** Та же дата машинным форматом — по ней считается аналитика карточки. */
+  at?: string;
   service: string;
   doctor: string;
   status: "arrived" | "no_show" | "cancelled" | "planned";

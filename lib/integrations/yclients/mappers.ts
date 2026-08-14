@@ -35,6 +35,8 @@ export interface PatientUpsert {
   yclientsId: number;
   name: string | null;
   phoneE164: string | null;
+  /** Дата первого визита в YCLIENTS; null — там её нет. */
+  firstSeenAt: Date | null;
 }
 export interface AppointmentUpsert {
   yclientsRecordId: number;
@@ -94,7 +96,27 @@ export function mapClient(dto: YclientsClient): PatientUpsert {
     yclientsId: dto.id,
     name: dto.name?.trim() || null,
     phoneE164: normalizePhone(dto.phone),
+    firstSeenAt: parseYclientsDate(dto.first_visit_date),
   };
+}
+
+/**
+ * Дата первого визита из YCLIENTS.
+ *
+ * Без неё выгрузка ставила всем пациентам «первое обращение — сейчас», то
+ * есть день импорта. В интерфейсе полторы тысячи человек с многолетней
+ * историей разом становились первичными, а метрика «новые пациенты» за месяц
+ * импорта показывала всю базу клиники.
+ *
+ * Формат у них «2023-11-09 12:00:00» — без часового пояса, время местное.
+ * Берём дату, время не важно: нас интересует день первого визита.
+ */
+export function parseYclientsDate(raw: string | null | undefined): Date | null {
+  if (!raw) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw.trim());
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /** visit_attendance YCLIENTS → наш статус визита. deleted перекрывает всё. */

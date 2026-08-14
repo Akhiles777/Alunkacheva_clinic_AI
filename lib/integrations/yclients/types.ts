@@ -31,6 +31,8 @@ export interface YclientsClient {
   id: number;
   name?: string;
   phone?: string;
+  /** Дата первого визита в YCLIENTS: «2023-11-09 12:00:00». */
+  first_visit_date?: string | null;
 }
 
 export interface YclientsRecordService {

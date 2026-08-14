@@ -69,6 +69,7 @@ describe("mapClient", () => {
       yclientsId: 5,
       name: "Иван",
       phoneE164: "+79161234567",
+      firstSeenAt: null,
     });
   });
   it("нераспознанный телефон → null, пустое имя → null", () => {
@@ -115,5 +116,20 @@ describe("mapRecord", () => {
     expect(r.revenue).toBe(7000);
     expect(r.clientPhoneE164).toBe("+79031112233");
     expect(r.startAt.toISOString()).toBe("2026-07-30T08:00:00.000Z");
+  });
+});
+
+describe("дата первого обращения", () => {
+  it("берётся из YCLIENTS, а не из дня выгрузки", () => {
+    // Иначе полторы тысячи человек с многолетней историей разом становятся
+    // первичными, а «новые пациенты» за месяц импорта — вся база клиники.
+    const r = mapClient({ id: 7, name: "Пациент", first_visit_date: "2023-11-09 12:00:00" });
+    expect(r.firstSeenAt?.toISOString()).toBe("2023-11-09T00:00:00.000Z");
+  });
+
+  it("без даты у них — null, дальше решает выгрузка", () => {
+    expect(mapClient({ id: 8 }).firstSeenAt).toBeNull();
+    expect(mapClient({ id: 9, first_visit_date: "" }).firstSeenAt).toBeNull();
+    expect(mapClient({ id: 10, first_visit_date: "не дата" }).firstSeenAt).toBeNull();
   });
 });

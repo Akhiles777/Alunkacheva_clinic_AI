@@ -213,7 +213,12 @@ async function upsertClientsPage(companyId: string, dtos: YclientsClient[]): Pro
   const patientByYclientsId = new Map(byId.map((p) => [p.yclientsId!, p.id]));
   const patientByPhone = new Map(byPhone.map((p) => [p.phone, p.patientId]));
 
-  const toCreate: { name: string | null; yclientsId: number; phone: string | null }[] = [];
+  const toCreate: {
+    name: string | null;
+    yclientsId: number;
+    phone: string | null;
+    firstSeenAt: Date | null;
+  }[] = [];
   const adopt: { patientId: string; yclientsId: number }[] = [];
   const rename: { patientId: string; name: string }[] = [];
 
@@ -223,7 +228,12 @@ async function upsertClientsPage(companyId: string, dtos: YclientsClient[]): Pro
       (c.phoneE164 ? patientByPhone.get(c.phoneE164) : undefined);
 
     if (!existing) {
-      toCreate.push({ name: c.name, yclientsId: c.yclientsId, phone: c.phoneE164 });
+      toCreate.push({
+        name: c.name,
+        yclientsId: c.yclientsId,
+        phone: c.phoneE164,
+        firstSeenAt: c.firstSeenAt,
+      });
       continue;
     }
     // Нашли по телефону — закрепляем идентификатор YCLIENTS за этой карточкой.
@@ -243,7 +253,19 @@ async function upsertClientsPage(companyId: string, dtos: YclientsClient[]): Pro
   if (toCreate.length === 0) return;
 
   await prisma.patient.createMany({
-    data: toCreate.map((p) => ({ companyId, yclientsId: p.yclientsId, name: p.name, firstSeenAt: new Date() })),
+    /**
+     * Дата первого обращения — из YCLIENTS, а не «сейчас».
+     *
+     * Прежде всем импортированным ставился день выгрузки: полторы тысячи
+     * человек с многолетней историей разом становились первичными, а метрика
+     * «новые пациенты» за месяц импорта показывала всю базу клиники.
+     */
+    data: toCreate.map((p) => ({
+      companyId,
+      yclientsId: p.yclientsId,
+      name: p.name,
+      firstSeenAt: p.firstSeenAt ?? new Date(),
+    })),
     skipDuplicates: true,
   });
 
@@ -303,7 +325,12 @@ export async function upsertClient(companyId: string, dto: YclientsClient): Prom
   } else {
     patientId = (
       await prisma.patient.create({
-        data: { companyId, yclientsId: c.yclientsId, name: c.name, firstSeenAt: new Date() },
+        data: {
+          companyId,
+          yclientsId: c.yclientsId,
+          name: c.name,
+          firstSeenAt: c.firstSeenAt ?? new Date(),
+        },
         select: { id: true },
       })
     ).id;
