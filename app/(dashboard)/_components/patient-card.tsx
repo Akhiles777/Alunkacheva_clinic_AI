@@ -101,6 +101,15 @@ export function PatientCardBody({
     };
   }, [patientId]);
 
+  /** Дата первого обращения человеческим языком. */
+  const firstContact = patient?.firstSeenAt
+    ? new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Moscow" }).format(
+        new Date(patient.firstSeenAt),
+      )
+    : patient?.firstSeen === "сегодня"
+      ? "сегодня"
+      : "дата неизвестна";
+
   const [newPhone, setNewPhone] = useState("");
   const [phoneErr, setPhoneErr] = useState(false);
   const [noteText, setNoteText] = useState("");
@@ -445,7 +454,12 @@ export function PatientCardBody({
 
       {/* источник */}
       <div className="border-border-soft text-text-subtle mt-5 border-t pt-4 text-2xs">
-        Первое обращение: {patient.source} · {patient.firstSeen}
+        {/*
+          Дата, а не только «сегодня/ранее». Прежде здесь шли источник и это
+          слово, и на экране получалось «Первое обращение: — · ранее»: даты не
+          было вовсе, а прочерк — это неизвестный источник.
+        */}
+        Первое обращение: {firstContact} · источник: {patient.source ?? "из YCLIENTS"}
       </div>
     </div>
   );

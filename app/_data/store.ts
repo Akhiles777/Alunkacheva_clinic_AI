@@ -147,6 +147,10 @@ export interface Patient {
   name: string;
   bornYear: number | null;
   firstSeen: string;
+  /** Дата первого обращения, машинным форматом. */
+  firstSeenAt?: string;
+  /** Где пациент в своём пути: ещё не приходил / первичный / повторный. */
+  visitStage?: "new" | "primary" | "repeat";
   source: string;
   channel: Channel;
   phones: Phone[];
@@ -275,6 +279,15 @@ export function getDb(): DB {
  * текущего стора (мигрируют со своими подсистемами). Пациенты, которых в БД нет
  * (мягко удалённые), из стора уходят.
  */
+/**
+ * Обновить пациентов в сторе.
+ *
+ * Записи ДОБАВЛЯЮТСЯ к тем, что уже есть, а не заменяют их. Прежде список
+ * пересобирался из переданных записей целиком: карточка догружала одного
+ * пациента — и в списке оставался он один, до перезагрузки страницы. Пустой
+ * список пациентов при полутора тысячах в базе выглядит как потеря данных, и
+ * администратор справедливо считает, что платформа сломалась.
+ */
 export function hydratePatients(records: PatientRecord[]) {
   const byId = new Map(db.patients.map((p) => [p.id, p]));
   const patients: Patient[] = records.map((r) => {
@@ -310,6 +323,8 @@ export function hydratePatients(records: PatientRecord[]) {
     if (existing) {
       return {
         ...existing,
+        firstSeenAt: r.firstSeenAt ?? existing.firstSeenAt,
+        visitStage: r.visitStage ?? existing.visitStage,
         name: r.name || existing.name,
         source: r.source ?? existing.source,
         phones,
@@ -323,6 +338,8 @@ export function hydratePatients(records: PatientRecord[]) {
       name: r.name,
       bornYear: null,
       firstSeen: r.firstSeenToday ? "сегодня" : "ранее",
+      firstSeenAt: r.firstSeenAt,
+      visitStage: r.visitStage,
       source: r.source ?? "—",
       channel: "phone",
       phones,
@@ -333,7 +350,16 @@ export function hydratePatients(records: PatientRecord[]) {
       messages: [],
     };
   });
-  commit({ ...db, patients });
+  /**
+   * Пришедшие записи кладём поверх прежних, порядок сохраняем: список
+   * отсортирован сервером, и переставлять его от того, что открыли карточку,
+   * нельзя.
+   */
+  const updated = new Map(patients.map((p) => [p.id, p]));
+  const merged = db.patients.map((p) => updated.get(p.id) ?? p);
+  for (const p of patients) if (!byId.has(p.id)) merged.push(p);
+
+  commit({ ...db, patients: merged });
 }
 
 /**
@@ -387,7 +413,15 @@ export function primaryPhone(p: Patient): Phone | null {
 
 export function patientTags(p: Patient): string[] {
   const tags: string[] = [];
-  if (p.firstSeen === "сегодня") tags.push("первичный");
+  /**
+   * Метка пути — по состоявшимся визитам, а не по дате контакта. Прежде у
+   * пациента, пришедшего не сегодня, метки не было вовсе: ни «первичный», ни
+   * «повторный», пустое место в карточке и в списке.
+   */
+  if (p.visitStage === "primary") tags.push("первичный");
+  else if (p.visitStage === "repeat") tags.push("повторный");
+  else if (p.visitStage === "new") tags.push("без визитов");
+  else if (p.firstSeen === "сегодня") tags.push("первичный");
   if (p.courses.some((c) => c.status === "active")) tags.push("на курсе");
   if (p.courses.some((c) => c.status === "stalled")) tags.push("выпал из курса");
   if (p.notes.some((n) => n.kind === "NO_CONSENT" && !n.resolved)) tags.push("без согласия");

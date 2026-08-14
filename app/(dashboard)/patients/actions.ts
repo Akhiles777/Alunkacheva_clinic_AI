@@ -42,6 +42,16 @@ export interface PatientRecord {
   name: string;
   source: string | null;
   firstSeenToday: boolean;
+  /** Дата первого обращения. В карточке показывается дата, а не только «ранее». */
+  firstSeenAt: string;
+  /**
+   * Где пациент в своём пути: ещё не приходил, пришёл впервые, ходит дальше.
+   *
+   * Считается по состоявшимся визитам (§8), а не по дате контакта. Прежде
+   * метка ставилась по «первый контакт сегодня» — и у всех, кто пришёл не
+   * сегодня, её не было вовсе: ни «первичный», ни «повторный», пустое место.
+   */
+  visitStage: "new" | "primary" | "repeat";
   phones: { id: string; e164: string; label: string | null; isPrimary: boolean; whatsapp: boolean }[];
   notes: { id: string; kind: PatientNoteKind; text: string; resolved: boolean }[];
   relations: { id: string; relatedPatientId: string; kind: PatientRelationKind }[];
@@ -64,6 +74,18 @@ const VISIT_STATUS_MAP: Record<string, PatientVisitRecord["status"]> = {
   CREATED: "planned",
   CONFIRMED: "planned",
 };
+
+/**
+ * Метка пути пациента по числу состоявшихся визитов (§8).
+ *
+ * Ноль — обратился, но ещё не приходил. Один — тот самый первичный визит.
+ * Больше — повторный. Прежде метка ставилась по дате первого контакта, и у
+ * всех, кто пришёл не сегодня, её не было вовсе.
+ */
+function stageOf(arrived: number): "new" | "primary" | "repeat" {
+  if (arrived === 0) return "new";
+  return arrived === 1 ? "primary" : "repeat";
+}
 
 const visitDate = new Intl.DateTimeFormat("ru-RU", {
   day: "numeric",
@@ -111,6 +133,8 @@ export async function getPatientRecords(): Promise<PatientRecord[]> {
       phones: { orderBy: { createdAt: "asc" } },
       notes: { orderBy: { createdAt: "asc" } },
       relationsOut: true,
+      // Состоявшиеся визиты: по ним ставится метка «первичный/повторный».
+      _count: { select: { appointments: { where: { status: "ARRIVED", deletedAt: null } } } },
     },
   });
   const startOfToday = new Date();
@@ -120,6 +144,8 @@ export async function getPatientRecords(): Promise<PatientRecord[]> {
     name: p.name ?? "",
     source: p.source?.title ?? null,
     firstSeenToday: p.firstSeenAt >= startOfToday,
+    firstSeenAt: p.firstSeenAt.toISOString(),
+    visitStage: stageOf(p._count.appointments),
     phones: p.phones.map((ph) => ({
       id: ph.id,
       e164: ph.phone,
@@ -161,6 +187,7 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       phones: { orderBy: { createdAt: "asc" } },
       notes: { orderBy: { createdAt: "asc" } },
       relationsOut: true,
+      _count: { select: { appointments: { where: { status: "ARRIVED", deletedAt: null } } } },
       appointments: {
         where: { deletedAt: null },
         orderBy: { startAt: "desc" },
@@ -186,6 +213,8 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
     name: p.name ?? "",
     source: p.source?.title ?? null,
     firstSeenToday: p.firstSeenAt >= startOfToday,
+    firstSeenAt: p.firstSeenAt.toISOString(),
+    visitStage: stageOf(p._count.appointments),
     phones: p.phones.map((ph) => ({
       id: ph.id,
       e164: ph.phone,
