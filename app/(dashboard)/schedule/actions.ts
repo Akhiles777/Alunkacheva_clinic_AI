@@ -15,8 +15,14 @@ import { pushAppointment, pushCancel, pushReschedule } from "@/lib/integrations/
  * (write-through) с общими id, поэтому владелец, админ и врач видят одно и то же,
  * и данные переживают перезагрузку.
  */
-const ROOM_KEY = (name: string): string =>
-  name.startsWith("Кабинет 1") ? "room-1" : name.startsWith("Кабинет 2") ? "room-2" : "room-3";
+/**
+ * Кабинет базы → ключ, которым его знает интерфейс расписания.
+ *
+ * По порядковому номеру, а не по названию. Прежде ключ выводился из строки
+ * «Кабинет 1…»: стоило клинике переименовать кабинет — и все его записи
+ * уезжали в третий, потому что так работала последняя ветка условия.
+ */
+const ROOM_KEY = (sortOrder: number): string => `room-${sortOrder}`;
 
 const TO_STORE: Record<string, Appt["status"]> = {
   ARRIVED: "arrived",
@@ -57,7 +63,7 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     },
     include: {
       staff: { select: { name: true } },
-      room: { select: { name: true } },
+      room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true } },
       patient: { select: { name: true } },
     },
@@ -65,7 +71,16 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
   });
   return rows.map((r) => ({
     id: r.id,
-    roomId: r.room ? ROOM_KEY(r.room.name) : "room-1",
+    /**
+     * Без кабинета — значит без кабинета.
+     *
+     * Здесь стояла подстановка первого. Из YCLIENTS кабинеты не приходят
+     * вовсе (у клиники они не заведены как ресурсы), и вся история визитов
+     * складывалась в «Кабинет 1»: на главной он выглядел занятым до конца дня,
+     * хотя ничего подобного не происходило. Придуманная занятость хуже
+     * пустого места — по ней принимают решения.
+     */
+    roomId: r.room ? ROOM_KEY(r.room.sortOrder) : null,
     roomName: r.room?.name ?? "",
     doctor: r.staff.name,
     service: r.primaryService?.title ?? "",
@@ -357,14 +372,14 @@ export async function getSpecialistsForBooking(): Promise<SpecialistOption[]> {
       id: true,
       name: true,
       specialty: true,
-      defaultRoom: { select: { name: true } },
+      defaultRoom: { select: { name: true, sortOrder: true } },
     },
   });
   return rows.map((s) => ({
     id: s.id,
     name: s.name,
     specialty: s.specialty,
-    roomKey: s.defaultRoom ? ROOM_KEY(s.defaultRoom.name) : null,
+    roomKey: s.defaultRoom ? ROOM_KEY(s.defaultRoom.sortOrder) : null,
   }));
 }
 
@@ -411,7 +426,7 @@ export async function getServicesForBooking(): Promise<ServiceOption[]> {
       title: s.title,
       durationMin: s.durationMin,
       price: Number(s.price),
-      roomKey: room ? ROOM_KEY(room.name) : null,
+      roomKey: room ? ROOM_KEY(room.sortOrder) : null,
       roomName: room?.name ?? null,
     };
   });

@@ -39,11 +39,13 @@ export function roomIntervals(appts: Appt[], roomId: string, excludeId?: string)
 /** Пересекается ли [start, start+dur) с занятыми интервалами кабинета. */
 export function hasConflict(
   appts: Appt[],
-  roomId: string,
+  /** null — кабинет не назначен, пересекаться нечему. */
+  roomId: string | null,
   startMinute: number,
   durationMin: number,
   excludeId?: string,
 ): boolean {
+  if (!roomId) return false;
   const end = startMinute + durationMin;
   return roomIntervals(appts, roomId, excludeId).some(
     (iv) => startMinute < iv.endMinute && end > iv.startMinute,

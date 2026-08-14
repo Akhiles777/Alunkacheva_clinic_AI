@@ -76,7 +76,8 @@ export interface Course {
 
 export interface Appt {
   id: string;
-  roomId: string;
+  /** null — кабинет не назначен. Подставлять первый нельзя: см. schedule/actions. */
+  roomId: string | null;
   roomName: string;
   doctor: string;
   /**
@@ -779,7 +780,9 @@ export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { 
   commit({ ...db, appointments: [...db.appointments, appt] });
   void createAppointmentDb({
     id: appt.id,
-    roomId: appt.roomId,
+    // Запись, созданную в интерфейсе, всегда кладём в выбранный кабинет;
+    // без выбора — в первый, как и предлагает форма.
+    roomId: appt.roomId ?? "room-1",
     doctor: appt.doctor,
     staffId: appt.staffId ?? null,
     service: appt.service,

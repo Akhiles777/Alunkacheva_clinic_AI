@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
 import type { Appt } from "@/app/_data/store";
+import { describe, expect, it } from "vitest";
 import {
   buildCabinets,
+  hasConflict,
   buildFreeWindows,
   durationLabel,
-  hasConflict,
   nowMinuteInTz,
   roomIntervals,
 } from "./schedule";
@@ -94,5 +94,36 @@ describe("buildFreeWindows", () => {
     for (let i = 1; i < windows.length; i++) {
       expect(windows[i].startMinute).toBeGreaterThanOrEqual(windows[i - 1].startMinute);
     }
+  });
+});
+
+describe("визит без кабинета", () => {
+  it("не занимает ни один кабинет", () => {
+    // Из YCLIENTS кабинеты не приходят вовсе: у клиники они не заведены как
+    // ресурсы. Раньше такие визиты подставлялись в первый кабинет, и на
+    // главной он выглядел занятым до конца дня.
+    const appts: Appt[] = [
+      {
+        id: "a1",
+        roomId: null,
+        roomName: "",
+        doctor: "Соколов",
+        service: "Приём",
+        patientId: "p1",
+        patientName: "Пациент",
+        startMinute: 600,
+        durationMin: 60,
+        status: "planned",
+        price: 5000,
+        isFirstVisit: false,
+      } as Appt,
+    ];
+    const cabs = buildCabinets(appts, 570);
+    expect(cabs.every((c) => c.current === null)).toBe(true);
+    expect(cabs.every((c) => c.nextFree !== null)).toBe(true);
+  });
+
+  it("не создаёт конфликта при переносе", () => {
+    expect(hasConflict([], null, 600, 60)).toBe(false);
   });
 });
