@@ -19,6 +19,7 @@ const MODEL = process.env.ROUTER_AI_MODEL || "anthropic/claude-sonnet-4.5";
 
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
+import { buildClinicSnapshot } from "@/lib/assistant/server-context";
 import { personaFor } from "@/lib/assistant/personas";
 
 /**
@@ -49,6 +50,20 @@ export async function askAI(
 
   const session = await getSession();
   const canSeeRevenue = await can(session, "VIEW_REVENUE");
+
+  /**
+   * Данные для анализа собираем здесь, на сервере, из базы.
+   *
+   * Экран присылал выжимку из своего стора, а туда попадает только то, что
+   * ему нужно: расписание на сегодня и список пациентов без визитов. Поэтому
+   * аналитик владельца отвечал лишь про сегодняшний день и не знал ни истории
+   * визитов, ни выручки, ни услуг — данных ему просто не давали.
+   *
+   * Присланное экраном оставляем рядом: там есть то, что человек видит прямо
+   * сейчас, и вопрос может быть про это.
+   */
+  const snapshot = await buildClinicSnapshot(session.companyId).catch(() => "");
+  const fullContext = snapshot ? `${snapshot}\n\n# Что открыто на экране\n${context}` : context;
   // «owner» — отдельный экран кабинета владельца; там роль задана самим
   // разделом, но право на выручку всё равно проверяем.
   const role = persona === "owner" ? "OWNER" : session.role;
@@ -72,7 +87,7 @@ export async function askAI(
         messages: [
           // Инструкции + свежий срез базы. Пересобираем каждый запрос — данные
           // могли измениться между репликами.
-          { role: "system", content: `${systemPrompt}\n\nДанные (только чтение):\n${context}` },
+          { role: "system", content: `${systemPrompt}\n\nДанные (только чтение):\n${fullContext}` },
           // Память диалога: предыдущие реплики, чтобы ИИ понимал контекст беседы.
           ...history.slice(-12).map((t) => ({ role: t.role, content: t.content })),
           { role: "user", content: question },
