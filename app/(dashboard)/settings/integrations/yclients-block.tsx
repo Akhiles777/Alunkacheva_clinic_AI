@@ -6,7 +6,7 @@ import {
   getYclientsState,
   retryPending,
   runYclientsReconcile,
-  runYclientsSync,
+  startYclientsSync,
   type RunResult,
   type YclientsState,
 } from "./yclients-actions";
@@ -30,6 +30,18 @@ export function YclientsBlock() {
     load();
   }, []);
 
+  /**
+   * Пока выгрузка идёт — опрашиваем состояние.
+   *
+   * Полная выгрузка занимает минуты: без опроса экран замирал бы на «идёт»
+   * до перезагрузки страницы, и понять, живо оно или упало, было бы нельзя.
+   */
+  useEffect(() => {
+    if (!state?.running) return;
+    const id = setInterval(load, 4000);
+    return () => clearInterval(id);
+  }, [state?.running]);
+
   if (!state) {
     return (
       <Group title="Синхронизация с YCLIENTS" hint="выгрузка данных и сверка">
@@ -38,7 +50,7 @@ export function YclientsBlock() {
     );
   }
 
-  const blocked = !state.enabled || !state.configured;
+  const blocked = !state.enabled || !state.configured || state.running;
 
   return (
     <Group
@@ -109,13 +121,13 @@ export function YclientsBlock() {
           onClick={() =>
             start(async () => {
               setReport(null);
-              setResult(await runYclientsSync());
+              setResult(await startYclientsSync());
               await load();
             })
           }
           className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
         >
-          {pending ? "Выполняем…" : "Выгрузить данные"}
+          {state.running ? "Выгрузка идёт…" : pending ? "Запускаем…" : "Выгрузить данные"}
         </button>
         {/*
           Полная выгрузка отдельной кнопкой. Обычная берёт визиты от последней
@@ -129,7 +141,7 @@ export function YclientsBlock() {
           onClick={() =>
             start(async () => {
               setReport(null);
-              setResult(await runYclientsSync(true));
+              setResult(await startYclientsSync(true));
               await load();
             })
           }

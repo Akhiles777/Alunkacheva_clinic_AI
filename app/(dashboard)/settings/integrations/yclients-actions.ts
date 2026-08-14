@@ -27,6 +27,8 @@ export interface CursorView {
 
 export interface YclientsState {
   enabled: boolean;
+  /** Идёт ли выгрузка прямо сейчас: экран показывает ход и не даёт запустить вторую. */
+  running: boolean;
   /** Заданы ли ключи: без них выгрузка не пойдёт. */
   configured: boolean;
   cursors: CursorView[];
@@ -59,6 +61,20 @@ const when = new Intl.DateTimeFormat("ru-RU", {
   timeZone: "Europe/Moscow",
 });
 
+/**
+ * Считается ли выгрузка идущей.
+ *
+ * Отметка RUNNING остаётся висеть, если процесс перезапустили посреди работы.
+ * Без срока давности кнопка выгрузки блокировалась бы навсегда, и починить
+ * это можно было бы только руками в базе.
+ */
+const STALE_RUN_MINUTES = 30;
+
+function isRunning(c: { status: string; updatedAt: Date }): boolean {
+  if (c.status !== "RUNNING") return false;
+  return Date.now() - c.updatedAt.getTime() < STALE_RUN_MINUTES * 60_000;
+}
+
 export async function getYclientsState(): Promise<YclientsState> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
@@ -82,6 +98,7 @@ export async function getYclientsState(): Promise<YclientsState> {
   const byEntity = new Map(cursors.map((c) => [c.entity, c]));
   return {
     enabled: isYclientsEnabled(),
+    running: cursors.some(isRunning),
     configured: creds >= 3,
     cursors: Object.keys(ENTITY_LABEL).map((entity) => {
       const row = byEntity.get(entity as never);
@@ -118,6 +135,64 @@ export interface RunResult {
  * именно это случилось у клиники: из 3759 визитов доехал один, а повторные
  * запуски ничего не меняли.
  */
+/**
+ * Запустить выгрузку и сразу вернуть управление.
+ *
+ * Полная выгрузка — это семьдесят с лишним запросов за клиентами и визиты
+ * помесячными окнами за два года, то есть минуты работы. Раньше она шла прямо
+ * внутри запроса от браузера: обратный прокси разрывал соединение по своему
+ * сроку ожидания, и администратор видел «Не удалось выполнить действие», хотя
+ * на сервере выгрузка продолжалась. Повторное нажатие запускало вторую поверх
+ * первой.
+ *
+ * Теперь запуск и ожидание разделены: действие только стартует работу, а ход
+ * виден по отметкам синхронизации — их обновляет сама выгрузка. Страница
+ * опрашивает состояние и показывает, что происходит.
+ */
+export async function startYclientsSync(full = false): Promise<RunResult> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+
+  if (!isYclientsEnabled()) {
+    return { ok: false, message: "Интеграция выключена: задайте YCLIENTS_ENABLED=true на хостинге." };
+  }
+
+  const cursors = await prisma.syncCursor.findMany({ where: { companyId: session.companyId } });
+  if (cursors.some(isRunning)) {
+    return { ok: false, message: "Выгрузка уже идёт — дождитесь окончания." };
+  }
+
+  if (full) {
+    // Сносим только отметки о ходе. Данные остаются: выгрузка идёт по
+    // уникальным идентификаторам и дублей не создаёт.
+    await prisma.syncCursor.deleteMany({ where: { companyId: session.companyId } });
+  }
+
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "yclients_sync",
+    meta: { started: true, full },
+  });
+
+  /**
+   * Намеренно не ждём. Процесс живёт под pm2 и продолжает работу после
+   * ответа; ошибки видны в отметках синхронизации и в журнале.
+   */
+  const companyId = session.companyId;
+  void syncAll(companyId).catch((e) => {
+    console.error("[yclients] выгрузка упала:", e);
+  });
+
+  return {
+    ok: true,
+    message: full
+      ? "Полная выгрузка запущена. Историю тянем заново, это займёт несколько минут."
+      : "Выгрузка запущена.",
+  };
+}
+
 export async function runYclientsSync(full = false): Promise<RunResult> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
