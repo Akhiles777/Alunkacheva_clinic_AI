@@ -5,6 +5,7 @@ import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
+import { phoneFromChatId } from "@/lib/integrations/whatsapp/chat-id";
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
@@ -411,11 +412,32 @@ export async function linkPatientDb(
   const session = await getSession();
   const conv = await prisma.conversation.findFirst({
     where: { id: conversationId, companyId: session.companyId },
-    select: { id: true, contactName: true, sourceId: true },
+    select: { id: true, contactName: true, sourceId: true, channel: true, externalUserId: true },
   });
   if (!conv) throw new Error("Диалог не найден");
 
+  /**
+   * Телефон из самого канала.
+   *
+   * В WhatsApp адрес чата и есть номер. Прежде он не использовался: карточка
+   * создавалась без телефона, и постоянная пациентка получала вторую — а
+   * ассистент разговаривал с ней как с незнакомой, потому что для него это
+   * другой человек. Телефон — единственный надёжный ключ пациента (§4), и
+   * если канал его знает, спрашивать заново незачем.
+   */
+  const channelPhone = conv.channel === "WHATSAPP" ? phoneFromChatId(conv.externalUserId) : null;
+
   let patientId = input.patientId ?? null;
+
+  if (!patientId && channelPhone) {
+    const existing = await prisma.patientPhone.findFirst({
+      where: { companyId: session.companyId, phone: channelPhone },
+      select: { patientId: true },
+    });
+    // Нашли по номеру — привязываем к ней, а не заводим вторую.
+    if (existing) patientId = existing.patientId;
+  }
+
   if (!patientId) {
     const name = (input.createName ?? conv.contactName ?? "").trim();
     if (!name) throw new Error("Укажите имя для новой карточки");
@@ -429,6 +451,22 @@ export async function linkPatientDb(
       select: { id: true },
     });
     patientId = created.id;
+
+    /**
+     * Номер сохраняем сразу: карточка без телефона — это будущий дубль,
+     * следующее обращение того же человека заведёт ещё одну.
+     */
+    if (channelPhone) {
+      await prisma.patientPhone.create({
+        data: {
+          companyId: session.companyId,
+          patientId,
+          phone: channelPhone,
+          isPrimary: true,
+          usedForWhatsapp: true,
+        },
+      });
+    }
   }
 
   await prisma.conversation.update({ where: { id: conversationId }, data: { patientId } });

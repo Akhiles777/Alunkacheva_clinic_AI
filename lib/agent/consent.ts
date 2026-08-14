@@ -34,9 +34,34 @@ export async function consentRequestFor(
 ): Promise<ConsentRequest | null> {
   const conv = await prisma.conversation.findUnique({
     where: { id: conversationId },
-    select: { consentAskedAt: true, consentGrantedAt: true },
+    select: { consentAskedAt: true, consentGrantedAt: true, patientId: true },
   });
   if (!conv || conv.consentGrantedAt || conv.consentAskedAt) return null;
+
+  /**
+   * Согласие принадлежит пациенту, а не переписке.
+   *
+   * Оно хранилось только на диалоге, и постоянная пациентка, написавшая с
+   * другого канала или в новом диалоге, получала требование согласиться
+   * заново — хотя подписала его давно и ходит в клинику годами. Для неё это
+   * выглядит так, будто её не помнят.
+   *
+   * Если карточка привязана и согласие в ней есть — переносим отметку на
+   * диалог и молчим.
+   */
+  if (conv.patientId) {
+    const given = await prisma.patientConsent.findFirst({
+      where: { companyId, patientId: conv.patientId },
+      select: { grantedAt: true },
+    });
+    if (given) {
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: { consentGrantedAt: given.grantedAt, consentAskedAt: given.grantedAt },
+      });
+      return null;
+    }
+  }
 
   const doc = await prisma.consentDocument.findFirst({
     where: { companyId, isActive: true },
