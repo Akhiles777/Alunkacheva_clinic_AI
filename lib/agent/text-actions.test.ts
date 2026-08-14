@@ -98,3 +98,19 @@ describe("приветствие", () => {
     expect(isGreeting("...")).toBe(false);
   });
 });
+
+describe("вопрос не считается нажатием кнопки", () => {
+  it("«Какие у вас услуги?» — это вопрос", () => {
+    // Короче тридцати знаков и содержит «услуги», но человек ждёт ответа, а
+    // не сухого прайс-листа.
+    expect(menuActionFromText("Какие у вас услуги?")).toBeNull();
+    expect(menuActionFromText("Сколько стоит?")).toBeNull();
+    expect(menuActionFromText("Как к вам добраться")).toBeNull();
+  });
+
+  it("сама подпись кнопки по-прежнему срабатывает", () => {
+    expect(menuActionFromText("Услуги и цены")).toBe("prices");
+    expect(menuActionFromText("адрес")).toBe("address");
+    expect(menuActionFromText("Позвать администратора")).toBe("human");
+  });
+});

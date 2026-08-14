@@ -637,10 +637,27 @@ export async function handlePatientMessage(
     return respond(ctx, conversation.id, { text: hello, buttons: mainMenu() });
   }
 
-  const knowledgeRows = await prisma.knowledgeEntry.findMany({
+  const allKnowledge = await prisma.knowledgeEntry.findMany({
     where: { companyId: ctx.companyId, isActive: true },
     select: { topic: true, question: true, answer: true },
   });
+
+  /**
+   * Записи про согласие на обработку данных исключаем, когда согласие уже
+   * дано.
+   *
+   * Согласие ведёт платформа: она спрашивает его первой репликой и хранит
+   * факт в базе. В справочнике клиника завела свои формулировки на ту же тему
+   * — и агент спрашивал согласие второй раз, уже после «Да». Пациент отвечал
+   * «Согласна», получал просьбу согласиться снова и справедливо считал, что с
+   * ним разговаривает неисправная программа.
+   *
+   * Пока согласие не дано, записи остаются: там объяснение, зачем оно нужно, и
+   * оно уместно.
+   */
+  const knowledgeRows = conversation.consentGrantedAt
+    ? allKnowledge.filter((r) => !aboutConsent(r.topic) && !aboutConsent(r.question))
+    : allKnowledge;
 
   // Правило 1: на медицинскую тему отвечаем ТОЛЬКО дословной справкой клиники.
   if (medical(text)) {
@@ -770,6 +787,16 @@ function consentButtons() {
     { text: "Согласен(на)", data: CONSENT_ACCEPT },
     { text: "Не сейчас", data: CONSENT_DECLINE },
   ];
+}
+
+/**
+ * Запись справочника — про согласие на обработку данных?
+ *
+ * Проверяем тему и список формулировок, а не ответ: в ответе слово «согласие»
+ * встречается и в записях о правилах отмены.
+ */
+function aboutConsent(text: string): boolean {
+  return /соглас|персональн\w* данн/i.test(text);
 }
 
 function mainMenu() {

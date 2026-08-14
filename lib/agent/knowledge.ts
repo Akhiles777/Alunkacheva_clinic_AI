@@ -70,14 +70,47 @@ function stem(word: string): string {
  * Лучшая запись справочника для вопроса и её оценка (0..1).
  * Оценка — доля слов вопроса, нашедшихся в записи.
  */
+/** Пары соседних слов: «сколько стоит» отличает вопрос о цене от вопроса о том, кого принимают. */
+function pairs(list: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i + 1 < list.length; i++) out.push(`${list[i]} ${list[i + 1]}`);
+  return out;
+}
+
 export function matchKnowledge(
   question: string,
   rows: KnowledgeRow[],
-): { row: KnowledgeRow; score: number; hits: number; topicCoverage: number } | null {
+): { row: KnowledgeRow; score: number; hits: number; topicCoverage: number; specificCoverage: number } | null {
   const asked = words(question).map(stem);
   if (asked.length === 0 || rows.length === 0) return null;
 
-  let best: { row: KnowledgeRow; score: number; hits: number; topicCoverage: number } | null = null;
+  /**
+   * Значимые слова вопроса: имена, названия услуг, редкие термины.
+   *
+   * Короткие слова есть почти в каждой записи и ничего не различают. Длинные
+   * различают: «Разият», «Ризвановны», «остеопат». Без их учёта вопрос
+   * «сколько стоит приём у Разият Ризвановны» совпал с записью про то, что
+   * взрослых мужчин клиника не принимает, — общим было одно слово «приём», а
+   * имя врача не значило ничего. Пациент получил ответ не по своему вопросу.
+   */
+  const specific = asked.filter((w) => w.length >= 5);
+
+  /**
+   * Пары соседних слов вопроса.
+   *
+   * Отдельные слова здесь бессильны. Запись «приём мужчин» содержит и
+   * «остеопат», и «Разият Ризвановна», и «приём» — потому что там перечислено
+   * «принимает ли Разият Ризвановна мужчин?». По словам она совпадает с
+   * вопросом «сколько стоит приём у Разият Ризвановны» не хуже записи о цене,
+   * и пациент получал ответ про то, что мужчин не принимают.
+   *
+   * Различает их порядок: «сколько стоит» и «стоит приём» есть только в
+   * записи о цене. Пары слов — самый дешёвый способ это увидеть.
+   */
+  const askedPairs = pairs(asked);
+
+  let best: { row: KnowledgeRow; score: number; hits: number; topicCoverage: number; specificCoverage: number } | null =
+    null;
   for (const row of rows) {
     /**
      * Совпадения считаем по теме и вопросу записи, а не по тексту ответа.
@@ -104,8 +137,15 @@ export function matchKnowledge(
       topicWords.length === 0
         ? 0
         : topicWords.filter((w) => asked.includes(w)).length / topicWords.length;
-    const score = hits / asked.length + topicCoverage * 0.5;
-    if (!best || score > best.score) best = { row, score, hits, topicCoverage };
+    const specificCoverage =
+      specific.length === 0 ? 1 : specific.filter((w) => haystack.has(w)).length / specific.length;
+
+    const rowPairs = new Set(pairs(words(`${row.topic} ${row.question}`.replace(/\//g, " ")).map(stem)));
+    const pairCoverage =
+      askedPairs.length === 0 ? 0 : askedPairs.filter((p) => rowPairs.has(p)).length / askedPairs.length;
+
+    const score = hits / asked.length + topicCoverage * 0.5 + specificCoverage * 0.5 + pairCoverage;
+    if (!best || score > best.score) best = { row, score, hits, topicCoverage, specificCoverage };
   }
   return best;
 }
@@ -118,9 +158,21 @@ export function matchKnowledge(
  * Поэтому для коротких вопросов требуем не меньше двух совпавших слов, а
  * односложные отдаём модели: у неё есть контекст переписки.
  */
-export function confidentMatch(m: { score: number; hits: number; topicCoverage: number } | null): boolean {
+export function confidentMatch(
+  m: { score: number; hits: number; topicCoverage: number; specificCoverage?: number } | null,
+): boolean {
   if (!m) return false;
   if (m.score < KNOWLEDGE_MIN_SCORE) return false;
+
+  /**
+   * Значимые слова вопроса должны хотя бы наполовину найтись в записи.
+   *
+   * Дословный ответ — обещание «это ответ именно на ваш вопрос». Если пациент
+   * назвал врача или услугу, а в записи их нет, обещание ложное. Такой вопрос
+   * лучше отдать модели: она видит весь справочник и ответит по делу, а не
+   * подменит вопрос похожим.
+   */
+  if (m.specificCoverage !== undefined && m.specificCoverage < 0.5) return false;
   // Двух совпавших слов достаточно. Одного — только если вопрос покрывает тему
   // целиком: «адрес» → тема «Адрес», но не «капельница» → «Подготовка к
   // капельнице», где спрашивать могли и про цену.
