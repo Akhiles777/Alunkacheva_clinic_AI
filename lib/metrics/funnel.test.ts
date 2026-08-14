@@ -96,3 +96,20 @@ describe("withSourceShares", () => {
     expect(result[1].share).toBeCloseTo(310 / 420);
   });
 });
+
+describe("шаги воронки считаются по одному множеству", () => {
+  it("конверсия не бывает больше ста процентов", () => {
+    // На боевых данных выходило «обратились 2, записались 51» — 2550%:
+    // первый шаг считался по переписке, второй по всем записям клиники,
+    // включая созданные по телефону и в самом YCLIENTS.
+    const steps = buildFunnel({ inquiries: 2, booked: 1, arrived: 1 });
+    for (const s of steps) {
+      if (s.conversionFromPrev !== null) expect(s.conversionFromPrev).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("нулевые обращения не ломают расчёт", () => {
+    const steps = buildFunnel({ inquiries: 0, booked: 0, arrived: 0 });
+    expect(steps.every((s) => Number.isFinite(s.shareOfTop))).toBe(true);
+  });
+});

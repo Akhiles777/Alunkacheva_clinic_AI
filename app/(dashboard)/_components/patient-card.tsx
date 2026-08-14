@@ -1,13 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { getPatientRecord } from "@/app/(dashboard)/patients/actions";
 import { formatMoney } from "@/lib/format";
 import {
   addNote,
   addPhone,
   addRelation,
   findPatient,
+  hydratePatients,
   patientCalls,
   patientTags,
   primaryPhone,
@@ -72,6 +74,33 @@ export function PatientCardBody({
 }) {
   const db = useDb();
   const patient = db.patients.find((p) => p.id === patientId);
+
+  /**
+   * Полную запись пациента догружаем здесь, в самой карточке.
+   *
+   * Список пациентов историю визитов не запрашивает — тянуть её на всю базу
+   * незачем. Значит любой экран, показывающий карточку, обязан догрузить её
+   * сам. Прежде это делала только отдельная страница /patients/[id], а из
+   * списка карточка открывается модальным окном — и в нём история визитов
+   * была пуста всегда, сколько бы визитов ни лежало в базе.
+   *
+   * Один запрос на пациента: повторные открытия берут данные из стора.
+   */
+  const loadedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!patientId || loadedFor.current === patientId) return;
+    loadedFor.current = patientId;
+    let alive = true;
+    getPatientRecord(patientId)
+      .then((record) => {
+        if (alive && record) hydratePatients([record]);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [patientId]);
+
   const [newPhone, setNewPhone] = useState("");
   const [phoneErr, setPhoneErr] = useState(false);
   const [noteText, setNoteText] = useState("");

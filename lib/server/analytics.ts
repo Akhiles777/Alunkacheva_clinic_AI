@@ -136,6 +136,9 @@ export async function getDashboardMetricsDb(
         courseId: true,
         sourceId: true,
         roomId: true,
+        // Привязка визита к диалогу: по ней воронка считает, сколько
+        // обращений в переписке дошло до записи.
+        conversationId: true,
         staffId: true,
         staff: { select: { name: true, specialty: true } },
         room: { select: { id: true, name: true, sortOrder: true } },
@@ -171,10 +174,25 @@ export async function getDashboardMetricsDb(
     .filter((a) => a.courseId)
     .reduce((sum, a) => sum + Number(a.revenue), 0);
 
+  /**
+   * Воронка обращений: одни и те же люди на каждом шаге.
+   *
+   * Прежде первым шагом шли диалоги в мессенджерах, а вторым — все записи
+   * клиники, включая созданные по телефону и в самом YCLIENTS. Получалось
+   * «обратились 2, записались 51» и конверсия 2550%: числа считались по
+   * разным множествам, и цепочкой это назвать было нельзя.
+   *
+   * Теперь второй и третий шаги считаются только по записям, пришедшим из
+   * переписки, — для этого у визита есть привязка к диалогу. Воронка отвечает
+   * на свой вопрос: сколько обращений в переписке дошло до записи и до визита.
+   * Общее число записей и визитов по клинике показывают карточки выше — это
+   * другой вопрос и другое множество.
+   */
+  const fromDialog = booked.filter((a) => a.conversationId !== null);
   const funnel = {
     inquiries: conversations.length,
-    booked: booked.length,
-    arrived: arrived.length,
+    booked: fromDialog.length,
+    arrived: fromDialog.filter((a) => a.status === "ARRIVED").length,
   };
 
   // Первичные и повторные — по §8. Визит внутри курса отделяем: это не
