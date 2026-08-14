@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getDashboardMetricsDb, getServicesLoadDb } from "@/lib/server/analytics";
 import { getSession } from "@/lib/server/session";
 import { formatDuration, formatMoney, formatMoneyPrecise, formatNumber, formatPercent } from "@/lib/format";
-import { isPeriodKey, type PeriodKey } from "@/lib/metrics/types";
+import { isMonthKey, isPeriodKey, monthLabel, type PeriodKey } from "@/lib/metrics/types";
 
 export const metadata = { title: "Отчёты" };
 
@@ -19,6 +19,24 @@ const PERIODS: { id: PeriodKey; label: string }[] = [
   { id: "month", label: "Месяц" },
   { id: "quarter", label: "Квартал" },
 ];
+
+/**
+ * Последние календарные месяцы для выбора.
+ *
+ * Скользящее окно отвечает на вопрос «как идут дела сейчас», календарный
+ * месяц — на «сколько было в мае». Владелец сравнивает май с мартом, а не
+ * «последние тридцать дней» с предыдущими тридцатью, и без такого выбора
+ * ответить на его вопрос было нечем.
+ */
+function recentMonths(now: Date, count = 18): { id: string; label: string }[] {
+  const out: { id: string; label: string }[] = [];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const id = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    out.push({ id, label: monthLabel(id) });
+  }
+  return out;
+}
 
 function Bar({ value, tone = "accent" }: { value: number; tone?: "accent" | "muted" }) {
   return (
@@ -79,6 +97,32 @@ export default async function AnalyticsPage({
               </Link>
             ))}
           </div>
+          {/*
+            Выбор месяца — обычный список, а не календарь: месяцев немного, и
+            выбрать «Май 2026» одним движением быстрее, чем указывать даты.
+          */}
+          <form method="get" className="flex items-center gap-2">
+            <input type="hidden" name="tab" value={tab} />
+            <select
+              name="period"
+              defaultValue={isMonthKey(period) ? period : ""}
+              className="border-border-input bg-surface rounded-md border px-2.5 py-1.5 text-sm outline-none max-md:flex-1"
+              aria-label="Отчёт за месяц"
+            >
+              <option value="">Выбрать месяц…</option>
+              {recentMonths(new Date()).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              className="border-border text-text hover:bg-hover rounded-md border px-3 py-1.5 text-sm"
+            >
+              Показать
+            </button>
+          </form>
         </div>
         <div className="mt-3.5 flex flex-wrap gap-1.5">
           {TABS.map((t) => (

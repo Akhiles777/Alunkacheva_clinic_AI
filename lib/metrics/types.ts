@@ -8,11 +8,63 @@
  * Минуты в полосе дня — от полуночи в локальной зоне клиники.
  */
 
-export type PeriodKey = "week" | "month" | "quarter";
+/**
+ * Период отчёта.
+ *
+ * Три скользящих окна — «последние семь дней», «последние тридцать» — и любой
+ * календарный месяц строкой «2026-05».
+ *
+ * Скользящее окно отвечает на вопрос «как идут дела сейчас», календарный
+ * месяц — на «сколько было в мае». Это разные вопросы, и подменять один
+ * другим нельзя: владелец сравнивает май с мартом, а не «последние тридцать
+ * дней» с «предыдущими тридцатью».
+ */
+export type PeriodKey = "week" | "month" | "quarter" | string;
+
+const MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+/** Календарный месяц вида «2026-05»? */
+export function isMonthKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const m = MONTH_RE.exec(value);
+  if (!m) return false;
+  const year = Number(m[1]);
+  // Разумные границы: до 2020 клиники не было, дальше 2100 загадывать незачем.
+  return year >= 2020 && year <= 2100;
+}
 
 /** Разбор периода из адресной строки: чужое значение до расчёта не доходит. */
 export function isPeriodKey(value: unknown): value is PeriodKey {
-  return value === "week" || value === "month" || value === "quarter";
+  return value === "week" || value === "month" || value === "quarter" || isMonthKey(value);
+}
+
+const MONTH_NAMES = [
+  "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+];
+
+/** «2026-05» → «Май 2026». Подпись читает человек. */
+export function monthLabel(key: string): string {
+  const m = MONTH_RE.exec(key);
+  if (!m) return key;
+  return `${MONTH_NAMES[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+/**
+ * Границы календарного месяца в часовом поясе клиники.
+ *
+ * Считаем в UTC со сдвигом: месяц клиники начинается в 00:00 по Москве, а не
+ * по Гринвичу. Разница в три часа переносила бы визиты первого числа в
+ * предыдущий месяц.
+ */
+export function monthBounds(key: string, offsetHours = 3): { from: Date; to: Date } {
+  const m = MONTH_RE.exec(key);
+  if (!m) throw new Error(`Неверный месяц: ${key}`);
+  const year = Number(m[1]);
+  const month = Number(m[2]) - 1;
+  const from = new Date(Date.UTC(year, month, 1, -offsetHours));
+  const to = new Date(Date.UTC(year, month + 1, 1, -offsetHours));
+  return { from, to };
 }
 
 export interface PeriodInfo {

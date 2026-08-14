@@ -3,6 +3,7 @@ import { buildFunnel } from "@/lib/metrics/funnel";
 import { busyMinutes, freeGaps, occupancyRate, type Interval } from "@/lib/metrics/occupancy";
 import { averageCheck, withSourceShares, withStaffShares } from "@/lib/metrics/summary";
 import { closedDatesBetween } from "@/lib/server/clinic-day";
+import { isMonthKey, monthBounds, monthLabel } from "@/lib/metrics/types";
 import type {
   DashboardMetrics,
   PeriodKey,
@@ -26,12 +27,35 @@ import type {
  * первичные — первый визит пациента со статусом ARRIVED.
  */
 
-const PERIOD_DAYS: Record<PeriodKey, number> = { week: 7, month: 30, quarter: 90 };
-const PERIOD_LABEL: Record<PeriodKey, string> = {
+const PERIOD_DAYS: Record<string, number> = { week: 7, month: 30, quarter: 90 };
+const PERIOD_LABEL: Record<string, string> = {
   week: "Неделя",
   month: "Месяц",
   quarter: "Квартал",
 };
+
+/**
+ * Границы периода.
+ *
+ * Скользящее окно доходит до конца текущих суток: верхняя граница «сейчас»
+ * отсекала визиты, которые администратор уже отметил состоявшимися, но время
+ * которых по расписанию ещё не прошло — отметка «пришёл» не меняла отчёт.
+ *
+ * Календарный месяц берётся целиком, включая будущие дни: за май смотрят
+ * итоги мая, а не «мая до сегодня».
+ */
+export function periodBounds(period: PeriodKey, now: Date = new Date()): { from: Date; to: Date } {
+  if (isMonthKey(period)) return monthBounds(period);
+  return {
+    from: new Date(now.getTime() - (PERIOD_DAYS[period] ?? 30) * 24 * 3600 * 1000),
+    to: endOfToday(now),
+  };
+}
+
+/** Подпись периода для экрана. */
+export function periodLabel(period: PeriodKey): string {
+  return isMonthKey(period) ? monthLabel(period) : (PERIOD_LABEL[period] ?? period);
+}
 
 /** Рабочий день клиники: 9:00–21:00, как в расписании. */
 const CLINIC_DAY: Interval = { startMinute: 9 * 60, endMinute: 21 * 60 };
@@ -97,8 +121,7 @@ export async function getDashboardMetricsDb(
    * суток, а план от факта отделяет статус.
    */
   const now = new Date();
-  const to = endOfToday(now);
-  const from = new Date(now.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
+  const { from, to } = periodBounds(period, now);
 
   const [appts, conversations, newPatients, rooms, sources, closed] = await Promise.all([
     prisma.appointment.findMany({
@@ -184,10 +207,15 @@ export async function getDashboardMetricsDb(
   return {
     period: {
       key: period,
-      label: PERIOD_LABEL[period],
+      label: periodLabel(period),
       from: from.toISOString(),
       to: to.toISOString(),
-      workingDays: Math.max(1, workingDaysBetween(from, now, closed)),
+      /**
+       * Рабочих дней в периоде. Для скользящего окна — до сегодня; для
+       * календарного месяца — весь месяц, иначе средние за май считались бы
+       * по неполному месяцу.
+       */
+      workingDays: Math.max(1, workingDaysBetween(from, isMonthKey(period) ? to : now, closed)),
     },
     funnel,
     funnelSteps: buildFunnel(funnel),
@@ -305,13 +333,12 @@ export async function getServicesLoadDb(
   companyId: string,
   period: PeriodKey,
 ): Promise<ServiceLoadRow[]> {
-  // Те же границы, что и в основном отчёте: окно до конца текущих суток.
+  // Те же границы, что и в основном отчёте — иначе разрезы разъедутся.
   const now = new Date();
-  const to = endOfToday(now);
-  const from = new Date(now.getTime() - PERIOD_DAYS[period] * 24 * 3600 * 1000);
+  const { from, to } = periodBounds(period, now);
   const workingDays = Math.max(
     1,
-    workingDaysBetween(from, now, await closedDatesBetween(companyId, from, to)),
+    workingDaysBetween(from, isMonthKey(period) ? to : now, await closedDatesBetween(companyId, from, to)),
   );
 
   const services = await prisma.service.findMany({
