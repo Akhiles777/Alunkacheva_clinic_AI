@@ -299,12 +299,38 @@ export async function updatePatientDb(id: string, patch: { name?: string; source
   await prisma.patient.updateMany({ where: { id, companyId: session.companyId }, data });
 }
 
+/**
+ * Удаление карточки пациента.
+ *
+ * Сама карточка удаляется мягко (§4): визиты, переписка и выгрузка из
+ * YCLIENTS на неё ссылаются, и физическое удаление порвало бы историю.
+ *
+ * Но две вещи нужно отвязать по-настоящему.
+ *
+ * Диалоги. Переписка живёт дальше — человек продолжает писать в WhatsApp. Если
+ * оставить ссылку на удалённую карточку, диалог выглядит привязанным, а
+ * «Карточка клиента» открывает пустоту: карточки-то нет. Так и вышло после
+ * удаления дубля с неверным номером. Отвязываем — администратор привяжет
+ * диалог к правильной карточке, и кнопка снова работает.
+ *
+ * Телефоны. Номер уникален в пределах клиники (§4), и пока он числится за
+ * удалённой карточкой, добавить его к правильной нельзя — «номер занят». Хуже
+ * того, сопоставление по номеру приводило бы новые обращения к удалённой
+ * карточке. Номер — не медицинская тайна и не история визитов; освобождаем.
+ */
 export async function softDeletePatient(id: string): Promise<void> {
   const session = await getSession();
-  await prisma.patient.updateMany({
-    where: { id, companyId: session.companyId },
-    data: { deletedAt: new Date() },
-  });
+  await prisma.$transaction([
+    prisma.patient.updateMany({
+      where: { id, companyId: session.companyId },
+      data: { deletedAt: new Date() },
+    }),
+    prisma.conversation.updateMany({
+      where: { patientId: id, companyId: session.companyId },
+      data: { patientId: null },
+    }),
+    prisma.patientPhone.deleteMany({ where: { patientId: id, companyId: session.companyId } }),
+  ]);
 }
 
 export async function addPhoneDb(input: {

@@ -209,7 +209,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
     where: { companyId: session.companyId, channel: { not: "TELEGRAM" } },
     orderBy: { lastMessageAt: "desc" },
     include: {
-      patient: { select: { name: true } },
+      patient: { select: { name: true, deletedAt: true } },
       // Последние сообщения, а не вся история: список обновляется каждые
       // несколько секунд, и тянуть переписку за год на каждый запрос нельзя.
       // Ничего не удаляется — просто не грузится лишнее.
@@ -227,7 +227,25 @@ export async function getConversations(): Promise<DialogRecord[]> {
       },
     },
   });
+  /**
+   * Диалоги, привязанные к удалённой карточке.
+   *
+   * Карточку удаляют, а переписка остаётся: человек продолжает писать. Ссылка
+   * при этом висит на несуществующей карточке — диалог выглядит привязанным, а
+   * «Карточка клиента» открывает пустоту. Отвязываем: администратор привяжет к
+   * правильной карточке. Само удаление теперь делает это сразу, здесь —
+   * починка диалогов, осиротевших раньше.
+   */
+  const orphaned = convs.filter((c) => c.patient?.deletedAt).map((c) => c.id);
+  if (orphaned.length > 0) {
+    await prisma.conversation.updateMany({
+      where: { id: { in: orphaned }, companyId: session.companyId },
+      data: { patientId: null },
+    });
+  }
+
   return convs.map((c) => {
+    const patient = c.patient?.deletedAt ? null : c.patient;
     // Из базы пришли в обратном порядке (последние сверху) — разворачиваем.
     const ordered = [...c.messages].reverse();
     const messages: DialogMessageRecord[] = ordered.map((m) => ({
@@ -245,8 +263,8 @@ export async function getConversations(): Promise<DialogRecord[]> {
     return {
       id: c.id,
       // Имя карточки важнее имени из профиля: карточку ведёт клиника.
-      name: c.patient?.name ?? c.contactName ?? null,
-      patientId: c.patientId,
+      name: patient?.name ?? c.contactName ?? null,
+      patientId: patient ? c.patientId : null,
       channel: CHANNEL_MAP[c.channel] ?? "whatsapp",
       status: STATUS_MAP[c.status],
       unread,
@@ -439,7 +457,9 @@ export async function linkPatientDb(
 
   if (!patientId && channelPhone) {
     const existing = await prisma.patientPhone.findFirst({
-      where: { companyId: session.companyId, phone: channelPhone },
+      // Удалённая карточка номер за собой не держит, но проверяем и здесь:
+      // привязать живой диалог к удалённому пациенту нельзя.
+      where: { companyId: session.companyId, phone: channelPhone, patient: { deletedAt: null } },
       select: { patientId: true },
     });
     // Нашли по номеру — привязываем к ней, а не заводим вторую.

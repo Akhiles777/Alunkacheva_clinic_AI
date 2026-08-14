@@ -349,6 +349,11 @@ model Conversation {
   botPausedUntil       DateTime? @db.Timestamptz(3)
   /// 24-часовое окно ответа Instagram вне messaging tags.
   replyWindowExpiresAt DateTime? @db.Timestamptz(3)
+  /// Когда забрали переписку, которая шла в мессенджере до подключения
+  /// платформы. Отметка, а не счёт сообщений: диалог мог начаться у нас, а
+  /// история за прошлый год всё равно есть у провайдера, и без неё агент
+  /// разговаривает с постоянным пациентом как с незнакомым. Тянем один раз.
+  historyImportedAt    DateTime? @db.Timestamptz(3)
 
   startedAt            DateTime  @db.Timestamptz(3)
   lastMessageAt        DateTime  @db.Timestamptz(3)

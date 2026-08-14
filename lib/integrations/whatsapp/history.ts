@@ -53,17 +53,33 @@ export async function importWhatsappHistory(input: {
 
   const existing = await prisma.conversation.findFirst({
     where: { companyId: input.companyId, channel: "WHATSAPP", externalUserId: input.chatId },
-    select: { id: true, _count: { select: { messages: true } } },
+    select: { id: true, historyImportedAt: true, startedAt: true, _count: { select: { messages: true } } },
   });
-  // В диалоге уже есть переписка — контекст на месте, тянуть нечего.
-  if (existing && existing._count.messages > 0) return none;
+  /**
+   * Историю тянем один раз на диалог — по отметке, а не по числу сообщений.
+   *
+   * Считать сообщения было ошибкой: у пациента, который уже писал нам,
+   * переписка в диалоге есть, и импорт пропускался — а прошлогодний разговор
+   * с клиникой на телефоне так и оставался невидимым. Именно этот случай и
+   * важен: постоянный пациент, для которого диалог у нас первый.
+   */
+  if (existing?.historyImportedAt) return none;
 
   const history = await fetchChatHistory(input.companyId, input.chatId, HISTORY_COUNT);
-  if (history.length === 0) return none;
-
   const cutoff = new Date(Date.now() - MAX_AGE_DAYS * 24 * 3600 * 1000);
   const fresh = history.filter((m) => m.at >= cutoff && m.externalId !== input.skipExternalId);
-  if (fresh.length === 0) return none;
+
+  if (fresh.length === 0) {
+    // Истории нет или она вся старше года. Отметку ставим всё равно: иначе
+    // будем ходить к провайдеру на каждое сообщение впустую.
+    if (existing) {
+      await prisma.conversation.update({
+        where: { id: existing.id },
+        data: { historyImportedAt: new Date() },
+      });
+    }
+    return none;
+  }
 
   const conversationId = existing?.id ?? (await createConversation(input.companyId, input.chatId, input.contactName));
 
@@ -87,13 +103,28 @@ export async function importWhatsappHistory(input: {
     skipDuplicates: true,
   });
 
+  /**
+   * Паузу бота ставим только для диалога, которого у нас ещё не было.
+   *
+   * Если переписка на платформе уже идёт, о том, кто говорит с пациентом
+   * сейчас, судим по ней, а не по подтянутой истории: старое сообщение
+   * администратора с телефона не должно задним числом затыкать бота в живом
+   * разговоре.
+   */
   const last = fresh[fresh.length - 1];
-  const staffWasLast = last.direction === "OUT" && last.at >= new Date(Date.now() - 12 * 3600 * 1000);
+  const wasEmpty = (existing?._count.messages ?? 0) === 0;
+  const staffWasLast =
+    wasEmpty && last.direction === "OUT" && last.at >= new Date(Date.now() - 12 * 3600 * 1000);
+
+  // Начало диалога двигаем только назад: история не может начаться позже, чем
+  // разговор, который у нас уже записан.
+  const startedAt = existing && existing.startedAt < fresh[0].at ? existing.startedAt : fresh[0].at;
 
   await prisma.conversation.update({
     where: { id: conversationId },
     data: {
-      startedAt: fresh[0].at,
+      startedAt,
+      historyImportedAt: new Date(),
       /**
        * Разговор вёл сотрудник — бот в него не вклинивается.
        *
