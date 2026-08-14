@@ -9,8 +9,11 @@
  * Персональные данные наружу не выводятся: имена и телефоны заменяются
  * пометками «есть» / «пусто». Нам важно, приходит ли поле, а не что в нём.
  *
- *   DATABASE_URL=... npx tsx scripts/yclients-probe.ts
+ * Запуск из каталога проекта: npx tsx scripts/yclients-probe.ts
+ * Переменные берутся из .env — без CREDENTIAL_MASTER_KEY ключи интеграции
+ * расшифровать нечем, и проверка решит, что их нет вовсе.
  */
+import "dotenv/config";
 import { prisma } from "../lib/db";
 import { loadYclientsCredentials, authHeader } from "../lib/integrations/yclients/credentials";
 import { YCLIENTS_ACCEPT, YCLIENTS_BASE_URL } from "../lib/integrations/yclients/config";
@@ -64,7 +67,16 @@ async function main() {
   const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
   const creds = await loadYclientsCredentials(company.id);
   if (!creds) {
-    console.error("Ключи YCLIENTS не заданы — подключите интеграцию в настройках");
+    const saved = await prisma.credential.findMany({
+      where: { companyId: company.id, provider: "yclients" },
+      select: { keyName: true },
+    });
+    console.error(
+      saved.length === 0
+        ? "Ключи YCLIENTS не заданы — подключите интеграцию в настройках"
+        : `Ключи есть (${saved.map((s) => s.keyName).join(", ")}), но расшифровать не удалось. ` +
+            "Проверьте CREDENTIAL_MASTER_KEY: запускать нужно из каталога проекта, где лежит .env",
+    );
     process.exit(1);
   }
   const auth = authHeader(creds);

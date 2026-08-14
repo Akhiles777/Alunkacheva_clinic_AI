@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
-import { isWhatsappEnabled } from "@/lib/integrations/whatsapp/config";
+import { isWhatsappEnabled, WHATSAPP_PROVIDER } from "@/lib/integrations/whatsapp/config";
 import { parseWebhook, verifyWebhookSecret } from "@/lib/integrations/whatsapp/webhook";
 import { sendText } from "@/lib/integrations/whatsapp/green-api";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
@@ -54,16 +54,22 @@ export async function POST(req: Request) {
   }
 
   /**
-   * Филиал определяем по единственной компании: у платформы одна клиника, а
-   * Green API не сообщает, к какому нашему филиалу относится инстанс. Если
-   * когда-нибудь клиник станет несколько, различать их придётся по idInstance
-   * из instanceData — поэтому здесь стоит явная проверка, а не «взять первую».
+   * Чью клинику касается сообщение.
+   *
+   * Прежде требовалось, чтобы в базе была ровно одна клиника. На боевой базе
+   * их оказалось две — настоящая и пустая запись, оставшаяся от ранней
+   * настройки, — и каждое сообщение из WhatsApp молча выбрасывалось с
+   * пометкой «не удалось определить клинику». Пациент писал, а в инбоксе не
+   * появлялось ничего: лишняя строка в таблице стоила потерянных обращений.
+   *
+   * Теперь порядок такой: клиника, у которой заведены ключи Green API; если
+   * такая одна — она и есть адресат. Иначе берём самую раннюю, как и весь
+   * остальной интерфейс платформы.
    */
-  const companies = await prisma.company.findMany({ select: { id: true }, take: 2 });
-  if (companies.length !== 1) {
-    return NextResponse.json({ ok: true, ignored: "не удалось определить клинику" });
+  const companyId = await resolveCompany();
+  if (!companyId) {
+    return NextResponse.json({ ok: true, ignored: "в базе нет ни одной клиники" });
   }
-  const companyId = companies[0].id;
 
   /**
    * Повторная доставка. Провайдер шлёт событие заново, если не получил ответ
@@ -144,6 +150,22 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ ok: true });
+}
+
+/** Клиника, которой адресовано сообщение WhatsApp. */
+async function resolveCompany(): Promise<string | null> {
+  const configured = await prisma.credential.findMany({
+    where: { provider: WHATSAPP_PROVIDER, keyName: "id_instance" },
+    select: { companyId: true },
+    take: 2,
+  });
+  if (configured.length === 1) return configured[0].companyId;
+
+  const oldest = await prisma.company.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  return oldest?.id ?? null;
 }
 
 /**
