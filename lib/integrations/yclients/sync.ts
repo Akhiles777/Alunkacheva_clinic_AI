@@ -483,7 +483,19 @@ export function buildRecordRow(
       yclientsRecordId: r.yclientsRecordId,
       staffId,
       patientId,
-      roomId: r.yclientsResourceId ? (lookups.roomByResourceId.get(r.yclientsResourceId) ?? null) : null,
+      /**
+       * Кабинет: из записи YCLIENTS, а если его там нет — по специалисту.
+       *
+       * Клиника не ведёт кабинеты в YCLIENTS как ресурсы, поэтому в записях
+       * их нет вовсе, и загрузку кабинетов считать было не из чего. Запасной
+       * путь предусмотрен §2: маппинг «специалист → кабинет» задаётся в
+       * «Настройки → Сотрудники». Пока он не задан, визит остаётся без
+       * кабинета — выдумывать привязку нельзя.
+       */
+      roomId:
+        (r.yclientsResourceId ? (lookups.roomByResourceId.get(r.yclientsResourceId) ?? null) : null) ??
+        lookups.defaultRoomByStaffId.get(staffId) ??
+        null,
       primaryServiceId: r.yclientsServiceIds[0]
         ? (lookups.serviceByYclientsId.get(r.yclientsServiceIds[0]) ?? null)
         : null,

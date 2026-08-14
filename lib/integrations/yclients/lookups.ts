@@ -16,6 +16,15 @@ import { prisma } from "@/lib/db";
  */
 export interface SyncLookups {
   staffByYclientsId: Map<number, string>;
+  /**
+   * Кабинет по умолчанию у специалиста («Настройки → Сотрудники»).
+   *
+   * Нужен, когда клиника не ведёт кабинеты в YCLIENTS как ресурсы: тогда в
+   * записях кабинета нет вовсе, и загрузку кабинетов считать не из чего.
+   * Запасной путь прямо предусмотрен §2 CLAUDE.md — маппинг «специалист →
+   * кабинет» на нашей стороне.
+   */
+  defaultRoomByStaffId: Map<string, string>;
   roomByResourceId: Map<number, string>;
   serviceByYclientsId: Map<number, string>;
   /** Пациенты по идентификатору YCLIENTS — пополняется по мере страниц. */
@@ -31,7 +40,7 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
   const [staff, rooms, services] = await Promise.all([
     prisma.staff.findMany({
       where: { companyId, yclientsStaffId: { not: null } },
-      select: { id: true, yclientsStaffId: true },
+      select: { id: true, yclientsStaffId: true, defaultRoomId: true },
     }),
     prisma.room.findMany({
       where: { companyId, yclientsResourceId: { not: null } },
@@ -45,6 +54,9 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
 
   return {
     staffByYclientsId: new Map(staff.map((s) => [s.yclientsStaffId!, s.id])),
+    defaultRoomByStaffId: new Map(
+      staff.filter((s) => s.defaultRoomId).map((s) => [s.id, s.defaultRoomId!]),
+    ),
     roomByResourceId: new Map(rooms.map((r) => [r.yclientsResourceId!, r.id])),
     serviceByYclientsId: new Map(services.map((s) => [s.yclientsServiceId!, s.id])),
     patientByYclientsId: new Map(),

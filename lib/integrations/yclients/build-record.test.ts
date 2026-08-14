@@ -10,6 +10,7 @@ import type { SyncLookups } from "./lookups";
 function lookups(over: Partial<SyncLookups> = {}): SyncLookups {
   return {
     staffByYclientsId: new Map([[10, "staff-1"]]),
+    defaultRoomByStaffId: new Map<string, string>(),
     roomByResourceId: new Map([[900, "room-1"]]),
     serviceByYclientsId: new Map([[55, "service-1"]]),
     patientByYclientsId: new Map([[7, "patient-1"]]),
@@ -86,5 +87,40 @@ describe("buildRecordRow", () => {
     const a = buildRecordRow("co", base, lookups());
     const b = buildRecordRow("co", base, lookups());
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+});
+
+describe("кабинет по специалисту, когда YCLIENTS его не прислал", () => {
+  /** Запись без ресурса: так их отдаёт YCLIENTS клиники без кабинетов. */
+  const noRoom = { ...base, resource_instances: [] };
+
+  it("берётся кабинет по умолчанию у врача", () => {
+    // Клиника не ведёт кабинеты в YCLIENTS как ресурсы: в записях их нет, и
+    // загрузку кабинетов считать было не из чего.
+    const row = buildRecordRow(
+      "co",
+      noRoom,
+      lookups({ defaultRoomByStaffId: new Map([["staff-1", "room-osteo"]]) }),
+    );
+    expect(row?.kind).toBe("row");
+    if (row?.kind !== "row") return;
+    expect(row.data.roomId).toBe("room-osteo");
+  });
+
+  it("кабинет из записи важнее кабинета по умолчанию", () => {
+    const row = buildRecordRow(
+      "co",
+      base,
+      lookups({ defaultRoomByStaffId: new Map([["staff-1", "room-osteo"]]) }),
+    );
+    if (row?.kind !== "row") return;
+    expect(row.data.roomId).toBe("room-1");
+  });
+
+  it("без привязки визит остаётся без кабинета", () => {
+    // Выдумывать кабинет нельзя: придуманная занятость хуже пустого места.
+    const row = buildRecordRow("co", noRoom, lookups());
+    if (row?.kind !== "row") return;
+    expect(row.data.roomId).toBeNull();
   });
 });
