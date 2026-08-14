@@ -198,7 +198,15 @@ const MESSAGE_WINDOW = 100;
 export async function getConversations(): Promise<DialogRecord[]> {
   const session = await getSession();
   const convs = await prisma.conversation.findMany({
-    where: { companyId: session.companyId },
+    /**
+     * Telegram в списке не показываем — решение заказчика.
+     *
+     * Бот в нём продолжает работать, переписка сохраняется и никуда не
+     * девается: канал используется для проверок, и его диалоги мешали
+     * администратору видеть обращения пациентов из WhatsApp. Чтобы вернуть —
+     * достаточно убрать это условие.
+     */
+    where: { companyId: session.companyId, channel: { not: "TELEGRAM" } },
     orderBy: { lastMessageAt: "desc" },
     include: {
       patient: { select: { name: true } },

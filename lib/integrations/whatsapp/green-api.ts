@@ -188,3 +188,85 @@ export async function sendText(
   }
   return { ok: true, externalId: res.data.idMessage };
 }
+
+/** Одно сообщение из истории переписки. */
+export interface HistoryMessage {
+  externalId: string;
+  /** Кто написал: пациент или клиника. */
+  direction: "IN" | "OUT";
+  text: string;
+  at: Date;
+}
+
+/**
+ * История переписки с собеседником.
+ *
+ * До подключения платформы клиника переписывалась с пациентом прямо на
+ * телефоне. Эти сообщения есть у WhatsApp, но не у нас — и ассистент начинал
+ * разговор с чистого листа при живой переписке на экране у пациента. Забираем
+ * их один раз, при первом сообщении в новом диалоге.
+ *
+ * Ошибки здесь не критичны: не получилось — работаем без истории, как раньше.
+ * Терять входящее сообщение из-за неудачной подгрузки нельзя.
+ */
+export async function fetchChatHistory(
+  companyId: string,
+  chatId: string,
+  count = 50,
+): Promise<HistoryMessage[]> {
+  if (!isWhatsappEnabled()) return [];
+  const creds = await loadCredentials(companyId);
+  if (!creds) return [];
+
+  const res = await enqueue(() =>
+    call<unknown>(ENDPOINTS.getChatHistory(creds.idInstance, creds.apiToken), { chatId, count }),
+  );
+  if (!res.ok || !Array.isArray(res.data)) return [];
+
+  return parseHistory(res.data);
+}
+
+/**
+ * Разбор ответа истории. Отдельно от запроса — чтобы проверять тестами без
+ * сети: формат у провайдера разный для текста, подписи к файлу и цитаты.
+ */
+export function parseHistory(rows: unknown[]): HistoryMessage[] {
+  const out: HistoryMessage[] = [];
+  for (const raw of rows) {
+    // Провайдер присылает и пустые элементы: обращение к полю null уронило бы
+    // разбор целиком, а вместе с ним и всю подгруженную историю.
+    if (!raw || typeof raw !== "object") continue;
+    const m = raw as {
+      idMessage?: string;
+      type?: string;
+      timestamp?: number;
+      textMessage?: string;
+      extendedTextMessage?: { text?: string };
+      extendedTextMessageData?: { text?: string };
+      caption?: string;
+      typeMessage?: string;
+    };
+    if (!m.idMessage || !m.timestamp) continue;
+
+    const text = (
+      m.textMessage ??
+      m.extendedTextMessage?.text ??
+      m.extendedTextMessageData?.text ??
+      m.caption ??
+      ""
+    ).trim();
+    // Нетекстовые сообщения истории помечаем: содержимое нам недоступно, но
+    // сам факт обмена важен для понимания разговора.
+    const body = text || (m.typeMessage ? `[${m.typeMessage}]` : "");
+    if (!body) continue;
+
+    out.push({
+      externalId: m.idMessage,
+      direction: m.type === "outgoing" ? "OUT" : "IN",
+      text: body.slice(0, 4000),
+      at: new Date(m.timestamp * 1000),
+    });
+  }
+  // От старых к новым: в таком порядке они лягут в переписку.
+  return out.sort((a, b) => a.at.getTime() - b.at.getTime());
+}

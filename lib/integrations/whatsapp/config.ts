@@ -39,6 +39,15 @@ export const ENDPOINTS = {
   sendFileByUrl: (id: string, token: string) => `/waInstance${id}/sendFileByUrl/${token}`,
   getStateInstance: (id: string, token: string) => `/waInstance${id}/getStateInstance/${token}`,
   getSettings: (id: string, token: string) => `/waInstance${id}/getSettings/${token}`,
+  /**
+   * История переписки с одним собеседником.
+   *
+   * Нужна при первом сообщении: до подключения платформы человек мог месяцами
+   * переписываться с клиникой на телефоне, и без этой истории ассистент
+   * начинает разговор с чистого листа при живой переписке на экране у
+   * пациента.
+   */
+  getChatHistory: (id: string, token: string) => `/waInstance${id}/getChatHistory/${token}`,
 } as const;
 
 /**

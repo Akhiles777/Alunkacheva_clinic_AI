@@ -6,6 +6,7 @@ import { parseWebhook, verifyWebhookSecret } from "@/lib/integrations/whatsapp/w
 import { sendText } from "@/lib/integrations/whatsapp/green-api";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { messageBody } from "@/lib/agent/attachments";
+import { importWhatsappHistory } from "@/lib/integrations/whatsapp/history";
 
 /**
  * Вебхук WhatsApp (Green API).
@@ -122,6 +123,29 @@ export async function POST(req: Request) {
       },
     });
     return NextResponse.json({ ok: true, kind: "outgoing", takeover: true });
+  }
+
+  /**
+   * Переписка, которая была до подключения платформы.
+   *
+   * У нас её нет, а у пациента она на экране: он продолжает разговор, начатый
+   * месяц назад на телефоне администратора. Без истории ассистент отвечает как
+   * незнакомому — здоровается и заново просит согласие. Забираем её у
+   * провайдера один раз, при первом сообщении в диалоге, до ответа агента:
+   * иначе первая же реплика уйдёт без контекста, а именно она и важна.
+   *
+   * Сбой здесь не мешает работе: не получилось — отвечаем без истории, как
+   * раньше. Терять обращение из-за неудачной подгрузки нельзя.
+   */
+  try {
+    await importWhatsappHistory({
+      companyId,
+      chatId: event.chatId,
+      contactName: event.senderName,
+      skipExternalId: event.externalId,
+    });
+  } catch (e) {
+    console.error("[whatsapp] история чата не загрузилась:", e);
   }
 
   try {
