@@ -585,7 +585,7 @@ export async function handlePatientMessage(
      * это первый признак того, что собеседник не помнит предыдущих реплик.
      */
     const said = await recentTurns(conversation.id);
-    if (alreadyGreeted(said)) {
+    if (alreadyGreeted(said, settings.greeting)) {
       return respond(ctx, conversation.id, { text: "Слушаю вас.", buttons: mainMenu() });
     }
     const hello =
@@ -678,6 +678,23 @@ export async function handlePatientMessage(
      * Отвечаем коротко и зовём человека. Справку пациент получит по конкретному
      * вопросу, а не свалкой.
      */
+    /**
+     * Прежде чем звать человека — берём лучшее, что нашлось в справочнике.
+     *
+     * Порог уверенности нужен там, где ответ уходит дословно: подменять один
+     * вопрос другим нельзя. Но когда модель недоступна, выбор не между точным
+     * и приблизительным, а между приблизительным и молчанием. Пациент
+     * спросил «а что взять с собой» — в справочнике есть «Подготовка к
+     * приёму», и отдать её куда полезнее, чем сказать «зову администратора».
+     *
+     * Медицинские темы сюда не попадают: они разошлись выше и требуют
+     * дословного совпадения (§6.1).
+     */
+    const best = matchKnowledge(text, knowledgeRows);
+    if (best && best.hits >= 1 && !alreadySaid(await recentTurns(conversation.id), best.row.answer)) {
+      return respond(ctx, conversation.id, { text: best.row.answer, buttons: mainMenu() });
+    }
+
     await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Ассистент не смог ответить").catch(() => {});
     return respond(ctx, conversation.id, {
       text: "Секунду, передаю ваш вопрос администратору — он ответит здесь же.",

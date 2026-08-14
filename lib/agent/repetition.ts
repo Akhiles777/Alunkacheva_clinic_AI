@@ -59,11 +59,22 @@ function similar(a: string, b: string): boolean {
 }
 
 /**
- * Здоровались ли уже.
+ * Здоровались ли мы уже — именно поздоровались, а не сказали хоть что-нибудь.
  *
- * Приветствие в середине разговора — самый заметный признак того, что
- * собеседник не помнит предыдущих реплик.
+ * Первая версия проверяла «есть ли вообще реплики бота», и это была ошибка: к
+ * моменту первого живого «здравствуйте» бот уже прислал запрос согласия на
+ * обработку данных. Пациент здоровался, а в ответ получал сухое «Слушаю вас»
+ * вместо приветствия клиники — то есть правка против повторов сама создала
+ * впечатление тупого собеседника.
+ *
+ * Смотрим на текст: приветствие узнаётся по первым словам ответа.
  */
-export function alreadyGreeted(history: Turn[]): boolean {
-  return history.some((t) => t.role === "assistant");
+export function alreadyGreeted(history: Turn[], greeting?: string): boolean {
+  const ours = normalize(greeting ?? "").slice(0, 40);
+  return history.some((t) => {
+    if (t.role !== "assistant") return false;
+    const said = normalize(t.content);
+    if (ours && said.startsWith(ours)) return true;
+    return /^(здравствуйте|добрый день|доброе утро|добрый вечер|приветствую|привет)\b/.test(said);
+  });
 }
