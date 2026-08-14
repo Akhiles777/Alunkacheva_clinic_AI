@@ -341,24 +341,38 @@ export async function getServicesLoadDb(
     workingDaysBetween(from, isMonthKey(period) ? to : now, await closedDatesBetween(companyId, from, to)),
   );
 
-  const services = await prisma.service.findMany({
-    where: { companyId, isActive: true },
-    select: {
-      id: true,
-      title: true,
-      rooms: { select: { roomId: true } },
-      primaryForAppointments: {
-        where: { deletedAt: null, status: { not: "CANCELLED" }, startAt: { gte: from, lt: to } },
-        select: { durationMin: true },
+  const [services, roomCount] = await Promise.all([
+    prisma.service.findMany({
+      where: { companyId, isActive: true },
+      select: {
+        id: true,
+        title: true,
+        rooms: { select: { roomId: true } },
+        primaryForAppointments: {
+          where: { deletedAt: null, status: { not: "CANCELLED" }, startAt: { gte: from, lt: to } },
+          select: { durationMin: true },
+        },
       },
-    },
-  });
+    }),
+    prisma.room.count({ where: { companyId } }),
+  ]);
 
   return services
     .map((s) => {
       const busy = s.primaryForAppointments.reduce((sum, a) => sum + a.durationMin, 0);
-      // Знаменатель — минуты всех кабинетов, где услуга может проводиться.
-      const available = s.rooms.length * CLINIC_MINUTES_PER_DAY * workingDays;
+
+      /**
+       * Знаменатель — минуты кабинетов, где услуга может проводиться.
+       *
+       * Привязка «услуга → кабинет» заводится вручную, и у услуг, приехавших
+       * из YCLIENTS, её нет. Раньше это давало ноль в знаменателе, ноль в
+       * доле — и весь отчёт по услугам выглядел пустым при полной базе
+       * визитов. Без привязки считаем, что услуга может идти в любом кабинете
+       * клиники: это приблизительно, но отвечает на вопрос «чем занят день», а
+       * ноль не отвечает ни на что.
+       */
+      const roomsForService = s.rooms.length > 0 ? s.rooms.length : roomCount;
+      const available = roomsForService * CLINIC_MINUTES_PER_DAY * workingDays;
       return {
         title: s.title,
         busyMinutes: busy,
@@ -366,5 +380,12 @@ export async function getServicesLoadDb(
         ratio: available > 0 ? busy / available : 0,
       };
     })
-    .sort((a, b) => b.ratio - a.ratio);
+    /**
+     * Сортируем по занятому времени, а не по доле.
+     *
+     * Доля зависит от числа кабинетов и при их отсутствии у всех одинакова.
+     * Занятые минуты — то, что администратор и хочет видеть: чем клиника
+     * занята больше всего.
+     */
+    .sort((a, b) => b.busyMinutes - a.busyMinutes || b.ratio - a.ratio);
 }

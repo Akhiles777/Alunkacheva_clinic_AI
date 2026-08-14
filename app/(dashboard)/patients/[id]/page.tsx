@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { PatientCardBody } from "../../_components/patient-card";
@@ -15,17 +15,23 @@ export default function PatientPage() {
   const patient = findPatient(id);
 
   /**
-   * Пока карточку не нашли в сторе, не утверждаем, что её нет.
+   * Карточку всегда догружаем с сервера, даже если пациент уже в сторе.
    *
-   * Стор наполняется один раз при загрузке дашборда: пациент, заведённый
-   * позже — из диалога, ботом или выгрузкой YCLIENTS, — в нём отсутствует, и
-   * экран показывал «такого пациента нет» для только что созданной карточки.
-   * Догружаем её с сервера и лишь потом судим.
+   * В сторе он оказывается из списка, а список не запрашивает историю визитов
+   * — тянуть её на всю базу незачем. Прежде эффект выходил на первой же
+   * проверке «пациент уже есть», и карточка показывала пустую историю всегда,
+   * сколько бы визитов ни было в базе.
+   *
+   * Заодно это закрывает второй случай: пациента, заведённого позже загрузки
+   * дашборда — из диалога, ботом или выгрузкой YCLIENTS, — в сторе нет вовсе,
+   * и экран сообщал «такого пациента нет» для только что созданной карточки.
    */
   const [lookup, setLookup] = useState<"searching" | "missing">("searching");
+  const loadedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!id || patient) return;
+    if (!id || loadedFor.current === id) return;
+    loadedFor.current = id;
     let alive = true;
     getPatientRecord(id)
       .then((record) => {
@@ -37,8 +43,7 @@ export default function PatientPage() {
     return () => {
       alive = false;
     };
-    // Ищем один раз на карточку: появится в сторе — эффект больше не нужен.
-  }, [id, patient]);
+  }, [id]);
 
   // Просмотр медицинской карточки фиксируется в журнале (§7).
   useEffect(() => {
