@@ -15,6 +15,19 @@ const PRIVATE_SUFFIX = "@c.us";
 const GROUP_SUFFIX = "@g.us";
 
 /**
+ * Адреса, в которых перед «@» действительно стоит телефон.
+ *
+ * WhatsApp давно адресует часть собеседников идентификатором устройства:
+ * `123456789012345@lid`. Это не номер, а внутренний ключ, и по длине он похож
+ * на телефон. Прежде подходил любой адрес, кроме группового, — и такой ключ
+ * превращался в номер вида +123456789012345. Пациент получал карточку с
+ * несуществующим телефоном, а настоящая карточка оставалась в стороне: по
+ * §4 телефон — единственный ключ сопоставления, и подделка здесь означает
+ * потерянную историю визитов.
+ */
+const PHONE_SUFFIXES = ["@c.us", "@s.whatsapp.net"];
+
+/**
  * Групповой чат или рассылка. Клиника с ними не работает: в группе нет одного
  * пациента, а ответ бота ушёл бы всем участникам.
  */
@@ -25,6 +38,8 @@ export function isGroupChat(chatId: string): boolean {
 /** Телефон в E.164 из chatId. null — не личная переписка или мусор. */
 export function phoneFromChatId(chatId: string | null | undefined): string | null {
   if (!chatId || isGroupChat(chatId)) return null;
+  // Только адреса, где перед «@» стоит телефон: @lid и прочее — не номера.
+  if (!PHONE_SUFFIXES.some((suffix) => chatId.endsWith(suffix))) return null;
   const digits = chatId.split("@")[0]?.replace(/\D/g, "") ?? "";
   if (digits.length < 10) return null;
   // Green API отдаёт номер без плюса; normalizePhone приводит к E.164 и

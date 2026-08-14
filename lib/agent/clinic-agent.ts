@@ -345,11 +345,41 @@ function pickRelevant(
   return result;
 }
 
+/**
+ * Предыдущие реплики для модели.
+ *
+ * Берём переписку не только этого диалога, но и прежние обращения того же
+ * пациента — если карточка привязана. Человек, который писал в клинику
+ * месяц назад и вернулся, справедливо ждёт, что его помнят; для него это один
+ * разговор, а не два. Прежде история ограничивалась текущим диалогом, и
+ * постоянная пациентка получала ассистента, который её не знает.
+ *
+ * Ограничение по времени намеренное: переписка годичной давности к сегодняшнему
+ * вопросу отношения не имеет, а место в промпте занимает.
+ */
+const HISTORY_DAYS = 60;
+
 async function recentTurns(conversationId: string): Promise<Turn[]> {
+  const conv = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { patientId: true, companyId: true },
+  });
+
+  const since = new Date(Date.now() - HISTORY_DAYS * 24 * 3600 * 1000);
+  const where = conv?.patientId
+    ? {
+        companyId: conv.companyId,
+        conversation: { patientId: conv.patientId },
+        createdAt: { gte: since },
+        deletedAt: null,
+        isDraft: false,
+      }
+    : { conversationId, deletedAt: null, isDraft: false };
+
   const rows = await prisma.message.findMany({
-    where: { conversationId, deletedAt: null, isDraft: false },
+    where,
     orderBy: { createdAt: "desc" },
-    take: 11,
+    take: 21,
     select: { direction: true, body: true },
   });
   return rows
