@@ -189,6 +189,15 @@ export interface StaffStat {
 }
 
 export interface DashboardMetrics {
+  /**
+   * Сколько записей и визитов пришло именно из переписки (§8, атрибуция).
+   *
+   * Отдельно от воронки: её шаги показывают полные числа по клинике, а сюда
+   * попадает та часть, что дошла из мессенджеров. Без этого разделения
+   * конверсия считалась от чужого множества.
+   */
+  fromDialog?: { booked: number; arrived: number };
+
   period: PeriodInfo;
   funnel: FunnelCounts;
   funnelSteps: FunnelStep[];
