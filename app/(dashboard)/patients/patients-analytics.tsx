@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatMoney } from "@/lib/format";
 import { allCourses, useDb } from "@/app/_data/store";
+import { getPatientsOverview, type PatientsOverview } from "./actions";
 import { clinicPatientStats, pluralDays } from "@/lib/assistant/analytics";
 
 function StatTile({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
@@ -17,8 +18,33 @@ function StatTile({ label, value, hint }: { label: string; value: string | numbe
 
 export function PatientsAnalytics() {
   const db = useDb();
-  const stats = useMemo(() => clinicPatientStats(db.patients), [db.patients]);
+
+  /**
+   * Числа по базе — с сервера.
+   *
+   * Прежде они считались по стору, а стор наполняется списком пациентов, где
+   * нет ни визитов, ни курсов. Отсюда «с визитами 1 из 1794» при полутора
+   * тысячах пациентов с историей и «средний интервал 0 дней»: считать было не
+   * по чему. Курсы по-прежнему из стора — они там есть.
+   */
+  const [server, setServer] = useState<PatientsOverview | null>(null);
+  useEffect(() => {
+    getPatientsOverview().then(setServer).catch(() => {});
+  }, []);
+
+  const local = useMemo(() => clinicPatientStats(db.patients), [db.patients]);
   const courses = useMemo(() => allCourses(db.patients), [db.patients]);
+
+  const stats = {
+    total: server?.total ?? local.total,
+    primary: server?.primaryToday ?? local.primary,
+    withVisits: server?.withVisits ?? local.withVisits,
+    avgIntervalDays: server ? server.avgIntervalDays : local.avgIntervalDays,
+    noConsent: server?.noConsent ?? local.noConsent,
+    bySource: server?.bySource ?? local.bySource,
+    onCourse: local.onCourse,
+    stalled: local.stalled,
+  };
 
   const moneyLeft = courses.reduce((sum, c) => sum + c.moneyLeft, 0);
   const toReturn = courses.filter((c) => c.stalled).length;

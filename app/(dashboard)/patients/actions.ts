@@ -444,3 +444,85 @@ export async function logPatientView(patientId: string): Promise<void> {
     entityId: patientId,
   }).catch(() => {});
 }
+
+/**
+ * Сводка по базе пациентов для верхней панели раздела.
+ *
+ * Считается на сервере, а не в браузере. Прежде эти числа брались из стора,
+ * который наполняется списком пациентов, — а список не содержит ни визитов,
+ * ни курсов. Отсюда «с визитами 1 из 1794» при полутора тысячах пациентов с
+ * историей и «средний интервал 0 дней»: считать было не по чему.
+ */
+export interface PatientsOverview {
+  total: number;
+  /** Первый контакт сегодня — по этому же правилу ставится метка «первичный». */
+  primaryToday: number;
+  withVisits: number;
+  avgIntervalDays: number | null;
+  noConsent: number;
+  bySource: { source: string; count: number }[];
+}
+
+export async function getPatientsOverview(): Promise<PatientsOverview> {
+  const session = await getSession();
+  const companyId = session.companyId;
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const [total, primaryToday, withVisits, noConsent, sources, intervals] = await Promise.all([
+    prisma.patient.count({ where: { companyId, deletedAt: null } }),
+    prisma.patient.count({ where: { companyId, deletedAt: null, firstSeenAt: { gte: startOfToday } } }),
+    prisma.patient.count({ where: { companyId, deletedAt: null, appointments: { some: { deletedAt: null } } } }),
+    prisma.patient.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        notes: { some: { kind: "NO_CONSENT", resolvedAt: null } },
+      },
+    }),
+    prisma.patient.groupBy({
+      by: ["sourceId"],
+      where: { companyId, deletedAt: null },
+      _count: { _all: true },
+    }),
+    /**
+     * Средний интервал между состоявшимися визитами по клинике.
+     *
+     * Считаем в базе: тянуть пять тысяч визитов в приложение ради одного
+     * числа незачем. Берём разницу между соседними визитами одного пациента.
+     */
+    prisma.$queryRaw<{ avg: number | null }[]>`
+      SELECT AVG(EXTRACT(EPOCH FROM diff) / 86400)::float AS avg
+        FROM (
+          SELECT "startAt" - LAG("startAt") OVER (PARTITION BY "patientId" ORDER BY "startAt") AS diff
+            FROM appointments
+           WHERE "companyId" = ${companyId} AND "deletedAt" IS NULL AND status = 'ARRIVED'
+        ) gaps
+       WHERE diff IS NOT NULL
+    `,
+  ]);
+
+  const titles = new Map(
+    (await prisma.source.findMany({ where: { companyId }, select: { id: true, title: true } })).map((s) => [
+      s.id,
+      s.title,
+    ]),
+  );
+
+  const avg = intervals[0]?.avg;
+  return {
+    total,
+    primaryToday,
+    withVisits,
+    avgIntervalDays: typeof avg === "number" && Number.isFinite(avg) ? Math.round(avg) : null,
+    noConsent,
+    bySource: sources
+      .map((s) => ({
+        // Пациенты из выгрузки YCLIENTS источника не имеют: там его нет.
+        // Пишем это прямо, а не прочерком — прочерк выглядит как потеря данных.
+        source: s.sourceId ? (titles.get(s.sourceId) ?? "—") : "Из YCLIENTS",
+        count: s._count._all,
+      }))
+      .sort((a, b) => b.count - a.count),
+  };
+}

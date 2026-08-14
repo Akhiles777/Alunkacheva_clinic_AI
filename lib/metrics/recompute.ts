@@ -55,6 +55,35 @@ export async function backfillRooms(companyId: string): Promise<number> {
   return updated;
 }
 
+/**
+ * Дата первого обращения — не позже первого визита.
+ *
+ * Выгрузка ставила её «сейчас», и полторы тысячи человек с многолетней
+ * историей разом стали первичными: на экране пациентов «первый контакт
+ * сегодня» показывал всю базу. Правка в разборе чинит будущие выгрузки, но
+ * уже загруженные строки надо поправить — иначе метка держится до следующей
+ * полной выгрузки.
+ *
+ * Двигаем только назад: если у пациента первый визит раньше записанной даты,
+ * значит он обратился тогда. Вперёд не двигаем никогда — это стёрло бы
+ * реальную дату первого контакта из переписки.
+ */
+export async function backfillFirstSeen(companyId: string): Promise<number> {
+  return prisma.$executeRaw`
+    UPDATE patients p
+       SET "firstSeenAt" = v.first_visit
+      FROM (
+        SELECT "patientId", MIN("startAt") AS first_visit
+          FROM appointments
+         WHERE "companyId" = ${companyId} AND "deletedAt" IS NULL
+         GROUP BY "patientId"
+      ) v
+     WHERE p.id = v."patientId"
+       AND p."companyId" = ${companyId}
+       AND p."firstSeenAt" > v.first_visit
+  `;
+}
+
 export async function recomputeVisitKinds(companyId: string): Promise<RecomputeResult> {
   const patients = await prisma.patient.findMany({
     where: { companyId, deletedAt: null },
