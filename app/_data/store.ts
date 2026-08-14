@@ -296,8 +296,24 @@ export function hydratePatients(records: PatientRecord[]) {
       relatedPatientId: rl.relatedPatientId,
       kind: rl.kind,
     }));
+    /**
+     * История визитов приходит только с карточкой пациента: в списке её не
+     * запрашивают, чтобы не тянуть тысячи строк. Поэтому отсутствие поля
+     * означает «не спрашивали», а не «визитов нет», — иначе открытая карточка
+     * теряла бы историю при обновлении списка.
+     */
+    const visits: Visit[] = r.visits ?? existing?.visits ?? [];
+
     if (existing) {
-      return { ...existing, name: r.name || existing.name, source: r.source ?? existing.source, phones, notes, relations };
+      return {
+        ...existing,
+        name: r.name || existing.name,
+        source: r.source ?? existing.source,
+        phones,
+        notes,
+        relations,
+        visits,
+      };
     }
     return {
       id: r.id,
@@ -310,7 +326,7 @@ export function hydratePatients(records: PatientRecord[]) {
       notes,
       relations,
       courses: [],
-      visits: [],
+      visits,
       messages: [],
     };
   });

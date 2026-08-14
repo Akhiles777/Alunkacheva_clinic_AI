@@ -16,6 +16,17 @@ import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/en
  * Курсы/визиты/переписка мигрируют вместе со своими подсистемами (Course,
  * Appointment, Message) — здесь их нет.
  */
+/** Визит в карточке пациента. */
+export interface PatientVisitRecord {
+  id: string;
+  /** Дата в виде «12 марта 2026» — карточку читает человек, а не машина. */
+  date: string;
+  service: string;
+  doctor: string;
+  status: "arrived" | "no_show" | "cancelled" | "planned";
+  amount: number;
+}
+
 export interface PatientRecord {
   id: string;
   name: string;
@@ -24,7 +35,32 @@ export interface PatientRecord {
   phones: { id: string; e164: string; label: string | null; isPrimary: boolean; whatsapp: boolean }[];
   notes: { id: string; kind: PatientNoteKind; text: string; resolved: boolean }[];
   relations: { id: string; relatedPatientId: string; kind: PatientRelationKind }[];
+  /**
+   * История визитов. Заполняется только при открытии карточки: в списке
+   * пациентов она не нужна, а тянуть её на всю базу — лишние тысячи строк.
+   *
+   * Раньше карточка показывала пустую историю всегда: поле в сторе стояло
+   * пустым массивом, и ни один запрос его не наполнял. Сколько бы визитов ни
+   * выгрузили из YCLIENTS, в карточке было «визитов нет».
+   */
+  visits?: PatientVisitRecord[];
 }
+
+/** Статус визита в базе → как его понимает карточка. */
+const VISIT_STATUS_MAP: Record<string, PatientVisitRecord["status"]> = {
+  ARRIVED: "arrived",
+  NO_SHOW: "no_show",
+  CANCELLED: "cancelled",
+  CREATED: "planned",
+  CONFIRMED: "planned",
+};
+
+const visitDate = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+  timeZone: "Europe/Moscow",
+});
 
 /**
  * Ограничение выборки для тех, кому не выдано право видеть чужих пациентов.
@@ -115,6 +151,20 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       phones: { orderBy: { createdAt: "asc" } },
       notes: { orderBy: { createdAt: "asc" } },
       relationsOut: true,
+      appointments: {
+        where: { deletedAt: null },
+        orderBy: { startAt: "desc" },
+        // История в карточке нужна обозримая: у постоянного пациента их сотни.
+        take: 100,
+        select: {
+          id: true,
+          startAt: true,
+          status: true,
+          revenue: true,
+          staff: { select: { name: true } },
+          primaryService: { select: { title: true } },
+        },
+      },
     },
   });
   if (!p) return null;
@@ -138,6 +188,14 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       id: r.id,
       relatedPatientId: r.relatedPatientId,
       kind: r.kind,
+    })),
+    visits: p.appointments.map((a) => ({
+      id: a.id,
+      date: visitDate.format(a.startAt),
+      service: a.primaryService?.title ?? "—",
+      doctor: a.staff?.name ?? "—",
+      status: VISIT_STATUS_MAP[a.status] ?? "planned",
+      amount: Number(a.revenue),
     })),
   };
 }
