@@ -62,7 +62,7 @@ export interface AgentReply {
  * Канал пациента. Бизнес-логика агента от него не зависит (§5): различаются
  * только доставка и кнопки, а правила ответа одни и те же.
  */
-export type AgentChannel = "TELEGRAM" | "WHATSAPP";
+export type AgentChannel = "TELEGRAM" | "WHATSAPP" | "INSTAGRAM";
 
 export interface AgentContext {
   companyId: string;
@@ -417,7 +417,8 @@ export async function handlePatientMessage(
 ): Promise<AgentReply | null> {
   const conversation = await loadConversation(ctx);
   const attachments = input.attachments ?? [];
-  const channelName = ctx.channel === "WHATSAPP" ? "WhatsApp" : "Telegram";
+  const channelName =
+    ctx.channel === "WHATSAPP" ? "WhatsApp" : ctx.channel === "INSTAGRAM" ? "Instagram" : "Telegram";
 
   // Правило 4: после ручного ответа сотрудника агент молчит.
   const paused =

@@ -30,6 +30,9 @@ export async function GET() {
     YCLIENTS_ENABLED: process.env.YCLIENTS_ENABLED === "true",
     YCLIENTS_WEBHOOK_SECRET: Boolean(process.env.YCLIENTS_WEBHOOK_SECRET),
     DOMAIN: Boolean(process.env.DOMAIN),
+    INSTAGRAM_ENABLED: process.env.INSTAGRAM_ENABLED === "true",
+    INSTAGRAM_APP_SECRET: Boolean(process.env.INSTAGRAM_APP_SECRET),
+    INSTAGRAM_VERIFY_TOKEN: Boolean(process.env.INSTAGRAM_VERIFY_TOKEN),
   };
 
   /**
@@ -140,6 +143,14 @@ export async function GET() {
     warnings.push(
       "YCLIENTS включён, но нет YCLIENTS_WEBHOOK_SECRET — вебхук закрыт, изменения из YCLIENTS не дойдут",
     );
+  }
+  if (env.INSTAGRAM_ENABLED && !env.INSTAGRAM_APP_SECRET) {
+    warnings.push(
+      "Instagram включён, но нет INSTAGRAM_APP_SECRET — вебхук закрыт, сообщения пациентов не дойдут",
+    );
+  }
+  if (env.INSTAGRAM_ENABLED && !env.INSTAGRAM_VERIFY_TOKEN) {
+    warnings.push("Instagram включён, но нет INSTAGRAM_VERIFY_TOKEN — Meta не сможет подтвердить адрес вебхука");
   }
   if (!env.DOMAIN) {
     warnings.push(

@@ -18,7 +18,9 @@ import { CONSENT_ACCEPT, CONSENT_DECLINE } from "./consent";
  */
 
 /** Каналы, где кнопки есть. Остальным подсказки уходят текстом. */
-export function supportsButtons(channel: "TELEGRAM" | "WHATSAPP"): boolean {
+export function supportsButtons(channel: "TELEGRAM" | "WHATSAPP" | "INSTAGRAM"): boolean {
+  // Кнопки есть только у Telegram. В WhatsApp через Green API и в Instagram
+  // Direct их нет — там подсказки понимаются словами.
   return channel === "TELEGRAM";
 }
 
