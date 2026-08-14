@@ -18,6 +18,7 @@ import { shouldNotifyEscalation, type EscalationReason } from "./escalation-wind
 import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 import { alreadyGreeted, alreadySaid } from "./repetition";
+import { greetingText } from "./greeting";
 
 /**
  * Агент пациентского канала.
@@ -652,18 +653,19 @@ export async function handlePatientMessage(
    */
   if (/^\/start\b/.test(text) || isGreeting(text)) {
     /**
-     * Здороваемся один раз за диалог. Пациент, поздоровавшийся посреди
-     * разговора, не хочет услышать «Здравствуйте! Чем могу помочь?» заново —
-     * это первый признак того, что собеседник не помнит предыдущих реплик.
+     * На приветствие отвечаем приветствием — всегда.
+     *
+     * Прежде второе «здравствуйте» получало в ответ «Слушаю вас», без единого
+     * приветственного слова: защита от повторов оказалась сильнее простой
+     * вежливости. Пациент здоровается — с ним здороваются. Повторно только
+     * короче: зачитывать вводную по второму разу в середине разговора значит
+     * показать, что предыдущих реплик собеседник не помнит.
      */
     const said = await recentTurns(conversation.id);
-    if (alreadyGreeted(said, settings.greeting)) {
-      return respond(ctx, conversation.id, { text: "Слушаю вас.", buttons: mainMenu() });
-    }
-    const hello =
-      settings.greeting.trim() ||
-      `Здравствуйте! Это клиника «${CLINIC_NAME}». Расскажу про услуги, цены, адрес, часы работы, ` +
-        "подготовку к процедурам и условия отмены. Запись и переносы ведёт администратор — передам ему.";
+    const hello = greetingText({
+      configured: settings.greeting,
+      repeat: alreadyGreeted(said, settings.greeting),
+    });
     return respond(ctx, conversation.id, { text: hello, buttons: mainMenu() });
   }
 
