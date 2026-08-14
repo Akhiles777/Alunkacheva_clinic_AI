@@ -38,6 +38,25 @@ export const RATE_LIMIT = {
  */
 export const HISTORY_YEARS = Number(process.env.YCLIENTS_HISTORY_YEARS ?? 2);
 
+/**
+ * Поля клиента, которые просим у YCLIENTS.
+ *
+ * Без явного списка их поиск отдаёт голый идентификатор и ничего больше —
+ * проверено на боевом API. Именно так у клиники и появились 25 пустых
+ * карточек без имени и телефона: формально пациенты есть, пользы ноль, а
+ * визиты потом не с кем связать.
+ */
+export const CLIENT_FIELDS = [
+  "id",
+  "name",
+  "phone",
+  "email",
+  "discount",
+  "first_visit_date",
+  "last_visit_date",
+  "visits_count",
+] as const;
+
 export const ENDPOINTS = {
   services: (companyId: string) => `/company/${companyId}/services`,
   staff: (companyId: string) => `/company/${companyId}/staff`,

@@ -8,11 +8,25 @@ import type { AppRole } from "@/lib/roles";
  */
 export type NavItem = { label: string; href: string; badge?: number };
 
+/**
+ * Счётчик у «Диалогов».
+ *
+ * Здесь стояла жёстко вписанная тройка. Она не менялась никогда: сколько бы
+ * обращений ни ждало ответа, в меню всегда светилось «3». Такой значок хуже,
+ * чем никакого, — на него перестают смотреть.
+ *
+ * Считаем то, ради чего он нужен: диалоги, где последним написал пациент и
+ * которые ещё не закрыты.
+ */
+export function waitingCount(dialogs: { unread: boolean; status: string }[]): number {
+  return dialogs.filter((d) => d.unread && d.status !== "closed").length;
+}
+
 // «Чат» доступен всем ролям: это внутренняя переписка клиники, а не
 // пациентский канал.
 const NAV_COMMON: NavItem[] = [
   { label: "Сегодня", href: "/" },
-  { label: "Диалоги", href: "/inbox", badge: 3 },
+  { label: "Диалоги", href: "/inbox" },
   { label: "Чат", href: "/chat" },
   { label: "Пациенты", href: "/patients" },
   { label: "Курсы", href: "/courses" },
@@ -25,7 +39,7 @@ export function navForRole(role: AppRole): NavItem[] {
   if (role === "doctor")
     return [
       { label: "Мой кабинет", href: "/doctor" },
-      { label: "Диалоги", href: "/inbox", badge: 3 },
+      { label: "Диалоги", href: "/inbox" },
       { label: "Чат", href: "/chat" },
       { label: "Пациенты", href: "/patients" },
       { label: "Курсы", href: "/courses" },

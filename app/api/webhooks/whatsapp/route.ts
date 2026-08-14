@@ -132,7 +132,14 @@ export async function POST(req: Request) {
         externalUserId: event.chatId,
         displayName: event.senderName,
       },
-      { text: event.text, externalId: event.externalId, attachments: event.attachments },
+      {
+        text: event.text,
+        externalId: event.externalId,
+        attachments: event.attachments,
+        // В WhatsApp адрес чата и есть телефон — карточка пациента
+        // привязывается сразу, спрашивать номер незачем.
+        knownPhone: event.phoneE164,
+      },
     );
 
     if (reply?.text) {

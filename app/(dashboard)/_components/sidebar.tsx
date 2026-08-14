@@ -7,7 +7,8 @@ import { logoutUser } from "@/app/(auth)/actions";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
 import { CLINIC_NAME, CLINIC_TAGLINE } from "@/lib/brand";
 import { NotificationCenter } from "./notification-center";
-import { initials, isActive, navForRole } from "./nav-model";
+import { useDb } from "@/app/_data/store";
+import { initials, isActive, navForRole, waitingCount } from "./nav-model";
 
 /**
  * Боковая навигация (232px) для десктопа. Набор пунктов берётся из общей
@@ -25,7 +26,13 @@ export function Sidebar({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const nav = navForRole(role);
+  const db = useDb();
+  // Значок «сколько ждёт ответа» — из общего стора, поэтому цифра живая и
+  // меняется вместе с перепиской.
+  const waiting = waitingCount(db.dialogs);
+  const nav = navForRole(role).map((item) =>
+    item.href === "/inbox" && waiting > 0 ? { ...item, badge: waiting } : item,
+  );
   // Пункт показываем ровно тогда, когда сервер пропустит действие (матрица прав).
   const showSettings = canEditSettings;
 

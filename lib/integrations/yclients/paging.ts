@@ -37,10 +37,22 @@ export function hasNextPage(input: {
 }): boolean {
   if (input.page >= MAX_PAGES) return false;
   if (input.received === 0) return false;
-  if (input.received < input.pageSize) return false;
+
+  /**
+   * Общее число важнее «короткой страницы».
+   *
+   * Раньше страница меньше запрошенной считалась последней. У YCLIENTS размер
+   * страницы фиксированный: просишь 200 клиентов — приходит 25, и выгрузка
+   * останавливалась после первой страницы. У клиники с 1816 карточками
+   * импортировалось 25, а визиты потом не с кем было связать: без пациента
+   * запись в проекцию не пишется, и из 3759 визитов доехал один.
+   *
+   * Поэтому сначала смотрим, сколько всего обещал сервер.
+   */
   if (typeof input.totalCount === "number" && input.totalCount >= 0) {
     return input.fetchedSoFar < input.totalCount;
   }
+  if (input.received < input.pageSize) return false;
   return true;
 }
 

@@ -3,7 +3,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { getYclientsClient, type YclientsClientHandle } from "./client";
 import { markFailed, markOk, markRunning, readCursor } from "./sync-cursor";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
-import { HISTORY_YEARS } from "./config";
+import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { pushPendingAppointments } from "./write-back";
 import {
@@ -135,11 +135,18 @@ export async function syncClients(companyId: string, client: YclientsClientHandl
    * по неполной базе.
    */
   for (;;) {
-    // Поиск клиентов у YCLIENTS работает только методом POST, страница и
-    // размер идут в теле: на GET адрес отвечает 405 Method Not Allowed.
+    /**
+     * Поиск клиентов у YCLIENTS работает только методом POST, страница и
+     * размер идут в теле: на GET адрес отвечает 405.
+     *
+     * Список полей обязателен. Без него приходит один идентификатор — ни
+     * имени, ни телефона, — и в базе появляются пустые карточки, к которым
+     * невозможно привязать ни визит, ни переписку.
+     */
     const res = await client.postPage<YclientsClient[]>(client.endpoints.clients(client.creds.companyId), {
       page,
       count: PAGE_SIZE,
+      fields: CLIENT_FIELDS,
     });
     const dtos = res.data ?? [];
 

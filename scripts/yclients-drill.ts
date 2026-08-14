@@ -19,6 +19,9 @@ import { prisma } from "../lib/db";
 const PORT = 8787;
 const COMPANY_YCLIENTS_ID = 777;
 
+/** Размер страницы у YCLIENTS фиксированный и от запроса не зависит. */
+const CLIENTS_PER_PAGE = 25;
+
 /** Сколько сущностей отдаёт поддельный сервер. Больше страницы — намеренно. */
 const STAFF_COUNT = 6;
 const SERVICE_COUNT = 8;
@@ -134,8 +137,20 @@ function start() {
       if (req.method !== "POST") return fail(405, "MethodNotAllowed");
       return void readBody().then((body) => {
         const page = Number(body.page ?? 1);
-        const count = Number(body.count ?? 200);
-        send(clients(page, count), CLIENT_COUNT);
+        /**
+         * Настоящий YCLIENTS держит свой размер страницы и запрошенный
+         * игнорирует: просишь 200 — приходит 25. На этом обожглись: выгрузка
+         * считала короткую страницу последней и брала 25 клиентов из 1816.
+         */
+        const rows = clients(page, CLIENTS_PER_PAGE);
+        /**
+         * Без списка полей отдаём только идентификатор — тоже как настоящий.
+         * Именно так у клиники появились пустые карточки без имени и
+         * телефона.
+         */
+        const fields = Array.isArray(body.fields) ? (body.fields as string[]) : [];
+        const data = fields.length > 0 ? rows : rows.map((c) => ({ id: c.id }));
+        send(data, CLIENT_COUNT);
       });
     }
 

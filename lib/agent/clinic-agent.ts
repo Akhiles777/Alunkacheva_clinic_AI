@@ -405,6 +405,13 @@ export async function handlePatientMessage(
     externalId?: string;
     /** Голосовые, фото, видео, документы — см. lib/agent/attachments.ts. */
     attachments?: IncomingAttachment[];
+    /**
+     * Номер, известный из самого канала. В WhatsApp он есть всегда: адрес
+     * чата и есть телефон. Спрашивать его отдельно бессмысленно, а без
+     * привязки диалог висит без карточки — администратор не видит ни истории
+     * визитов, ни прошлых обращений.
+     */
+    knownPhone?: string | null;
   },
 ): Promise<AgentReply | null> {
   const conversation = await loadConversation(ctx);
@@ -452,6 +459,17 @@ export async function handlePatientMessage(
   // ── контакт с номером
   if (input.phone) {
     return attachPhone(ctx, conversation.id, input.phone);
+  }
+
+  /**
+   * Привязка карточки по номеру из канала.
+   *
+   * Молча и до разбора текста: пациенту об этом сообщать нечего, а
+   * администратору карточка нужна с первого сообщения. Телефон — наш
+   * единственный надёжный ключ пациента (§4).
+   */
+  if (input.knownPhone && !conversation.patientId) {
+    await linkByPhone(ctx, conversation.id, input.knownPhone).catch(() => {});
   }
 
   const text = (input.text ?? "").trim();
@@ -815,18 +833,30 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
  * Номер телефона от пациента. Записи бот не создаёт, поэтому номер просто
  * привязываем к диалогу и передаём администратору — ему звонить и записывать.
  */
-async function attachPhone(ctx: AgentContext, conversationId: string, rawPhone: string): Promise<AgentReply> {
+/**
+ * Найти или завести карточку по номеру и привязать к диалогу.
+ *
+ * Общая часть для двух случаев: пациент прислал контакт в Telegram и номер
+ * известен из адреса чата WhatsApp. Разница только в том, что в первом случае
+ * мы отвечаем пациенту, а во втором молчим.
+ */
+async function linkByPhone(
+  ctx: AgentContext,
+  conversationId: string,
+  rawPhone: string,
+): Promise<string | null> {
   const phone = normalizePhone(rawPhone);
-  if (!phone) return { text: "Не удалось разобрать номер. Отправьте его ещё раз.", askPhone: true };
+  if (!phone) return null;
 
   const existing = await prisma.patientPhone.findFirst({
     where: { companyId: ctx.companyId, phone },
     select: { patientId: true },
   });
   let patientId = existing?.patientId ?? null;
+
   if (!patientId) {
     const source = await prisma.source.findFirst({
-      where: { companyId: ctx.companyId, code: "telegram" },
+      where: { companyId: ctx.companyId, code: ctx.channel.toLowerCase() },
       select: { id: true },
     });
     const created = await prisma.patient.create({
@@ -843,9 +873,17 @@ async function attachPhone(ctx: AgentContext, conversationId: string, rawPhone: 
     });
     patientId = created.id;
   }
+
   await prisma.conversation.update({ where: { id: conversationId }, data: { patientId } });
   // Согласие могли дать до появления карточки — переносим его в карточку.
   await materializeConsent(ctx.companyId, patientId, conversationId).catch(() => {});
+  return patientId;
+}
+
+async function attachPhone(ctx: AgentContext, conversationId: string, rawPhone: string): Promise<AgentReply> {
+  const patientId = await linkByPhone(ctx, conversationId, rawPhone);
+  if (!patientId) return { text: "Не удалось разобрать номер. Отправьте его ещё раз.", askPhone: true };
+
   await escalate(ctx.companyId, conversationId, "PATIENT_REQUEST", "Пациент оставил номер для записи").catch(() => {});
   return { text: "Спасибо, передал(а) номер администратору — он свяжется и подберёт время." };
 }

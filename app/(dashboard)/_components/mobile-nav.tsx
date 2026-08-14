@@ -6,7 +6,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { logoutUser } from "@/app/(auth)/actions";
 import { CLINIC_NAME, CLINIC_TAGLINE } from "@/lib/brand";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
-import { initials, isActive, navForRole } from "./nav-model";
+import { useDb } from "@/app/_data/store";
+import { initials, isActive, navForRole, waitingCount } from "./nav-model";
 import { NotificationCenter } from "./notification-center";
 
 /**
@@ -30,7 +31,13 @@ export function MobileNav({
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const nav = navForRole(role);
+  const db = useDb();
+  // Значок «сколько ждёт ответа» — из общего стора, поэтому цифра живая и
+  // меняется вместе с перепиской.
+  const waiting = waitingCount(db.dialogs);
+  const nav = navForRole(role).map((item) =>
+    item.href === "/inbox" && waiting > 0 ? { ...item, badge: waiting } : item,
+  );
   // Переход закрывает панель: иначе она остаётся поверх новой страницы.
   const close = () => setOpen(false);
 

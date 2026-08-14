@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { getYclientsClient, type YclientsClientHandle } from "./client";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
-import { HISTORY_YEARS } from "./config";
+import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import type {
   YclientsClient as YclientsClientDto,
   YclientsRecord,
@@ -193,7 +193,9 @@ function reconcileClients(companyId: string, client: YclientsClientHandle) {
       // POST, страница и размер идут в теле. На GET адрес отвечает 405.
       const res = await client.postPage<YclientsClientDto[]>(
         client.endpoints.clients(client.creds.companyId),
-        { page, count: PAGE_SIZE },
+        // Список полей нужен и здесь: без него YCLIENTS отдаёт голые
+        // идентификаторы, и сверка сравнивала бы пустоту с пустотой.
+        { page, count: PAGE_SIZE, fields: CLIENT_FIELDS },
       );
       const dtos = res.data ?? [];
       remoteIds.push(...dtos.map((c) => c.id));
