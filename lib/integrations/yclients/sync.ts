@@ -4,6 +4,7 @@ import { getYclientsClient, type YclientsClientHandle } from "./client";
 import { markFailed, markOk, markRunning, readCursor } from "./sync-cursor";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
 import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
+import { recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { pushPendingAppointments } from "./write-back";
 import {
@@ -33,7 +34,7 @@ import type {
  */
 export interface SyncResult {
   skipped: boolean;
-  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records", number>>;
+  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds", number>>;
   errors: string[];
 }
 
@@ -50,6 +51,21 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
   counts.resources = await run("RESOURCES", () => syncResources(companyId, client), errors, companyId);
   counts.clients = await run("CLIENTS", () => syncClients(companyId, client), errors, companyId);
   counts.records = await run("RECORDS", () => syncRecords(companyId, client), errors, companyId);
+
+  /**
+   * После выгрузки — пересчёт первичных и повторных визитов.
+   *
+   * Классификация зависит от всей истории пациента, а не от отдельной записи,
+   * поэтому её нельзя проставить при вставке. Без этого шага после выгрузки
+   * первичных в отчётах ноль, а в списке пациентов все выглядят новыми —
+   * данные есть, а метрики врут.
+   */
+  try {
+    const marked = await recomputeVisitKinds(companyId);
+    counts.visitKinds = marked.updated;
+  } catch (e) {
+    errors.push(`VISIT_KINDS: ${(e as Error).message}`);
+  }
 
   /**
    * После приёма данных отправляем своё. Порядок важен: сначала забираем
