@@ -136,7 +136,7 @@ export async function POST(req: Request) {
     );
 
     if (reply?.text) {
-      const sent = await sendText(companyId, event.chatId, withButtonsAsText(reply));
+      const sent = await sendText(companyId, event.chatId, reply.text);
       if (!sent.ok) {
         // Ответ не ушёл. Сообщение пациента уже сохранено, диалог виден
         // администратору — это лучше, чем потерять обращение целиком.
@@ -168,15 +168,16 @@ async function resolveCompany(): Promise<string | null> {
   return oldest?.id ?? null;
 }
 
-/**
- * Кнопки в текст.
+/*
+ * Подсказок под сообщениями в WhatsApp нет намеренно.
  *
- * В Telegram агент предлагает варианты кнопками. В WhatsApp через Green API
- * их нет, и молча терять подсказки нельзя — пациент остался бы без понимания,
- * что можно спросить. Поэтому дописываем строкой.
+ * В Telegram это кнопки: они не занимают место в переписке и нажимаются одним
+ * касанием. В WhatsApp кнопок нет, и раньше их подписи дописывались строками
+ * под каждый ответ — «Услуги и цены, Адрес, Часы работы, Позвать
+ * администратора». В живой переписке это выглядит как навязчивое меню под
+ * каждой репликой, а не как разговор.
+ *
+ * Понимать эти слова агент по-прежнему умеет: пациент может написать «адрес»
+ * или «позвать администратора», и они сработают (см. lib/agent/text-actions).
+ * Перечислять их в каждом сообщении для этого не нужно.
  */
-function withButtonsAsText(reply: { text: string; buttons?: { text: string }[] }): string {
-  if (!reply.buttons?.length) return reply.text;
-  const options = reply.buttons.map((b) => `• ${b.text}`).join("\n");
-  return `${reply.text}\n\n${options}`;
-}
