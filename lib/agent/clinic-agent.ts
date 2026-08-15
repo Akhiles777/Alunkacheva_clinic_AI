@@ -19,6 +19,7 @@ import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText } from "./greeting";
+import { ungroundedNumbers } from "./grounding";
 
 /**
  * Агент пациентского канала.
@@ -712,100 +713,89 @@ export async function handlePatientMessage(
   }
 
   /**
-   * Прочие организационные вопросы: сначала точная справка.
+   * Организационные вопросы: сначала думаем, дословная справка — подстраховка.
    *
-   * Справочник проверяется РАНЬШЕ ветки про расписание намеренно. Прежде было
-   * наоборот, и на «Как записаться» пациент получал казённое «запись ведёт
-   * администратор» — хотя клиника завела на этот самый вопрос свой ответ и
-   * утвердила его. Наш текст перебивал текст клиники, а §6 требует ровно
-   * обратного: отвечаем тем, что клиника написала сама.
+   * Раньше порядок был обратный: нашлась подходящая запись справочника — она и
+   * уходила пациенту слово в слово. Из-за этого на «а сколько по времени
+   * остеопатия?» человек получал весь блок про остеопатию целиком, включая то,
+   * о чём не спрашивал. Формально верно, по-человечески — не ответ.
+   *
+   * Теперь найденные записи уходят модели как факты, и она отвечает на
+   * заданный вопрос. Дословный текст клиники остаётся запасным: если модель
+   * недоступна, промолчала или назвала число, которого в справке нет, —
+   * отправляем справку, как раньше.
+   *
+   * Медицинских тем это не касается: они разошлись выше и требуют дословного
+   * совпадения (§6.1).
    */
   const exact = matchKnowledge(text, knowledgeRows);
-  if (confidentMatch(exact)) {
-    /**
-     * Ответ есть, но тема всё равно про запись — значит администратору нужно
-     * подключиться. Пациенту уходит текст клиники, человеку — уведомление.
-     * Одно другого не заменяет: справка объясняет порядок, время называет
-     * человек.
-     */
-    if (scheduleTopic(text)) {
-      await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
-    }
-
-    /**
-     * Тот же блок второй раз не отправляем.
-     *
-     * Дословный ответ справочника — правило (§6.1), и для медицинских тем оно
-     * не обсуждается: там мы уже вышли выше. Но на организационном вопросе
-     * повтор слово в слово выглядит как заевшая пластинка — пациент
-     * переспросил уточнение, а получил ту же простыню. В этом случае отдаём
-     * найденную запись модели: факты те же, ответ — на заданный вопрос.
-     */
-    const said = await recentTurns(conversation.id);
-    if (!alreadySaid(said, exact!.row.answer)) {
-      return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
-    }
-  }
-
-  // Расписание — зона администратора (решение заказчика). Сюда попадаем
-  // только когда своего ответа у клиники нет.
-  if (scheduleTopic(text)) {
-    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
-    return respond(ctx, conversation.id, {
-      text:
-        "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
-        "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.",
-      buttons: mainMenu(),
-    });
-  }
-
-  const context = await clinicContext(ctx.companyId, text);
-  const answer = await answerLLM(text, context, await recentTurns(conversation.id));
-  if (!answer) {
-    /**
-     * Модель недоступна или молчит. Раньше сюда отдавалась вся справка
-     * клиники — и пациент получал простыню на двадцать шесть тысяч знаков:
-     * весь прайс, часы работы и каждую запись справочника разом, в ответ на
-     * «Добрый день». Это выглядит как поломка и отпугивает сильнее молчания.
-     *
-     * Отвечаем коротко и зовём человека. Справку пациент получит по конкретному
-     * вопросу, а не свалкой.
-     */
-    /**
-     * Прежде чем звать человека — берём лучшее, что нашлось в справочнике.
-     *
-     * Порог уверенности нужен там, где ответ уходит дословно: подменять один
-     * вопрос другим нельзя. Но когда модель недоступна, выбор не между точным
-     * и приблизительным, а между приблизительным и молчанием. Пациент
-     * спросил «а что взять с собой» — в справочнике есть «Подготовка к
-     * приёму», и отдать её куда полезнее, чем сказать «зову администратора».
-     *
-     * Медицинские темы сюда не попадают: они разошлись выше и требуют
-     * дословного совпадения (§6.1).
-     */
-    const best = matchKnowledge(text, knowledgeRows);
-    if (best && best.hits >= 1 && !alreadySaid(await recentTurns(conversation.id), best.row.answer)) {
-      return respond(ctx, conversation.id, { text: best.row.answer, buttons: mainMenu() });
-    }
-
-    await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Ассистент не смог ответить").catch(() => {});
-    return respond(ctx, conversation.id, {
-      text: "Секунду, передаю ваш вопрос администратору — он ответит здесь же.",
-      buttons: mainMenu(),
-    });
-  }
 
   /**
-   * Последняя проверка перед отправкой: модель могла пообещать записать,
-   * хотя расписанием агент не распоряжается (§6). Такой ответ не отправляем —
-   * пациент, которому пообещали запись, придёт к закрытой двери.
+   * Тема про запись — администратору нужно подключиться в любом случае.
+   * Пациенту уходит ответ, человеку — уведомление. Одно другого не заменяет:
+   * порядок объясняет справка, время называет человек.
    */
-  if (promisesBooking(answer)) {
+  if (scheduleTopic(text)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
+    // Своего ответа у клиники нет — говорим прямо и не занимаем модель.
+    if (!confidentMatch(exact)) {
+      return respond(ctx, conversation.id, {
+        text:
+          "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
+          "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.",
+        buttons: mainMenu(),
+      });
+    }
+  }
+
+  const said = await recentTurns(conversation.id);
+  const context = await clinicContext(ctx.companyId, text);
+  const answer = await answerLLM(text, context, said);
+
+  /**
+   * Обещание записать не отправляем никогда: расписанием агент не
+   * распоряжается (§6), а пациент, которому пообещали запись, придёт к
+   * закрытой двери.
+   */
+  if (answer && promisesBooking(answer)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
     return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
   }
 
-  return respond(ctx, conversation.id, { text: answer, buttons: mainMenu() });
+  /**
+   * Числа в ответе сверяем со справкой. Формулировка — дело модели, цена и
+   * часы работы — нет: см. lib/agent/grounding.
+   */
+  const invented = answer ? ungroundedNumbers(answer, context) : [];
+  if (invented.length > 0) {
+    console.error(`[agent] ответ отклонён: чисел нет в справке — ${invented.join(", ")}`);
+  }
+
+  if (answer && invented.length === 0 && !alreadySaid(said, answer)) {
+    return respond(ctx, conversation.id, { text: answer, buttons: mainMenu() });
+  }
+
+  // Дальше — запасные пути: сказать словами клиники лучше, чем не сказать.
+  if (confidentMatch(exact) && !alreadySaid(said, exact!.row.answer)) {
+    return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
+  }
+
+  /**
+   * Порог уверенности нужен там, где ответ уходит дословно: подменять один
+   * вопрос другим нельзя. Но когда выбора между точным и приблизительным уже
+   * нет, приблизительная справка полезнее молчания. Пациент спросил «а что
+   * взять с собой» — в справочнике есть «Подготовка к приёму».
+   */
+  const best = matchKnowledge(text, knowledgeRows);
+  if (best && best.hits >= 1 && !alreadySaid(said, best.row.answer)) {
+    return respond(ctx, conversation.id, { text: best.row.answer, buttons: mainMenu() });
+  }
+
+  await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Ассистент не смог ответить").catch(() => {});
+  return respond(ctx, conversation.id, {
+    text: "Секунду, передаю ваш вопрос администратору — он ответит здесь же.",
+    buttons: mainMenu(),
+  });
 }
 
 /**
