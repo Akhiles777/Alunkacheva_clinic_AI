@@ -5,7 +5,7 @@ import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
-import { HANDOVER_REPLY, deniesService, promisesBooking, promisesHuman } from "./booking-promise";
+import { HANDOVER_REPLY, promisesBooking, promisesHuman } from "./booking-promise";
 import { medical, personalTopic, scheduleTopic, wantsHuman } from "./triggers";
 import {
   CONSENT_ACCEPT,
@@ -874,22 +874,6 @@ async function replyToQuestion(
     await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Агент трижды не понял запрос").catch(() => {});
     return respond(ctx, conversation.id, {
       text: "Давайте я позову администратора — он разберётся быстрее. Он ответит здесь же.",
-    });
-  }
-
-  /**
-   * Отказ от лица клиники не отправляем — зовём человека.
-   *
-   * Решение заказчика по итогам прогона: если выбор между «у нас такого нет» и
-   * «позову администратора», всегда второе. Агент видит только справочник, а
-   * клиника делает больше, чем в нём записано: на «ребёнок плохо говорит, что
-   * посоветуете» он отвечал, что таких услуг нет, — и человек уходил. Отказ от
-   * лица клиники — решение администратора, не бота.
-   */
-  if (answer && deniesService(answer)) {
-    await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ответа нет в справочнике").catch(() => {});
-    return respond(ctx, conversation.id, {
-      text: "Уточню у администратора и вернусь с ответом — он напишет здесь же.",
     });
   }
 
