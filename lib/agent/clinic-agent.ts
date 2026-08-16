@@ -21,6 +21,7 @@ import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
+import { intakePrompt, looksLikeIntake } from "./intake";
 
 /**
  * Агент пациентского канала.
@@ -198,12 +199,15 @@ export interface AssistantMode {
   mode: "on" | "off" | "drafts";
   greeting: string;
   stopWords: string[];
+  /** Инструкция клиники: порядок разговора, что спрашивать при записи. */
+  prompt: string;
 }
 
 const DEFAULT_MODE: AssistantMode = {
   mode: "on",
   greeting: "",
   stopWords: [],
+  prompt: "",
 };
 
 /**
@@ -222,6 +226,7 @@ async function assistantMode(companyId: string): Promise<AssistantMode> {
       mode: cfg.mode === "off" || cfg.mode === "drafts" ? cfg.mode : "on",
       greeting: typeof cfg.greeting === "string" ? cfg.greeting : "",
       stopWords: Array.isArray(cfg.stopWords) ? cfg.stopWords.filter((w) => typeof w === "string") : [],
+      prompt: typeof cfg.prompt === "string" ? cfg.prompt : "",
     };
   } catch {
     return DEFAULT_MODE;
@@ -692,6 +697,24 @@ async function replyToQuestion(
   }
 
   /**
+   * Пациент прислал данные для записи.
+   *
+   * Проверяем это раньше медицинских правил намеренно. Анкета содержит жалобу
+   * — «боли в пояснице, онемение тела», — и по словам это медицинский текст:
+   * агент ответил бы «уточните у специалиста» на присланные для записи данные.
+   * Человек выполнил просьбу, а его отправили по кругу.
+   *
+   * Отвечаем коротко и зовём администратора: дальше нужно поставить время, а
+   * это его работа. Сами данные уже в переписке, повторять их незачем.
+   */
+  if (looksLikeIntake(text)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент прислал данные для записи").catch(() => {});
+    return respond(ctx, conversation.id, {
+      text: "Спасибо, записал(а). Администратор подберёт ближайшее удобное время и напишет здесь же.",
+    });
+  }
+
+  /**
    * Приветствие. Клиника задаёт его в «Настройки → Ассистент», и до сих пор
    * это поле было чистой декорацией: агент его не читал ни разу, а на «Добрый
    * день» отвечал тем, что придумает модель. Здороваться клиника хочет своими
@@ -780,22 +803,28 @@ async function replyToQuestion(
    * Пациенту уходит ответ, человеку — уведомление. Одно другого не заменяет:
    * порядок объясняет справка, время называет человек.
    */
+  /**
+   * Тема про запись — администратору нужно подключиться в любом случае.
+   *
+   * Но ответ пациенту на этом больше не заканчивается. Прежде здесь уходил
+   * шаблон «запись ведёт администратор», и разговор обрывался ровно в тот
+   * момент, когда человек готов записаться: в живой переписке пациентка
+   * написала «на приём к остеопату Ирине, взрослый» — и не услышала ни цены,
+   * ни вопроса о данных, ничего. Дальше её вёл человек, с нуля.
+   *
+   * Теперь агент доводит разговор: называет услугу и цену из справки,
+   * спрашивает данные для записи и говорит, что время подберёт администратор.
+   * Порядок задаёт клиника в «Настройки → Ассистент» (см. lib/agent/intake).
+   * Расписанием агент по-прежнему не распоряжается: время, окна и
+   * подтверждение — только человек, за этим следит проверка promisesBooking.
+   */
   if (scheduleTopic(text)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
-    // Своего ответа у клиники нет — говорим прямо и не занимаем модель.
-    if (!confidentMatch(exact)) {
-      return respond(ctx, conversation.id, {
-        text:
-          "Запись, свободное время и переносы ведёт администратор — передал(а) ему ваш вопрос, " +
-          "он ответит здесь же. Пока могу рассказать про услуги, цены, адрес и часы работы.",
-        buttons: mainMenu(),
-      });
-    }
   }
 
   const said = await recentTurns(conversation.id);
   const context = await clinicContext(ctx.companyId, text);
-  const answer = await answerLLM(text, context, said);
+  const answer = await answerLLM(text, context, said, intakePrompt(settings.prompt));
 
   /**
    * Обещание записать не отправляем никогда: расписанием агент не
@@ -844,6 +873,17 @@ async function replyToQuestion(
   const best = matchKnowledge(text, knowledgeRows);
   if (best && best.hits >= 1 && !alreadySaid(said, best.row.answer)) {
     return respond(ctx, conversation.id, { text: best.row.answer, buttons: mainMenu() });
+  }
+
+  // Модель недоступна и подходящей справки нет. Про запись отвечаем по делу,
+  // остальное честно передаём человеку.
+  if (scheduleTopic(text)) {
+    return respond(ctx, conversation.id, {
+      text:
+        "Время приёма подбирает администратор — передал(а) ему ваш вопрос, он ответит здесь же. " +
+        "Чтобы ускорить, пришлите одним сообщением: ФИО, возраст, вес, жалобу и город.",
+      buttons: mainMenu(),
+    });
   }
 
   await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Ассистент не смог ответить").catch(() => {});

@@ -15,6 +15,7 @@ import {
 import { saveSection } from "../blob-actions";
 import { deleteKnowledge, saveKnowledge } from "./actions";
 import { mergeKeepingOrder } from "@/lib/merge-list";
+import { DEFAULT_INTAKE_PROMPT } from "@/lib/agent/intake";
 
 type AssistantConfig = typeof settingsStore.assistant;
 
@@ -244,6 +245,38 @@ export function AssistantClient({
             onChange={(e) => setAssistant({ ...assistant, signature: e.target.value })}
           />
         </Field>
+      </Group>
+
+      <Group
+        title="Инструкция ассистента"
+        hint="как вести разговор и что спрашивать при записи"
+      >
+        <p className="text-text-muted text-sm">
+          Это правила поведения, а не ответы на вопросы: ответы ассистент берёт из базы знаний ниже.
+          Базовые ограничения работают всегда и отсюда не отключаются — ассистент не называет время
+          приёма, не подтверждает запись, не выдумывает цены и передаёт человеку медицинские вопросы.
+        </p>
+        <Field label="Текст инструкции" htmlFor="a-prompt">
+          <Textarea
+            id="a-prompt"
+            rows={12}
+            value={assistant.prompt}
+            onChange={(e) => setAssistant({ ...assistant, prompt: e.target.value })}
+            placeholder={DEFAULT_INTAKE_PROMPT}
+          />
+        </Field>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setAssistant({ ...assistant, prompt: DEFAULT_INTAKE_PROMPT })}
+            className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-2 text-sm"
+          >
+            Вставить образец
+          </button>
+          <span className="text-text-subtle text-sm">
+            Пусто — ассистент работает по образцу.
+          </span>
+        </div>
       </Group>
 
       <Group title="Стоп-слова" hint="при них ассистент молчит и зовёт человека">

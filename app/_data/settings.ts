@@ -1,3 +1,4 @@
+import { DEFAULT_INTAKE_PROMPT } from "@/lib/agent/intake";
 /**
  * Мок-стор настроек платформы (волна 2). Форма — под реальные модели волны 1
  * (Setting, ClinicSchedule, Room, Service, ServiceRoom, Source, RolePermission,
@@ -179,6 +180,7 @@ export const settingsStore = {
     greeting: `Здравствуйте! Это клиника «${CLINIC_NAME}». Чем помочь?`,
     signature: `— команда «${CLINIC_NAME}»`,
     stopWords: ["жалоба", "боль", "вернуть деньги", "юрист", "врач ошибся"],
+    prompt: DEFAULT_INTAKE_PROMPT,
   },
   knowledge: [
     { id: "k1", topic: "Адрес", question: "Где вы находитесь?", answer: "Москва, ул. Примерная, 1.", serviceId: null, isActive: true },

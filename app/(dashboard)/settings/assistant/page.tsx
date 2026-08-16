@@ -10,8 +10,14 @@ export default async function AssistantSettingsPage() {
   // самой, откуда её читает агент.
   const stored = (await getSection("assistant")) as Partial<AssistantData> | null;
   const knowledge = await getKnowledge();
+  /**
+   * Сохранённые настройки дополняем значениями по умолчанию, а не подменяем.
+   * Клиника настраивала ассистента до появления поля инструкции, и в её записи
+   * этого поля просто нет: без слияния текстовое поле осталось бы без
+   * значения, а React ругается на неуправляемое поле ввода.
+   */
   const initial: AssistantData = {
-    assistant: stored?.assistant ?? settingsStore.assistant,
+    assistant: { ...settingsStore.assistant, ...(stored?.assistant ?? {}) },
     knowledge,
   };
 

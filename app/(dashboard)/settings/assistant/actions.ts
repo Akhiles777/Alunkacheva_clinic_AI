@@ -23,6 +23,11 @@ export interface AssistantConfig {
   greeting: string;
   signature: string;
   stopWords: string[];
+  /**
+   * Инструкция ассистента: порядок разговора и что спрашивать при записи.
+   * Дописывается к базовым правилам, не заменяет их — см. lib/agent/intake.
+   */
+  prompt: string;
 }
 
 export async function getKnowledge(): Promise<KnowledgeItem[]> {

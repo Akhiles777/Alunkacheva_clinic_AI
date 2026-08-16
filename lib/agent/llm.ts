@@ -90,6 +90,12 @@ export async function answerLLM(
   question: string,
   clinicContext: string,
   history: Turn[] = [],
+  /**
+   * Инструкция клиники из настроек. Дописывается к базовым правилам, а не
+   * заменяет их: не обещать запись, не выдумывать цены и не лезть в медицину
+   * агент обязан независимо от того, что клиника напишет в своём тексте (§6).
+   */
+  extraRules?: string,
 ): Promise<string | null> {
   const key = process.env.ROUTER_AI;
   if (!key) {
@@ -113,6 +119,9 @@ export async function answerLLM(
         max_tokens: 400,
         messages: [
           { role: "system", content: PATIENT_PROMPT },
+          ...(extraRules?.trim()
+            ? [{ role: "system" as const, content: `Инструкция клиники:\n${extraRules.trim()}` }]
+            : []),
           { role: "system", content: `Справка клиники:\n${clinicContext}` },
           // Последние реплики — чтобы «а сколько это стоит?» понималось в контексте.
           ...history.slice(-10),
