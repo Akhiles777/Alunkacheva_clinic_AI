@@ -63,6 +63,30 @@ export async function consentRequestFor(
     }
   }
 
+  /**
+   * Пациент, которого клиника уже знает.
+   *
+   * Требовать согласие у человека, который ходит в клинику годами и только что
+   * переписывался с администратором, — решение заказчика отменить, и оно
+   * разумное: в переписке это выглядит как «здравствуйте, вы кто?» на десятом
+   * визите. Основание считать согласие полученным есть: пациент с визитами
+   * подписал бумажную форму на первом приёме, а с тем, с кем клиника ведёт
+   * переписку, отношения уже начаты — обе стороны это подтверждают самим
+   * фактом разговора.
+   *
+   * Что считаем признаком: визиты в карточке или переписка, которая была до
+   * сегодняшнего обращения (в том числе выкачанная из WhatsApp).
+   */
+  if (await knownToClinic(companyId, conversationId, conv.patientId)) {
+    const now = new Date();
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { consentGrantedAt: now, consentAskedAt: now },
+    });
+    if (conv.patientId) await materializeConsent(companyId, conv.patientId, conversationId);
+    return null;
+  }
+
   const doc = await prisma.consentDocument.findFirst({
     where: { companyId, isActive: true },
     orderBy: { createdAt: "desc" },
@@ -98,6 +122,40 @@ export async function consentRequestFor(
       { text: "Не сейчас", data: CONSENT_DECLINE },
     ],
   };
+}
+
+/**
+ * Насколько давним должно быть сообщение, чтобы считаться прошлой перепиской.
+ *
+ * Текущее обращение уже сохранено к моменту проверки, и без окна оно засчитало
+ * бы само себя: согласие не спросили бы ни у кого.
+ */
+const PRIOR_TALK_MS = 10 * 60 * 1000;
+
+/**
+ * Клиника уже знает этого человека: есть визиты или переписка до сегодня.
+ */
+async function knownToClinic(
+  companyId: string,
+  conversationId: string,
+  patientId: string | null,
+): Promise<boolean> {
+  if (patientId) {
+    const visits = await prisma.appointment.count({
+      where: { companyId, patientId, deletedAt: null },
+    });
+    if (visits > 0) return true;
+  }
+
+  const earlier = await prisma.message.count({
+    where: {
+      conversationId,
+      deletedAt: null,
+      isDraft: false,
+      createdAt: { lt: new Date(Date.now() - PRIOR_TALK_MS) },
+    },
+  });
+  return earlier > 0;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { normalizePhone } from "@/lib/phone";
-import { notifyStaff, inboxRecipients, escalationRecipients } from "@/lib/server/notify";
+import { notifyStaff, escalationRecipients } from "@/lib/server/notify";
 import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
@@ -18,7 +18,8 @@ import { shouldNotifyEscalation, type EscalationReason } from "./escalation-wind
 import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 import { alreadyGreeted, alreadySaid } from "./repetition";
-import { greetingText } from "./greeting";
+import { greetingText, withoutOffer } from "./greeting";
+import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
 
 /**
@@ -413,21 +414,6 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
  * пациенту, но не сохраняла его: в инбоксе диалог выглядел как молчание бота,
  * а администратор не понимал, что уже было сказано.
  */
-/**
- * Разметка в текст мессенджера.
- *
- * Клиника набирает справочник в редакторе и ставит списки звёздочками. В
- * мессенджере звёздочка так и остаётся звёздочкой: пациент видит «* взрослый
- * приём» и решает, что сообщение сломалось. Меняем только маркер списка —
- * сами слова клиники не трогаем.
- */
-function forMessenger(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => line.replace(/^(\s*)[*+]\s+/, "$1• "))
-    .join("\n");
-}
-
 async function respond(
   ctx: AgentContext,
   conversationId: string,
@@ -528,7 +514,16 @@ export async function handlePatientMessage(
       });
       await notifyStaff({
         companyId: ctx.companyId,
-        recipientIds: await inboxRecipients(ctx.companyId),
+        /**
+         * Пока диалог ведёт человек, сообщения пациента — его дело.
+         *
+         * Прежде они уходили всем, у кого есть доступ к инбоксу, включая
+         * владельца: он просил присылать вызовы администратора только
+         * администраторам, а получал ещё и каждую реплику по переданному
+         * диалогу. На десятке обращений в день это поток, который перестают
+         * читать — и тогда теряется настоящее.
+         */
+        recipientIds: await escalationRecipients(ctx.companyId),
         kind: "PATIENT_MESSAGE",
         title: "Новое сообщение от пациента",
         // Без служебных пояснений про агента: сотруднику важно, что пациент
@@ -652,6 +647,22 @@ export async function handlePatientMessage(
     return null;
   }
 
+  return replyToQuestion(ctx, conversation, text);
+}
+
+/**
+ * Ответ на вопрос пациента.
+ *
+ * Вынесено из обработки сообщения, потому что вызывается из двух мест: обычной
+ * репликой и сразу после согласия на обработку данных. Во втором случае вопрос
+ * уже задан — пациент написал его первым сообщением, и переспрашивать «чем могу
+ * помочь» значит заставлять человека повторяться.
+ */
+async function replyToQuestion(
+  ctx: AgentContext,
+  conversation: { id: string; consentGrantedAt: Date | null },
+  text: string,
+): Promise<AgentReply | null> {
   const settings = await assistantMode(ctx.companyId);
 
   // Режим «выключен»: агент молчит полностью, диалог ведёт человек.
@@ -858,6 +869,32 @@ function consentButtons() {
 }
 
 /**
+ * Вопрос, который пациент задал до того, как у него спросили согласие.
+ *
+ * Берём последнее его сообщение, кроме самого ответа про согласие и голого
+ * приветствия: «Да» и «Здравствуйте» вопросами не являются, отвечать на них
+ * после согласия нечего — на приветствие ответит приветствие.
+ */
+async function pendingQuestion(conversationId: string): Promise<string | null> {
+  const rows = await prisma.message.findMany({
+    where: { conversationId, direction: "IN", deletedAt: null, isDraft: false },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+    select: { body: true },
+  });
+  for (const row of rows) {
+    const body = row.body.trim();
+    if (!body) continue;
+    if (consentFromText(body)) continue;
+    if (isGreeting(body)) continue;
+    // Слишком короткое — не вопрос, а реакция: «ок», «ага», смайлик.
+    if (body.length < 4) continue;
+    return body;
+  }
+  return null;
+}
+
+/**
  * Запись справочника — про согласие на обработку данных?
  *
  * Проверяем тему и список формулировок, а не ответ: в ответе слово «согласие»
@@ -884,8 +921,33 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
     // этого пациент видел только юридический текст. Берём её из настроек,
     // чтобы знакомство шло словами клиники, а не нашей заглушкой.
     const { greeting } = await assistantMode(ctx.companyId);
+    const hello = greeting.trim() || "Спасибо!";
+
+    /**
+     * Вопрос, заданный до согласия.
+     *
+     * Пациент пишет «когда есть окошко к Ирине?», получает юридический текст,
+     * отвечает «Да» — и слышит «чем я могу вам помочь?». То есть его просят
+     * повторить то, что он уже написал. В живых переписках это видно раз за
+     * разом: человек дублирует вопрос, и только тогда разговор начинается.
+     *
+     * Поэтому: здороваемся и сразу отвечаем на заданный вопрос. Встречное
+     * «чем могу помочь» из приветствия убираем — отвечать есть на что.
+     */
+    const pending = await pendingQuestion(conversationId);
+    if (pending) {
+      const conv = await prisma.conversation.findUnique({
+        where: { id: conversationId },
+        select: { id: true, consentGrantedAt: true },
+      });
+      const answer = conv ? await replyToQuestion(ctx, conv, pending) : null;
+      if (answer) {
+        return { ...answer, text: `${withoutOffer(hello)}\n\n${answer.text}` };
+      }
+    }
+
     return respond(ctx, conversationId, {
-      text: greeting.trim() ? `Спасибо!\n\n${greeting.trim()}` : "Спасибо. Чем можем помочь?",
+      text: greeting.trim() ? `Спасибо!\n\n${hello}` : "Спасибо. Чем можем помочь?",
       buttons: mainMenu(),
     });
   }
