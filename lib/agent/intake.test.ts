@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { intakePrompt, looksLikeIntake, DEFAULT_INTAKE_PROMPT } from "./intake";
+import { intakePrompt, looksLikeIntake, DEFAULT_INTAKE_PROMPT, asksForIntake, inIntakeFlow, nameFromIntake } from "./intake";
 
 /**
  * Строки взяты из живых переписок клиники: именно так пациенты присылают
@@ -54,5 +54,66 @@ describe("инструкция ассистента", () => {
     expect(DEFAULT_INTAKE_PROMPT).toMatch(/ФИО/);
     expect(DEFAULT_INTAKE_PROMPT).toMatch(/цену/);
     expect(DEFAULT_INTAKE_PROMPT).toMatch(/администратор/i);
+  });
+});
+
+/**
+ * Ответ на вопрос, который агент задал сам.
+ *
+ * Живой случай: агент спросил «для взрослого или ребёнка и с какой жалобой»,
+ * пациентка ответила «взрослая женщина, головная боль» — и получила «этот
+ * вопрос лучше уточнить у специалиста». Человек выполнил просьбу и был послан
+ * по кругу, запись сорвалась.
+ */
+describe("оформление записи", () => {
+  it("узнаёт вопрос агента про данные", () => {
+    for (const t of [
+      "Это приём для взрослого или для ребёнка? И кратко опишите, с какой жалобой вы обращаетесь.",
+      "Пришлите, пожалуйста, данные: ФИО, возраст, вес и город.",
+      "Сколько лет ребёнку?",
+      "Как к вам обращаться?",
+    ]) {
+      expect(asksForIntake(t), t).toBe(true);
+    }
+  });
+
+  it("обычный ответ по справке оформлением не считает", () => {
+    for (const t of [
+      "Приём остеопата стоит 8000 ₽ и длится 40 минут.",
+      "Мы работаем с понедельника по субботу.",
+      "Здравствуйте! Слушаю вас.",
+    ]) {
+      expect(asksForIntake(t), t).toBe(false);
+    }
+  });
+
+  it("жалоба в ответ на свой же вопрос — часть записи", () => {
+    const history = [
+      { role: "user" as const, content: "Хотела бы записаться к остеопату" },
+      { role: "assistant" as const, content: "Для взрослого или ребёнка? Опишите, с какой жалобой." },
+    ];
+    expect(inIntakeFlow(history)).toBe(true);
+  });
+
+  it("вне оформления медицинские правила работают как прежде", () => {
+    const history = [
+      { role: "user" as const, content: "Сколько стоит приём?" },
+      { role: "assistant" as const, content: "Приём остеопата стоит 8000 ₽." },
+    ];
+    expect(inIntakeFlow(history)).toBe(false);
+  });
+});
+
+describe("имя из анкеты", () => {
+  it("берёт ФИО из начала строки", () => {
+    expect(nameFromIntake("Магомедова Гульбара Халитовна 23 года 61 кг боли в пояснице")).toBe(
+      "Магомедова Гульбара Халитовна",
+    );
+    expect(nameFromIntake("Алиева Малика. 34. 45. Поясница")).toBe("Алиева Малика");
+  });
+
+  it("не выдумывает имя там, где его нет", () => {
+    expect(nameFromIntake("Взрослая женщина, головная боль")).toBeNull();
+    expect(nameFromIntake("сколько стоит приём")).toBeNull();
   });
 });

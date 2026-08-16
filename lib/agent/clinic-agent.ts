@@ -21,7 +21,7 @@ import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
-import { intakePrompt, looksLikeIntake } from "./intake";
+import { inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
 import { stuckInMisunderstanding } from "./confusion";
 
 /**
@@ -86,7 +86,19 @@ async function loadConversation(ctx: AgentContext) {
   if (existing) {
     // Имя в профиле могло измениться, а до привязки к карточке оно —
     // единственное, чем администратор отличает диалоги друг от друга.
-    if (ctx.displayName && existing.contactName !== ctx.displayName) {
+    /**
+     * Имя из профиля не затирает то, которым человек представился.
+     *
+     * Профиль подписан как «Ася» или вовсе «..», а для записи пациент назвал
+     * ФИО целиком — и это имя нужнее и агенту, и администратору. Раньше каждое
+     * следующее сообщение возвращало подпись из профиля, и названное ФИО
+     * держалось до первой же реплики.
+     */
+    const words = (v: string) => v.trim().split(/\s+/).filter(Boolean).length;
+    const keepKnown =
+      existing.contactName && ctx.displayName && words(existing.contactName) > words(ctx.displayName);
+
+    if (ctx.displayName && existing.contactName !== ctx.displayName && !keepKnown) {
       return prisma.conversation.update({
         where: { id: existing.id },
         data: { contactName: ctx.displayName },
@@ -504,10 +516,18 @@ export async function handlePatientMessage(
    * Проверяем по тексту, а не по факту эскалации: справочный вопрос посреди
    * ожидания администратора агент отвечать обязан.
    */
-  const askedForAdmin =
-    scheduleTopic(input.text ?? "") ||
-    personalTopic(input.text ?? "") ||
-    wantsHuman(input.text ?? "");
+  /**
+   * Что действительно нельзя перебивать: просьбу позвать человека и жалобу.
+   *
+   * Запись сюда больше не входит. Пациентка написала «хотела бы записаться к
+   * остеопату», а по диалогу уже висела эскалация — и агент промолчал. Ответил
+   * он только со второго раза, на «Можно?». Со стороны это выглядит как
+   * неисправность, а по сути мы бросаем клиента ровно там, где он готов
+   * записаться: пока администратор освободится, агент должен вести человека
+   * дальше — назвать услугу, цену и собрать данные. Времени он всё равно не
+   * называет, так что помешать администратору нечем.
+   */
+  const askedForAdmin = personalTopic(input.text ?? "") || wantsHuman(input.text ?? "");
 
   const paused =
     (conversation.status === "HUMAN_TAKEOVER" &&
@@ -718,6 +738,15 @@ async function replyToQuestion(
    * это его работа. Сами данные уже в переписке, повторять их незачем.
    */
   if (looksLikeIntake(text)) {
+    /**
+     * Имя из анкеты запоминаем сразу.
+     *
+     * Пациент представился полным именем, а через две реплики услышал «вы его
+     * не называли»: имя было в переписке, но в промпт уходят последние
+     * сообщения, и всё, что дальше, для агента не существует. В карточке оно
+     * нужно и администратору — диалог перестаёт быть безымянным.
+     */
+    await rememberName(ctx.companyId, conversation.id, nameFromIntake(text)).catch(() => {});
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент прислал данные для записи").catch(() => {});
     return respond(ctx, conversation.id, {
       text: "Спасибо, записал(а). Администратор подберёт ближайшее удобное время и напишет здесь же.",
@@ -779,8 +808,22 @@ async function replyToQuestion(
     ? allKnowledge.filter((r) => !aboutConsent(r.topic) && !aboutConsent(r.question))
     : allKnowledge;
 
-  // Правило 1: на медицинскую тему отвечаем ТОЛЬКО дословной справкой клиники.
-  if (medical(text)) {
+  const said = await recentTurns(conversation.id);
+
+  /**
+   * Правило 1: на медицинскую тему отвечаем ТОЛЬКО дословной справкой клиники.
+   *
+   * Кроме одного случая — когда жалобу только что запросил сам агент. Он
+   * спросил «для взрослого или ребёнка и с какой жалобой», пациентка ответила
+   * «взрослая женщина, головная боль» — и получила «этот вопрос лучше уточнить
+   * у специалиста». Слово «боль» есть, значит медицина; то, что вопрос задал он
+   * сам минуту назад, никто не проверял. Человек выполнил просьбу и был послан
+   * по кругу, а запись сорвалась.
+   *
+   * Лечить агент от этого не начинает: советовать по жалобам ему запрещено
+   * промптом, а его дело здесь — записать сказанное и довести до администратора.
+   */
+  if (medical(text) && !inIntakeFlow(said)) {
     const match = matchKnowledge(text, knowledgeRows);
     if (!confidentMatch(match)) {
       await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос без готового ответа").catch(() => {});
@@ -839,9 +882,14 @@ async function replyToQuestion(
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
   }
 
-  const said = await recentTurns(conversation.id);
   const context = await clinicContext(ctx.companyId, text);
-  const answer = await answerLLM(text, context, said, intakePrompt(settings.prompt));
+  const answer = await answerLLM(
+    text,
+    context,
+    said,
+    intakePrompt(settings.prompt),
+    await patientNameFor(conversation.id),
+  );
 
   /**
    * Обещание записать не отправляем никогда: расписанием агент не
@@ -938,6 +986,50 @@ function consentButtons() {
     { text: "Согласен(на)", data: CONSENT_ACCEPT },
     { text: "Не сейчас", data: CONSENT_DECLINE },
   ];
+}
+
+/**
+ * Запомнить имя, которым представился пациент.
+ *
+ * В карточку, если она уже привязана, иначе — в имя контакта на диалоге.
+ * Затирать заполненное имя не будем: в карточке его мог поправить
+ * администратор, и его правка важнее нашей догадки из переписки.
+ */
+async function rememberName(companyId: string, conversationId: string, name: string | null): Promise<void> {
+  if (!name) return;
+  const conv = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { patientId: true, contactName: true },
+  });
+  if (!conv) return;
+
+  if (conv.patientId) {
+    await prisma.patient.updateMany({
+      where: { id: conv.patientId, companyId, OR: [{ name: null }, { name: "" }] },
+      data: { name },
+    });
+    return;
+  }
+  /**
+   * Имя контакта из мессенджера — это «Ася» или «..», как человек подписал свой
+   * профиль. Названное для записи ФИО полнее, и в диалоге администратору нужно
+   * именно оно. Считаем по числу слов: правку администратора («Ася, мама
+   * Умара») двумя словами не перебить.
+   */
+  const current = conv.contactName?.trim() ?? "";
+  const words = (v: string) => v.split(/\s+/).filter(Boolean).length;
+  if (!current || words(name) > words(current)) {
+    await prisma.conversation.update({ where: { id: conversationId }, data: { contactName: name } });
+  }
+}
+
+/** Как зовут собеседника: имя карточки, иначе имя контакта из мессенджера. */
+async function patientNameFor(conversationId: string): Promise<string | null> {
+  const conv = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { contactName: true, patient: { select: { name: true } } },
+  });
+  return conv?.patient?.name?.trim() || conv?.contactName?.trim() || null;
 }
 
 /**

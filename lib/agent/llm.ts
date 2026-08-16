@@ -100,6 +100,13 @@ export async function answerLLM(
    * агент обязан независимо от того, что клиника напишет в своём тексте (§6).
    */
   extraRules?: string,
+  /**
+   * Имя собеседника. Передаём отдельно, а не надеемся, что модель найдёт его в
+   * переписке: в промпт уходят последние реплики, и представившийся пациент
+   * через десяток сообщений становится безымянным. Только имя — ни диагнозов,
+   * ни остальных данных (§7).
+   */
+  patientName?: string | null,
 ): Promise<string | null> {
   const key = process.env.ROUTER_AI;
   if (!key) {
@@ -126,9 +133,17 @@ export async function answerLLM(
           ...(extraRules?.trim()
             ? [{ role: "system" as const, content: `Инструкция клиники:\n${extraRules.trim()}` }]
             : []),
+          ...(patientName?.trim()
+            ? [{ role: "system" as const, content: `Собеседника зовут ${patientName.trim()}. Обращайтесь по имени.` }]
+            : []),
           { role: "system", content: `Справка клиники:\n${clinicContext}` },
           // Последние реплики — чтобы «а сколько это стоит?» понималось в контексте.
-          ...history.slice(-10),
+          /**
+           * Двадцать реплик, а не десять: на десяти пациент, назвавший себя в
+           * начале разговора, к середине становился незнакомым — и агент честно
+           * отвечал, что имени не знает.
+           */
+          ...history.slice(-20),
           { role: "user", content: question },
         ],
       }),
