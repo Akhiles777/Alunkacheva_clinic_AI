@@ -27,6 +27,13 @@ export const runtime = "nodejs";
  */
 export const maxDuration = 20;
 
+/**
+ * Сколько времени считаем эхом собственного ответа. Администратор, вручную
+ * повторяющий текст бота слово в слово через несколько минут, — случай
+ * теоретический; бот, перебивший сам себя, — случившийся.
+ */
+const ECHO_WINDOW_MS = 10 * 60 * 1000;
+
 export async function POST(req: Request) {
   if (!isWhatsappEnabled()) {
     return NextResponse.json({ error: "whatsapp disabled" }, { status: 503 });
@@ -101,6 +108,44 @@ export async function POST(req: Request) {
     // он появится, когда пациент ответит.
     if (!conv) return NextResponse.json({ ok: true, ignored: "нет диалога" });
 
+    /**
+     * Эхо нашего собственного ответа.
+     *
+     * Провайдер помечает отправленное через API отдельным типом события, и его
+     * мы отбрасываем. Но телефон клиники, подключённый к тому же аккаунту,
+     * присылает наш же текст ещё раз — уже как сообщение, набранное на
+     * телефоне. Идентификатор у него другой, поэтому проверка на повтор его не
+     * ловила.
+     *
+     * Последствия были не косметические: ответ агента появлялся в переписке
+     * дважды, диалог помечался «ведёт человек», и бот замолкал на двенадцать
+     * часов — сам себя перебив. Именно так и произошло в диалоге, где на
+     * «Расскажите» пациентка не получила ничего.
+     *
+     * Поэтому сверяем текст: если ровно это мы недавно отправили сами, событие
+     * пропускаем.
+     */
+    const body = messageBody(event.text, event.attachments).slice(0, 4000);
+    const echo = await prisma.message.findFirst({
+      where: {
+        conversationId: conv.id,
+        direction: "OUT",
+        body,
+        createdAt: { gte: new Date(Date.now() - ECHO_WINDOW_MS) },
+      },
+      select: { id: true, externalId: true },
+    });
+    if (echo) {
+      // Заодно запоминаем идентификатор провайдера: со следующим событием по
+      // этому сообщению хватит обычной проверки на повтор.
+      if (!echo.externalId) {
+        await prisma.message
+          .update({ where: { id: echo.id }, data: { externalId: event.externalId } })
+          .catch(() => {});
+      }
+      return NextResponse.json({ ok: true, ignored: "эхо собственного сообщения" });
+    }
+
     await prisma.message.create({
       data: {
         companyId,
@@ -108,7 +153,7 @@ export async function POST(req: Request) {
         channel: "WHATSAPP",
         direction: "OUT",
         authorType: "STAFF",
-        body: messageBody(event.text, event.attachments).slice(0, 4000),
+        body,
         externalId: event.externalId,
         status: "SENT",
         sentAt: new Date(),

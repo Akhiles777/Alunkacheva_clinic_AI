@@ -5,7 +5,7 @@ import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
-import { HANDOVER_REPLY, promisesBooking } from "./booking-promise";
+import { HANDOVER_REPLY, promisesBooking, promisesHuman } from "./booking-promise";
 import { medical, personalTopic, scheduleTopic, wantsHuman } from "./triggers";
 import {
   CONSENT_ACCEPT,
@@ -268,7 +268,7 @@ const KNOWLEDGE_CHARS_BUDGET = 8000;
 const KNOWLEDGE_CHARS_FALLBACK = 20000;
 
 async function clinicContext(companyId: string, question?: string): Promise<string> {
-  const [services, knowledge, schedule] = await Promise.all([
+  const [services, knowledge, schedule, staff] = await Promise.all([
     getServices(companyId),
     prisma.knowledgeEntry.findMany({
       where: { companyId, isActive: true },
@@ -278,6 +278,20 @@ async function clinicContext(companyId: string, question?: string): Promise<stri
       where: { companyId },
       orderBy: { weekday: "asc" },
       select: { weekday: true, startMinute: true, endMinute: true },
+    }),
+    /**
+     * Кто принимает. Списка специалистов у агента не было вовсе, и на вопрос
+     * «Ирина принимает?» он отвечал первой похожей записью справочника — про
+     * авторскую программу с её именем. Пациентка спросила про врача, а
+     * услышала про процедуру: имя совпало, ответ мимо.
+     *
+     * Имена и специальность — не медицинские данные и не персональные данные
+     * пациента: это то же самое, что висит на двери кабинета.
+     */
+    prisma.staff.findMany({
+      where: { companyId, isActive: true, deletedAt: null },
+      orderBy: { name: "asc" },
+      select: { name: true, specialty: true },
     }),
   ]);
 
@@ -292,6 +306,10 @@ async function clinicContext(companyId: string, question?: string): Promise<stri
   for (const d of schedule) lines.push(`${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
   const closed = [1, 2, 3, 4, 5, 6, 7].filter((w) => !schedule.some((d) => d.weekday === w));
   if (closed.length) lines.push(`Выходной: ${closed.map((w) => days[w]).join(", ")}`);
+  if (staff.length) {
+    lines.push("", "Принимают:");
+    for (const p of staff) lines.push(`• ${p.name}${p.specialty ? ` — ${p.specialty}` : ""}`);
+  }
   const relevant = pickRelevant(knowledge, question);
   if (relevant.length) {
     lines.push("", "Справка клиники:");
@@ -456,15 +474,21 @@ export async function handlePatientMessage(
    * Когда агент молчит.
    *
    *   1. Сотрудник ответил вручную — пауза на 12 часов (§6.4).
-   *   2. Диалог передан человеку и эскалация ещё открыта.
+   *   2. Диалог передан администратору, и вопрос снова из его зоны.
    *
-   * Второе правило добавлено по требованию заказчика: диалог, переданный
-   * администратору, ведёт администратор. Прежде агент продолжал отвечать
-   * поверх ожидающего человека — пациент видел двух собеседников сразу.
+   * Второе правило раньше было шире: любая открытая эскалация выключала агента
+   * целиком. На живом диалоге это вышло так. Пациентка спросила про свободное
+   * окно — вопрос администратора, агент передал его человеку. Следующей
+   * репликой она написала «Расскажите», то есть попросила рассказать об
+   * услугах, — и не получила ничего. Ответ был у агента под рукой, но он уже
+   * молчал по всему диалогу.
    *
-   * Молчание не бесконечно: администратор возвращает диалог кнопкой «Вернуть
-   * агенту», и она же закрывает эскалацию. Сообщения пациента всё это время
-   * сохраняются и видны в инбоксе — потерять обращение нельзя.
+   * Теперь молчим только там, где решение за человеком: запись и расписание,
+   * жалобы, прямая просьба позвать администратора. На справочные вопросы агент
+   * продолжает отвечать, пока администратор занимается своим.
+   *
+   * Как только сотрудник ответил сам — замолкаем полностью (правило 1): двое
+   * собеседников сразу хуже, чем один медленный.
    */
   const openEscalation =
     conversation.status === "ESCALATED"
@@ -474,11 +498,21 @@ export async function handlePatientMessage(
         })
       : null;
 
+  /**
+   * Зона администратора: пока он ведёт диалог, эти темы — его.
+   * Проверяем по тексту, а не по факту эскалации: справочный вопрос посреди
+   * ожидания администратора агент отвечать обязан.
+   */
+  const askedForAdmin =
+    scheduleTopic(input.text ?? "") ||
+    personalTopic(input.text ?? "") ||
+    wantsHuman(input.text ?? "");
+
   const paused =
     (conversation.status === "HUMAN_TAKEOVER" &&
       conversation.botPausedUntil !== null &&
       conversation.botPausedUntil > new Date()) ||
-    openEscalation !== null;
+    (openEscalation !== null && askedForAdmin);
   if (paused) {
     const pausedBody = messageBody(input.text ?? "", attachments);
     if (pausedBody) {
@@ -772,6 +806,16 @@ export async function handlePatientMessage(
   }
 
   if (answer && invented.length === 0 && !alreadySaid(said, answer)) {
+    /**
+     * Обещал позвать человека — значит человека зовём.
+     *
+     * На живом диалоге ассистент написал «позову администратора, чтобы она
+     * помогла связаться с врачом» — и не позвал: эскалацию создаёт код, а не
+     * текст ответа. Администратор о вопросе не узнал, пациентка ждала.
+     */
+    if (promisesHuman(answer)) {
+      await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ассистент обещал позвать человека").catch(() => {});
+    }
     return respond(ctx, conversation.id, { text: answer, buttons: mainMenu() });
   }
 
