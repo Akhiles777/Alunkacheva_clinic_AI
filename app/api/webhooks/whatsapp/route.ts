@@ -230,20 +230,30 @@ export async function POST(req: Request) {
          *
          * С идентификатором эхо отсекается обычной проверкой на повтор — той
          * же, что защищает от повторной доставки.
+         *
+         * Обновляем ровно одну строку, найденную по диалогу: один и тот же
+         * текст (запрос согласия, например) уходит многим пациентам, а
+         * идентификатор провайдера уникален — попытка записать его сразу
+         * нескольким сообщениям упёрлась бы в уникальный индекс.
          */
-        await prisma.message
-          .updateMany({
-            where: {
-              companyId,
-              channel: "WHATSAPP",
-              direction: "OUT",
-              authorType: "BOT",
-              body: reply.text,
-              externalId: null,
-            },
-            data: { externalId: sent.externalId },
-          })
-          .catch(() => {});
+        const own = await prisma.message.findFirst({
+          where: {
+            companyId,
+            channel: "WHATSAPP",
+            direction: "OUT",
+            authorType: "BOT",
+            body: reply.text,
+            externalId: null,
+            conversation: { channel: "WHATSAPP", externalUserId: event.chatId },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        });
+        if (own) {
+          await prisma.message
+            .update({ where: { id: own.id }, data: { externalId: sent.externalId } })
+            .catch(() => {});
+        }
       }
     }
   } catch (e) {
