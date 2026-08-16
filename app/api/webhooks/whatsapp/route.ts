@@ -6,6 +6,7 @@ import { parseWebhook, verifyWebhookSecret } from "@/lib/integrations/whatsapp/w
 import { sendText } from "@/lib/integrations/whatsapp/green-api";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { messageBody } from "@/lib/agent/attachments";
+import { runSerial } from "@/lib/server/background";
 import { importWhatsappHistory } from "@/lib/integrations/whatsapp/history";
 
 /**
@@ -22,10 +23,10 @@ import { importWhatsappHistory } from "@/lib/integrations/whatsapp/history";
 
 export const runtime = "nodejs";
 /**
- * Провайдер ждёт ответ считанные секунды. Не уложились — пришлёт заново,
- * поэтому обработка должна быть короткой.
+ * Сам запрос теперь короткий: разбор, проверка на повтор и постановка в
+ * очередь. Разговор с моделью идёт после ответа провайдеру — см. runSerial.
  */
-export const maxDuration = 20;
+export const maxDuration = 10;
 
 /**
  * Сколько времени считаем эхом собственного ответа. Администратор, вручную
@@ -171,6 +172,28 @@ export async function POST(req: Request) {
   }
 
   /**
+   * Отвечаем провайдеру сразу, разговор ведём после ответа.
+   *
+   * Разговор с моделью занимает секунды, а мессенджер ждёт считанные. Пока
+   * обработка шла внутри запроса, провайдер не дожидался, обрывал соединение и
+   * присылал сообщение заново — а у нас оно уже было сохранено, и повторная
+   * доставка отбрасывалась как дубль. Сообщение пациента лежало в переписке без
+   * ответа, и человеку приходилось писать второй и третий раз. Ровно это и
+   * заметил заказчик.
+   *
+   * Задачи одного чата идут по очереди: два сообщения подряд иначе
+   * обрабатывались одновременно и оба здоровались с одним и тем же человеком.
+   */
+  runSerial(`whatsapp:${event.chatId}`, () => handleIncoming(companyId, event));
+  return NextResponse.json({ ok: true, queued: true });
+}
+
+/** Разговор: подгрузка истории, ответ агента, отправка. */
+async function handleIncoming(
+  companyId: string,
+  event: Extract<ReturnType<typeof parseWebhook>, { kind: "message" }>,
+): Promise<void> {
+  /**
    * Переписка, которая была до подключения платформы.
    *
    * У нас её нет, а у пациента она на экране: он продолжает разговор, начатый
@@ -193,76 +216,65 @@ export async function POST(req: Request) {
     console.error("[whatsapp] история чата не загрузилась:", e);
   }
 
-  try {
-    const reply = await handlePatientMessage(
-      {
-        companyId,
-        channel: "WHATSAPP",
-        externalUserId: event.chatId,
-        displayName: event.senderName,
-      },
-      {
-        text: event.text,
-        externalId: event.externalId,
-        attachments: event.attachments,
-        // В WhatsApp адрес чата и есть телефон — карточка пациента
-        // привязывается сразу, спрашивать номер незачем.
-        knownPhone: event.phoneE164,
-      },
-    );
+  const reply = await handlePatientMessage(
+    {
+      companyId,
+      channel: "WHATSAPP",
+      externalUserId: event.chatId,
+      displayName: event.senderName,
+    },
+    {
+      text: event.text,
+      externalId: event.externalId,
+      attachments: event.attachments,
+      // В WhatsApp адрес чата и есть телефон — карточка пациента
+      // привязывается сразу, спрашивать номер незачем.
+      knownPhone: event.phoneE164,
+    },
+  );
+  if (!reply?.text) return;
 
-    if (reply?.text) {
-      const sent = await sendText(companyId, event.chatId, reply.text);
-      if (!sent.ok) {
-        // Ответ не ушёл. Сообщение пациента уже сохранено, диалог виден
-        // администратору — это лучше, чем потерять обращение целиком.
-        console.error("[whatsapp] ответ не доставлен:", sent.error);
-      } else if (sent.externalId) {
-        /**
-         * Запоминаем идентификатор провайдера у своего же ответа.
-         *
-         * Телефон клиники присылает наш текст обратно как «набранный вручную»,
-         * и без идентификатора узнать в нём собственный ответ можно было только
-         * по совпадению текста. Совпадение — признак хороший, но не точный:
-         * достаточно провайдеру подставить невидимый символ или обрезать
-         * длинное сообщение, и ответ агента снова задвоится в переписке, а
-         * диалог уйдёт в перехват человеком.
-         *
-         * С идентификатором эхо отсекается обычной проверкой на повтор — той
-         * же, что защищает от повторной доставки.
-         *
-         * Обновляем ровно одну строку, найденную по диалогу: один и тот же
-         * текст (запрос согласия, например) уходит многим пациентам, а
-         * идентификатор провайдера уникален — попытка записать его сразу
-         * нескольким сообщениям упёрлась бы в уникальный индекс.
-         */
-        const own = await prisma.message.findFirst({
-          where: {
-            companyId,
-            channel: "WHATSAPP",
-            direction: "OUT",
-            authorType: "BOT",
-            body: reply.text,
-            externalId: null,
-            conversation: { channel: "WHATSAPP", externalUserId: event.chatId },
-          },
-          orderBy: { createdAt: "desc" },
-          select: { id: true },
-        });
-        if (own) {
-          await prisma.message
-            .update({ where: { id: own.id }, data: { externalId: sent.externalId } })
-            .catch(() => {});
-        }
-      }
-    }
-  } catch (e) {
-    // Сбой обработки не должен приводить к повторной доставке: сообщение
-    // сохранено, ответ можно дать вручную.
-    console.error("[whatsapp] сбой обработки:", e);
+  const sent = await sendText(companyId, event.chatId, reply.text);
+  if (!sent.ok) {
+    // Ответ не ушёл. Сообщение пациента уже сохранено, диалог виден
+    // администратору — это лучше, чем потерять обращение целиком.
+    console.error("[whatsapp] ответ не доставлен:", sent.error);
+    return;
   }
+  if (!sent.externalId) return;
 
-  return NextResponse.json({ ok: true });
+  /**
+   * Запоминаем идентификатор провайдера у своего же ответа.
+   *
+   * Телефон клиники присылает наш текст обратно как «набранный вручную», и без
+   * идентификатора узнать в нём собственный ответ можно было только по
+   * совпадению текста. Совпадение — признак хороший, но не точный: достаточно
+   * провайдеру подставить невидимый символ, и ответ агента снова задвоится в
+   * переписке, а диалог уйдёт в перехват человеком.
+   *
+   * Обновляем ровно одну строку, найденную по диалогу: один и тот же текст
+   * (запрос согласия, например) уходит многим пациентам, а идентификатор
+   * провайдера уникален — записать его сразу нескольким сообщениям не даст
+   * уникальный индекс.
+   */
+  const own = await prisma.message.findFirst({
+    where: {
+      companyId,
+      channel: "WHATSAPP",
+      direction: "OUT",
+      authorType: "BOT",
+      body: reply.text,
+      externalId: null,
+      conversation: { channel: "WHATSAPP", externalUserId: event.chatId },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (own) {
+    await prisma.message
+      .update({ where: { id: own.id }, data: { externalId: sent.externalId } })
+      .catch(() => {});
+  }
 }
 
 /** Клиника, которой адресовано сообщение WhatsApp. */

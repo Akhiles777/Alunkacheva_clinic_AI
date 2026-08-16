@@ -21,7 +21,7 @@ import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
-import { inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
+import { hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
 import { stuckInMisunderstanding } from "./confusion";
 
 /**
@@ -737,7 +737,8 @@ async function replyToQuestion(
    * Отвечаем коротко и зовём администратора: дальше нужно поставить время, а
    * это его работа. Сами данные уже в переписке, повторять их незачем.
    */
-  if (looksLikeIntake(text)) {
+  const intakeSent = looksLikeIntake(text);
+  if (intakeSent) {
     /**
      * Имя из анкеты запоминаем сразу.
      *
@@ -748,9 +749,21 @@ async function replyToQuestion(
      */
     await rememberName(ctx.companyId, conversation.id, nameFromIntake(text)).catch(() => {});
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент прислал данные для записи").catch(() => {});
-    return respond(ctx, conversation.id, {
-      text: "Спасибо, записал(а). Администратор подберёт ближайшее удобное время и напишет здесь же.",
-    });
+
+    /**
+     * Вопрос вместе с данными без ответа не оставляем.
+     *
+     * «Степан Андрей Павлович, 15 лет, 35 кг, город Махачкала, извиняюсь, а у
+     * вас же город тоже Махачкала?» — на такое уходило только «спасибо,
+     * записал(а)». Человек спросил и не услышал ответа: сообщение целиком
+     * считалось анкетой, а на анкету заготовлена фраза. Если вопрос есть —
+     * отвечаем на него обычным путём, а про переданные данные скажем в конце.
+     */
+    if (!hasQuestion(text)) {
+      return respond(ctx, conversation.id, {
+        text: "Спасибо, записал(а). Администратор подберёт ближайшее удобное время и напишет здесь же.",
+      });
+    }
   }
 
   /**
@@ -936,7 +949,10 @@ async function replyToQuestion(
     if (promisesHuman(answer)) {
       await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ассистент обещал позвать человека").catch(() => {});
     }
-    return respond(ctx, conversation.id, { text: answer, buttons: mainMenu() });
+    return respond(ctx, conversation.id, {
+      text: intakeSent ? `${answer}\n\n${INTAKE_ACCEPTED}` : answer,
+      buttons: mainMenu(),
+    });
   }
 
   // Дальше — запасные пути: сказать словами клиники лучше, чем не сказать.
@@ -1022,6 +1038,9 @@ async function rememberName(companyId: string, conversationId: string, name: str
     await prisma.conversation.update({ where: { id: conversationId }, data: { contactName: name } });
   }
 }
+
+/** Подтверждение, что анкета ушла администратору. */
+const INTAKE_ACCEPTED = "Данные передал(а) администратору — он подберёт время и напишет здесь же.";
 
 /** Как зовут собеседника: имя карточки, иначе имя контакта из мессенджера. */
 async function patientNameFor(conversationId: string): Promise<string | null> {

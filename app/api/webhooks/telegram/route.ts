@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
+import { runSerial } from "@/lib/server/background";
 import { answerCallback, isTelegramConfigured, removeKeyboard, requestPhone, sendText } from "@/lib/integrations/telegram/client";
 import { attachmentsFrom, TelegramAttachmentFields } from "@/lib/integrations/telegram/attachments";
 
@@ -22,7 +23,7 @@ export const runtime = "nodejs";
  * при отсутствии ответа шлёт update заново, поэтому вся обработка должна
  * укладываться в окно. На тарифе Hobby у Vercel потолок 10 с — держимся ниже.
  */
-export const maxDuration = 15;
+export const maxDuration = 10;
 
 const Update = z.object({
   update_id: z.number(),
@@ -117,23 +118,33 @@ export async function POST(req: Request) {
 
     if (cb?.id) await answerCallback(cb.id);
 
-    const reply = await handlePatientMessage(
-      { companyId: company.id, channel: "TELEGRAM", externalUserId: String(chatId), displayName },
-      {
-        // Подпись к фото или видео — тоже текст пациента, и терять её нельзя.
-        text: msg?.text ?? msg?.caption,
-        phone: msg?.contact?.phone_number,
-        callbackData: cb?.data,
-        attachments: attachmentsFrom(msg),
-        externalId: msg ? `tg:${chatId}:${msg.message_id}` : undefined,
-      },
-    );
+    /**
+     * Ответ Telegram отдаём сразу, разговор ведём после.
+     *
+     * Разговор с моделью занимает секунды, а Telegram ждёт считанные: не
+     * дождавшись, он присылает update заново. Он у нас уже помечен
+     * обработанным, повтор отбрасывается — и сообщение остаётся без ответа. То
+     * же самое, что случалось в WhatsApp, где пациенту приходилось писать
+     * второй и третий раз.
+     */
+    runSerial(`telegram:${chatId}`, async () => {
+      const reply = await handlePatientMessage(
+        { companyId: company.id, channel: "TELEGRAM", externalUserId: String(chatId), displayName },
+        {
+          // Подпись к фото или видео — тоже текст пациента, и терять её нельзя.
+          text: msg?.text ?? msg?.caption,
+          phone: msg?.contact?.phone_number,
+          callbackData: cb?.data,
+          attachments: attachmentsFrom(msg),
+          externalId: msg ? `tg:${chatId}:${msg.message_id}` : undefined,
+        },
+      );
+      if (!reply) return;
 
-    if (reply) {
       if (reply.askPhone) await requestPhone(chatId, reply.text);
       else if (msg?.contact) await removeKeyboard(chatId, reply.text);
       else await sendText(chatId, reply.text, reply.buttons);
-    }
+    });
   } catch (e) {
     // Telegram отвечаем 200, иначе он шлёт update по кругу. Но в лог пишем:
     // молчаливый catch однажды спрятал причину, по которой бот переставал

@@ -338,7 +338,23 @@ export async function getConversations(): Promise<DialogRecord[]> {
     });
     const last = ordered[ordered.length - 1];
     // Ждёт ответа, если последним написал пациент и диалог не закрыт.
-    const unread = last?.direction === "IN" && c.status !== "CLOSED";
+    /**
+     * Ждёт ответа — значит последним написал пациент и этого сообщения ещё не
+     * видел ни один сотрудник.
+     *
+     * Прежде метка держалась, пока пациент не получит ответ. Но отвечает и
+     * агент, и часть диалогов не требует ответа вовсе — «спасибо», «хорошо».
+     * Такие диалоги висели в «Нужен ответ» с фиолетовой точкой неделями, и
+     * список перестал что-либо значить: администратор видел в нём всё подряд и
+     * не искал там настоящие обращения.
+     *
+     * Теперь открытый диалог из ожидающих уходит, а новое сообщение пациента
+     * возвращает его обратно.
+     */
+    const unread =
+      last?.direction === "IN" &&
+      c.status !== "CLOSED" &&
+      (c.staffReadAt === null || c.lastMessageAt > c.staffReadAt);
     // Окно 24 часов — ограничение Instagram. В Telegram и WhatsApp его нет.
     const windowLeftMs = c.replyWindowExpiresAt ? c.replyWindowExpiresAt.getTime() - Date.now() : null;
     return {
@@ -599,6 +615,23 @@ export async function searchPatientsForLink(query: string): Promise<{ id: string
     select: { id: true, name: true, phones: { where: { isPrimary: true }, take: 1, select: { phone: true } } },
   });
   return rows.map((p) => ({ id: p.id, name: p.name ?? "Без имени", phone: p.phones[0]?.phone ?? null }));
+}
+
+/**
+ * Отметить диалог прочитанным.
+ *
+ * Вызывается, когда сотрудник открыл переписку. Отдельным действием, а не
+ * побочным эффектом загрузки списка: список тянется каждые несколько секунд у
+ * всех сразу, и «прочитано» на нём означало бы, что диалоги гасятся сами собой,
+ * пока их никто не видел.
+ */
+export async function markDialogReadDb(conversationId: string): Promise<{ ok: true }> {
+  const session = await getSession();
+  await prisma.conversation.updateMany({
+    where: { id: conversationId, companyId: session.companyId },
+    data: { staffReadAt: new Date() },
+  });
+  return { ok: true };
 }
 
 export async function startDialogDb(input: {

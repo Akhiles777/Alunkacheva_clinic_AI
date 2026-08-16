@@ -28,6 +28,7 @@ import {
 } from "@/app/(dashboard)/patients/actions";
 import {
   returnToBotDb,
+  markDialogReadDb,
   sendMessageDb,
   startDialogDb,
   type DialogRecord,
@@ -685,8 +686,17 @@ export function returnToBot(dialogId: string) {
   void returnToBotDb(dialogId).catch(() => {});
 }
 
+/**
+ * Диалог прочитан.
+ *
+ * Отметку нужно сохранить на сервере, а не только на экране: список тянется
+ * заново каждые несколько секунд, и «непрочитано» возвращалось вместе с ним.
+ * Фиолетовая точка гасла на мгновение и загоралась снова — администратор
+ * перестал на неё смотреть.
+ */
 export function markDialogRead(dialogId: string) {
   replaceDialog(dialogId, (d) => ({ ...d, unread: false }));
+  void markDialogReadDb(dialogId).catch(() => {});
 }
 
 /** Начать диалог. Если окно закрыто, первым сообщением идёт только шаблон. */
