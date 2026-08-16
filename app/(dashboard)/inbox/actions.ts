@@ -10,6 +10,7 @@ import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
 import type { ConversationStatus } from "@/generated/prisma/enums";
+import { KIND_LABEL, type AttachmentKind } from "@/lib/agent/attachments";
 
 /**
  * Утверждённые WhatsApp-шаблоны для инбокса — из сохранённых настроек (раздел
@@ -131,6 +132,8 @@ export interface DialogRecord {
   id: string;
   name: string | null;
   patientId: string | null;
+  /** Номер, с которого пишет пациент. В WhatsApp он известен всегда. */
+  phone: string | null;
   channel: DialogChannel;
   /** Последнее слово за пациентом — диалог ждёт ответа. */
   unread: boolean;
@@ -195,6 +198,59 @@ const ESCALATION_LABEL: Record<string, string> = {
 /** Сколько последних сообщений диалога загружаем в инбокс. */
 const MESSAGE_WINDOW = 100;
 
+/**
+ * Текст сообщения без наших пометок о вложении.
+ *
+ * В базе пометка нужна: без неё сообщение с одной фотографией выглядит пустым
+ * в списке диалогов. Но в самой переписке вложение показано отдельной строкой
+ * с кнопкой, и пациент видел «[фотография]» дважды подряд.
+ */
+function stripMarks(body: string, files: DialogAttachmentRecord[]): string {
+  if (files.length === 0) return body;
+  const marks = files
+    .map((f) => `[${KIND_LABEL[f.kind as AttachmentKind] ?? f.label}]`)
+    .join(" ");
+  return (body.startsWith(marks) ? body.slice(marks.length) : body).trim();
+}
+
+/**
+ * Привязать диалоги к карточкам по номеру из канала.
+ *
+ * Телефон — единственный надёжный ключ пациента (§4). Если номер уже есть в
+ * базе, диалог должен относиться к той же карточке: иначе у человека их
+ * становится две, а его история визитов не видна ни администратору, ни агенту.
+ */
+async function linkKnownPhones(
+  companyId: string,
+  convs: { id: string; externalUserId: string }[],
+): Promise<void> {
+  if (convs.length === 0) return;
+
+  const byPhone = new Map<string, string[]>();
+  for (const c of convs) {
+    const phone = phoneFromChatId(c.externalUserId);
+    if (!phone) continue;
+    const list = byPhone.get(phone);
+    if (list) list.push(c.id);
+    else byPhone.set(phone, [c.id]);
+  }
+  if (byPhone.size === 0) return;
+
+  const known = await prisma.patientPhone.findMany({
+    where: { companyId, phone: { in: [...byPhone.keys()] }, patient: { deletedAt: null } },
+    select: { phone: true, patientId: true },
+  });
+
+  for (const row of known) {
+    const ids = byPhone.get(row.phone);
+    if (!ids?.length) continue;
+    await prisma.conversation.updateMany({
+      where: { id: { in: ids }, companyId, patientId: null },
+      data: { patientId: row.patientId },
+    });
+  }
+}
+
 export async function getConversations(): Promise<DialogRecord[]> {
   const session = await getSession();
   const convs = await prisma.conversation.findMany({
@@ -209,7 +265,13 @@ export async function getConversations(): Promise<DialogRecord[]> {
     where: { companyId: session.companyId, channel: { not: "TELEGRAM" } },
     orderBy: { lastMessageAt: "desc" },
     include: {
-      patient: { select: { name: true, deletedAt: true } },
+      patient: {
+        select: {
+          name: true,
+          deletedAt: true,
+          phones: { where: { isPrimary: true }, take: 1, select: { phone: true } },
+        },
+      },
       // Последние сообщения, а не вся история: список обновляется каждые
       // несколько секунд, и тянуть переписку за год на каждый запрос нельзя.
       // Ничего не удаляется — просто не грузится лишнее.
@@ -236,6 +298,20 @@ export async function getConversations(): Promise<DialogRecord[]> {
    * правильной карточке. Само удаление теперь делает это сразу, здесь —
    * починка диалогов, осиротевших раньше.
    */
+  /**
+   * Диалог без карточки, но с известным номером.
+   *
+   * В WhatsApp адрес чата и есть телефон, и если такой пациент в базе уже есть,
+   * привязка должна происходить сама: администратор не должен искать человека
+   * руками, а агент — разговаривать с постоянным пациентом как с незнакомым.
+   * Новые сообщения привязываются при обработке; здесь подхватываем диалоги,
+   * заведённые раньше этого правила.
+   */
+  await linkKnownPhones(
+    session.companyId,
+    convs.filter((c) => !c.patientId && c.channel === "WHATSAPP").map((c) => ({ id: c.id, externalUserId: c.externalUserId })),
+  );
+
   const orphaned = convs.filter((c) => c.patient?.deletedAt).map((c) => c.id);
   if (orphaned.length > 0) {
     await prisma.conversation.updateMany({
@@ -248,13 +324,18 @@ export async function getConversations(): Promise<DialogRecord[]> {
     const patient = c.patient?.deletedAt ? null : c.patient;
     // Из базы пришли в обратном порядке (последние сверху) — разворачиваем.
     const ordered = [...c.messages].reverse();
-    const messages: DialogMessageRecord[] = ordered.map((m) => ({
+    const messages: DialogMessageRecord[] = ordered.map((m) => {
+      const files = attachmentsOf(m.attachments);
+      return {
       id: m.id,
       from: m.authorType === "PATIENT" ? "patient" : m.authorType === "BOT" ? "bot" : "staff",
-      text: m.body,
+      // Пометку про вложение из текста убираем: файл показан отдельной строкой
+      // рядом, и пациент видел «[фотография]» дважды.
+      text: stripMarks(m.body, files),
       at: atLabel(m.createdAt),
-      attachments: attachmentsOf(m.attachments),
-    }));
+      attachments: files,
+      };
+    });
     const last = ordered[ordered.length - 1];
     // Ждёт ответа, если последним написал пациент и диалог не закрыт.
     const unread = last?.direction === "IN" && c.status !== "CLOSED";
@@ -265,6 +346,8 @@ export async function getConversations(): Promise<DialogRecord[]> {
       // Имя карточки важнее имени из профиля: карточку ведёт клиника.
       name: patient?.name ?? c.contactName ?? null,
       patientId: patient ? c.patientId : null,
+      // Карточка знает номер точнее: в неё его мог поправить администратор.
+      phone: patient?.phones[0]?.phone ?? (c.channel === "WHATSAPP" ? phoneFromChatId(c.externalUserId) : null),
       channel: CHANNEL_MAP[c.channel] ?? "whatsapp",
       status: STATUS_MAP[c.status],
       unread,

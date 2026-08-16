@@ -44,6 +44,25 @@ const MessageData = z.object({
     .optional(),
   locationMessageData: z.object({ nameLocation: z.string() }).partial().optional(),
   contactMessageData: z.object({ displayName: z.string() }).partial().optional(),
+  /**
+   * Ответ на конкретное сообщение — то, что в WhatsApp делают свайпом.
+   *
+   * Провайдер присылает такое сообщение с типом quotedMessage, и раньше оно
+   * не подходило ни под один известный тип: платформа считала его вложением и
+   * писала в переписку «[вложение]». Ответ пациента на конкретную реплику
+   * выглядел как присланный неизвестный файл — ни текста, ни того, на что
+   * отвечали.
+   */
+  quotedMessage: z
+    .object({
+      stanzaId: z.string(),
+      participant: z.string(),
+      typeMessage: z.string(),
+      textMessage: z.string(),
+      caption: z.string(),
+    })
+    .partial()
+    .optional(),
 });
 
 export const GreenWebhookSchema = z.object({
@@ -170,6 +189,32 @@ function parseOutgoing(e: GreenWebhook): ParsedEvent {
   };
 }
 
+/** Типы, у которых есть собственный текст: вложением их считать нельзя. */
+const TEXT_TYPES = new Set(["textMessage", "extendedTextMessage", "quotedMessage"]);
+
+/** Сколько знаков цитаты показываем: она подсказка, а не сообщение. */
+const QUOTE_LIMIT = 120;
+
+/**
+ * Строка «В ответ на: …», если пациент отвечал на конкретное сообщение.
+ *
+ * У цитаты может не быть текста — отвечали на фотографию или голосовое. Тогда
+ * называем тип: понять, к чему относится ответ, всё равно важнее, чем ничего.
+ */
+function quotedText(e: GreenWebhook): string | null {
+  const q = e.messageData?.quotedMessage;
+  if (!q) return null;
+
+  const text = (q.textMessage ?? q.caption ?? "").trim();
+  if (text) {
+    const short = text.length > QUOTE_LIMIT ? `${text.slice(0, QUOTE_LIMIT)}…` : text;
+    return `В ответ на: «${short}»`;
+  }
+
+  const kind = q.typeMessage ? KIND_BY_TYPE[q.typeMessage] : undefined;
+  return kind ? `В ответ на: ${KIND_LABEL[kind]}` : "В ответ на сообщение";
+}
+
 function parseMessage(e: GreenWebhook): ParsedEvent {
   const chatId = e.senderData?.chatId;
   if (!chatId) return { kind: "ignored", reason: "нет chatId" };
@@ -189,7 +234,8 @@ function parseMessage(e: GreenWebhook): ParsedEvent {
     "";
 
   const kind = KIND_BY_TYPE[type];
-  const isMedia = Boolean(kind) || (type !== "textMessage" && type !== "extendedTextMessage");
+  // Текстовые типы: обычное сообщение, сообщение со ссылкой и ответ на реплику.
+  const isMedia = Boolean(kind) || !TEXT_TYPES.has(type);
 
   const attachments: IncomingAttachment[] = [];
   if (isMedia) {
@@ -213,8 +259,16 @@ function parseMessage(e: GreenWebhook): ParsedEvent {
    */
   const caption = text.trim();
   const marks = attachments.map((a) => `[${a.label}]`).join(" ");
-  const body = caption && marks ? `${marks} ${caption}` : caption || marks;
-  if (!body) return { kind: "ignored", reason: "пустое сообщение" };
+  const withMarks = caption && marks ? `${marks} ${caption}` : caption || marks;
+
+  /**
+   * На что отвечал пациент. Без этой строки ответ свайпом читается как реплика
+   * невпопад: «да» само по себе не говорит ни администратору, ни агенту, к
+   * чему оно относится.
+   */
+  const quoted = quotedText(e);
+  const body = quoted ? `${quoted}\n${withMarks}` : withMarks;
+  if (!body.trim()) return { kind: "ignored", reason: "пустое сообщение" };
 
   return {
     kind: "message",

@@ -77,6 +77,21 @@ export function messageBody(text: string, attachments: IncomingAttachment[]): st
 }
 
 /**
+ * Текст без наших пометок о вложениях.
+ *
+ * В переписке пометка нужна: без неё сообщение с одной фотографией выглядит
+ * пустым. Но на экране инбокса вложение и так показано отдельной строкой с
+ * кнопкой — и пациент видел «[фотография]» дважды: в тексте и рядом. Здесь
+ * пометку снимаем, в базе она остаётся.
+ */
+export function withoutMarks(body: string, attachments: IncomingAttachment[]): string {
+  if (!attachments.length) return body;
+  const marks = attachments.map((a) => `[${a.label}]`).join(" ");
+  const trimmed = body.startsWith(marks) ? body.slice(marks.length) : body;
+  return trimmed.trim();
+}
+
+/**
  * Умеет ли ассистент понять это сообщение сам.
  *
  * Не умеет: он читает текст. Голосовое, фотографию направления или видео

@@ -126,6 +126,13 @@ export function ContactPanel({ dialog, onChanged }: { dialog: Dialog; onChanged:
       ) : (
         <span className="text-text-subtle">Не привязан к карточке клиента</span>
       )}
+      {/* Номер виден сразу: раньше администратор не знал, с какого телефона
+          пишут, пока не откроет карточку — а её могло и не быть. */}
+      {dialog.phone ? (
+        <a href={`tel:${dialog.phone}`} className="num text-text-muted hover:text-text">
+          {dialog.phone}
+        </a>
+      ) : null}
       <button type="button" onClick={() => setMode("rename")} className="text-text-muted hover:text-text">
         Переименовать
       </button>

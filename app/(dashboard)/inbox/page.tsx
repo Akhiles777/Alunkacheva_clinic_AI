@@ -235,6 +235,9 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           </div>
           <div className="text-text-subtle text-2xs">
             {CHANNEL_LABEL[dialog.channel]} · {DIALOG_STATUS_LABEL[dialog.status]}
+            {/* Номер, с которого пишет пациент: администратор набирает его,
+                не выходя из диалога, и по нему же узнаёт человека. */}
+            {dialog.phone ? <> · <span className="num">{dialog.phone}</span></> : null}
           </div>
         </div>
         <div className="ml-auto flex flex-none items-center gap-2.5">

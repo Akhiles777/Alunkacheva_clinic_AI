@@ -208,3 +208,61 @@ describe("ответ администратора с телефона", () => {
     expect(e.kind).toBe("ignored");
   });
 });
+
+/**
+ * Ответ свайпом на конкретное сообщение. В переписке клиники такие ответы
+ * появлялись как «[вложение]»: тип quotedMessage не подходил ни под один
+ * известный, и текст пациента терялся вместе с тем, на что он отвечал.
+ */
+describe("ответ на конкретное сообщение", () => {
+  const quoted = (messageData: Record<string, unknown>) => ({
+    typeWebhook: "incomingMessageReceived",
+    idMessage: "q1",
+    senderData: { chatId: "79280000000@c.us", senderName: "Ася" },
+    messageData,
+  });
+
+  it("читает текст ответа, а не считает его вложением", () => {
+    const e = parseWebhook(
+      quoted({
+        typeMessage: "quotedMessage",
+        extendedTextMessageData: { text: "Да" },
+        quotedMessage: { stanzaId: "abc", typeMessage: "textMessage", textMessage: "Приём нужен взрослому или ребёнку?" },
+      }),
+    );
+    expect(e.kind).toBe("message");
+    if (e.kind !== "message") return;
+    expect(e.isMedia).toBe(false);
+    expect(e.attachments).toHaveLength(0);
+    expect(e.text).toContain("Да");
+    // Видно, на что отвечали: без этого «Да» — реплика невпопад.
+    expect(e.text).toContain("Приём нужен взрослому или ребёнку?");
+  });
+
+  it("длинную цитату укорачивает", () => {
+    const long = "а".repeat(300);
+    const e = parseWebhook(
+      quoted({
+        typeMessage: "quotedMessage",
+        extendedTextMessageData: { text: "Хорошо" },
+        quotedMessage: { textMessage: long },
+      }),
+    );
+    if (e.kind !== "message") throw new Error("ожидалось сообщение");
+    expect(e.text.length).toBeLessThan(200);
+    expect(e.text).toContain("…");
+  });
+
+  it("ответ на фотографию называет тип", () => {
+    const e = parseWebhook(
+      quoted({
+        typeMessage: "quotedMessage",
+        extendedTextMessageData: { text: "Это моё направление" },
+        quotedMessage: { typeMessage: "imageMessage" },
+      }),
+    );
+    if (e.kind !== "message") throw new Error("ожидалось сообщение");
+    expect(e.text).toContain("фотография");
+    expect(e.text).toContain("Это моё направление");
+  });
+});

@@ -169,6 +169,8 @@ export interface Dialog {
   name: string;
   channel: DialogChannel;
   patientId: string | null;
+  /** Номер, с которого пишет пациент: в WhatsApp он известен всегда. */
+  phone: string | null;
   status: DialogStatus;
   preview: string;
   at: string;
@@ -383,6 +385,7 @@ export function hydrateDialogs(records: DialogRecord[]) {
       name: r.name ?? existing?.name ?? "Без имени",
       channel: r.channel,
       patientId: r.patientId,
+      phone: r.phone,
       status: r.status,
       preview: r.preview,
       at: r.at,
@@ -700,6 +703,8 @@ export function startDialog(input: {
     name: input.name,
     channel: input.channel,
     patientId: input.patientId,
+    // Диалог, заведённый из звонка: номер известен из карточки, а не из канала.
+    phone: null,
     status: "human",
     preview: input.message,
     at: "сейчас",
