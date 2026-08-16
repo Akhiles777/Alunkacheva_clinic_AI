@@ -22,6 +22,7 @@ import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
 import { intakePrompt, looksLikeIntake } from "./intake";
+import { stuckInMisunderstanding } from "./confusion";
 
 /**
  * Агент пациентского канала.
@@ -732,10 +733,17 @@ async function replyToQuestion(
      * прежде здесь уходило сухое «Слушаю вас».
      */
     const said = await recentTurns(conversation.id);
+    /**
+     * Повтором считаем не только прошлое приветствие, но и любой предыдущий
+     * содержательный ответ. На прогоне пациент спросил про цену, получил
+     * ответ, потом поздоровался — и услышал вводную «это клиника такая-то,
+     * расскажу про услуги» в середине разговора. Знакомятся один раз.
+     */
+    const met = alreadyGreeted(said, settings.greeting) || said.some((t) => t.role === "assistant");
     const hello = greetingText({
       incoming: text,
       configured: settings.greeting,
-      repeat: alreadyGreeted(said, settings.greeting),
+      repeat: met,
     });
     return respond(ctx, conversation.id, { text: hello, buttons: mainMenu() });
   }
@@ -843,6 +851,21 @@ async function replyToQuestion(
   const invented = answer ? ungroundedNumbers(answer, context) : [];
   if (invented.length > 0) {
     console.error(`[agent] ответ отклонён: чисел нет в справке — ${invented.join(", ")}`);
+  }
+
+  /**
+   * Разговор не двигается: агент переспрашивает третий раз подряд (§6).
+   *
+   * Правило было в требованиях и не жило нигде. На прогоне пациент трижды
+   * написал невнятное, и агент трижды бодро уточнил, чем может помочь, — а
+   * человека не позвал никто. Живой администратор на третьей реплике уже
+   * ответил бы голосом.
+   */
+  if (stuckInMisunderstanding(said, text)) {
+    await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Агент трижды не понял запрос").catch(() => {});
+    return respond(ctx, conversation.id, {
+      text: "Давайте я позову администратора — он разберётся быстрее. Он ответит здесь же.",
+    });
   }
 
   if (answer && invented.length === 0 && !alreadySaid(said, answer)) {

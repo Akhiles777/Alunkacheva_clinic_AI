@@ -129,6 +129,16 @@ async function pushToUser(subs: Sub[], payload: string): Promise<DeliveryResult>
  * должен ронять действие, ради которого уведомление возникло.
  */
 export async function notifyStaff(input: NotifyInput): Promise<{ created: number; pushed: number }> {
+  /**
+   * Прогон ассистента на живых сценариях (scripts/agent-drill.ts).
+   *
+   * Проверять поведение агента нужно на настоящей модели и настоящей справке
+   * клиники — иначе проверяются мои представления о них, а не сама система.
+   * Но будить администраторов десятками push из-за проверки нельзя. Сами
+   * эскалации при этом создаются: по ним и видно, когда агент зовёт человека.
+   */
+  if (process.env.AGENT_DRILL === "1") return { created: 0, pushed: 0 };
+
   const recipients = [...new Set(input.recipientIds)].filter(Boolean);
   if (recipients.length === 0) return { created: 0, pushed: 0 };
 
