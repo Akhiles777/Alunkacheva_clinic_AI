@@ -382,9 +382,26 @@ export async function syncRecords(companyId: string, client: YclientsClientHandl
   // Запас назад от последней синхронизации: запись могли изменить задним
   // числом, и без перекрытия такое изменение мы бы не увидели.
   const OVERLAP_DAYS = 7;
-  const from = cursor?.lastSyncedAt
+
+  /**
+   * Отметку «пришёл» администратор ставит задним числом.
+   *
+   * Окно догона считается по дате визита, а не по времени изменения записи:
+   * такого фильтра у YCLIENTS нет. Пока запас был семь дней, визит, отмеченный
+   * через неделю после приёма, не попадал в окно уже никогда — и навсегда
+   * оставался «созданным». В отчётах это выглядело как «приёмов шестнадцать,
+   * пришёл один».
+   *
+   * Поэтому последний месяц перечитываем всегда, независимо от курсора. Это
+   * тридцать запросов в месяц против вечно неверной статистики.
+   */
+  const ATTENDANCE_WINDOW_DAYS = 30;
+  const catchUp = new Date(now.getTime() - ATTENDANCE_WINDOW_DAYS * 24 * 3600 * 1000);
+
+  const incremental = cursor?.lastSyncedAt
     ? new Date(cursor.lastSyncedAt.getTime() - OVERLAP_DAYS * 24 * 3600 * 1000)
     : new Date(Date.UTC(now.getUTCFullYear() - HISTORY_YEARS, now.getUTCMonth(), 1));
+  const from = incremental < catchUp ? incremental : catchUp;
   // Вперёд берём будущие записи: расписание на месяцы вперёд — это тоже данные.
   const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 3, 1));
 
