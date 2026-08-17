@@ -7,12 +7,16 @@
  * незнакомцем — и агент разговаривает соответственно.
  *
  * Скрипт спрашивает номер у провайдера для каждого такого диалога, запоминает
- * его и привязывает диалог к карточке с тем же номером. Новых карточек не
- * создаёт: заводить их пачкой — отдельное решение, и принимать его должен
- * человек, глядя на результат.
+ * его и привязывает диалог к карточке с тем же номером.
  *
- *   npx tsx scripts/whatsapp-link-phones.ts           # показать план
- *   npx tsx scripts/whatsapp-link-phones.ts --apply   # выполнить
+ * С флагом --create заводит карточки тем, кого в базе нет. Отдельным флагом
+ * намеренно: среди собеседников клиники есть не только пациенты — магазины,
+ * сотрудники, знакомые. Каждая такая карточка попадёт в «новых пациентов» и
+ * испортит метрики, поэтому решение принимает человек, увидев список.
+ *
+ *   npx tsx scripts/whatsapp-link-phones.ts                    # показать план
+ *   npx tsx scripts/whatsapp-link-phones.ts --apply            # привязать существующие
+ *   npx tsx scripts/whatsapp-link-phones.ts --apply --create   # и завести недостающие
  *   npx tsx scripts/whatsapp-link-phones.ts --apply --limit=50
  */
 import "dotenv/config";
@@ -31,18 +35,34 @@ function limitArg(): number {
 
 async function main() {
   const apply = process.argv.includes("--apply");
+  const create = process.argv.includes("--create");
   const limit = limitArg();
   const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
 
   const convs = await prisma.conversation.findMany({
-    where: { companyId: company.id, channel: "WHATSAPP", phoneE164: null },
+    where: {
+      companyId: company.id,
+      channel: "WHATSAPP",
+      // Диалоги без номера и те, что номер получили, но карточки так и не
+      // нашли: второй проход с --create должен их подхватить.
+      OR: [{ phoneE164: null }, { patientId: null }],
+    },
     orderBy: { lastMessageAt: "desc" },
     take: limit,
-    select: { id: true, externalUserId: true, patientId: true, contactName: true },
+    select: {
+      id: true,
+      externalUserId: true,
+      patientId: true,
+      contactName: true,
+      phoneE164: true,
+      sourceId: true,
+      startedAt: true,
+    },
   });
 
   console.log(`клиника: ${company.name}`);
-  console.log(`диалогов без номера: ${convs.length}`);
+  console.log(`диалогов без номера или без карточки: ${convs.length}`);
+  if (!create) console.log("карточки заводиться не будут — для этого нужен флаг --create");
   if (!apply) {
     console.log("\nэто предварительный просмотр. чтобы выполнить: --apply");
     await prisma.$disconnect();
@@ -52,12 +72,16 @@ async function main() {
   let resolved = 0;
   let linked = 0;
   let noPatient = 0;
+  let created = 0;
   let failed = 0;
 
   for (const conv of convs) {
     // Старые чаты ещё содержат номер в адресе — лишний запрос к провайдеру не
     // нужен, а запросы у него не бесплатны и ограничены по частоте.
-    const phone = phoneFromChatId(conv.externalUserId) ?? (await fetchContactPhone(company.id, conv.externalUserId).catch(() => null));
+    const phone =
+      conv.phoneE164 ??
+      phoneFromChatId(conv.externalUserId) ??
+      (await fetchContactPhone(company.id, conv.externalUserId).catch(() => null));
 
     if (!phone) {
       failed += 1;
@@ -74,8 +98,38 @@ async function main() {
       select: { patientId: true },
     });
     if (!known) {
-      noPatient += 1;
-      console.log(`  ${tail(phone)} — карточки с таким номером нет${conv.contactName ? `, контакт «${conv.contactName}»` : ""}`);
+      if (!create) {
+        noPatient += 1;
+        console.log(`  ${tail(phone)} — карточки с таким номером нет${conv.contactName ? `, контакт «${conv.contactName}»` : ""}`);
+        continue;
+      }
+
+      /**
+       * Заводим карточку.
+       *
+       * Дата первого обращения — начало переписки, а не «сейчас»: иначе полторы
+       * тысячи человек с многолетней историей разом становятся первичными, и
+       * отчёты врут ровно так, как это уже было после первой выгрузки.
+       */
+      const source = await prisma.source.findFirst({
+        where: { companyId: company.id, code: "whatsapp" },
+        select: { id: true },
+      });
+      const patient = await prisma.patient.create({
+        data: {
+          companyId: company.id,
+          name: conv.contactName?.trim() || null,
+          firstSeenAt: conv.startedAt,
+          sourceId: conv.sourceId ?? source?.id ?? null,
+          phones: {
+            create: { companyId: company.id, phone, isPrimary: true, usedForWhatsapp: true },
+          },
+        },
+        select: { id: true },
+      });
+      await prisma.conversation.update({ where: { id: conv.id }, data: { patientId: patient.id } });
+      created += 1;
+      console.log(`  заведена карточка ${tail(phone)}${conv.contactName ? ` — ${conv.contactName}` : ""}`);
       continue;
     }
 
@@ -85,12 +139,17 @@ async function main() {
 
   console.log(
     `\nномеров получено: ${resolved}, привязано карточек: ${linked}, ` +
-      `без карточки: ${noPatient}, не удалось узнать номер: ${failed}`,
+      `заведено карточек: ${created}, без карточки: ${noPatient}, ` +
+      `не удалось узнать номер: ${failed}`,
   );
   if (noPatient > 0) {
+    console.log("Чтобы завести недостающие карточки, добавьте --create.");
+  }
+  if (created > 0) {
     console.log(
-      "Диалоги без карточки — это обращения людей, которых нет в базе YCLIENTS. " +
-        "Карточки им заведёт агент при записи или администратор вручную.",
+      "Проверьте список заведённых: среди собеседников клиники бывают магазины, " +
+        "сотрудники и знакомые. Лишнюю карточку можно удалить в разделе «Пациенты» — " +
+        "диалог при этом отвяжется, а номер освободится.",
     );
   }
 
