@@ -87,11 +87,54 @@ async function state(): Promise<Response> {
       prisma.webhookEvent.count({ where: { companyId: company.id, provider: "YCLIENTS" } }),
     ]);
 
+  /**
+   * Разбивка по кабинетам и то, чего не хватает для привязки.
+   *
+   * «Процедурный кабинет 0% — не может такого быть» — и это правда: приёмы в
+   * нём идут каждый день. Ноль означает не отсутствие приёмов, а отсутствие
+   * привязки: кабинет визита берётся из ресурса YCLIENTS (их клиника не
+   * ведёт), из кабинета специалиста или из кабинета услуги. Нет ни одного —
+   * визит остаётся без кабинета и в загрузку не попадает.
+   *
+   * Печатаем, у каких услуг и специалистов привязки нет: по этому списку
+   * видно, что именно заполнить.
+   */
+  const [rooms, byRoom, staffNoRoom, servicesNoRoom] = await Promise.all([
+    prisma.room.findMany({
+      where: { companyId: company.id, isActive: true },
+      orderBy: { sortOrder: "asc" },
+      select: { id: true, name: true },
+    }),
+    prisma.appointment.groupBy({
+      by: ["roomId"],
+      where: { companyId: company.id, deletedAt: null },
+      _count: { _all: true },
+    }),
+    prisma.staff.findMany({
+      where: { companyId: company.id, isActive: true, deletedAt: null, defaultRoomId: null },
+      select: { name: true, specialty: true },
+    }),
+    prisma.service.findMany({
+      where: { companyId: company.id, rooms: { none: {} } },
+      select: { title: true },
+      take: 30,
+    }),
+  ]);
+  const countByRoom = new Map(byRoom.map((r) => [r.roomId, r._count._all]));
+
   return NextResponse.json({
     ok: true,
     at: now.toISOString(),
     company: company.name,
     расписание: schedulerState(),
+    визитыПоКабинетам: [
+      ...rooms.map((r) => ({ кабинет: r.name, визитов: countByRoom.get(r.id) ?? 0 })),
+      { кабинет: "(без кабинета)", визитов: countByRoom.get(null) ?? 0 },
+    ],
+    безПривязкиККабинету: {
+      специалисты: staffNoRoom.map((s) => `${s.name}${s.specialty ? ` (${s.specialty})` : ""}`),
+      услуги: servicesNoRoom.map((s) => s.title),
+    },
     синхронизация: Object.fromEntries(
       cursors.map((c) => [c.entity, c.lastSyncedAt?.toISOString() ?? null]),
     ),
