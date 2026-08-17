@@ -48,6 +48,12 @@ export const ENDPOINTS = {
    * пациента.
    */
   getChatHistory: (id: string, token: string) => `/waInstance${id}/getChatHistory/${token}`,
+  /**
+   * Справка о собеседнике. Единственный способ узнать номер у чата со скрытым
+   * идентификатором («…@lid»): в самом адресе телефона больше нет, а здесь он
+   * приходит полем phoneNumber. Проверено зондом на боевом аккаунте клиники.
+   */
+  getContactInfo: (id: string, token: string) => `/waInstance${id}/getContactInfo/${token}`,
 } as const;
 
 /**

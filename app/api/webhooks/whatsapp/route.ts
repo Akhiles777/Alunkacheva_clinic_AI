@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { isWhatsappEnabled, WHATSAPP_PROVIDER } from "@/lib/integrations/whatsapp/config";
 import { parseWebhook, verifyWebhookSecret } from "@/lib/integrations/whatsapp/webhook";
-import { sendText } from "@/lib/integrations/whatsapp/green-api";
+import { fetchContactPhone, sendText } from "@/lib/integrations/whatsapp/green-api";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { messageBody } from "@/lib/agent/attachments";
 import { runSerial } from "@/lib/server/background";
@@ -184,33 +184,6 @@ export async function POST(req: Request) {
    * Задачи одного чата идут по очереди: два сообщения подряд иначе
    * обрабатывались одновременно и оба здоровались с одним и тем же человеком.
    */
-  /**
-   * Диалог без номера — это диалог без карточки пациента.
-   *
-   * WhatsApp перешёл на скрытые идентификаторы («…@lid»), и в таком адресе
-   * номера нет. Пишем предупреждение с окончанием адреса — без цифр номера,
-   * это персональные данные (§7). По журналу видно, какая доля переписки
-   * приходит без телефона и есть ли смысл спрашивать его у пациента.
-   */
-  if (!event.phoneE164) {
-    const at = event.chatId.indexOf("@");
-    console.warn(`[whatsapp] номер не определён, адрес вида ${at === -1 ? "без @" : event.chatId.slice(at)}`);
-  } else {
-    /**
-     * Номер известен — запоминаем его на диалоге.
-     *
-     * Адрес чата больше не годится как источник: WhatsApp перешёл на скрытые
-     * идентификаторы, и номера в нём нет. Если провайдер прислал настоящий
-     * адрес отдельным полем, это единственный момент, когда мы его видим.
-     */
-    await prisma.conversation
-      .updateMany({
-        where: { companyId, channel: "WHATSAPP", externalUserId: event.chatId, phoneE164: null },
-        data: { phoneE164: event.phoneE164 },
-      })
-      .catch(() => {});
-  }
-
   runSerial(`whatsapp:${event.chatId}`, () => handleIncoming(companyId, event));
   return NextResponse.json({ ok: true, queued: true });
 }
@@ -254,9 +227,7 @@ async function handleIncoming(
       text: event.text,
       externalId: event.externalId,
       attachments: event.attachments,
-      // В WhatsApp адрес чата и есть телефон — карточка пациента
-      // привязывается сразу, спрашивать номер незачем.
-      knownPhone: event.phoneE164,
+      knownPhone: await resolvePhone(companyId, event),
     },
   );
   if (!reply?.text) return;
@@ -302,6 +273,45 @@ async function handleIncoming(
       .update({ where: { id: own.id }, data: { externalId: sent.externalId } })
       .catch(() => {});
   }
+}
+
+/**
+ * Телефон собеседника.
+ *
+ * Раньше он брался прямо из адреса чата: в WhatsApp адрес и был номером.
+ * WhatsApp перешёл на скрытые идентификаторы («…@lid»), номера в адресе нет, и
+ * без него не находится карточка пациента — на боевой базе без карточек
+ * оказалась почти вся переписка.
+ *
+ * Порядок: адрес чата (для старых чатов он ещё работает), сохранённый номер
+ * диалога, справка провайдера. Последнее — сетевой запрос, поэтому делаем его
+ * один раз на диалог и запоминаем результат.
+ */
+async function resolvePhone(
+  companyId: string,
+  event: Extract<ReturnType<typeof parseWebhook>, { kind: "message" }>,
+): Promise<string | null> {
+  if (event.phoneE164) return event.phoneE164;
+
+  const conv = await prisma.conversation.findFirst({
+    where: { companyId, channel: "WHATSAPP", externalUserId: event.chatId },
+    select: { id: true, phoneE164: true },
+  });
+  if (conv?.phoneE164) return conv.phoneE164;
+
+  const phone = await fetchContactPhone(companyId, event.chatId).catch(() => null);
+  if (!phone) {
+    const at = event.chatId.indexOf("@");
+    console.warn(`[whatsapp] номер не определён, адрес вида ${at === -1 ? "без @" : event.chatId.slice(at)}`);
+    return null;
+  }
+
+  if (conv) {
+    await prisma.conversation
+      .update({ where: { id: conv.id }, data: { phoneE164: phone } })
+      .catch(() => {});
+  }
+  return phone;
 }
 
 /** Клиника, которой адресовано сообщение WhatsApp. */

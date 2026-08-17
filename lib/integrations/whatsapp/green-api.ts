@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { chatIdFromPhone } from "./chat-id";
+import { normalizePhone } from "@/lib/phone";
 import {
   ENDPOINTS,
   GREEN_API_BASE,
@@ -269,4 +270,33 @@ export function parseHistory(rows: unknown[]): HistoryMessage[] {
   }
   // От старых к новым: в таком порядке они лягут в переписку.
   return out.sort((a, b) => a.at.getTime() - b.at.getTime());
+}
+
+
+/**
+ * Номер собеседника по адресу чата.
+ *
+ * WhatsApp перешёл на скрытые идентификаторы: адрес вида «…@lid» телефона не
+ * содержит, и без этого запроса вся привязка пациентов по номеру перестаёт
+ * работать — на боевой базе без карточки оказалась почти вся переписка.
+ *
+ * Ответ провайдера проверен зондом: номер приходит полем phoneNumber, без
+ * плюса. Нормализуем его сами (§4) — телефон в базе живёт только в E.164.
+ */
+export async function fetchContactPhone(companyId: string, chatId: string): Promise<string | null> {
+  if (!isWhatsappEnabled()) return null;
+  const creds = await loadCredentials(companyId);
+  if (!creds) return null;
+
+  const res = await enqueue(() =>
+    call<{ phoneNumber?: string | number }>(
+      ENDPOINTS.getContactInfo(creds.idInstance, creds.apiToken),
+      { chatId },
+    ),
+  );
+  if (!res.ok) return null;
+
+  const raw = res.data?.phoneNumber;
+  if (raw === undefined || raw === null || raw === "") return null;
+  return normalizePhone(String(raw));
 }
