@@ -183,7 +183,7 @@ export async function getDashboardMetricsDb(
   const now = new Date();
   const { from, to } = periodBounds(period, now);
 
-  const [appts, inquiries, newPatients, rooms, sources, closed, schedule, bookedInPeriod] =
+  const [appts, inquiries, newPatients, rooms, sources, closed, schedule, roomLoads, bookedInPeriod] =
     await Promise.all([
     prisma.appointment.findMany({
       where: { companyId, deletedAt: null, startAt: { gte: from, lt: to } },
@@ -241,6 +241,7 @@ export async function getDashboardMetricsDb(
     }),
     closedDatesBetween(companyId, from, to),
     loadSchedule(companyId),
+    roomOccupancyBetween(companyId, from, to),
     prisma.appointment.count({
       where: {
         companyId,
@@ -252,6 +253,7 @@ export async function getDashboardMetricsDb(
   ]);
 
   const booked = appts.filter((a) => a.status !== "CANCELLED");
+  const roomOccupancy = new Map(roomLoads.map((r) => [r.roomId, r.rate]));
   const arrived = appts.filter((a) => a.status === "ARRIVED");
   const revenue = arrived.reduce((sum, a) => sum + Number(a.revenue), 0);
   /**
@@ -358,7 +360,7 @@ export async function getDashboardMetricsDb(
       returned: arrived.length - first - courseSession,
       total: arrived.length,
     },
-    rooms: buildRoomDays(rooms, booked, from, to, closed, schedule),
+    rooms: buildRoomDays(rooms, booked, from, to, closed, schedule, roomOccupancy),
     sources: withSourceShares(sourceStats),
     staff: withStaffShares(staffStats).sort((a, b) => b.revenue - a.revenue),
     updatedAt: now.toISOString(),
@@ -400,6 +402,16 @@ function buildRoomDays(
   to: Date,
   closed: Set<string>,
   schedule: Schedule,
+  /**
+   * Загрузка за период — из общей функции, а не своя.
+   *
+   * Здесь она считалась по всем неотменённым визитам, включая неявки, а
+   * roomOccupancyBetween неявки исключает: пациент не пришёл, кабинет был
+   * свободен. На одном и том же периоде выходило 23% против 21%. Разница
+   * небольшая, но это ровно тот случай, когда две функции считают одно и то же
+   * и расходятся — а владелец видит две цифры и не знает, какой верить.
+   */
+  occupancy: Map<string, number>,
 ): RoomDay[] {
   const days = appts.map((a) => isoDate(a.startAt));
   const shownDate = days.length > 0 ? days[days.length - 1] : isoDate(to);
@@ -429,7 +441,6 @@ function buildRoomDays(
     });
 
     const busy = busyMinutes(intervals, shownDay);
-    const periodBusy = ofRoom.reduce((sum, a) => sum + a.durationMin, 0);
 
     return {
       roomId: room.id,
@@ -442,7 +453,7 @@ function buildRoomDays(
       busyMinutes: busy,
       workingMinutes: shownMinutes,
       occupancy: occupancyRate(busy, shownMinutes),
-      periodOccupancy: occupancyRate(periodBusy, periodMinutes),
+      periodOccupancy: occupancy.get(room.id) ?? 0,
     };
   });
 }
