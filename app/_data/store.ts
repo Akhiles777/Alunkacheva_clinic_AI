@@ -460,6 +460,27 @@ export function searchPatients(query: string, patients: Patient[] = db.patients)
 
 // ─────────────────────────────────────────────── мутаторы
 
+/**
+ * Что делать, когда запись в базу не удалась.
+ *
+ * Все изменения здесь идут «сквозь»: сначала меняется экран, затем база. Пока
+ * неудачу гасил пустой `catch`, экран оставался с изменением, которого в базе
+ * нет, — отметка «пришёл» не доезжала, а выручка считалась по базе. Теперь
+ * такая неудача видна человеку, а не только в консоли браузера.
+ *
+ * В сообщение попадает только действие и причина: ни имён, ни телефонов, ни
+ * текстов сообщений (§7).
+ */
+export function writeFailed(action: string): (e: unknown) => void {
+  return (e: unknown) => {
+    const reason = (e as Error)?.message ?? String(e);
+    console.error(`[запись] ${action}: ${reason}`);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("clinic:write-failed", { detail: { action, reason } }));
+    }
+  };
+}
+
 function replacePatient(id: string, fn: (p: Patient) => Patient) {
   commit({ ...db, patients: db.patients.map((p) => (p.id === id ? fn(p) : p)) });
 }
@@ -488,14 +509,16 @@ export function addPatient(input: { name: string; phone: string; source?: string
     source: input.source ?? null,
     phoneId: ph?.id,
     e164: e164 ?? null,
-  }).catch(() => {});
+  }).catch(writeFailed("не удалось завести карточку пациента"));
   return created;
 }
 
 export function updatePatient(id: string, patch: Partial<Pick<Patient, "name" | "bornYear" | "source">>) {
   replacePatient(id, (p) => ({ ...p, ...patch }));
   if (patch.name !== undefined || patch.source !== undefined) {
-    void updatePatientDb(id, { name: patch.name, source: patch.source }).catch(() => {});
+    void updatePatientDb(id, { name: patch.name, source: patch.source }).catch(
+      writeFailed("не удалось сохранить карточку пациента"),
+    );
   }
 }
 
@@ -508,7 +531,7 @@ export function removePatient(id: string) {
       .map((p) => ({ ...p, relations: p.relations.filter((r) => r.relatedPatientId !== id) })),
     calls: db.calls.map((c) => (c.patientId === id ? { ...c, patientId: null } : c)),
   });
-  void softDeletePatient(id).catch(() => {});
+  void softDeletePatient(id).catch(writeFailed("не удалось удалить карточку пациента"));
 }
 
 /** Добавить номер. Возвращает false, если номер не распознан. */
@@ -522,7 +545,9 @@ export function addPhone(patientId: string, raw: string): boolean {
   replacePatient(patientId, (cur) =>
     cur.phones.some((x) => x.e164 === e164) ? cur : { ...cur, phones: [...cur.phones, ph] },
   );
-  void addPhoneDb({ id: ph.id, patientId, e164, isPrimary: isFirst }).catch(() => {});
+  void addPhoneDb({ id: ph.id, patientId, e164, isPrimary: isFirst }).catch(
+    writeFailed("не удалось добавить номер"),
+  );
   return true;
 }
 
@@ -537,7 +562,7 @@ export function removePhone(patientId: string, phoneId: string) {
     if (r.length > 0 && !r.some((ph) => ph.isPrimary)) r[0] = { ...r[0], isPrimary: true };
     return { ...cur, phones: r };
   });
-  void removePhoneDb(phoneId, newPrimaryId).catch(() => {});
+  void removePhoneDb(phoneId, newPrimaryId).catch(writeFailed("не удалось убрать номер"));
 }
 
 export function setPrimaryPhone(patientId: string, phoneId: string) {
@@ -545,7 +570,7 @@ export function setPrimaryPhone(patientId: string, phoneId: string) {
     ...p,
     phones: p.phones.map((ph) => ({ ...ph, isPrimary: ph.id === phoneId })),
   }));
-  void setPrimaryPhoneDb(patientId, phoneId).catch(() => {});
+  void setPrimaryPhoneDb(patientId, phoneId).catch(writeFailed("не удалось сменить основной номер"));
 }
 
 export function toggleWhatsapp(patientId: string, phoneId: string) {
@@ -555,13 +580,15 @@ export function toggleWhatsapp(patientId: string, phoneId: string) {
     ...cur,
     phones: cur.phones.map((ph) => (ph.id === phoneId ? { ...ph, whatsapp: !ph.whatsapp } : ph)),
   }));
-  void toggleWhatsappDb(phoneId, next).catch(() => {});
+  void toggleWhatsappDb(phoneId, next).catch(writeFailed("не удалось отметить WhatsApp у номера"));
 }
 
 export function addNote(patientId: string, kind: NoteKind, text: string) {
   const note: Note = { id: uid("n"), kind, text: text.trim(), createdAt: "сегодня", resolved: false };
   replacePatient(patientId, (p) => ({ ...p, notes: [...p.notes, note] }));
-  void addNoteDb({ id: note.id, patientId, kind, text: note.text }).catch(() => {});
+  void addNoteDb({ id: note.id, patientId, kind, text: note.text }).catch(
+    writeFailed("не удалось сохранить пометку"),
+  );
 }
 
 export function resolveNote(patientId: string, noteId: string) {
@@ -569,7 +596,7 @@ export function resolveNote(patientId: string, noteId: string) {
     ...p,
     notes: p.notes.map((n) => (n.id === noteId ? { ...n, resolved: true } : n)),
   }));
-  void resolveNoteDb(noteId).catch(() => {});
+  void resolveNoteDb(noteId).catch(writeFailed("не удалось снять пометку"));
 }
 
 export function addRelation(patientId: string, relatedPatientId: string, kind: RelationKind) {
@@ -582,7 +609,9 @@ export function addRelation(patientId: string, relatedPatientId: string, kind: R
       ? cur
       : { ...cur, relations: [...cur.relations, rel] },
   );
-  void addRelationDb({ id: rel.id, patientId, relatedPatientId, kind }).catch(() => {});
+  void addRelationDb({ id: rel.id, patientId, relatedPatientId, kind }).catch(
+    writeFailed("не удалось связать карточки"),
+  );
 }
 
 export function removeRelation(patientId: string, relationId: string) {
@@ -590,7 +619,7 @@ export function removeRelation(patientId: string, relationId: string) {
     ...p,
     relations: p.relations.filter((r) => r.id !== relationId),
   }));
-  void removeRelationDb(relationId).catch(() => {});
+  void removeRelationDb(relationId).catch(writeFailed("не удалось убрать связь карточек"));
 }
 
 /**
@@ -683,7 +712,7 @@ export function sendMessage(dialogId: string, text: string): Promise<{ ok: boole
 /** Вернуть диалог агенту: снять паузу и закрыть эскалацию. */
 export function returnToBot(dialogId: string) {
   replaceDialog(dialogId, (d) => ({ ...d, status: "bot", escalationReason: undefined }));
-  void returnToBotDb(dialogId).catch(() => {});
+  void returnToBotDb(dialogId).catch(writeFailed("не удалось вернуть диалог агенту"));
 }
 
 /**
@@ -696,7 +725,7 @@ export function returnToBot(dialogId: string) {
  */
 export function markDialogRead(dialogId: string) {
   replaceDialog(dialogId, (d) => ({ ...d, unread: false }));
-  void markDialogReadDb(dialogId).catch(() => {});
+  void markDialogReadDb(dialogId).catch(writeFailed("не удалось отметить диалог прочитанным"));
 }
 
 /** Начать диалог. Если окно закрыто, первым сообщением идёт только шаблон. */
@@ -730,7 +759,7 @@ export function startDialog(input: {
     channel: input.channel,
     patientId: input.patientId,
     message: input.message,
-  }).catch(() => {});
+  }).catch(writeFailed("не удалось начать диалог"));
   return id;
 }
 
@@ -823,20 +852,20 @@ function replaceAppt(id: string, fn: (a: Appt) => Appt) {
 
 export function markArrived(id: string) {
   replaceAppt(id, (a) => ({ ...a, status: "arrived" }));
-  void setApptStatusDb(id, "arrived").catch(() => {});
+  void setApptStatusDb(id, "arrived").catch(writeFailed("отметка «пришёл» не сохранена"));
 }
 /** Заметка по визиту после приёма. Её разбирает ИИ-аналитик владельца. */
 export function setApptNote(id: string, note: string) {
   replaceAppt(id, (a) => ({ ...a, note: note.trim() || null }));
-  void setApptNoteDb(id, note).catch(() => {});
+  void setApptNoteDb(id, note).catch(writeFailed("заметка по визиту не сохранена"));
 }
 export function markNoShow(id: string) {
   replaceAppt(id, (a) => ({ ...a, status: "no_show" }));
-  void setApptStatusDb(id, "no_show").catch(() => {});
+  void setApptStatusDb(id, "no_show").catch(writeFailed("отметка «не пришёл» не сохранена"));
 }
 export function rescheduleAppt(id: string, startMinute: number) {
   replaceAppt(id, (a) => ({ ...a, startMinute }));
-  void rescheduleApptDb(id, startMinute).catch(() => {});
+  void rescheduleApptDb(id, startMinute).catch(writeFailed("перенос визита не сохранён"));
 }
 /**
  * Создать запись.

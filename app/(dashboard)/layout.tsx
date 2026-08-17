@@ -6,6 +6,7 @@ import { CommandPalette } from "./_components/command-palette";
 import { BookingPanel } from "./_components/booking-panel";
 import { CallForm } from "./_components/call-form";
 import { StoreHydrator } from "./_components/store-hydrator";
+import { WriteAlert } from "./_components/write-alert";
 import { PushGate } from "./_components/push-gate";
 import { StaleBuildGuard } from "./_components/stale-build-guard";
 import { AssistantChat } from "./_components/assistant-chat";
@@ -37,6 +38,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <CallForm />
       <AssistantChat />
       <StoreHydrator />
+      <WriteAlert />
       <PushGate />
       <StaleBuildGuard />
     </div>
