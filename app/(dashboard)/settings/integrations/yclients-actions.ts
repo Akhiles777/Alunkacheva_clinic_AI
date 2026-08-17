@@ -8,6 +8,7 @@ import { isYclientsEnabled } from "@/lib/integrations/yclients/config";
 import { syncAll } from "@/lib/integrations/yclients/sync";
 import { reconcile, type ReconcileReport } from "@/lib/integrations/yclients/reconcile";
 import { pushPendingAppointments } from "@/lib/integrations/yclients/write-back";
+import { schedulerState } from "@/lib/server/scheduler";
 
 /**
  * Управление синхронизацией YCLIENTS из настроек.
@@ -36,6 +37,24 @@ export interface YclientsState {
   notPushed: number;
   /** Визиты, которые YCLIENTS не принял: слот занят. */
   conflicts: number;
+  /**
+   * Расписание выгрузки: включено ли, когда прошёл последний круг и чем
+   * кончился.
+   *
+   * Без этого вопрос «данные обновились или нет» проверялся только на сервере.
+   * Отметки о последней выгрузке по сущностям рядом ничего не говорят о том,
+   * идут ли круги дальше: они замрут на прошлом значении и будут выглядеть
+   * так же, как исправная работа.
+   */
+  schedule: {
+    on: boolean;
+    intervalMin: number;
+    lastAt: string | null;
+    lastOk: boolean | null;
+    lastError: string | null;
+    lastMs: number | null;
+    runningNow: boolean;
+  };
 }
 
 const ENTITY_LABEL: Record<string, string> = {
@@ -95,6 +114,9 @@ export async function getYclientsState(): Promise<YclientsState> {
     prisma.appointment.count({ where: { companyId, deletedAt: null, syncState: "CONFLICT" } }),
   ]);
 
+  const sched = schedulerState();
+  const last = sched.последниеПрогоны[sched.последниеПрогоны.length - 1] ?? null;
+
   const byEntity = new Map(cursors.map((c) => [c.entity, c]));
   return {
     enabled: isYclientsEnabled(),
@@ -112,6 +134,15 @@ export async function getYclientsState(): Promise<YclientsState> {
     }),
     notPushed,
     conflicts,
+    schedule: {
+      on: sched.включён,
+      intervalMin: sched.интервалМинут,
+      lastAt: last ? when.format(new Date(last.startedAt)) : null,
+      lastOk: last ? last.ok : null,
+      lastError: last?.error ?? null,
+      lastMs: last?.ms ?? null,
+      runningNow: sched.идётСейчас,
+    },
   };
 }
 

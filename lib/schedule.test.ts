@@ -152,3 +152,64 @@ describe("buildCabinets с настоящими кабинетами", () => {
     expect(buildCabinets([], 10 * 60, undefined, [])).toEqual([]);
   });
 });
+
+/**
+ * Кто принимает в кабинете. Карточка показывала одного — того, у кого сегодня
+ * больше приёмов, — и вторая медсестра процедурного просто исчезала с экрана.
+ */
+describe("кто принимает в кабинете", () => {
+  const rooms = [
+    {
+      id: "room-1",
+      name: "Кабинет 1 — процедурный",
+      direction: "процедурный",
+      staff: ["Сафия Гаджиевна", "Нурият"],
+    },
+  ];
+
+  it("показывает всех, кто сегодня принимает, а не одного", () => {
+    const appts = [
+      appt({ id: "1", doctor: "Сафия Гаджиевна", startMinute: 540, durationMin: 60 }),
+      appt({ id: "2", doctor: "Сафия Гаджиевна", startMinute: 600, durationMin: 60 }),
+      appt({ id: "3", doctor: "Нурият", startMinute: 660, durationMin: 60 }),
+    ];
+    const [cab] = buildCabinets(appts, 9 * 60, undefined, rooms);
+    expect(cab.doctor).toBe("Сафия Гаджиевна, Нурият");
+  });
+
+  it("приёмов сегодня нет — показывает закреплённых за кабинетом", () => {
+    const [cab] = buildCabinets([], 9 * 60, undefined, rooms);
+    expect(cab.doctor).toBe("Сафия Гаджиевна, Нурият");
+  });
+
+  it("закреплённый без приёмов не пропадает", () => {
+    const appts = [appt({ id: "1", doctor: "Нурият", startMinute: 540, durationMin: 60 })];
+    const [cab] = buildCabinets(appts, 9 * 60, undefined, rooms);
+    // Сафия сегодня не принимает, но кабинет и её тоже.
+    expect(cab.doctor).toBe("Нурият, Сафия Гаджиевна");
+  });
+
+  it("ни приёмов, ни привязок — прочерк, а не выдуманное имя", () => {
+    const [cab] = buildCabinets([], 9 * 60, undefined, [
+      { id: "room-1", name: "Кабинет 1", direction: "" },
+    ]);
+    expect(cab.doctor).toBe("—");
+  });
+});
+
+/**
+ * Свободные окна перебирали зашитый список кабинетов, а карточки выше —
+ * настоящий. На одном экране получалось два разных набора кабинетов.
+ */
+describe("свободные окна берут кабинеты клиники", () => {
+  it("названия окон совпадают с карточками", () => {
+    const rooms = [{ id: "room-1", name: "Кабинет 1 — процедурный", direction: "процедурный" }];
+    const out = buildFreeWindows([], 9 * 60, { startMinute: 9 * 60, endMinute: 18 * 60 }, rooms);
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.every((w) => w.cabName === "Кабинет 1 — процедурный")).toBe(true);
+  });
+
+  it("кабинетов нет — окон нет", () => {
+    expect(buildFreeWindows([], 9 * 60, undefined, [])).toEqual([]);
+  });
+});

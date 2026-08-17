@@ -14,6 +14,8 @@ export interface RoomDef {
   id: string;
   name: string; // «Кабинет 1»
   direction: string; // «Остеопатия»
+  /** Кто закреплён за кабинетом. Пусто — привязок в базе нет. */
+  staff?: string[];
 }
 
 export const ROOMS: RoomDef[] = [
@@ -98,18 +100,30 @@ function shortService(title: string): string {
   return title.split(",")[0];
 }
 
-function topDoctor(appts: Appt[]): string {
-  const counts = new Map<string, number>();
-  for (const a of appts) counts.set(a.doctor, (counts.get(a.doctor) ?? 0) + 1);
-  let best = "";
-  let max = 0;
-  for (const [d, n] of counts) {
-    if (n > max) {
-      best = d;
-      max = n;
+/**
+ * Кто принимает в кабинете.
+ *
+ * Здесь стояло «тот, у кого сегодня больше приёмов». В процедурном работают
+ * две медсестры, и вторая с карточки просто исчезала — заказчик заметил это
+ * раньше нас. Показываем всех, кто сегодня в кабинете принимает, в порядке
+ * начала работы; если приёмов сегодня нет — тех, кто за кабинетом закреплён.
+ */
+export function roomDoctors(appts: Appt[], attached: string[] = []): string {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const a of [...appts].sort((x, y) => x.startMinute - y.startMinute)) {
+    if (!a.doctor || seen.has(a.doctor)) continue;
+    seen.add(a.doctor);
+    names.push(a.doctor);
+  }
+  // Закреплённые, но сегодня без приёмов, идут следом: кабинет всё равно их.
+  for (const name of attached) {
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      names.push(name);
     }
   }
-  return best;
+  return names.join(", ");
 }
 
 const MIN_CABINET_GAP = 15;
@@ -159,7 +173,7 @@ export function buildCabinets(
       id: room.id,
       name: room.name,
       direction: room.direction,
-      doctor: topDoctor(occ) || "—",
+      doctor: roomDoctors(occ, room.staff) || "—",
       current: current
         ? {
             proc: shortService(current.service),
@@ -183,10 +197,22 @@ export function buildCabinets(
   return withStart.map((w) => w.cabinet);
 }
 
-/** Список свободных окон по всем кабинетам до конца дня. */
-export function buildFreeWindows(appts: Appt[], now: number, day: Interval = CLINIC_DAY): FreeWindowRow[] {
+/**
+ * Список свободных окон по всем кабинетам до конца дня.
+ *
+ * Кабинеты приходят снаружи — те же, что в карточках выше. Здесь перебирался
+ * зашитый список, и на одном экране получалось два разных набора кабинетов:
+ * карточки с настоящими названиями клиники и список окон с выдуманными
+ * «Кабинет 1 · Процедурный · IV».
+ */
+export function buildFreeWindows(
+  appts: Appt[],
+  now: number,
+  day: Interval = CLINIC_DAY,
+  rooms: RoomDef[] = ROOMS,
+): FreeWindowRow[] {
   const rows: FreeWindowRow[] = [];
-  for (const room of ROOMS) {
+  for (const room of rooms) {
     const gaps = freeGaps(roomIntervals(appts, room.id), day, 1).filter(
       (g) => g.endMinute > now && g.endMinute - Math.max(g.startMinute, now) >= MIN_LIST_WINDOW,
     );

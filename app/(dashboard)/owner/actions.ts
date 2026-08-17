@@ -45,9 +45,6 @@ export interface OwnerReport {
   hypotheses: string[];
 }
 
-const ROOM_KEY = (name: string): string =>
-  name.startsWith("Кабинет 1") ? "room-1" : name.startsWith("Кабинет 2") ? "room-2" : "room-3";
-
 const STATUS_MAP: Record<string, Appt["status"]> = {
   ARRIVED: "arrived",
   NO_SHOW: "no_show",
@@ -103,14 +100,20 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
     },
     include: {
       staff: { select: { name: true } },
-      room: { select: { name: true } },
+      room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true } },
       patient: { select: { name: true } },
     },
   });
   return rows.map((r) => ({
     id: r.id,
-    roomId: r.room ? ROOM_KEY(r.room.name) : "room-1",
+    /**
+     * Кабинет — по порядковому номеру, как во всём остальном интерфейсе, и
+     * без подстановки первого. Здесь ключ выводился из названия («Кабинет 1…»),
+     * а визит без кабинета приписывался первому: любой кабинет с другим
+     * названием уезжал в третий, а тысяча визитов без привязки — в первый.
+     */
+    roomId: r.room ? `room-${r.room.sortOrder}` : null,
     roomName: r.room?.name ?? "",
     doctor: r.staff.name,
     service: r.primaryService?.title ?? "",
@@ -125,9 +128,16 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
   }));
 }
 
+/**
+ * Пациенты за тот же период, что и весь отчёт.
+ *
+ * Здесь считались новые «с полуночи», причём по часам сервера, а не клиники.
+ * В отчёте, подписанном «за последние 30 дней», стояло дневное число — и оно
+ * же уходило ИИ-аналитику владельца. Один экран должен отвечать про один
+ * период.
+ */
 async function patientCounts(companyId: string) {
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  const { start } = ownerPeriod();
   const [total, primary, noConsent] = await Promise.all([
     prisma.patient.count({ where: { companyId, deletedAt: null } }),
     prisma.patient.count({
@@ -137,7 +147,7 @@ async function patientCounts(companyId: string) {
         // Карточки, перенесённые из YCLIENTS без визитов, новыми не считаются:
         // дату первого обращения у них взять было неоткуда (§8).
         firstSeenExact: true,
-        firstSeenAt: { gte: startOfToday },
+        firstSeenAt: { gte: start },
       },
     }),
     prisma.patient.count({
@@ -298,23 +308,37 @@ export async function getOwnerAiContext(): Promise<string> {
   const [report, appts] = await Promise.all([getOwnerReport(), loadAppts(session.companyId)]);
   const lines: string[] = [];
   lines.push("# Сводка клиники");
+  /**
+   * Период — в каждом заголовке.
+   *
+   * Числа здесь месячные, а подписи говорили «сегодня»: аналитик на вопрос
+   * «сколько было приёмов сегодня» уверенно называл цифру за тридцать дней.
+   * Ошибиться так владелец мог только один раз — и в разговоре с клиентом.
+   */
+  const { start: pStart, end: pEnd } = ownerPeriod();
+  const dayLabel = (d: Date) =>
+    new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long" }).format(d);
   lines.push(
-    `Пациентов: ${report.patients.total} (первичных сегодня: ${report.patients.primary}, ` +
+    `Период отчёта: ${dayLabel(pStart)} — ${dayLabel(new Date(pEnd.getTime() - 1))}. ` +
+      "Все числа ниже — за этот период, а не за сегодня.",
+  );
+  lines.push(
+    `Пациентов в базе всего: ${report.patients.total} (новых за период: ${report.patients.primary}, ` +
       `без согласия: ${report.patients.noConsent}).`,
   );
   lines.push(
-    `Приёмов сегодня: ${report.appts} (пришли ${report.arrived}, первичных ${report.firstVisits}, ` +
+    `Приёмов за период: ${report.appts} (пришли ${report.arrived}, первичных ${report.firstVisits}, ` +
       `неявки ${report.noShowRatePct}%). Выручка: ${report.revenue} ₽, средний чек ${report.avgCheck} ₽. ` +
       `Средняя загрузка кабинетов: ${report.avgLoadPct}%.`,
   );
   lines.push(`Воронка: диалогов ${report.funnel.dialogs}, звонков ${report.funnel.calls}.`);
   lines.push("");
-  lines.push("# Выручка по услугам");
+  lines.push("# Выручка по услугам за период");
   // Верхние позиции: полный перечень раздувает запрос, а решения принимают
   // по значимым строкам.
   for (const s of report.services.slice(0, 8)) lines.push(`- ${s.service}: ${s.count} приёмов, ${s.revenue} ₽`);
   lines.push("");
-  lines.push("# Сотрудники (сегодня)");
+  lines.push("# Сотрудники за период");
   for (const s of report.staff.slice(0, 10)) {
     lines.push(
       `- ${s.name}: приёмов ${s.appts} (пришли ${s.arrived}, неявок ${s.noShow}); ` +
@@ -322,7 +346,7 @@ export async function getOwnerAiContext(): Promise<string> {
     );
   }
   lines.push("");
-  lines.push("# Загрузка кабинетов");
+  lines.push("# Загрузка кабинетов за период");
   for (const r of report.rooms) lines.push(`- ${r.name}: ${r.ratePct}%.`);
   const notes = appts.filter((a) => a.note && a.note.trim());
   if (notes.length) {

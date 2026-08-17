@@ -7,10 +7,9 @@ import { AttentionList, InquiryList } from "./today-lists";
 import { TodayAlerts } from "./today-alerts";
 import { SearchTrigger } from "./command-palette";
 import { BookingButton } from "./booking-panel";
-import { getToday, type AttentionItem } from "@/app/_data/today";
+import type { AttentionItem } from "@/app/_data/today";
 import { allCourses, useDb } from "@/app/_data/store";
 import { CHANNEL_LABEL } from "@/app/_data/inbox";
-import { ROOM_SOURCE_LABEL } from "@/lib/rooms";
 import { formatMoney, formatNumber } from "@/lib/format";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { buildCabinets, buildFreeWindows, dateLabelInTz, nowMinuteInTz } from "@/lib/schedule";
@@ -27,7 +26,6 @@ import { getClinicDayToday, type ClinicDayView } from "../schedule/actions";
  */
 export function TodayClient() {
   const db = useDb();
-  const data = getToday();
 
   // «Сейчас» зависит от текущего времени, поэтому вычисляем ПОСЛЕ монтирования —
   // иначе SSR и клиент рендерят разную минуту и рушат гидрацию. Начальное
@@ -56,7 +54,9 @@ export function TodayClient() {
     : undefined;
   // Кабинеты — из базы клиники: они приходят вместе с рабочим днём.
   const cabinets = buildCabinets(db.appointments, nowMinute, day, clinicDay?.rooms);
-  const freeWindows = clinicDay?.closed ? [] : buildFreeWindows(db.appointments, nowMinute, day);
+  const freeWindows = clinicDay?.closed
+    ? []
+    : buildFreeWindows(db.appointments, nowMinute, day, clinicDay?.rooms);
 
   const scheduled = db.appointments.length;
   const firstVisits = db.appointments.filter((a) => a.isFirstVisit).length;
@@ -204,8 +204,17 @@ export function TodayClient() {
           </section>
         </div>
 
+        {/*
+          Здесь стояла строка «кабинет визита берётся через маппинг
+          «специалист → кабинет»» — по флагу окружения, которого в браузере
+          нет вовсе, поэтому она всегда называла один и тот же источник.
+          Выгрузка ищет кабинет иначе: ресурс YCLIENTS, потом кабинет
+          специалиста, потом кабинет услуги. Подпись под данными не должна
+          говорить о них неправду.
+        */}
         <p className="text-text-subtle mt-8 text-2xs">
-          Проекция YCLIENTS · кабинет визита берётся через {ROOM_SOURCE_LABEL[data.roomSource]}
+          Проекция YCLIENTS · кабинет визита — из ресурса записи, кабинета специалиста или кабинета
+          услуги; если ничего из этого не задано, визит остаётся без кабинета
         </p>
       </div>
     </div>

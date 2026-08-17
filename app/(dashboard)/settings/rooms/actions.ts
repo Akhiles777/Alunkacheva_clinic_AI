@@ -88,15 +88,31 @@ export async function getRooms(): Promise<RoomsPayload> {
   const session = await getSession();
   const [rooms, staffOptions] = await Promise.all([
     readRooms(session.companyId),
+    /**
+     * Выключенных показываем тоже, если они за кабинетом закреплены.
+     *
+     * Прежде список был только из активных, а привязки читались из всех: у
+     * выключенного в YCLIENTS сотрудника кабинет в базе оставался, но на
+     * экране кабинет выглядел пустым — и первое же сохранение эту привязку
+     * стирало. Потерять её молча нельзя, поэтому такой сотрудник виден с
+     * пометкой.
+     */
     prisma.staff.findMany({
-      where: { companyId: session.companyId, deletedAt: null, isActive: true },
-      select: { id: true, name: true },
-      orderBy: { sortOrder: "asc" },
+      where: {
+        companyId: session.companyId,
+        deletedAt: null,
+        OR: [{ isActive: true }, { defaultRoomId: { not: null } }],
+      },
+      select: { id: true, name: true, isActive: true },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
   ]);
   return {
     rooms,
-    staffOptions,
+    staffOptions: staffOptions.map((s) => ({
+      id: s.id,
+      name: s.isActive ? s.name : `${s.name} · выключен`,
+    })),
     nameSuggestions: uniq([...BASE_NAME_SUGGESTIONS, ...rooms.map((r) => r.name)]),
     directionSuggestions: uniq([...BASE_DIRECTION_SUGGESTIONS, ...rooms.map((r) => r.direction)]),
   };

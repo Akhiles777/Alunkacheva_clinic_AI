@@ -838,7 +838,18 @@ export function rescheduleAppt(id: string, startMinute: number) {
   replaceAppt(id, (a) => ({ ...a, startMinute }));
   void rescheduleApptDb(id, startMinute).catch(() => {});
 }
-export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { status?: Appt["status"] }) {
+/**
+ * Создать запись.
+ *
+ * `onError` обязателен по смыслу, а не по типу: раньше неудача записи в базу
+ * гасилась пустым `catch`, и запись оставалась только на экране. Администратор
+ * видел её в расписании, в YCLIENTS её не было — а значит, время считалось
+ * свободным, и в него ставили второго пациента.
+ */
+export function addAppt(
+  input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { status?: Appt["status"] },
+  onError?: (message: string) => void,
+) {
   const appt: Appt = {
     id: uid("a"),
     status: input.status ?? "planned",
@@ -848,9 +859,9 @@ export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { 
   commit({ ...db, appointments: [...db.appointments, appt] });
   void createAppointmentDb({
     id: appt.id,
-    // Запись, созданную в интерфейсе, всегда кладём в выбранный кабинет;
-    // без выбора — в первый, как и предлагает форма.
-    roomId: appt.roomId ?? "room-1",
+    // Кабинет — только выбранный. Подстановка первого приписывала запись
+    // кабинету, в котором приёма нет, и портила его загрузку.
+    roomId: appt.roomId ?? "",
     doctor: appt.doctor,
     staffId: appt.staffId ?? null,
     service: appt.service,
@@ -862,6 +873,12 @@ export function addAppt(input: Omit<Appt, "id" | "status" | "isFirstVisit"> & { 
     price: appt.price,
     note: appt.note,
     bookedByName: appt.bookedByName,
-  }).catch(() => {});
+  }).catch((e: unknown) => {
+    // Записи нет в базе — не должно быть и на экране.
+    commit({ ...db, appointments: db.appointments.filter((a) => a.id !== appt.id) });
+    const message = (e as Error)?.message ?? "не удалось сохранить запись";
+    console.error("[запись] не сохранена:", message);
+    onError?.(message);
+  });
   return appt.id;
 }

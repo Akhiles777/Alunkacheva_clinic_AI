@@ -201,17 +201,31 @@ export async function createAppointmentDb(input: CreateApptInput): Promise<void>
   const session = await getSession();
   const co = session.companyId;
 
-  const roomNum = input.roomId.replace("room-", "");
+  /**
+   * Кабинет ищем по порядковому номеру — тем же ключом, каким его знает
+   * интерфейс.
+   *
+   * Здесь стоял поиск по названию: `startsWith("Кабинет N")`. Стоит клинике
+   * переименовать кабинет — «Процедурный», «Кабинет №1», что угодно, — и
+   * поиск не находит ничего. А дальше запись молча не создавалась: на экране
+   * она появлялась, в базе и в YCLIENTS её не было. Тихо потерянная запись —
+   * это пациент, который придёт в незанятое для клиники время.
+   */
+  const roomSort = Number(input.roomId.replace("room-", ""));
   const [staff, room, service] = await Promise.all([
     input.staffId
       ? prisma.staff.findFirst({ where: { id: input.staffId, companyId: co, deletedAt: null }, select: { id: true } })
       : prisma.staff.findFirst({ where: { companyId: co, deletedAt: null, name: { startsWith: input.doctor.split(/\s/)[0] } }, select: { id: true } }),
-    prisma.room.findFirst({ where: { companyId: co, name: { startsWith: `Кабинет ${roomNum}` } }, select: { id: true } }),
+    Number.isFinite(roomSort)
+      ? prisma.room.findFirst({ where: { companyId: co, sortOrder: roomSort }, select: { id: true } })
+      : Promise.resolve(null),
     input.service
       ? prisma.service.findFirst({ where: { companyId: co, title: input.service }, select: { id: true } })
       : Promise.resolve(null),
   ]);
-  if (!staff || !room) return; // без обязательных связей запись в проекцию не создаём
+  // Без обязательных связей запись не создаём — и говорим об этом вслух.
+  if (!staff) throw new Error(`Специалист «${input.doctor}» не найден в базе клиники`);
+  if (!room) throw new Error(`Кабинет ${input.roomId} не найден в базе клиники`);
 
   // Пациент обязателен: находим по id/имени или заводим нового.
   let patientId = input.patientId;
@@ -445,7 +459,13 @@ export interface ClinicDayView {
   endMinute: number;
   label: string | null;
   /** Кабинеты клиники — настоящие, а не зашитые в коде. */
-  rooms: { id: string; name: string; direction: string }[];
+  rooms: {
+    id: string;
+    name: string;
+    direction: string;
+    /** Кто закреплён за кабинетом — все, а не один. */
+    staff: string[];
+  }[];
 }
 
 export async function getClinicDayToday(): Promise<ClinicDayView> {
@@ -463,7 +483,24 @@ export async function getClinicDayToday(): Promise<ClinicDayView> {
     prisma.room.findMany({
       where: { companyId: session.companyId, isActive: true },
       orderBy: { sortOrder: "asc" },
-      select: { name: true, sortOrder: true },
+      select: {
+        name: true,
+        sortOrder: true,
+        direction: true,
+        /**
+         * Все закреплённые за кабинетом, а не один.
+         *
+         * В процедурном работают две медсестры — Сафия Гаджиевна и Нурият, —
+         * а карточка показывала одну: имя бралось у того, у кого сегодня
+         * больше приёмов. Кто закреплён за кабинетом, знает база, и спрашивать
+         * об этом расписание одного дня не нужно.
+         */
+        defaultForStaff: {
+          where: { isActive: true, deletedAt: null },
+          orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+          select: { name: true },
+        },
+      },
     }),
   ]);
   return {
@@ -474,8 +511,10 @@ export async function getClinicDayToday(): Promise<ClinicDayView> {
     rooms: rooms.map((r) => ({
       id: ROOM_KEY(r.sortOrder),
       name: r.name,
-      // Направление — то, что клиника написала после тире в названии кабинета.
-      direction: r.name.split(/\s+[—–-]\s+/)[1] ?? "",
+      // Направление клиника заполняет в настройках; если поле пустое — берём
+      // то, что написано в названии после тире.
+      direction: r.direction?.trim() || r.name.split(/\s+[—–-]\s+/)[1] || "",
+      staff: r.defaultForStaff.map((s) => s.name),
     })),
   };
 }

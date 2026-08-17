@@ -100,6 +100,41 @@ export function YclientsBlock() {
         </div>
       </div>
 
+      {/*
+        Расписание выгрузки. Отметки в таблице выше говорят, когда данные
+        приезжали в последний раз, но не говорят, приедут ли они снова:
+        остановившееся расписание выглядит там ровно так же, как работающее.
+      */}
+      <p className="text-text-muted text-sm">
+        {state.schedule.on ? (
+          <>
+            Выгрузка идёт сама каждые{" "}
+            <b className="num text-text">{state.schedule.intervalMin} мин</b>
+            {state.schedule.runningNow ? " · круг идёт прямо сейчас" : null}
+            {state.schedule.lastAt ? (
+              <>
+                {" · последний круг "}
+                <span className="num">{state.schedule.lastAt}</span>
+                {state.schedule.lastOk === false ? (
+                  <span className="text-accent-text">
+                    {" "}
+                    — не удался{state.schedule.lastError ? `: ${state.schedule.lastError}` : ""}
+                  </span>
+                ) : state.schedule.lastMs !== null ? (
+                  <span className="text-text-subtle"> — за {Math.round(state.schedule.lastMs / 1000)} с</span>
+                ) : null}
+              </>
+            ) : (
+              " · первый круг ещё не проходил"
+            )}
+          </>
+        ) : (
+          <span className="text-accent-text">
+            Автоматическая выгрузка выключена — данные обновляются только кнопкой ниже.
+          </span>
+        )}
+      </p>
+
       {state.notPushed > 0 || state.conflicts > 0 ? (
         <p className="text-text-muted text-sm">
           Визитов, не отправленных в YCLIENTS: <b className="num text-text">{state.notPushed}</b>

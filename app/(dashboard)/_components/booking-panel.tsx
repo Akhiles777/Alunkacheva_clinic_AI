@@ -23,14 +23,7 @@ import { Picker, type PickerItem } from "./picker";
  * §2): если за время выбора его заняли — запись не создаётся. Успешная запись
  * реально добавляется в стор и появляется в расписании.
  */
-type Check = "idle" | "checking" | "created" | "taken";
-
-/** Запасные названия кабинетов: используются, только если у услуги не указан кабинет. */
-const ROOM_NAME: Record<string, string> = {
-  "room-1": "Кабинет 1 · процедурный",
-  "room-2": "Кабинет 2 · БОС",
-  "room-3": "Кабинет 3 · остеопат",
-};
+type Check = "idle" | "checking" | "created" | "taken" | "failed";
 
 function toPatientItem(p: PatientOption): PickerItem {
   const parts = [p.phone, p.visits > 0 ? `визитов ${p.visits}` : "новый"].filter(Boolean);
@@ -109,6 +102,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   const [staffPicked, setStaffPicked] = useState<SpecialistOption | null>(null);
   const [staffQuery, setStaffQuery] = useState("");
   const [check, setCheck] = useState<Check>("idle");
+  const [failure, setFailure] = useState<string | null>(null);
   const [booked, setBooked] = useState<{ time: string; room: string } | null>(null);
   const [price, setPrice] = useState<string>("");
   const [note, setNote] = useState("");
@@ -143,6 +137,16 @@ function BookingInner({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(t);
   }, [patient, patientPicked]);
 
+  /**
+   * Название кабинета — из базы клиники.
+   *
+   * Здесь лежал запасной список «Кабинет 1 · процедурный, Кабинет 2 · БОС»:
+   * если у услуги кабинет не заполнен, форма подставляла выдуманное название,
+   * и в подтверждении записи пациенту называли кабинет, которого нет.
+   */
+  const roomName = (key: string): string =>
+    clinicDay?.rooms.find((r) => r.id === key)?.name ?? "";
+
   const service = services.find((s) => s.id === serviceKey) ?? null;
   // Цена по умолчанию — из настроек услуги; администратор может изменить.
   const defaultPrice = service?.price ?? 0;
@@ -162,7 +166,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
       roomId: roomKey,
       startMinute: g.startMinute,
       durationMin: service.durationMin,
-      cab: service.roomName ?? ROOM_NAME[roomKey],
+      cab: service.roomName ?? roomName(roomKey),
       dir: service.title.split(",")[0],
       dur: durationLabel(g.durationMin),
     }));
@@ -205,24 +209,34 @@ function BookingInner({ onClose }: { onClose: () => void }) {
         setCheck("taken");
         return;
       }
-      addAppt({
-        roomId: selected.roomId,
-        roomName: service.roomName ?? ROOM_NAME[selected.roomId],
-        doctor: staffPicked.name,
-        staffId: staffPicked.id,
-        service: service.title,
-        patientId: patientPicked?.id ?? null,
-        patientName: (patientPicked?.name ?? patient).trim(),
-        startMinute: selected.startMinute,
-        durationMin: selected.durationMin,
-        status: "planned",
-        price: price.trim() === "" ? defaultPrice : Number(price),
-        note: note.trim() || null,
-        bookedByName: bookedBy.trim() || null,
-      });
+      addAppt(
+        {
+          roomId: selected.roomId,
+          roomName: service.roomName ?? roomName(selected.roomId),
+          doctor: staffPicked.name,
+          staffId: staffPicked.id,
+          service: service.title,
+          patientId: patientPicked?.id ?? null,
+          patientName: (patientPicked?.name ?? patient).trim(),
+          startMinute: selected.startMinute,
+          durationMin: selected.durationMin,
+          status: "planned",
+          price: price.trim() === "" ? defaultPrice : Number(price),
+          note: note.trim() || null,
+          bookedByName: bookedBy.trim() || null,
+        },
+        /**
+         * Неудача сохранения должна быть видна. Прежде она гасилась молча:
+         * форма говорила «запись создана», а в базе и в YCLIENTS её не было.
+         */
+        (message) => {
+          setFailure(message);
+          setCheck("failed");
+        },
+      );
       setBooked({
         time: formatMinute(selected.startMinute),
-        room: service.roomName ?? ROOM_NAME[selected.roomId],
+        room: service.roomName ?? roomName(selected.roomId),
       });
       setCheck("created");
     }, 700);
@@ -429,7 +443,11 @@ function BookingInner({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="border-border border-t px-5 py-4">
-          {check === "taken" ? (
+          {check === "failed" ? (
+            <p className="text-accent-text mb-2.5 text-sm">
+              Запись не сохранена: {failure}. В расписании её нет — исправьте и попробуйте снова.
+            </p>
+          ) : check === "taken" ? (
             <p className="text-accent-text mb-2.5 text-sm">
               Слот уже заняли, пока вы выбирали. Возьмите другое окно.
             </p>
@@ -452,7 +470,9 @@ function BookingInner({ onClose }: { onClose: () => void }) {
                 ? "Готово"
                 : check === "taken"
                   ? "Выбрать другое окно"
-                  : "Проверить и записать"}
+                  : check === "failed"
+                    ? "Попробовать снова"
+                    : "Проверить и записать"}
           </button>
         </div>
       </div>
