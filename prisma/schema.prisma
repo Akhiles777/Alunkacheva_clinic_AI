@@ -349,6 +349,13 @@ model Conversation {
   botPausedUntil       DateTime? @db.Timestamptz(3)
   /// 24-часовое окно ответа Instagram вне messaging tags.
   replyWindowExpiresAt DateTime? @db.Timestamptz(3)
+  /// Телефон собеседника, если его удалось узнать.
+  ///
+  /// Раньше номер всегда доставали из адреса чата: в WhatsApp это был он же.
+  /// WhatsApp перешёл на скрытые идентификаторы («…@lid»), номера в адресе нет,
+  /// и держать его теперь негде — кроме как здесь. Заполняется из вебхука,
+  /// из справки провайдера или при привязке карточки.
+  phoneE164            String?
   /// Когда сотрудник последний раз открывал диалог. По этой отметке считается
   /// «нужен ответ»: диалог, который прочитали, из списка ожидающих уходит.
   staffReadAt          DateTime? @db.Timestamptz(3)
@@ -390,6 +397,7 @@ model Conversation {
   @@index([companyId, status, lastMessageAt])
   @@index([companyId, assignedToId, status])
   @@index([companyId, patientId])
+  @@index([companyId, phoneE164])
   @@map("conversations")
 }
 

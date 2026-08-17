@@ -228,13 +228,13 @@ function stripMarks(body: string, files: DialogAttachmentRecord[]): string {
  */
 async function linkKnownPhones(
   companyId: string,
-  convs: { id: string; externalUserId: string }[],
+  convs: { id: string; externalUserId: string; phoneE164: string | null }[],
 ): Promise<void> {
   if (convs.length === 0) return;
 
   const byPhone = new Map<string, string[]>();
   for (const c of convs) {
-    const phone = phoneFromChatId(c.externalUserId);
+    const phone = c.phoneE164 ?? phoneFromChatId(c.externalUserId);
     if (!phone) continue;
     const list = byPhone.get(phone);
     if (list) list.push(c.id);
@@ -315,7 +315,9 @@ export async function getConversations(): Promise<DialogRecord[]> {
    */
   await linkKnownPhones(
     session.companyId,
-    convs.filter((c) => !c.patientId && c.channel === "WHATSAPP").map((c) => ({ id: c.id, externalUserId: c.externalUserId })),
+    convs
+      .filter((c) => !c.patientId && c.channel === "WHATSAPP")
+      .map((c) => ({ id: c.id, externalUserId: c.externalUserId, phoneE164: c.phoneE164 })),
   );
 
   const orphaned = convs.filter((c) => c.patient?.deletedAt).map((c) => c.id);
@@ -374,7 +376,15 @@ export async function getConversations(): Promise<DialogRecord[]> {
       name: patient?.name ?? c.contactName ?? null,
       patientId: patient ? c.patientId : null,
       // Карточка знает номер точнее: в неё его мог поправить администратор.
-      phone: patient?.phones[0]?.phone ?? (c.channel === "WHATSAPP" ? phoneFromChatId(c.externalUserId) : null),
+      /**
+       * Номер: из карточки, из самого диалога, из адреса чата — в этом порядке.
+       * Карточка точнее всего (её ведёт администратор), адрес чата — последний
+       * шанс: в WhatsApp он теперь чаще всего скрытый и номера не содержит.
+       */
+      phone:
+        patient?.phones[0]?.phone ??
+        c.phoneE164 ??
+        (c.channel === "WHATSAPP" ? phoneFromChatId(c.externalUserId) : null),
       channel: CHANNEL_MAP[c.channel] ?? "whatsapp",
       status: STATUS_MAP[c.status],
       unread,

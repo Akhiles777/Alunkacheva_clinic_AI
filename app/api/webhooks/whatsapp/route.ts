@@ -195,6 +195,20 @@ export async function POST(req: Request) {
   if (!event.phoneE164) {
     const at = event.chatId.indexOf("@");
     console.warn(`[whatsapp] номер не определён, адрес вида ${at === -1 ? "без @" : event.chatId.slice(at)}`);
+  } else {
+    /**
+     * Номер известен — запоминаем его на диалоге.
+     *
+     * Адрес чата больше не годится как источник: WhatsApp перешёл на скрытые
+     * идентификаторы, и номера в нём нет. Если провайдер прислал настоящий
+     * адрес отдельным полем, это единственный момент, когда мы его видим.
+     */
+    await prisma.conversation
+      .updateMany({
+        where: { companyId, channel: "WHATSAPP", externalUserId: event.chatId, phoneE164: null },
+        data: { phoneE164: event.phoneE164 },
+      })
+      .catch(() => {});
   }
 
   runSerial(`whatsapp:${event.chatId}`, () => handleIncoming(companyId, event));

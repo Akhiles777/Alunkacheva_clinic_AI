@@ -1313,7 +1313,17 @@ async function linkByPhone(
     patientId = created.id;
   }
 
-  await prisma.conversation.update({ where: { id: conversationId }, data: { patientId } });
+  /**
+   * Номер сохраняем на диалоге, а не только в карточке.
+   *
+   * Адрес чата в WhatsApp больше не содержит телефона: WhatsApp перешёл на
+   * скрытые идентификаторы. Значит единственное место, где номер переживёт
+   * перезагрузку экрана, — сама переписка.
+   */
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { patientId, phoneE164: phone },
+  });
   // Согласие могли дать до появления карточки — переносим его в карточку.
   await materializeConsent(ctx.companyId, patientId, conversationId).catch(() => {});
   return patientId;
