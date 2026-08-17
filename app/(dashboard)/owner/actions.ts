@@ -5,6 +5,7 @@ import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import type { Appt } from "@/app/_data/store";
 import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
+import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
 import { weekKeyOf } from "@/lib/metrics/types";
 
@@ -206,8 +207,17 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     appts: appts.length,
     arrived,
     avgLoadPct,
-    avgCheck: arrived > 0 ? Math.round(revenueSum / arrived) : 0,
-    noShowRatePct: appts.length > 0 ? Math.round((noShow / appts.length) * 100) : 0,
+    // Средний чек — общей функцией: округление тоже часть определения.
+    avgCheck: averageCheck(revenueSum, arrived),
+    /**
+     * Неявки — той же функцией, что и в карточке специалиста.
+     *
+     * Здесь знаменателем были все незаменённые визиты, включая запланированные
+     * на следующую неделю: они неявкой ещё быть не могли и только разбавляли
+     * показатель. У специалиста то же самое считалось по состоявшимся исходам,
+     * и два числа под подписью «Неявки» расходились вдвое.
+     */
+    noShowRatePct: noShowRate(arrived, noShow),
     firstVisits: appts.filter((a) => a.isFirstVisit).length,
     patients,
     staff: perf.map((p) => ({

@@ -17,6 +17,15 @@ export interface CurrentUser {
   /** Кабинет врача (если у учётки есть привязанный специалист). */
   roomName: string | null;
   /**
+   * Специалист, к которому привязана учётка.
+   *
+   * «Мой кабинет» отбирал свои приёмы сравнением имён. Учётка и справочник
+   * специалистов заполняются по отдельности — «Ирина Алункачева» против
+   * «Алункачева И. Ю.», — и при малейшем расхождении врач видел пустой экран
+   * вместо своего дня. Отбор по идентификатору такого не допускает.
+   */
+  staffId: string | null;
+  /**
    * Может ли пользователь менять настройки — берётся из матрицы прав, а не из
    * роли. Интерфейс обязан спрашивать то же, что проверяет сервер, иначе
    * получаются кнопки, которые падают с «Недостаточно прав».
@@ -30,7 +39,13 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   if (session.userId) {
     const u = await prisma.staffUser.findUnique({
       where: { id: session.userId },
-      select: { id: true, name: true, login: true, role: true, staff: { select: { defaultRoom: { select: { name: true } } } } },
+      select: {
+        id: true,
+        name: true,
+        login: true,
+        role: true,
+        staff: { select: { id: true, defaultRoom: { select: { name: true } } } },
+      },
     });
     if (u) {
       return {
@@ -39,6 +54,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
         login: u.login,
         role: appRoleOf(u.role),
         roomName: u.staff?.defaultRoom?.name ?? null,
+        staffId: u.staff?.id ?? null,
         canEditSettings,
       };
     }
@@ -50,6 +66,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
     login: "",
     role: appRoleOf(session.role),
     roomName: null,
+    staffId: null,
     canEditSettings,
   };
 }

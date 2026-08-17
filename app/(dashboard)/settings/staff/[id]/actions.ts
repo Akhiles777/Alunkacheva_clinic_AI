@@ -1,6 +1,8 @@
 "use server";
 
 import { prisma } from "@/lib/db";
+import { averageCheck, noShowRate } from "@/lib/metrics/summary";
+import { weekKeyOf, weekLabel as sharedWeekLabel } from "@/lib/metrics/types";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
@@ -133,9 +135,16 @@ function weekKey(d: Date): number {
   const dow = (msk.getUTCDay() + 6) % 7;
   return Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth(), msk.getUTCDate() - dow);
 }
+/**
+ * Подпись недели — диапазоном, как и на графике владельца.
+ *
+ * Здесь стояла одна дата, «10.08». Ровно из-за такой подписи владелец сравнил
+ * столбец графика с отчётом за «Неделю» и увидел 205 тысяч против 215: подпись
+ * не говорила, за какой отрезок посчитано. У одной клиники подписи не должны
+ * означать разное на разных экранах.
+ */
 function weekLabel(key: number): string {
-  const m = new Date(key);
-  return `${String(m.getUTCDate()).padStart(2, "0")}.${String(m.getUTCMonth() + 1).padStart(2, "0")}`;
+  return sharedWeekLabel(weekKeyOf(new Date(key + 12 * 3600 * 1000)));
 }
 
 async function buildMetrics(companyId: string, staffId: string | null): Promise<StaffMetrics> {
@@ -257,8 +266,8 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
     uniquePatients: patients.size,
     hours: Math.round(hours * 10) / 10,
     revenue,
-    avgCheck: arrivedRows.length ? Math.round(revenue / arrivedRows.length) : 0,
-    noShowRatePct: settled ? Math.round((noShow / settled) * 100) : 0,
+    avgCheck: averageCheck(revenue, arrivedRows.length),
+    noShowRatePct: noShowRate(arrivedRows.length, noShow),
     arrivalRatePct: settled ? Math.round((arrivedRows.length / settled) * 100) : 0,
     revenueSharePct: totalClinic > 0 ? Math.round((revenue / totalClinic) * 100) : 0,
     services: [...byService.entries()]

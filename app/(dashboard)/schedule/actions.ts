@@ -62,7 +62,7 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
       startAt: { gte: start, lt: end },
     },
     include: {
-      staff: { select: { name: true } },
+      staff: { select: { id: true, name: true } },
       room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true } },
       patient: { select: { name: true } },
@@ -83,6 +83,8 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     roomId: r.room ? ROOM_KEY(r.room.sortOrder) : null,
     roomName: r.room?.name ?? "",
     doctor: r.staff.name,
+    // Идентификатор специалиста: по имени отбирать нельзя, см. CurrentUser.staffId.
+    staffId: r.staff.id,
     service: r.primaryService?.title ?? "",
     patientId: r.patientId,
     patientName: r.patient?.name ?? "",

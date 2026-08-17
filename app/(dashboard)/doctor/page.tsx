@@ -24,9 +24,21 @@ export default function DoctorPage() {
   }, []);
   const myName = me?.name ?? "";
 
+  /**
+   * Свои приёмы — по идентификатору специалиста.
+   *
+   * Здесь стояло сравнение имён: `a.doctor === myName`. Учётка сотрудника и
+   * карточка специалиста заполняются по отдельности, и «Ирина Алункачева»
+   * против «Алункачева И. Ю.» давали врачу пустой экран вместо его дня. По
+   * имени отбираем только когда специалист к учётке не привязан вовсе.
+   */
+  const myStaffId = me?.staffId ?? null;
   const myAppts = useMemo(
-    () => db.appointments.filter((a) => a.doctor === myName).sort((a, b) => a.startMinute - b.startMinute),
-    [db.appointments, myName],
+    () =>
+      db.appointments
+        .filter((a) => (myStaffId ? a.staffId === myStaffId : a.doctor === myName))
+        .sort((a, b) => a.startMinute - b.startMinute),
+    [db.appointments, myStaffId, myName],
   );
   const roomName = me?.roomName ?? myAppts[0]?.roomName ?? "—";
 
