@@ -5,8 +5,8 @@ import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
-import { HANDOVER_REPLY, promisesBooking, promisesHuman } from "./booking-promise";
-import { medical, personalTopic, scheduleTopic, wantsHuman } from "./triggers";
+import { HANDOVER_REPLY, admitsInability, promisesBooking, promisesHuman } from "./booking-promise";
+import { asksForSlot, cantCome, medical, personalTopic, scheduleTopic, wantsHuman } from "./triggers";
 import {
   CONSENT_ACCEPT,
   CONSENT_DECLINE,
@@ -790,7 +790,16 @@ async function replyToQuestion(
      * ответ, потом поздоровался — и услышал вводную «это клиника такая-то,
      * расскажу про услуги» в середине разговора. Знакомятся один раз.
      */
-    const met = alreadyGreeted(said, settings.greeting) || said.some((t) => t.role === "assistant");
+    /**
+     * Знакомы ли мы — в пределах суток.
+     *
+     * «Доброе утро! Слушаю вас.» уместно, когда разговор идёт. Но если человек
+     * не писал неделю, это новое обращение: он должен услышать приветствие
+     * клиники целиком, как в справочнике. История у агента теперь длинная — на
+     * шестьдесят дней, — и без границы по времени полная вводная не звучала бы
+     * уже никогда.
+     */
+    const met = (await spokeWithin(conversation.id, MET_WINDOW_MS)) || alreadyGreeted(said, settings.greeting);
     const hello = greetingText({
       incoming: text,
       configured: settings.greeting,
@@ -893,6 +902,36 @@ async function replyToQuestion(
    */
   if (scheduleTopic(text)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
+
+    /**
+     * Спросили про свободное время — уточнять нечего.
+     *
+     * Расписания агент не видит, и любой его вопрос только оттягивает ответ.
+     * Пациентка написала «ещё свободно окошко?» в ответ на сообщение с
+     * названием услуги и врача — и услышала «на какую услугу и для кого». Всё
+     * это было прямо в её сообщении, а ответить всё равно мог только человек.
+     */
+    if (asksForSlot(text)) {
+      return respond(ctx, conversation.id, {
+        text: "Секунду, уточню у администратора — он ответит здесь же.",
+      });
+    }
+
+    /**
+     * Человек предупредил, что не придёт.
+     *
+     * Отвечаем сами и коротко: ему нужно знать, что предупреждение принято и
+     * запись не пропадёт. Модели этот случай не отдаём — она цепляется за
+     * названные симптомы и уходит рассуждать о здоровье вместо простого
+     * «поняла, передал(а)». Ровно так и вышло в живой переписке.
+     */
+    if (cantCome(text)) {
+      return respond(ctx, conversation.id, {
+        text:
+          "Поняла, спасибо, что предупредили. Передал(а) администратору — он отменит или перенесёт " +
+          "запись, как вам удобно, и напишет здесь же. Выздоравливайте!",
+      });
+    }
   }
 
   const context = await clinicContext(ctx.companyId, text);
@@ -935,6 +974,21 @@ async function replyToQuestion(
     await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Агент трижды не понял запрос").catch(() => {});
     return respond(ctx, conversation.id, {
       text: "Давайте я позову администратора — он разберётся быстрее. Он ответит здесь же.",
+    });
+  }
+
+  /**
+   * Агент объясняет, чего он не может, — вместо этого зовём человека.
+   *
+   * «Прошу прощения, но я — справочная служба клиники в мессенджере, и у меня
+   * нет доступа к фотографиям счётчиков…» — четыре строки о себе там, где
+   * человеку нужен был администратор. Пациенту неинтересно, как у нас
+   * устроена работа: ему нужен ответ.
+   */
+  if (answer && admitsInability(answer)) {
+    await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Вопрос вне возможностей ассистента").catch(() => {});
+    return respond(ctx, conversation.id, {
+      text: "Передал(а) администратору — он ответит здесь же.",
     });
   }
 
@@ -1037,6 +1091,27 @@ async function rememberName(companyId: string, conversationId: string, name: str
   if (!current || words(name) > words(current)) {
     await prisma.conversation.update({ where: { id: conversationId }, data: { contactName: name } });
   }
+}
+
+/**
+ * Сколько времени считаем, что разговор продолжается: сутки. Та же граница,
+ * по которой считается новое обращение (§8).
+ */
+const MET_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Отвечали ли мы этому человеку за последнее время. */
+async function spokeWithin(conversationId: string, windowMs: number): Promise<boolean> {
+  const said = await prisma.message.findFirst({
+    where: {
+      conversationId,
+      direction: "OUT",
+      deletedAt: null,
+      isDraft: false,
+      createdAt: { gte: new Date(Date.now() - windowMs) },
+    },
+    select: { id: true },
+  });
+  return said !== null;
 }
 
 /** Подтверждение, что анкета ушла администратору. */

@@ -17,6 +17,11 @@ import { KIND_LABEL, type AttachmentKind, type IncomingAttachment } from "@/lib/
 
 const SenderData = z.object({
   chatId: z.string(),
+  /**
+   * Настоящий адрес отправителя. Нужен для чатов вида «…@lid»: WhatsApp
+   * перешёл на скрытые идентификаторы, и номера в chatId там нет вовсе.
+   * Провайдер при этом обычно присылает исходный адрес отдельным полем.
+   */
   sender: z.string().optional(),
   senderName: z.string().optional(),
   chatName: z.string().optional(),
@@ -274,7 +279,7 @@ function parseMessage(e: GreenWebhook): ParsedEvent {
     kind: "message",
     externalId: e.idMessage,
     chatId,
-    phoneE164: phoneFromChatId(chatId),
+    phoneE164: phoneFromChatId(chatId) ?? phoneFromChatId(e.senderData?.sender ?? ""),
     senderName: e.senderData?.senderName?.trim() || null,
     text: body.slice(0, 4000),
     isMedia,

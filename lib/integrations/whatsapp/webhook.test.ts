@@ -266,3 +266,37 @@ describe("ответ на конкретное сообщение", () => {
     expect(e.text).toContain("Это моё направление");
   });
 });
+
+/**
+ * Скрытые идентификаторы WhatsApp (@lid).
+ *
+ * Номера в таком chatId нет вовсе, и раньше диалог оставался без телефона: он
+ * не показывался администратору и карточка пациента не находилась. Провайдер
+ * при этом присылает настоящий адрес отдельным полем.
+ */
+describe("чат со скрытым идентификатором", () => {
+  it("берёт номер из адреса отправителя", () => {
+    const e = parseWebhook({
+      typeWebhook: "incomingMessageReceived",
+      idMessage: "lid1",
+      senderData: { chatId: "123456789012345@lid", sender: "79280001122@c.us", senderName: "Ася" },
+      messageData: { typeMessage: "textMessage", textMessageData: { textMessage: "Здравствуйте" } },
+    });
+    expect(e.kind).toBe("message");
+    if (e.kind !== "message") return;
+    expect(e.phoneE164).toBe("+79280001122");
+  });
+
+  it("не выдумывает номер из самого скрытого идентификатора", () => {
+    // Прежде «123456789012345@lid» превращалось в +123456789012345 — и в базе
+    // появлялась вторая карточка того же человека с несуществующим номером.
+    const e = parseWebhook({
+      typeWebhook: "incomingMessageReceived",
+      idMessage: "lid2",
+      senderData: { chatId: "123456789012345@lid" },
+      messageData: { typeMessage: "textMessage", textMessageData: { textMessage: "Здравствуйте" } },
+    });
+    if (e.kind !== "message") throw new Error("ожидалось сообщение");
+    expect(e.phoneE164).toBeNull();
+  });
+});
