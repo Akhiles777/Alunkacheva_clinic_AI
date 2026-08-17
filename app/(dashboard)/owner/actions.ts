@@ -225,9 +225,21 @@ function weekKey(d: Date): number {
   const dow = (msk.getUTCDay() + 6) % 7; // 0 = понедельник
   return Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth(), msk.getUTCDate() - dow);
 }
+/**
+ * Подпись недели — диапазоном, а не одной датой.
+ *
+ * Столбец «10.08» читался как «неделя с десятого», и владелец сравнивал его с
+ * отчётом за «Неделю», который считает последние семь дней до сегодня. На
+ * семнадцатое августа это 10–16 против 10–17: разные окна, разная выручка —
+ * 205 тысяч против 215. Обе цифры верные, вопрос был в том, что подписи не
+ * говорили, за какой отрезок они посчитаны.
+ */
 function weekLabel(key: number): string {
-  const m = new Date(key);
-  return `${String(m.getUTCDate()).padStart(2, "0")}.${String(m.getUTCMonth() + 1).padStart(2, "0")}`;
+  const from = new Date(key);
+  const to = new Date(key + 6 * 24 * 3600 * 1000);
+  const dd = (d: Date) => String(d.getUTCDate()).padStart(2, "0");
+  const mm = (d: Date) => String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${dd(from)}–${dd(to)}.${mm(to)}`;
 }
 
 /** Динамика по неделям (доход, клиенты, приёмы) за последние 6 недель. */

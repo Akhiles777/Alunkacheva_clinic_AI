@@ -124,6 +124,16 @@ export default async function AnalyticsPage({
             </button>
           </form>
         </div>
+        {/*
+          Отрезок, за который посчитаны цифры. Без него «Неделя» в отчётах и
+          столбец недели на графике владельца читались как одно и то же, хотя
+          отчёт берёт последние семь дней до сегодня, а график — календарную
+          неделю: 205 тысяч против 215 на одних и тех же данных.
+        */}
+        <p className="text-text-subtle mt-2 text-2xs">
+          {new Date(m.period.from).toLocaleDateString("ru-RU")} —{" "}
+          {new Date(m.period.to).toLocaleDateString("ru-RU")} · рабочих дней {m.period.workingDays}
+        </p>
         <div className="mt-3.5 flex flex-wrap gap-1.5">
           {TABS.map((t) => (
             <Link

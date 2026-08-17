@@ -111,9 +111,24 @@ async function state(): Promise<Response> {
       where: { companyId: company.id, deletedAt: null },
       _count: { _all: true },
     }),
+    /**
+     * Все специалисты, включая выключенных.
+     *
+     * Заказчик заметил, что медсестёр двое — Сафия Гаджиевна и Нурият, — а в
+     * списке видна одна. Показываем всех: выключенный в YCLIENTS специалист у
+     * нас не исчезает, но и в загрузку кабинетов не попадает, и это надо
+     * видеть, а не выяснять.
+     */
     prisma.staff.findMany({
-      where: { companyId: company.id, isActive: true, deletedAt: null },
-      select: { name: true, specialty: true, defaultRoom: { select: { name: true } } },
+      where: { companyId: company.id, deletedAt: null },
+      select: {
+        name: true,
+        specialty: true,
+        isActive: true,
+        defaultRoom: { select: { name: true } },
+        _count: { select: { appointments: { where: { deletedAt: null } } } },
+      },
+      orderBy: { name: "asc" },
     }),
     prisma.service.findMany({
       where: { companyId: company.id, rooms: { none: {} }, isActive: true },
@@ -136,7 +151,9 @@ async function state(): Promise<Response> {
     ],
     ктоВКакомКабинете: staffNoRoom.map(
       (s) =>
-        `${s.name}${s.specialty ? ` (${s.specialty})` : ""} → ${s.defaultRoom?.name ?? "кабинет не задан"}`,
+        `${s.name}${s.specialty ? ` (${s.specialty})` : ""} → ` +
+        `${s.defaultRoom?.name ?? "КАБИНЕТ НЕ ЗАДАН"}` +
+        `${s.isActive ? "" : " · выключен"}, визитов ${s._count.appointments}`,
     ),
     услугиБезКабинета: servicesNoRoom.map((s) => s.title),
     /**
