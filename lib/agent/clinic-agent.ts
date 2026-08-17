@@ -6,7 +6,7 @@ import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { HANDOVER_REPLY, admitsInability, promisesBooking, promisesHuman } from "./booking-promise";
-import { asksForSlot, cantCome, medical, personalTopic, scheduleTopic, wantsHuman } from "./triggers";
+import { asksForSlot, cantCome, medical, personalTopic, scheduleTopic, wantsHuman, wantsReschedule } from "./triggers";
 import {
   CONSENT_ACCEPT,
   CONSENT_DECLINE,
@@ -21,6 +21,7 @@ import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
+import { matchServices } from "./service-match";
 import { hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
@@ -75,6 +76,17 @@ export interface AgentContext {
   channel: AgentChannel;
   externalUserId: string;
   displayName?: string | null;
+  /**
+   * Текст, на который отвечаем. Ставится в начале обработки и нужен ровно для
+   * одного: если человек поздоровался, ответ должен начинаться с приветствия —
+   * какой бы веткой он ни был получен.
+   *
+   * Раньше приветствие добавлялось только к ответу модели, и на «Здравствуйте,
+   * мы записаны были 20 августа, можно после 12» уходило «Конечно 🌿
+   * Напишите…» — без единого приветственного слова. Заводить это в каждой
+   * ветке значит однажды забыть в новой.
+   */
+  incomingText?: string;
 }
 
 
@@ -342,7 +354,24 @@ async function clinicContext(
 
   // Без разметки: этот текст и уходит в модель, и показывается пациенту.
   // Символы # и * в мессенджере выглядят как мусор.
-  const lines = [`Клиника «${CLINIC_NAME}».`, "", "Услуги и цены:"];
+  const lines = [`Клиника «${CLINIC_NAME}».`];
+
+  /**
+   * Услуги, подходящие под вопрос, — отдельно и первыми.
+   *
+   * В прайсе шесть десятков строк, среди них «Остеопатия — дети, приём Ирины»
+   * за 4900 и взрослый приём за 8000. На вопрос «хотела ребёнка записать»
+   * модель назвала взрослую цену. Выбор из шести десятков похожих названий —
+   * работа для кода: подходящие отбираем сами, модель формулирует ответ, но
+   * цену не выбирает.
+   */
+  const matched = question ? matchServices(question, services) : [];
+  if (matched.length > 0) {
+    lines.push("", "ПОДХОДИТ ПОД ВОПРОС (цену и длительность бери только отсюда):");
+    for (const s of matched) lines.push(`• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
+  }
+
+  lines.push("", "Все услуги и цены:");
   for (const s of services) lines.push(`• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
   lines.push("", "Часы работы:");
   for (const d of schedule) lines.push(`${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
@@ -463,7 +492,11 @@ async function respond(
   conversationId: string,
   reply: AgentReply,
 ): Promise<AgentReply> {
-  const text = forMessenger(reply.text);
+  // Поздоровались с нами — здороваемся в ответ. Одно место на все ветки.
+  const withHello = ctx.incomingText
+    ? greetIfNeeded(ctx.incomingText, reply.text, "")
+    : reply.text;
+  const text = forMessenger(withHello);
   await saveMessage({
     companyId: ctx.companyId,
     conversationId,
@@ -610,6 +643,9 @@ export async function handlePatientMessage(
   }
 
   const text = (input.text ?? "").trim();
+  // Дальше все ответы проходят через respond, а он добавит приветствие, если
+  // человек поздоровался. Одно место на все ветки.
+  ctx.incomingText = text;
   /**
    * Тело сообщения складывается из подписи пациента и пометок о вложениях.
    * Пустым оно бывает только у по-настоящему пустого update — раньше сюда же
@@ -944,6 +980,21 @@ async function replyToQuestion(
     }
 
     /**
+     * Просят перенести существующую запись.
+     *
+     * Услуга и врач уже выбраны — переспрашивать «на какую услугу и для кого»
+     * значит показать, что предыдущий разговор забыт. Времени агент не
+     * называет: это администратор, и он же видит саму запись.
+     */
+    if (wantsReschedule(text)) {
+      return respond(ctx, conversation.id, {
+        text:
+          "Поняла, передал(а) администратору — он подберёт время из тех, что вы просите, " +
+          "и напишет здесь же.",
+      });
+    }
+
+    /**
      * Человек предупредил, что не придёт.
      *
      * Отвечаем сами и коротко: ему нужно знать, что предупреждение принято и
@@ -1019,16 +1070,7 @@ async function replyToQuestion(
   }
 
   if (answer && invented.length === 0 && !alreadySaid(said, answer)) {
-    /**
-     * Поздоровались вместе с вопросом — здороваемся в ответ.
-     *
-     * «Здравствуйте, у вас оплата картой есть?» — приветствие и вопрос в одном
-     * сообщении. Ветка приветствия сюда не доходит (это вопрос, на него нужен
-     * ответ по существу), а модель здоровается через раз: на боевом стенде
-     * человек поздоровался и получил сухое «Да, конечно. Оплата принимается…».
-     * Мелочь, по которой сразу видно автомат.
-     */
-    const withHello = greetIfNeeded(text, answer, settings.greeting);
+
     /**
      * Обещал позвать человека — значит человека зовём.
      *
@@ -1040,7 +1082,8 @@ async function replyToQuestion(
       await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ассистент обещал позвать человека").catch(() => {});
     }
     return respond(ctx, conversation.id, {
-      text: intakeSent ? `${withHello}\n\n${INTAKE_ACCEPTED}` : withHello,
+      // Приветствие добавит respond — одно место на все ветки.
+      text: intakeSent ? `${answer}\n\n${INTAKE_ACCEPTED}` : answer,
       buttons: mainMenu(),
     });
   }
