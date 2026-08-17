@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { syncAll } from "@/lib/integrations/yclients/sync";
 import { recomputeVisitKinds, backfillRooms, backfillFirstSeen } from "@/lib/metrics/recompute";
+import { schedulerState } from "@/lib/server/scheduler";
 
 /**
  * Синхронизация с YCLIENTS по расписанию.
@@ -90,6 +91,7 @@ async function state(): Promise<Response> {
     ok: true,
     at: now.toISOString(),
     company: company.name,
+    расписание: schedulerState(),
     синхронизация: Object.fromEntries(
       cursors.map((c) => [c.entity, c.lastSyncedAt?.toISOString() ?? null]),
     ),
