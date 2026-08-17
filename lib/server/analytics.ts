@@ -4,6 +4,7 @@ import { busyMinutes, freeGaps, occupancyRate, type Interval } from "@/lib/metri
 import { countInquiriesFromDb } from "@/lib/metrics/inquiries";
 import { averageCheck, withSourceShares, withStaffShares } from "@/lib/metrics/summary";
 import { closedDatesBetween } from "@/lib/server/clinic-day";
+import { startOfClinicDay } from "@/lib/clinic-time";
 import { isMonthKey, monthBounds, monthLabel } from "@/lib/metrics/types";
 import type {
   DashboardMetrics,
@@ -92,11 +93,23 @@ async function loadSchedule(companyId: string): Promise<Schedule> {
 }
 
 /** Рабочий интервал конкретного дня. Нет в расписании — клиника закрыта. */
+/**
+ * День недели в зоне клиники, 1 = понедельник … 7 = воскресенье.
+ *
+ * Здесь стоял `date.getDay()` — день недели по часам сервера. Границы периода
+ * строятся по полуночи клиники (для Москвы это 21:00 UTC предыдущих суток), и
+ * на сервере в UTC весь перебор дней съезжал на сутки назад: график субботы
+ * применялся к пятнице, а закрытое воскресенье выпадало на субботу.
+ */
+function clinicWeekday(date: Date, tz = "Europe/Moscow"): number {
+  const name = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(date);
+  const order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  return order.indexOf(name) + 1;
+}
+
 function dayInterval(schedule: Schedule, date: Date): Interval | null {
   if (schedule.size === 0) return FALLBACK_DAY;
-  // В базе понедельник — 1, воскресенье — 7; в JS воскресенье — 0.
-  const weekday = date.getDay() === 0 ? 7 : date.getDay();
-  return schedule.get(weekday) ?? null;
+  return schedule.get(clinicWeekday(date)) ?? null;
 }
 
 /**
@@ -104,7 +117,7 @@ function dayInterval(schedule: Schedule, date: Date): Interval | null {
  * Закрытые даты (праздники) в знаменатель не идут: иначе кабинеты выглядят
  * простаивающими ровно на эти дни.
  */
-function workingMinutesBetween(
+export function workingMinutesBetween(
   from: Date,
   to: Date,
   schedule: Schedule,
@@ -113,10 +126,20 @@ function workingMinutesBetween(
   let minutes = 0;
   const cursor = new Date(from);
   while (cursor < to) {
-    const key = cursor.toISOString().slice(0, 10);
+    /**
+     * Дату дня берём в зоне клиники.
+     *
+     * Здесь стояло `toISOString().slice(0, 10)` — дата в UTC. Период считается
+     * от полуночи клиники, то есть от 21:00 предыдущих суток по UTC, поэтому
+     * ключ всегда получался на день раньше и ни разу не совпадал с датами
+     * закрытых дней. Праздники и санитарные дни в знаменатель загрузки
+     * попадали все до одного, и кабинеты выглядели простаивающими ровно на те
+     * дни, когда клиника была закрыта.
+     */
+    const key = isoDate(cursor);
     const day = dayInterval(schedule, cursor);
     if (day && !closed?.has(key)) minutes += day.endMinute - day.startMinute;
-    cursor.setDate(cursor.getDate() + 1);
+    cursor.setTime(cursor.getTime() + 24 * 3600 * 1000);
   }
   return minutes;
 }
@@ -142,11 +165,15 @@ function isoDate(at: Date, tz = "Europe/Moscow"): string {
   }).format(at);
 }
 
-/** Конец текущих суток в зоне клиники: граница отчётного окна. */
+/**
+ * Конец текущих суток в зоне клиники: граница отчётного окна.
+ *
+ * Подпись обещала зону клиники, а `setHours` брал часы сервера. На сервере в
+ * UTC период заканчивался в 02:59 следующего дня по клинике и прихватывал
+ * лишние сутки в знаменатель загрузки.
+ */
 function endOfToday(now: Date): Date {
-  const end = new Date(now);
-  end.setHours(23, 59, 59, 999);
-  return end;
+  return new Date(startOfClinicDay(now).getTime() + 24 * 3600 * 1000 - 1);
 }
 
 /**
@@ -157,13 +184,14 @@ function endOfToday(now: Date): Date {
  * занижалась ровно на эти дни — кабинеты выглядели простаивающими, хотя
  * клиника была закрыта.
  */
-function workingDaysBetween(from: Date, to: Date, closed?: Set<string>): number {
+export function workingDaysBetween(from: Date, to: Date, closed?: Set<string>): number {
   let count = 0;
   const cursor = new Date(from);
   while (cursor < to) {
-    const key = cursor.toISOString().slice(0, 10);
-    if (cursor.getDay() !== 0 && !closed?.has(key)) count += 1;
-    cursor.setDate(cursor.getDate() + 1);
+    // Дата и день недели — в зоне клиники, как и в рабочих минутах выше.
+    const key = isoDate(cursor);
+    if (clinicWeekday(cursor) !== 7 && !closed?.has(key)) count += 1;
+    cursor.setTime(cursor.getTime() + 24 * 3600 * 1000);
   }
   return count;
 }

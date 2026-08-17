@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { startOfClinicDay } from "@/lib/clinic-time";
 import { getDashboardMetricsDb } from "@/lib/server/analytics";
 
 /**
@@ -30,8 +31,8 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   const monthAgo = new Date(now.getTime() - 30 * DAY);
   const quarterAgo = new Date(now.getTime() - 90 * DAY);
   const yearAgo = new Date(now.getTime() - 365 * DAY);
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+  // Сутки клиники, а не сервера: иначе «новых пациентов сегодня» ночью врёт.
+  const startOfToday = startOfClinicDay(now);
 
   const [
     patients,

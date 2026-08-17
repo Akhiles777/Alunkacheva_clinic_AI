@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/db";
+import { startOfClinicDay } from "@/lib/clinic-time";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
@@ -172,8 +173,9 @@ const dateFmt = new Intl.DateTimeFormat("ru-RU", {
 function atLabel(d: Date): string {
   const now = new Date();
   const day = 24 * 60 * 60 * 1000;
-  const startToday = new Date(now);
-  startToday.setHours(0, 0, 0, 0);
+  // «Сегодня» и «вчера» — по времени клиники: сервер живёт по UTC, и три часа
+  // каждой ночи сегодняшние сообщения подписывались вчерашним днём.
+  const startToday = startOfClinicDay(now);
   if (d >= startToday) return timeFmt.format(d);
   if (d >= new Date(startToday.getTime() - day)) return "вчера";
   return dateFmt.format(d);

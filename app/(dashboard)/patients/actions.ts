@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/db";
+import { startOfClinicDay } from "@/lib/clinic-time";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
@@ -137,8 +138,8 @@ export async function getPatientRecords(): Promise<PatientRecord[]> {
       _count: { select: { appointments: { where: { status: "ARRIVED", deletedAt: null } } } },
     },
   });
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  // Полночь клиники, а не сервера: на UTC-хостинге «сегодня» начиналось в 03:00.
+  const startOfToday = startOfClinicDay();
   return patients.map((p) => ({
     id: p.id,
     name: p.name ?? "",
@@ -206,8 +207,8 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
   });
   if (!p) return null;
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  // Полночь клиники, а не сервера: на UTC-хостинге «сегодня» начиналось в 03:00.
+  const startOfToday = startOfClinicDay();
   return {
     id: p.id,
     name: p.name ?? "",
@@ -521,8 +522,8 @@ export interface PatientsOverview {
 export async function getPatientsOverview(): Promise<PatientsOverview> {
   const session = await getSession();
   const companyId = session.companyId;
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  // Полночь клиники, а не сервера: на UTC-хостинге «сегодня» начиналось в 03:00.
+  const startOfToday = startOfClinicDay();
 
   const [total, primaryToday, withVisits, noConsent, sources, intervals] = await Promise.all([
     prisma.patient.count({ where: { companyId, deletedAt: null } }),
