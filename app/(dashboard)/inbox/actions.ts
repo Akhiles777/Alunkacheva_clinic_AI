@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { startOfClinicDay } from "@/lib/clinic-time";
+import { isNewInquiryWaiting } from "@/lib/inbox/needs-reply";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
@@ -197,12 +198,6 @@ const ESCALATION_LABEL: Record<string, string> = {
   OTHER: "другое",
 };
 
-/**
- * Граница нового обращения — сутки (§8). Та же, по которой считается воронка:
- * одно и то же число в метриках и на экране, иначе они начнут расходиться.
- */
-const NEW_INQUIRY_MS = 24 * 60 * 60 * 1000;
-
 /** Сколько последних сообщений диалога загружаем в инбокс. */
 const MESSAGE_WINDOW = 100;
 
@@ -347,23 +342,11 @@ export async function getConversations(): Promise<DialogRecord[]> {
       };
     });
     const last = ordered[ordered.length - 1];
-    // Ждёт ответа, если последним написал пациент и диалог не закрыт.
-    /**
-     * Когда диалог просится в «Нужен ответ» — правило заказчика.
-     *
-     * Метка означает новое обращение, а не любое неотвеченное сообщение.
-     * Прежде она висела на каждом диалоге, где последним написал пациент, —
-     * включая «спасибо» и «ок» после разговора. Список наполнялся тем, что
-     * ответа не требует, и администратор перестал в него смотреть.
-     *
-     * Считаем обращением два случая: совсем новый диалог, где мы ещё ни разу
-     * не отвечали, и сообщение, пришедшее больше чем через сутки после
-     * предыдущего. Ровно так же в §8 считается граница обращения для метрик.
-     */
-    const answeredEver = ordered.some((m) => m.direction === "OUT");
-    const previous = ordered[ordered.length - 2];
-    const gapMs = last && previous ? last.createdAt.getTime() - previous.createdAt.getTime() : 0;
-    const newInquiry = !answeredEver || gapMs >= NEW_INQUIRY_MS;
+    // Ждёт ответа, если пришло новое обращение и диалог не закрыт. Само
+    // правило — в lib/inbox/needs-reply: там же оно проверено тестами.
+    const newInquiry = isNewInquiryWaiting(
+      ordered.map((m) => ({ direction: m.direction, createdAt: m.createdAt })),
+    );
 
     const unread =
       last?.direction === "IN" &&
