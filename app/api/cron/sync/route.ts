@@ -99,7 +99,8 @@ async function state(): Promise<Response> {
    * Печатаем, у каких услуг и специалистов привязки нет: по этому списку
    * видно, что именно заполнить.
    */
-  const [rooms, byRoom, staffNoRoom, servicesNoRoom] = await Promise.all([
+  const [rooms, byRoom, staffNoRoom, servicesNoRoom, servicesTotal, servicesFromYclients] =
+    await Promise.all([
     prisma.room.findMany({
       where: { companyId: company.id, isActive: true },
       orderBy: { sortOrder: "asc" },
@@ -111,14 +112,16 @@ async function state(): Promise<Response> {
       _count: { _all: true },
     }),
     prisma.staff.findMany({
-      where: { companyId: company.id, isActive: true, deletedAt: null, defaultRoomId: null },
-      select: { name: true, specialty: true },
+      where: { companyId: company.id, isActive: true, deletedAt: null },
+      select: { name: true, specialty: true, defaultRoom: { select: { name: true } } },
     }),
     prisma.service.findMany({
-      where: { companyId: company.id, rooms: { none: {} } },
+      where: { companyId: company.id, rooms: { none: {} }, isActive: true },
       select: { title: true },
       take: 30,
     }),
+    prisma.service.count({ where: { companyId: company.id } }),
+    prisma.service.count({ where: { companyId: company.id, yclientsServiceId: { not: null } } }),
   ]);
   const countByRoom = new Map(byRoom.map((r) => [r.roomId, r._count._all]));
 
@@ -131,9 +134,20 @@ async function state(): Promise<Response> {
       ...rooms.map((r) => ({ кабинет: r.name, визитов: countByRoom.get(r.id) ?? 0 })),
       { кабинет: "(без кабинета)", визитов: countByRoom.get(null) ?? 0 },
     ],
-    безПривязкиККабинету: {
-      специалисты: staffNoRoom.map((s) => `${s.name}${s.specialty ? ` (${s.specialty})` : ""}`),
-      услуги: servicesNoRoom.map((s) => s.title),
+    ктоВКакомКабинете: staffNoRoom.map(
+      (s) =>
+        `${s.name}${s.specialty ? ` (${s.specialty})` : ""} → ${s.defaultRoom?.name ?? "кабинет не задан"}`,
+    ),
+    услугиБезКабинета: servicesNoRoom.map((s) => s.title),
+    /**
+     * Задвоенные услуги. Одна строка заведена руками и несёт привязку к
+     * кабинету, вторая приехала из YCLIENTS и на неё ссылаются визиты — из-за
+     * этого кабинет у визита не находится. См. scripts/services-dedupe.ts.
+     */
+    услуги: {
+      всего: servicesTotal,
+      изYclients: servicesFromYclients,
+      заведеныУНас: servicesTotal - servicesFromYclients,
     },
     синхронизация: Object.fromEntries(
       cursors.map((c) => [c.entity, c.lastSyncedAt?.toISOString() ?? null]),
