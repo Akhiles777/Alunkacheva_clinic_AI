@@ -5,7 +5,14 @@ import { countInquiriesFromDb } from "@/lib/metrics/inquiries";
 import { averageCheck, withSourceShares, withStaffShares } from "@/lib/metrics/summary";
 import { closedDatesBetween } from "@/lib/server/clinic-day";
 import { startOfClinicDay } from "@/lib/clinic-time";
-import { isMonthKey, monthBounds, monthLabel } from "@/lib/metrics/types";
+import {
+  isMonthKey,
+  isWeekKey,
+  monthBounds,
+  monthLabel,
+  weekBounds,
+  weekLabel,
+} from "@/lib/metrics/types";
 import type {
   DashboardMetrics,
   PeriodKey,
@@ -48,6 +55,8 @@ const PERIOD_LABEL: Record<string, string> = {
  */
 export function periodBounds(period: PeriodKey, now: Date = new Date()): { from: Date; to: Date } {
   if (isMonthKey(period)) return monthBounds(period);
+  // Календарная неделя: тот же отрезок, что показывает столбец графика.
+  if (isWeekKey(period)) return weekBounds(period);
   return {
     from: new Date(now.getTime() - (PERIOD_DAYS[period] ?? 30) * 24 * 3600 * 1000),
     to: endOfToday(now),
@@ -56,7 +65,9 @@ export function periodBounds(period: PeriodKey, now: Date = new Date()): { from:
 
 /** Подпись периода для экрана. */
 export function periodLabel(period: PeriodKey): string {
-  return isMonthKey(period) ? monthLabel(period) : (PERIOD_LABEL[period] ?? period);
+  if (isMonthKey(period)) return monthLabel(period);
+  if (isWeekKey(period)) return weekLabel(period);
+  return PERIOD_LABEL[period] ?? period;
 }
 
 /**
@@ -172,6 +183,23 @@ function isoDate(at: Date, tz = "Europe/Moscow"): string {
  * UTC период заканчивался в 02:59 следующего дня по клинике и прихватывал
  * лишние сутки в знаменатель загрузки.
  */
+/**
+ * Докуда считать знаменатель периода.
+ *
+ * Скользящее окно — до сегодня. Календарный месяц или неделя — до конца этого
+ * отрезка, иначе средние за май считались бы по неполному маю. Но не дальше
+ * сегодняшнего дня: у текущего месяца в знаменатель уходили ещё не наступившие
+ * дни, и загрузка кабинетов в нём выглядела вдвое ниже настоящей просто
+ * потому, что месяц не кончился.
+ */
+function denominatorEnd(period: PeriodKey, from: Date, to: Date, now: Date): Date {
+  const calendar = isMonthKey(period) || isWeekKey(period);
+  const end = calendar ? to : now;
+  const today = endOfToday(now);
+  if (end > today) return today > from ? today : from;
+  return end;
+}
+
 function endOfToday(now: Date): Date {
   return new Date(startOfClinicDay(now).getTime() + 24 * 3600 * 1000 - 1);
 }
@@ -356,7 +384,7 @@ export async function getDashboardMetricsDb(
        * календарного месяца — весь месяц, иначе средние за май считались бы
        * по неполному месяцу.
        */
-      workingDays: Math.max(1, workingDaysBetween(from, isMonthKey(period) ? to : now, closed)),
+      workingDays: Math.max(1, workingDaysBetween(from, denominatorEnd(period, from, to, now), closed)),
     },
     funnel,
     funnelSteps: buildFunnel(funnel),
@@ -577,7 +605,7 @@ export async function getServicesLoadDb(
   ]);
   const minutesPerRoom = Math.max(
     1,
-    workingMinutesBetween(from, isMonthKey(period) ? to : now, schedule, closedDates),
+    workingMinutesBetween(from, denominatorEnd(period, from, to, now), schedule, closedDates),
   );
 
   const [services, roomCount] = await Promise.all([

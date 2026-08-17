@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { formatMoney } from "@/lib/format";
+import { averageCheck } from "@/lib/metrics/summary";
 import type { WeeklyDynamics, WeekPoint } from "./actions";
 
 /**
@@ -27,9 +29,17 @@ const MEASURES: Measure[] = [
   {
     key: "avg",
     title: "Средний чек",
-    value: (w) => (w.clients > 0 ? Math.round(w.revenue / w.clients) : 0),
+    /**
+     * Той же функцией, что и в отчётах.
+     *
+     * Здесь считалось «доход ÷ клиенты», а в отчётах — «выручка ÷ приёмы».
+     * Пациент, пришедший за неделю трижды, в одном месте один, в другом три:
+     * два разных числа под одной подписью «средний чек», и владелец
+     * справедливо считал это ошибкой платформы.
+     */
+    value: (w) => averageCheck(w.revenue, w.appts),
     format: (n) => formatMoney(n),
-    hint: "доход ÷ клиенты",
+    hint: "выручка ÷ приёмы",
   },
 ];
 
@@ -85,7 +95,17 @@ function Panel({ measure, weeks }: { measure: Measure; weeks: WeekPoint[] }) {
             // h-full обязателен: без него у колонки авто-высота и процентная
             // высота столбика схлопывается в ноль. Слот подписи занимает место
             // всегда, чтобы базовые линии всех панелей совпадали.
-            <div key={w.label} className="group relative flex h-full min-w-0 flex-1 flex-col">
+            /*
+              Столбец — ссылка на отчёт ровно за эту неделю. Иначе сравнить
+              график с отчётом нельзя: они считали разные отрезки, и два числа
+              под словом «неделя» выглядели ошибкой платформы.
+            */
+            <Link
+              key={w.label}
+              href={`/analytics?period=${w.key}`}
+              title={`Отчёты за ${w.label}`}
+              className="group relative flex h-full min-w-0 flex-1 flex-col"
+            >
               <div className="text-text-muted h-3.5 truncate text-center text-[10px] leading-none">
                 {labelled ? measure.format(v) : ""}
               </div>
@@ -106,7 +126,7 @@ function Panel({ measure, weeks }: { measure: Measure; weeks: WeekPoint[] }) {
                   </div>
                 ) : null}
               </div>
-            </div>
+            </Link>
           );
         })}
       </div>

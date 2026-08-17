@@ -2,7 +2,15 @@ import Link from "next/link";
 import { getDashboardMetricsDb, getServicesLoadDb } from "@/lib/server/analytics";
 import { getSession } from "@/lib/server/session";
 import { formatDuration, formatMoney, formatMoneyPrecise, formatNumber, formatPercent } from "@/lib/format";
-import { isMonthKey, isPeriodKey, monthLabel, type PeriodKey } from "@/lib/metrics/types";
+import {
+  isMonthKey,
+  isPeriodKey,
+  isWeekKey,
+  monthLabel,
+  weekLabel,
+  type PeriodKey,
+} from "@/lib/metrics/types";
+import { CLINIC_TZ } from "@/lib/clinic-time";
 
 export const metadata = { title: "Отчёты" };
 
@@ -36,6 +44,15 @@ function recentMonths(now: Date, count = 18): { id: string; label: string }[] {
     out.push({ id, label: monthLabel(id) });
   }
   return out;
+}
+
+/** День периода в зоне клиники: сервер живёт по UTC, и границы уезжали. */
+function periodDay(at: string | Date): string {
+  return new Intl.DateTimeFormat("ru-RU", { timeZone: CLINIC_TZ }).format(new Date(at));
+}
+
+function periodLabelFor(period: PeriodKey): string {
+  return isWeekKey(period) ? weekLabel(period) : period;
 }
 
 function Bar({ value, tone = "accent" }: { value: number; tone?: "accent" | "muted" }) {
@@ -85,6 +102,16 @@ export default async function AnalyticsPage({
         <div className="flex flex-wrap items-center justify-between gap-3 max-md:flex-col max-md:items-stretch max-md:gap-2.5">
           <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Отчёты</h1>
           <div className="border-border inline-flex overflow-hidden rounded-md border max-md:flex">
+            {isWeekKey(period) ? (
+              /*
+                Выбранная неделя видна как период: без этого отчёт открывался
+                со столбца графика, а на экране не было активного периода — и
+                непонятно, за что вообще посчитаны цифры.
+              */
+              <span className="bg-accent-tint text-accent-text border-border border-r px-3 py-1.5 text-sm font-medium">
+                {periodLabelFor(period)}
+              </span>
+            ) : null}
             {PERIODS.map((p, i) => (
               <Link
                 key={p.id}
@@ -131,8 +158,15 @@ export default async function AnalyticsPage({
           неделю: 205 тысяч против 215 на одних и тех же данных.
         */}
         <p className="text-text-subtle mt-2 text-2xs">
-          {new Date(m.period.from).toLocaleDateString("ru-RU")} —{" "}
-          {new Date(m.period.to).toLocaleDateString("ru-RU")} · рабочих дней {m.period.workingDays}
+          {/*
+            Верхняя граница периода исключительная: показываем последний день,
+            а не первый день следующего. Иначе строка, которая как раз и должна
+            прекратить путаницу с отрезками, называет неделю 10–17 при
+            настоящей 10–16.
+          */}
+          {periodDay(m.period.from)} — {periodDay(new Date(new Date(m.period.to).getTime() - 1))} ·
+          рабочих дней {m.period.workingDays}
+          {isWeekKey(period) ? " · календарная неделя, как на графике владельца" : null}
         </p>
         <div className="mt-3.5 flex flex-wrap gap-1.5">
           {TABS.map((t) => (

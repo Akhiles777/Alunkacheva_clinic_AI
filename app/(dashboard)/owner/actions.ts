@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/server/authz";
 import type { Appt } from "@/app/_data/store";
 import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
 import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
+import { weekKeyOf } from "@/lib/metrics/types";
 
 /**
  * Серверный отчёт владельца — из БД (проекция Appointment + пациенты). Не мок:
@@ -226,6 +227,14 @@ export async function getOwnerReport(): Promise<OwnerReport> {
 
 export interface WeekPoint {
   label: string;
+  /**
+   * Ключ периода отчёта — «w2026-08-10».
+   *
+   * По нему столбец открывает «Отчёты» ровно за свою неделю. Прежде сравнивать
+   * было не с чем: график считал полные недели с понедельника, отчёт — последние
+   * семь дней до сегодня, и под словом «неделя» стояли два разных числа.
+   */
+  key: string;
   revenue: number;
   clients: number;
   appts: number;
@@ -236,7 +245,7 @@ export interface WeeklyDynamics {
   clientsGrowthPct: number | null;
 }
 
-function weekKey(d: Date): number {
+function weekStart(d: Date): number {
   // Сдвигаем к московскому «настенному» времени и берём понедельник недели.
   const msk = new Date(d.getTime() + 3 * 3600 * 1000);
   const dow = (msk.getUTCDay() + 6) % 7; // 0 = понедельник
@@ -273,7 +282,7 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
 
   const buckets = new Map<number, { revenue: number; clients: Set<string>; appts: number }>();
   for (const r of rows) {
-    const key = weekKey(r.startAt);
+    const key = weekStart(r.startAt);
     const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0 };
     b.revenue += Number(r.revenue);
     if (r.patientId) b.clients.add(r.patientId);
@@ -282,11 +291,17 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
   }
 
   // Текущая неделя ещё не завершена — в динамику берём только полные недели.
-  const currentWeek = weekKey(new Date());
+  const currentWeek = weekStart(new Date());
   const keys = [...buckets.keys()].filter((k) => k < currentWeek).sort((a, b) => a - b).slice(-6);
   const weeks: WeekPoint[] = keys.map((k) => {
     const b = buckets.get(k)!;
-    return { label: weekLabel(k), revenue: b.revenue, clients: b.clients.size, appts: b.appts };
+    return {
+      label: weekLabel(k),
+      key: weekKeyOf(new Date(k + 12 * 3600 * 1000)),
+      revenue: b.revenue,
+      clients: b.clients.size,
+      appts: b.appts,
+    };
   });
 
   const pct = (arr: number[]) => {
