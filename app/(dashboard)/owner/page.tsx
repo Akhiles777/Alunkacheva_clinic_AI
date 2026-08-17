@@ -44,7 +44,11 @@ export default async function OwnerPage() {
     <>
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
         <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Кабинет владельца</h1>
-        <p className="text-text-muted mt-1 text-xs">Полный отчёт из базы и глубокий ИИ-анализ по клинике</p>
+        {/* Период обязателен в подписи: раздел считал один текущий день, и
+            «Неявки 0%» читались как «неявок нет вовсе», хотя в базе их сотня. */}
+        <p className="text-text-muted mt-1 text-xs">
+          За последние 30 дней · операционная картина дня — на экране «Сегодня»
+        </p>
       </header>
 
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
@@ -96,7 +100,7 @@ export default async function OwnerPage() {
                 «Отчётах», и без подписи одинаковые заголовки с разными числами
                 читаются как ошибка платформы. */}
             <h2 className="text-sm font-medium">Загрузка кабинетов</h2>
-            <p className="text-text-subtle mb-4 text-2xs">сегодня · за период — в разделе «Отчёты»</p>
+            <p className="text-text-subtle mb-4 text-2xs">за 30 дней</p>
             <ul className="flex flex-col gap-3">
               {report.rooms.map((l) => (
                 <li key={l.name} className="flex items-center gap-3">

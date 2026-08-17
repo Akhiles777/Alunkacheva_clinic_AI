@@ -5,7 +5,6 @@ import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import type { Appt } from "@/app/_data/store";
 import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
-import { todayRangeMoscow } from "@/lib/schedule";
 import { roomOccupancyBetween } from "@/lib/server/analytics";
 
 /**
@@ -69,8 +68,25 @@ function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
   return h * 60 + m;
 }
 
+/**
+ * Период кабинета владельца — последние тридцать дней, а не сегодня.
+ *
+ * Раздел называется «полный отчёт по клинике», но считал он один текущий день.
+ * Отсюда «Неявки 0%» при ста двадцати двух неявках в базе: сегодня никто не
+ * пропустил приём — и показатель честно показывал ноль, только отвечал он на
+ * другой вопрос. Владельцу нужен месяц, операционная картина дня — на экране
+ * «Сегодня».
+ */
+const OWNER_DAYS = 30;
+
+// Не экспортируем: файл серверных действий может отдавать наружу только
+// асинхронные функции, иначе сборка падает.
+function ownerPeriod(now = new Date()): { start: Date; end: Date } {
+  return { start: new Date(now.getTime() - OWNER_DAYS * 24 * 3600 * 1000), end: now };
+}
+
 async function loadAppts(companyId: string): Promise<Appt[]> {
-  const { start, end } = todayRangeMoscow();
+  const { start, end } = ownerPeriod();
   const rows = await prisma.appointment.findMany({
     where: {
       companyId,
@@ -158,7 +174,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    * выходило 8% там, где в отчётах 0%, — и понять, какому числу верить, было
    * невозможно. Правильный ответ: никакому, расхождение само по себе ошибка.
    */
-  const { start, end } = todayRangeMoscow();
+  const { start, end } = ownerPeriod();
   const loads = await roomOccupancyBetween(session.companyId, start, end);
   const revenueSum = perf.reduce((s, p) => s + p.revenue, 0);
   const arrived = appts.filter((a) => a.status === "arrived").length;

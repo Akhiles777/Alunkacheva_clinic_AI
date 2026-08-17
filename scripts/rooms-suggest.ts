@@ -43,6 +43,30 @@ function score(a: string, b: string): number {
   return common / Math.min(wa.size, wb.size);
 }
 
+/**
+ * Кабинет по виду услуги.
+ *
+ * Совпадения по названию мало: «Нейрококтейль», «Антистресс коктейль» и
+ * «Забор анализов» с «Кабинетом 1 — процедурный» не пересекаются ни одним
+ * словом, а идут именно там. Вид услуги знает об этом прямо: капельницы и
+ * анализы — процедурный кабинет.
+ */
+const ROOM_WORD_BY_KIND: Record<string, string> = {
+  OSTEOPATHY: "остеопат",
+  BIOFEEDBACK: "бос",
+  NEUROMEDITATION: "нейромед",
+  IV_THERAPY: "процедур",
+  LAB: "процедур",
+};
+
+function roomByKind(kind: string, rooms: { id: string; name: string }[]): { id: string; name: string } | null {
+  const word = ROOM_WORD_BY_KIND[kind];
+  if (!word) return null;
+  const matched = rooms.filter((r) => r.name.toLowerCase().replace(/ё/g, "е").includes(word));
+  // Подошёл ровно один — привязываем; несколько или ни одного — не гадаем.
+  return matched.length === 1 ? matched[0] : null;
+}
+
 /** Кабинет с лучшим совпадением, если оно уверенное. */
 function bestRoom(name: string, rooms: { id: string; name: string }[]): { id: string; name: string } | null {
   const ranked = rooms
@@ -71,7 +95,7 @@ async function main() {
     }),
     prisma.service.findMany({
       where: { companyId: company.id },
-      select: { id: true, title: true, rooms: { select: { roomId: true } } },
+      select: { id: true, title: true, kind: true, rooms: { select: { roomId: true } } },
     }),
     prisma.appointment.count({ where: { companyId: company.id, deletedAt: null, roomId: { not: null } } }),
     prisma.appointment.count({ where: { companyId: company.id, deletedAt: null, roomId: null } }),
@@ -111,12 +135,14 @@ async function main() {
       console.log(`  ${s.title.slice(0, 34).padEnd(36)} уже задана`);
       continue;
     }
-    const match = bestRoom(s.title, rooms);
+    // Сначала по названию, затем по виду услуги: «Нейрококтейль» с
+    // «процедурным» не пересекается ни одним словом, но идёт именно там.
+    const match = bestRoom(s.title, rooms) ?? roomByKind(s.kind, rooms);
     if (!match) {
-      console.log(`  ${s.title.slice(0, 34).padEnd(36)} совпадения нет`);
+      console.log(`  ${s.title.slice(0, 34).padEnd(36)} ${String(s.kind).padEnd(16)} совпадения нет`);
       continue;
     }
-    console.log(`  ${s.title.slice(0, 34).padEnd(36)} → ${match.name}`);
+    console.log(`  ${s.title.slice(0, 34).padEnd(36)} ${String(s.kind).padEnd(16)} → ${match.name}`);
     servicePlan.push({ id: s.id, roomId: match.id, label: s.title });
   }
 
