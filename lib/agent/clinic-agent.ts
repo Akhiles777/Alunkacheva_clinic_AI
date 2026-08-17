@@ -296,7 +296,20 @@ const KNOWLEDGE_CHARS_BUDGET = 14000;
  */
 const KNOWLEDGE_CHARS_FALLBACK = 20000;
 
-async function clinicContext(companyId: string, question?: string): Promise<string> {
+async function clinicContext(
+  companyId: string,
+  question?: string,
+  /**
+   * Согласие уже получено — записи справочника про него в промпт не идут.
+   *
+   * Дословный путь такие записи уже отфильтровывал, а этот — нет. В результате
+   * пациентка ответила «Да» на запрос согласия и следующей же репликой
+   * услышала от модели: «нужно ваше согласие, ответьте „Согласна“ или „Не
+   * согласна“». Согласие ведёт платформа, а не текст из справочника: для
+   * человека это выглядит как неисправная программа.
+   */
+  consentGranted = false,
+): Promise<string> {
   const [services, knowledge, schedule, staff] = await Promise.all([
     getServices(companyId),
     prisma.knowledgeEntry.findMany({
@@ -339,7 +352,10 @@ async function clinicContext(companyId: string, question?: string): Promise<stri
     lines.push("", "Принимают:");
     for (const p of staff) lines.push(`• ${p.name}${p.specialty ? ` — ${p.specialty}` : ""}`);
   }
-  const relevant = pickRelevant(knowledge, question);
+  const usable = consentGranted
+    ? knowledge.filter((k) => !aboutConsent(k.topic) && !aboutConsent(k.question))
+    : knowledge;
+  const relevant = pickRelevant(usable, question);
   if (relevant.length) {
     lines.push("", "Справка клиники:");
     for (const k of relevant) lines.push(`${k.topic}: ${k.answer}`);
@@ -944,7 +960,7 @@ async function replyToQuestion(
     }
   }
 
-  const context = await clinicContext(ctx.companyId, text);
+  const context = await clinicContext(ctx.companyId, text, conversation.consentGrantedAt !== null);
   const answer = await answerLLM(
     text,
     context,
@@ -1215,8 +1231,17 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
     // Первая фраза после согласия — по сути и есть приветствие клиники: до
     // этого пациент видел только юридический текст. Берём её из настроек,
     // чтобы знакомство шло словами клиники, а не нашей заглушкой.
+    /**
+     * После согласия здороваемся — всегда.
+     *
+     * Запасным вариантом стояло «Спасибо!»: если клиника не заполнила
+     * приветствие в настройках, человек получал «Спасибо, Имя» и сразу деловой
+     * текст — без единого приветственного слова. Он только что поздоровался с
+     * клиникой, ответил на юридический вопрос и вправе услышать «здравствуйте»
+     * прежде всего остального.
+     */
     const { greeting } = await assistantMode(ctx.companyId);
-    const hello = greeting.trim() || "Спасибо!";
+    const hello = greeting.trim() || greetingText({ incoming: "здравствуйте", repeat: false });
 
     /**
      * Вопрос, заданный до согласия.
@@ -1242,7 +1267,7 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
     }
 
     return respond(ctx, conversationId, {
-      text: greeting.trim() ? `Спасибо!\n\n${hello}` : "Спасибо. Чем можем помочь?",
+      text: hello,
       buttons: mainMenu(),
     });
   }

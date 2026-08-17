@@ -99,7 +99,7 @@ async function state(): Promise<Response> {
    * Печатаем, у каких услуг и специалистов привязки нет: по этому списку
    * видно, что именно заполнить.
    */
-  const [rooms, byRoom, staffNoRoom, servicesNoRoom, servicesTotal, servicesFromYclients] =
+  const [rooms, byRoom, staffNoRoom, servicesNoRoom, servicesTotal, servicesFromYclients, prices] =
     await Promise.all([
     prisma.room.findMany({
       where: { companyId: company.id, isActive: true },
@@ -137,6 +137,18 @@ async function state(): Promise<Response> {
     }),
     prisma.service.count({ where: { companyId: company.id } }),
     prisma.service.count({ where: { companyId: company.id, yclientsServiceId: { not: null } } }),
+    /**
+     * Цены услуг — то, чем отвечает ассистент пациенту.
+     *
+     * На живом диалоге женщина записывала ребёнка, а услышала 8000 ₽. Понять,
+     * ошибка это модели или цена в справочнике, можно только увидев сам
+     * справочник. Это данные клиники, не пациентов: показывать их безопасно.
+     */
+    prisma.service.findMany({
+      where: { companyId: company.id, isActive: true },
+      select: { title: true, price: true, durationMin: true },
+      orderBy: { title: "asc" },
+    }),
   ]);
   const countByRoom = new Map(byRoom.map((r) => [r.roomId, r._count._all]));
 
@@ -156,6 +168,7 @@ async function state(): Promise<Response> {
         `${s.isActive ? "" : " · выключен"}, визитов ${s._count.appointments}`,
     ),
     услугиБезКабинета: servicesNoRoom.map((s) => s.title),
+    ценыУслуг: prices.map((s) => `${s.title} — ${Number(s.price)} ₽, ${s.durationMin} мин`),
     /**
      * Задвоенные услуги. Одна строка заведена руками и несёт привязку к
      * кабинету, вторая приехала из YCLIENTS и на неё ссылаются визиты — из-за
