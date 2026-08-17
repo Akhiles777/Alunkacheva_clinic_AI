@@ -143,7 +143,7 @@ export function menuActionFromText(raw: string): string | null {
   return null;
 }
 
-function normalize(raw: string): string {
+export function normalize(raw: string): string {
   return raw
     .toLowerCase()
     .replace(/ё/g, "е")

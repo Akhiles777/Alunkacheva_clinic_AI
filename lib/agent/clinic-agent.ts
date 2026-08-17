@@ -15,13 +15,14 @@ import {
   materializeConsent,
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
-import { consentFromText, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
+import { consentFromText, greetingUsed, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
 import { hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
+import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
 
 /**
@@ -726,6 +727,24 @@ async function replyToQuestion(
     return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
 
+  const said = await recentTurns(conversation.id);
+
+  /**
+   * «Хорошо», «спасибо», «до свидания» — отвечаем сами.
+   *
+   * Это подтверждение, а не вопрос. На боевом стенде такое «Хорошо» ушло в
+   * модель, та промолчала, и сработал запасной путь: «Секунду, передаю ваш
+   * вопрос администратору». Администратора позвали на слово «хорошо».
+   *
+   * Проверяем после ветки согласия и до всего остального, но только вне
+   * оформления записи: там короткое «да» — ответ на вопрос агента, а не
+   * вежливость.
+   */
+  if (!inIntakeFlow(said)) {
+    const polite = smallTalkReply(text);
+    if (polite) return respond(ctx, conversation.id, { text: polite });
+  }
+
   /**
    * Пациент прислал данные для записи.
    *
@@ -783,13 +802,6 @@ async function replyToQuestion(
      * собеседник не помнит. Но без приветственного слова ответа не бывает —
      * прежде здесь уходило сухое «Слушаю вас».
      */
-    const said = await recentTurns(conversation.id);
-    /**
-     * Повтором считаем не только прошлое приветствие, но и любой предыдущий
-     * содержательный ответ. На прогоне пациент спросил про цену, получил
-     * ответ, потом поздоровался — и услышал вводную «это клиника такая-то,
-     * расскажу про услуги» в середине разговора. Знакомятся один раз.
-     */
     /**
      * Знакомы ли мы — в пределах суток.
      *
@@ -829,8 +841,6 @@ async function replyToQuestion(
   const knowledgeRows = conversation.consentGrantedAt
     ? allKnowledge.filter((r) => !aboutConsent(r.topic) && !aboutConsent(r.question))
     : allKnowledge;
-
-  const said = await recentTurns(conversation.id);
 
   /**
    * Правило 1: на медицинскую тему отвечаем ТОЛЬКО дословной справкой клиники.
@@ -994,6 +1004,16 @@ async function replyToQuestion(
 
   if (answer && invented.length === 0 && !alreadySaid(said, answer)) {
     /**
+     * Поздоровались вместе с вопросом — здороваемся в ответ.
+     *
+     * «Здравствуйте, у вас оплата картой есть?» — приветствие и вопрос в одном
+     * сообщении. Ветка приветствия сюда не доходит (это вопрос, на него нужен
+     * ответ по существу), а модель здоровается через раз: на боевом стенде
+     * человек поздоровался и получил сухое «Да, конечно. Оплата принимается…».
+     * Мелочь, по которой сразу видно автомат.
+     */
+    const withHello = greetIfNeeded(text, answer, settings.greeting);
+    /**
      * Обещал позвать человека — значит человека зовём.
      *
      * На живом диалоге ассистент написал «позову администратора, чтобы она
@@ -1004,7 +1024,7 @@ async function replyToQuestion(
       await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ассистент обещал позвать человека").catch(() => {});
     }
     return respond(ctx, conversation.id, {
-      text: intakeSent ? `${answer}\n\n${INTAKE_ACCEPTED}` : answer,
+      text: intakeSent ? `${withHello}\n\n${INTAKE_ACCEPTED}` : withHello,
       buttons: mainMenu(),
     });
   }
@@ -1112,6 +1132,23 @@ async function spokeWithin(conversationId: string, windowMs: number): Promise<bo
     select: { id: true },
   });
   return said !== null;
+}
+
+/**
+ * Добавить ответное приветствие, если человек поздоровался, а ответ начинается
+ * сразу с дела.
+ *
+ * Здороваемся тем же, чем поздоровались с нами (см. lib/agent/greeting), но
+ * без вводной клиники: на вопрос уже отвечено, представляться посреди ответа
+ * незачем.
+ */
+function greetIfNeeded(incoming: string, answer: string, configured: string): string {
+  if (!greetingUsed(incoming)) return answer;
+  // Модель могла поздороваться сама — второй раз не нужно.
+  if (alreadyGreeted([{ role: "assistant", content: answer }], configured)) return answer;
+
+  const hello = greetingText({ incoming, configured, repeat: true }).replace(/\s*Слушаю вас\.?$/i, "");
+  return `${hello.trim()} ${answer}`;
 }
 
 /** Подтверждение, что анкета ушла администратору. */
