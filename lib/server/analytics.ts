@@ -11,6 +11,7 @@ import {
   monthBounds,
   monthLabel,
   weekBounds,
+  weekKeyOf,
   weekLabel,
 } from "@/lib/metrics/types";
 import type {
@@ -36,9 +37,9 @@ import type {
  * первичные — первый визит пациента со статусом ARRIVED.
  */
 
-const PERIOD_DAYS: Record<string, number> = { week: 7, month: 30, quarter: 90 };
+const PERIOD_DAYS: Record<string, number> = { month: 30, quarter: 90 };
 const PERIOD_LABEL: Record<string, string> = {
-  week: "Неделя",
+  week: "Прошлая неделя",
   month: "Месяц",
   quarter: "Квартал",
 };
@@ -57,10 +58,31 @@ export function periodBounds(period: PeriodKey, now: Date = new Date()): { from:
   if (isMonthKey(period)) return monthBounds(period);
   // Календарная неделя: тот же отрезок, что показывает столбец графика.
   if (isWeekKey(period)) return weekBounds(period);
-  return {
-    from: new Date(now.getTime() - (PERIOD_DAYS[period] ?? 30) * 24 * 3600 * 1000),
-    to: endOfToday(now),
-  };
+
+  /**
+   * «Неделя» — последняя ПОЛНАЯ календарная неделя, та же, что последний
+   * столбец графика у владельца.
+   *
+   * Здесь были последние семь дней до сегодня. График показывает полные недели
+   * с понедельника, и под одним словом «неделя» стояли 205 тысяч и 215. Ссылка
+   * со столбца в отчёт этого не лечит: владелец сравнивает то, что открыто
+   * перед ним, а не то, что можно открыть по ссылке. Значит слово «неделя»
+   * обязано означать один и тот же отрезок на обоих экранах.
+   */
+  if (period === "week") {
+    return weekBounds(weekKeyOf(new Date(now.getTime() - 7 * 24 * 3600 * 1000)));
+  }
+
+  /**
+   * Скользящее окно — ровно N календарных суток клиники.
+   *
+   * Начало бралось как «сейчас минус тридцать суток», то есть с середины дня:
+   * период охватывал тридцать дней плюс остаток сегодняшнего, и подпись честно
+   * показывала тридцать одну дату под словом «месяц».
+   */
+  const days = PERIOD_DAYS[period] ?? 30;
+  const from = startOfClinicDay(new Date(now.getTime() - (days - 1) * 24 * 3600 * 1000));
+  return { from, to: endOfToday(now) };
 }
 
 /** Подпись периода для экрана. */
@@ -193,7 +215,8 @@ function isoDate(at: Date, tz = "Europe/Moscow"): string {
  * потому, что месяц не кончился.
  */
 function denominatorEnd(period: PeriodKey, from: Date, to: Date, now: Date): Date {
-  const calendar = isMonthKey(period) || isWeekKey(period);
+  // «Неделя» — тоже календарный отрезок: последняя полная неделя.
+  const calendar = isMonthKey(period) || isWeekKey(period) || period === "week";
   const end = calendar ? to : now;
   const today = endOfToday(now);
   if (end > today) return today > from ? today : from;

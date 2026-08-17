@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, formatMoneyPrecise } from "@/lib/format";
 import { averageCheck } from "@/lib/metrics/summary";
 import type { WeeklyDynamics, WeekPoint } from "./actions";
 
@@ -38,7 +38,9 @@ const MEASURES: Measure[] = [
      * справедливо считал это ошибкой платформы.
      */
     value: (w) => averageCheck(w.revenue, w.appts),
-    format: (n) => formatMoney(n),
+    // Формат тот же, что в отчётах: округление до рубля здесь и до копейки
+    // там дало бы «4 475 ₽» против «4 475,11 ₽» под одной подписью.
+    format: (n) => formatMoneyPrecise(n),
     hint: "выручка ÷ приёмы",
   },
 ];
