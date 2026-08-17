@@ -92,11 +92,15 @@ export default async function OwnerPage() {
           </section>
 
           <section className="border-border bg-surface rounded-xl border p-5">
-            <h2 className="mb-4 text-sm font-medium">Загрузка кабинетов</h2>
+            {/* Подпись периода обязательна: тот же показатель за месяц стоит в
+                «Отчётах», и без подписи одинаковые заголовки с разными числами
+                читаются как ошибка платформы. */}
+            <h2 className="text-sm font-medium">Загрузка кабинетов</h2>
+            <p className="text-text-subtle mb-4 text-2xs">сегодня · за период — в разделе «Отчёты»</p>
             <ul className="flex flex-col gap-3">
               {report.rooms.map((l) => (
                 <li key={l.name} className="flex items-center gap-3">
-                  <span className="w-20 flex-none truncate text-sm">{l.name}</span>
+                  <span className="w-40 flex-none truncate text-sm" title={l.name}>{l.name}</span>
                   <span className="bg-list-gap relative h-2 flex-1 overflow-hidden rounded-pill">
                     <span
                       className="bg-accent absolute inset-y-0 left-0 rounded-pill"

@@ -5,7 +5,6 @@ import Link from "next/link";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { formatMoney } from "@/lib/format";
 import { useDb } from "@/app/_data/store";
-import { priceOf } from "@/lib/staff-analytics";
 import { getCurrentUser, type CurrentUser } from "../_components/user-actions";
 import { InternalStaffChat } from "../chat/internal-staff-chat";
 import { VisitNote } from "../_components/visit-note";
@@ -34,7 +33,17 @@ export default function DoctorPage() {
   const arrived = myAppts.filter((a) => a.status === "arrived").length;
   const noShow = myAppts.filter((a) => a.status === "no_show").length;
   const hours = myAppts.filter((a) => a.status !== "no_show").reduce((s, a) => s + a.durationMin, 0) / 60;
-  const revenue = myAppts.filter((a) => a.status === "arrived").reduce((s, a) => s + priceOf(a.service), 0);
+  /**
+   * Выручка — из данных визита, а не из зашитого прайса.
+   *
+   * Здесь стояло `priceOf(a.service)` — список цен по ключевым словам прямо в
+   * коде: остеопатия 6500, БОС 5000. У клиники цены другие (взрослый приём
+   * 8000), и врач видел выдуманные суммы, не совпадающие ни с отчётами, ни с
+   * кассой. Цена визита приходит из YCLIENTS вместе с записью.
+   */
+  const revenue = myAppts
+    .filter((a) => a.status === "arrived")
+    .reduce((s, a) => s + (a.price ?? 0), 0);
 
   // Уведомления — из данных: ближайшие приёмы, первичные, неявки.
   const notifications = useMemo(() => {

@@ -289,7 +289,10 @@ export default async function AnalyticsPage({
           ) : null}
 
           {tab === "rooms" ? (
-            <Card title="Загрузка кабинетов" hint="дополнительный разрез — по кабинетам">
+            <Card
+              title="Загрузка кабинетов"
+              hint="за выбранный период; на экране владельца — за сегодня"
+            >
               <ul className="flex flex-col gap-3.5">
                 {m.rooms.map((r) => (
                   <li key={r.roomId}>

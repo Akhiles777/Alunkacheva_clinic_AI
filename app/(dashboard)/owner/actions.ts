@@ -4,8 +4,9 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import type { Appt } from "@/app/_data/store";
-import { hypotheses, priceOf, roomLoad, staffPerformance } from "@/lib/staff-analytics";
+import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
 import { todayRangeMoscow } from "@/lib/schedule";
+import { roomOccupancyBetween } from "@/lib/server/analytics";
 
 /**
  * Серверный отчёт владельца — из БД (проекция Appointment + пациенты). Не мок:
@@ -106,7 +107,16 @@ async function patientCounts(companyId: string) {
   startOfToday.setHours(0, 0, 0, 0);
   const [total, primary, noConsent] = await Promise.all([
     prisma.patient.count({ where: { companyId, deletedAt: null } }),
-    prisma.patient.count({ where: { companyId, deletedAt: null, firstSeenAt: { gte: startOfToday } } }),
+    prisma.patient.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        // Карточки, перенесённые из YCLIENTS без визитов, новыми не считаются:
+        // дату первого обращения у них взять было неоткуда (§8).
+        firstSeenExact: true,
+        firstSeenAt: { gte: startOfToday },
+      },
+    }),
     prisma.patient.count({
       where: { companyId, deletedAt: null, notes: { some: { kind: "NO_CONSENT", resolvedAt: null } } },
     }),
@@ -120,7 +130,9 @@ function serviceBreakdown(appts: Appt[]): OwnerServiceRow[] {
     const key = a.service || "—";
     const cur = map.get(key) ?? { service: key, count: 0, revenue: 0 };
     cur.count += 1;
-    if (a.status === "arrived") cur.revenue += a.price ?? priceOf(a.service);
+    // Цена визита — из данных, а не из зашитого прайса по ключевым словам:
+    // тот показывал остеопатию по 6500 при настоящих 8000.
+    if (a.status === "arrived") cur.revenue += a.price ?? 0;
     map.set(key, cur);
   }
   return [...map.values()].sort((x, y) => y.revenue - x.revenue);
@@ -138,7 +150,16 @@ export async function getOwnerReport(): Promise<OwnerReport> {
   ]);
 
   const perf = staffPerformance(appts);
-  const loads = roomLoad(appts);
+  /**
+   * Загрузка кабинетов — той же функцией, что и в отчётах.
+   *
+   * Здесь считалось своё: по зашитому списку «Кабинет 1/2/3», по зашитому дню
+   * 9:00–21:00, и визит без кабинета приписывался первому. На экране владельца
+   * выходило 8% там, где в отчётах 0%, — и понять, какому числу верить, было
+   * невозможно. Правильный ответ: никакому, расхождение само по себе ошибка.
+   */
+  const { start, end } = todayRangeMoscow();
+  const loads = await roomOccupancyBetween(session.companyId, start, end);
   const revenueSum = perf.reduce((s, p) => s + p.revenue, 0);
   const arrived = appts.filter((a) => a.status === "arrived").length;
   const noShow = appts.filter((a) => a.status === "no_show").length;
@@ -166,7 +187,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     rooms: loads.map((l) => ({ name: l.name, ratePct: Math.round(l.rate * 100) })),
     services: serviceBreakdown(appts),
     funnel: { dialogs, calls },
-    hypotheses: hypotheses(appts),
+    hypotheses: hypotheses(appts, loads),
   };
 }
 

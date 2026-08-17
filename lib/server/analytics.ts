@@ -451,6 +451,68 @@ function buildRoomDays(
  * Загрузка по услугам: занятые минуты к доступным минутам тех кабинетов, где
  * услуга проводится. Раньше считалась по вымышленным средним за день.
  */
+export interface RoomOccupancyRow {
+  roomId: string;
+  name: string;
+  busyMinutes: number;
+  availableMinutes: number;
+  /** Доля занятого времени, 0…1. */
+  rate: number;
+}
+
+/**
+ * Загрузка кабинетов за произвольный период — одна функция на всю платформу.
+ *
+ * Раньше кабинет владельца считал загрузку сам: по зашитому списку «Кабинет
+ * 1/2/3», по зашитому дню 9:00–21:00 и по сегодняшним визитам, причём визит без
+ * кабинета попадал в первый кабинет. Отчёты считали иначе — по настоящим
+ * кабинетам и графику клиники. На двух экранах выходили разные числа под
+ * одинаковой подписью: 8% против 0%. Владельцу невозможно объяснить, какому
+ * верить, и правильный ответ — «никакому»: расхождение само по себе ошибка.
+ */
+export async function roomOccupancyBetween(
+  companyId: string,
+  from: Date,
+  to: Date,
+): Promise<RoomOccupancyRow[]> {
+  const [rooms, appts, closed, schedule] = await Promise.all([
+    prisma.room.findMany({
+      where: { companyId, isActive: true },
+      orderBy: { sortOrder: "asc" },
+      select: { id: true, name: true },
+    }),
+    prisma.appointment.findMany({
+      where: {
+        companyId,
+        deletedAt: null,
+        // Отменённые и неявки время кабинета не занимают: слот освобождается.
+        status: { in: ["CREATED", "CONFIRMED", "ARRIVED"] },
+        startAt: { gte: from, lt: to },
+      },
+      select: { roomId: true, durationMin: true },
+    }),
+    closedDatesBetween(companyId, from, to),
+    loadSchedule(companyId),
+  ]);
+
+  const available = Math.max(1, workingMinutesBetween(from, to, schedule, closed));
+
+  return rooms.map((room) => {
+    // Визиты без кабинета не приписываем никакому: они видны отдельной
+    // строкой в проверке состояния, а тихо раздувать первый кабинет нельзя.
+    const busy = appts
+      .filter((a) => a.roomId === room.id)
+      .reduce((sum, a) => sum + a.durationMin, 0);
+    return {
+      roomId: room.id,
+      name: room.name,
+      busyMinutes: busy,
+      availableMinutes: available,
+      rate: Math.min(busy / available, 1),
+    };
+  });
+}
+
 export interface ServiceLoadRow {
   title: string;
   ratio: number;

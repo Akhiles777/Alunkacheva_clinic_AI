@@ -526,7 +526,16 @@ export async function getPatientsOverview(): Promise<PatientsOverview> {
 
   const [total, primaryToday, withVisits, noConsent, sources, intervals] = await Promise.all([
     prisma.patient.count({ where: { companyId, deletedAt: null } }),
-    prisma.patient.count({ where: { companyId, deletedAt: null, firstSeenAt: { gte: startOfToday } } }),
+    prisma.patient.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        // Карточки, перенесённые из YCLIENTS без визитов, новыми не считаются:
+        // дату первого обращения у них взять было неоткуда (§8).
+        firstSeenExact: true,
+        firstSeenAt: { gte: startOfToday },
+      },
+    }),
     prisma.patient.count({ where: { companyId, deletedAt: null, appointments: { some: { deletedAt: null } } } }),
     prisma.patient.count({
       where: {
