@@ -59,6 +59,14 @@ export function TodayClient() {
     : buildFreeWindows(db.appointments, nowMinute, day, clinicDay?.rooms);
 
   const scheduled = db.appointments.length;
+  /**
+   * Первичные ЗАПИСАННЫЕ на сегодня, а не состоявшиеся.
+   *
+   * В отчётах «первичные» — это пришедшие (§8), и цифры здесь и там разные по
+   * существу: экран дня отвечает на вопрос «кто сегодня придёт впервые», отчёт
+   * — «сколько первичных состоялось». Подпись обязана это различать, иначе
+   * одинаковое слово с разными числами снова читается как ошибка платформы.
+   */
   const firstVisits = db.appointments.filter((a) => a.isFirstVisit).length;
 
   // Деньги — только по состоявшимся визитам: запланированный визит ещё не
@@ -164,6 +172,7 @@ export function TodayClient() {
           <span aria-hidden className="sep-dot" />
           <span>
             <b className="num text-text font-medium">{formatNumber(firstVisits)}</b> первичных
+            записано
           </span>
           <span className="num text-text ml-auto font-medium">{formatMinute(nowMinute)}</span>
         </div>

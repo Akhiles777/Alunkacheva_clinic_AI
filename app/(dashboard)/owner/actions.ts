@@ -218,7 +218,14 @@ export async function getOwnerReport(): Promise<OwnerReport> {
      * и два числа под подписью «Неявки» расходились вдвое.
      */
     noShowRatePct: noShowRate(arrived, noShow),
-    firstVisits: appts.filter((a) => a.isFirstVisit).length,
+    /**
+     * Первичные — первый визит пациента СО СТАТУСОМ «пришёл» (§8).
+     *
+     * Здесь считались все записи подряд, включая запланированные и неявки. В
+     * отчётах то же слово означает состоявшиеся первичные, и числа расходились
+     * тем сильнее, чем больше в периоде будущих записей.
+     */
+    firstVisits: appts.filter((a) => a.isFirstVisit && a.status === "arrived").length,
     patients,
     staff: perf.map((p) => ({
       name: p.name,
