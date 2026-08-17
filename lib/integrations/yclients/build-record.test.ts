@@ -16,6 +16,7 @@ function lookups(over: Partial<SyncLookups> = {}): SyncLookups {
     patientByYclientsId: new Map([[7, "patient-1"]]),
     patientByPhone: new Map([["+79991234567", "patient-phone"]]),
     knownRecordIds: new Set<number>(),
+    roomByServiceId: new Map<string, string>(),
     ...over,
   };
 }
@@ -122,5 +123,50 @@ describe("кабинет по специалисту, когда YCLIENTS его
     const row = buildRecordRow("co", noRoom, lookups());
     if (row?.kind !== "row") return;
     expect(row.data.roomId).toBeNull();
+  });
+});
+
+/**
+ * Кабинет визита. Кабинеты в YCLIENTS как ресурсы не заведены, привязку
+ * «специалист → кабинет» клиника не задала — и все визиты оставались без
+ * кабинета: загрузка кабинетов пустая при полной базе визитов.
+ */
+describe("кабинет визита", () => {
+  const record = { id: 1, staff_id: 10, datetime: "2026-08-17T09:00:00+03:00", seance_length: 3600, client: { id: 7 }, services: [{ id: 55, cost: 5000 }] };
+
+  it("берёт кабинет из ресурса записи", () => {
+    const row = buildRecordRow("c1", { ...record, resource_instances: [{ resource_id: 900 }] }, lookups());
+    expect(row?.kind).toBe("row");
+    if (row?.kind !== "row") return;
+    expect(row.data.roomId).toBe("room-1");
+  });
+
+  it("нет ресурса — берёт кабинет специалиста", () => {
+    const row = buildRecordRow("c1", record, lookups({ defaultRoomByStaffId: new Map([["staff-1", "room-staff"]]) }));
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(row.data.roomId).toBe("room-staff");
+  });
+
+  it("нет и его — берёт кабинет услуги, если он один", () => {
+    const row = buildRecordRow("c1", record, lookups({ roomByServiceId: new Map([["service-1", "room-service"]]) }));
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(row.data.roomId).toBe("room-service");
+  });
+
+  it("ничего не известно — кабинета нет, а не выдуманный", () => {
+    const row = buildRecordRow("c1", record, lookups());
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(row.data.roomId).toBeNull();
+  });
+
+  it("кабинет специалиста важнее кабинета услуги", () => {
+    // Специалист принимает в своём кабинете, даже если услуга обычно идёт в
+    // другом: привязку специалиста задаёт человек, а услугу мы выводим сами.
+    const row = buildRecordRow("c1", record, lookups({
+      defaultRoomByStaffId: new Map([["staff-1", "room-staff"]]),
+      roomByServiceId: new Map([["service-1", "room-service"]]),
+    }));
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(row.data.roomId).toBe("room-staff");
   });
 });

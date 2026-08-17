@@ -13,6 +13,7 @@ import {
   mapResource,
   mapService,
   mapStaff,
+  type AppointmentUpsert,
 } from "./mappers";
 import type {
   YclientsClient,
@@ -505,6 +506,40 @@ async function syncRecordsWindow(
   return written;
 }
 
+/**
+ * Кабинет визита — три источника по убыванию надёжности.
+ *
+ *   1. Ресурс из записи YCLIENTS. Так и задумано в §2, но клиника кабинеты как
+ *      ресурсы не ведёт, и на боевых данных этого источника нет ни у одной
+ *      записи.
+ *   2. Кабинет специалиста из «Настройки → Сотрудники». Задаётся руками и на
+ *      сегодня тоже пуст.
+ *   3. Кабинет услуги — если он у неё ровно один. БОС-терапия идёт в кабинете
+ *      БОС-терапии, тут сомнений нет.
+ *
+ * Ни один не подошёл — визит остаётся без кабинета. Выдумывать привязку
+ * нельзя: загрузка кабинета это не оценка, а число, по которому принимают
+ * решение о найме.
+ */
+function resolveRoom(
+  r: AppointmentUpsert,
+  staffId: string,
+  lookups: SyncLookups,
+): string | null {
+  const fromResource = r.yclientsResourceId
+    ? (lookups.roomByResourceId.get(r.yclientsResourceId) ?? null)
+    : null;
+  if (fromResource) return fromResource;
+
+  const fromStaff = lookups.defaultRoomByStaffId.get(staffId);
+  if (fromStaff) return fromStaff;
+
+  const serviceId = r.yclientsServiceIds[0]
+    ? lookups.serviceByYclientsId.get(r.yclientsServiceIds[0])
+    : undefined;
+  return serviceId ? (lookups.roomByServiceId.get(serviceId) ?? null) : null;
+}
+
 /** Что делать с записью: удалить у себя или записать данными. */
 type RecordRow =
   | { kind: "deleted"; yclientsRecordId: number }
@@ -563,10 +598,7 @@ export function buildRecordRow(
        * «Настройки → Сотрудники». Пока он не задан, визит остаётся без
        * кабинета — выдумывать привязку нельзя.
        */
-      roomId:
-        (r.yclientsResourceId ? (lookups.roomByResourceId.get(r.yclientsResourceId) ?? null) : null) ??
-        lookups.defaultRoomByStaffId.get(staffId) ??
-        null,
+      roomId: resolveRoom(r, staffId, lookups),
       primaryServiceId: r.yclientsServiceIds[0]
         ? (lookups.serviceByYclientsId.get(r.yclientsServiceIds[0]) ?? null)
         : null,

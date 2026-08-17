@@ -187,8 +187,8 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
         (m.fromDialog ? `Из переписки с агентом: записались ${m.fromDialog.booked}, пришли ${m.fromDialog.arrived}.` : ""),
     );
     lines.push(
-      `Выручка ${money(m.money.revenue)} (из них отмечено оплаченными ${money(m.money.paidRevenue)}); ` +
-        `средний чек ${money(m.money.avgCheck)}; новых пациентов ${m.money.newPatients}.`,
+      `Выручка ${money(m.money.revenue)}; средний чек ${money(m.money.avgCheck)}; ` +
+        `новых пациентов ${m.money.newPatients}.`,
     );
     lines.push(`Записалось за период по дате записи: ${m.bookedInPeriod}.`);
     lines.push(

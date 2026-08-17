@@ -33,11 +33,22 @@ export interface SyncLookups {
   patientByPhone: Map<string, string>;
   /** Уже известные визиты: их идентификаторы в YCLIENTS. */
   knownRecordIds: Set<number>;
+  /**
+   * Кабинет услуги — когда он у неё ровно один.
+   *
+   * Третий и последний способ узнать кабинет визита. Кабинеты в YCLIENTS не
+   * заведены как ресурсы, привязку «специалист → кабинет» клиника пока не
+   * задала, и все визиты оставались без кабинета: загрузка кабинетов в отчётах
+   * пустая при полной базе визитов. Если услуга проводится ровно в одном
+   * кабинете, сомнений нет — БОС-терапия идёт в кабинете БОС-терапии. Если в
+   * нескольких, гадать не будем.
+   */
+  roomByServiceId: Map<string, string>;
 }
 
 /** Прочитать справочники клиники один раз за прогон. */
 export async function loadLookups(companyId: string): Promise<SyncLookups> {
-  const [staff, rooms, services] = await Promise.all([
+  const [staff, rooms, services, serviceRooms] = await Promise.all([
     prisma.staff.findMany({
       where: { companyId, yclientsStaffId: { not: null } },
       select: { id: true, yclientsStaffId: true, defaultRoomId: true },
@@ -50,7 +61,24 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
       where: { companyId, yclientsServiceId: { not: null } },
       select: { id: true, yclientsServiceId: true },
     }),
+    prisma.serviceRoom.findMany({
+      where: { service: { companyId } },
+      select: { serviceId: true, roomId: true },
+    }),
   ]);
+
+  // Услуга с единственным кабинетом — однозначная привязка; с несколькими —
+  // выбирать нельзя, оставляем визит без кабинета.
+  const roomsOfService = new Map<string, Set<string>>();
+  for (const link of serviceRooms) {
+    const set = roomsOfService.get(link.serviceId) ?? new Set<string>();
+    set.add(link.roomId);
+    roomsOfService.set(link.serviceId, set);
+  }
+  const roomByServiceId = new Map<string, string>();
+  for (const [serviceId, set] of roomsOfService) {
+    if (set.size === 1) roomByServiceId.set(serviceId, [...set][0]);
+  }
 
   return {
     staffByYclientsId: new Map(staff.map((s) => [s.yclientsStaffId!, s.id])),
@@ -62,6 +90,7 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     patientByYclientsId: new Map(),
     patientByPhone: new Map(),
     knownRecordIds: new Set(),
+    roomByServiceId,
   };
 }
 

@@ -255,16 +255,14 @@ export async function getDashboardMetricsDb(
   const arrived = appts.filter((a) => a.status === "ARRIVED");
   const revenue = arrived.reduce((sum, a) => sum + Number(a.revenue), 0);
   /**
-   * Оплаченная часть выручки (§8: «сумма по оплаченным визитам»).
+   * Отдельной «оплаченной выручки» больше нет — решение заказчика.
    *
-   * Показываем рядом, а не вместо: клиника может не отмечать оплату в
-   * YCLIENTS, и тогда подмена обнулила бы отчёт. Разрыв между двумя числами —
-   * сам по себе полезный сигнал: он показывает, сколько приёмов состоялось без
-   * зафиксированной оплаты.
+   * Выручка визита — стоимость оказанной услуги: пришёл на приём за 8000 ₽,
+   * значит 8000 ₽ и есть выручка. Отметка оплаты в YCLIENTS у этой клиники
+   * стоит на всех записях подряд (значение 1 у всех пятидесяти в проверке),
+   * то есть различать по ней нечего, а вторая цифра рядом с первой только
+   * заставляла бы гадать, какая из них настоящая.
    */
-  const paidRevenue = arrived
-    .filter((a) => a.isPaid)
-    .reduce((sum, a) => sum + Number(a.revenue), 0);
   const courseRevenue = arrived
     .filter((a) => a.courseId)
     .reduce((sum, a) => sum + Number(a.revenue), 0);
@@ -346,7 +344,6 @@ export async function getDashboardMetricsDb(
     },
     money: {
       revenue,
-      paidRevenue,
       courseRevenue,
       avgCheck: averageCheck(revenue, arrived.length),
       newPatients,

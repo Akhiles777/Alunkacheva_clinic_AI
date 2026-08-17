@@ -181,10 +181,8 @@ export default async function AnalyticsPage({
               <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
                 <Card title="Выручка">
                   <div className="readout text-2xl">{formatMoney(m.money.revenue)}</div>
-                  {/* Оплаченная часть — рядом, а не вместо: если клиника не
-                      отмечает оплату в YCLIENTS, подмена обнулила бы отчёт. */}
                   <div className="text-text-subtle mt-1 text-xs">
-                    оплачено {formatMoney(m.money.paidRevenue)}
+                    курсами {formatMoney(m.money.courseRevenue)}
                   </div>
                 </Card>
                 <Card title="Средний чек">
