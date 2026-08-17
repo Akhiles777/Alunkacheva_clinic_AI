@@ -31,6 +31,76 @@ function authorized(req: Request): boolean {
   return header === `Bearer ${secret}`;
 }
 
+/**
+ * Состояние без запуска выгрузки: `?check=1`.
+ *
+ * Нужно, чтобы проверить данные, не заходя на сервер по ssh. Раньше любая
+ * проверка требовала пароля и запуска скрипта руками, и вопрос «почему цифры
+ * не обновились» упирался в переписку вместо ответа.
+ *
+ * Только чтение и только числа: ни имён, ни телефонов (§7).
+ */
+async function state(): Promise<Response> {
+  const company = await prisma.company.findFirst({
+    where: { yclientsId: { gte: 100 } },
+    select: { id: true, name: true },
+  });
+  if (!company) return NextResponse.json({ ok: true, note: "нет клиник, привязанных к YCLIENTS" });
+
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+
+  const [cursors, byStatus, patients, newExact, newInexact, withRoom, withoutRoom, zeroRevenue, hooks] =
+    await Promise.all([
+      prisma.syncCursor.findMany({
+        where: { companyId: company.id },
+        select: { entity: true, lastSyncedAt: true },
+        orderBy: { entity: "asc" },
+      }),
+      prisma.appointment.groupBy({
+        by: ["status"],
+        where: { companyId: company.id, deletedAt: null },
+        _count: { _all: true },
+      }),
+      prisma.patient.count({ where: { companyId: company.id, deletedAt: null } }),
+      prisma.patient.count({
+        where: {
+          companyId: company.id,
+          deletedAt: null,
+          firstSeenExact: true,
+          firstSeenAt: { gte: monthStart },
+        },
+      }),
+      prisma.patient.count({
+        where: { companyId: company.id, deletedAt: null, firstSeenExact: false },
+      }),
+      prisma.appointment.count({
+        where: { companyId: company.id, deletedAt: null, roomId: { not: null } },
+      }),
+      prisma.appointment.count({
+        where: { companyId: company.id, deletedAt: null, roomId: null },
+      }),
+      prisma.appointment.count({
+        where: { companyId: company.id, deletedAt: null, status: "ARRIVED", revenue: 0 },
+      }),
+      prisma.webhookEvent.count({ where: { companyId: company.id, provider: "YCLIENTS" } }),
+    ]);
+
+  return NextResponse.json({
+    ok: true,
+    at: now.toISOString(),
+    company: company.name,
+    синхронизация: Object.fromEntries(
+      cursors.map((c) => [c.entity, c.lastSyncedAt?.toISOString() ?? null]),
+    ),
+    визиты: Object.fromEntries(byStatus.map((r) => [r.status, r._count._all])),
+    кабинеты: { сУказанным: withRoom, безКабинета: withoutRoom },
+    выручка: { состоявшихсяСНулём: zeroRevenue },
+    пациенты: { всего: patients, новыхВЭтомМесяце: newExact, датаНеизвестна: newInexact },
+    вебхукиYclients: hooks,
+  });
+}
+
 async function run(): Promise<Response> {
   const companies = await prisma.company.findMany({
     // Клиники, привязанные к филиалу YCLIENTS. Временные номера из начальных
@@ -81,7 +151,7 @@ export async function POST(req: Request) {
   if (!authorized(req)) {
     return NextResponse.json({ error: "нужен CRON_SECRET" }, { status: 401 });
   }
-  return run();
+  return new URL(req.url).searchParams.get("check") ? state() : run();
 }
 
 /** GET — чтобы запускать той же строкой curl из crontab. */
@@ -89,5 +159,5 @@ export async function GET(req: Request) {
   if (!authorized(req)) {
     return NextResponse.json({ error: "нужен CRON_SECRET" }, { status: 401 });
   }
-  return run();
+  return new URL(req.url).searchParams.get("check") ? state() : run();
 }
