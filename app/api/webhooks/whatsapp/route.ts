@@ -234,11 +234,20 @@ async function handleIncoming(
 
   const sent = await sendText(companyId, event.chatId, reply.text);
   if (!sent.ok) {
-    // Ответ не ушёл. Сообщение пациента уже сохранено, диалог виден
-    // администратору — это лучше, чем потерять обращение целиком.
-    console.error("[whatsapp] ответ не доставлен:", sent.error);
+    /**
+     * Ответ не ушёл. Сообщение пациента уже сохранено, диалог виден
+     * администратору — это лучше, чем потерять обращение целиком, но человек
+     * сидит без ответа и не знает об этом.
+     *
+     * Бросать здесь нельзя: сообщение обработано, повтор создал бы второй
+     * ответ. Поэтому просто оставляем как есть — следующий круг расписания
+     * увидит диалог без ответа и доберёт его (lib/agent/unanswered).
+     */
+    console.error("[whatsapp] ответ не доставлен, доберём следующим кругом:", sent.error);
+    await markOutgoing(companyId, event.chatId, reply.text, false);
     return;
   }
+  await markOutgoing(companyId, event.chatId, reply.text, true);
   if (!sent.externalId) return;
 
   /**
@@ -273,6 +282,40 @@ async function handleIncoming(
       .update({ where: { id: own.id }, data: { externalId: sent.externalId } })
       .catch(() => {});
   }
+}
+
+/**
+ * Отметить на сообщении, приняла ли его сторона провайдера.
+ *
+ * Ответ агента сохраняется как «в очереди»: пока отметку никто не ставил,
+ * неудачная отправка выглядела успешной — в инбоксе ответ есть, у пациента
+ * нет. По отметке «не доставлено» расписание доберёт доставку следующим кругом.
+ */
+async function markOutgoing(
+  companyId: string,
+  chatId: string,
+  body: string,
+  ok: boolean,
+): Promise<void> {
+  const row = await prisma.message.findFirst({
+    where: {
+      companyId,
+      channel: "WHATSAPP",
+      direction: "OUT",
+      body,
+      status: "QUEUED",
+      conversation: { externalUserId: chatId },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!row) return;
+  await prisma.message
+    .update({
+      where: { id: row.id },
+      data: ok ? { status: "SENT", sentAt: new Date() } : { status: "FAILED" },
+    })
+    .catch(() => {});
 }
 
 /**

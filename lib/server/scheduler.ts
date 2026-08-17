@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { syncAll } from "@/lib/integrations/yclients/sync";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
+import { answerUnanswered } from "@/lib/agent/unanswered";
 
 /**
  * Синхронизация с YCLIENTS по расписанию — внутри приложения.
@@ -105,12 +106,25 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
         backfillRooms(company.id),
         backfillFirstSeen(company.id),
       ]);
+      /**
+       * Добор неотвеченных — здесь же, каждым кругом.
+       *
+       * Пациенту приходилось писать дважды: первое сообщение оставалось без
+       * ответа. Причины разные — провайдер не принял отправку, модель ответила
+       * ошибкой, обработка упала. Проверяем результат, а не причины.
+       */
+      const sweep = await answerUnanswered(company.id).catch((e) => {
+        console.error("[scheduler] добор не удался:", (e as Error)?.message ?? e);
+        return null;
+      });
+
       results.push({
         клиника: company.name,
         counts,
         пересчитано: kinds.updated,
         кабинетовПроставлено: rooms,
         датПервогоОбращения: firstSeen,
+        доборНеотвеченных: sweep,
       });
     }
 

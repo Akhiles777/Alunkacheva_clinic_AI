@@ -149,6 +149,8 @@ async function saveMessage(input: {
   body: string;
   externalId?: string | null;
   attachments?: IncomingAttachment[];
+  /** Для исходящих: «в очереди», пока канал не подтвердил отправку. */
+  status?: "QUEUED" | "SENT" | "FAILED";
 }) {
   await prisma.message.create({
     data: {
@@ -159,6 +161,7 @@ async function saveMessage(input: {
       authorType: input.authorType,
       body: input.body.slice(0, 4000),
       externalId: input.externalId ?? null,
+      ...(input.status ? { status: input.status } : {}),
       attachments: input.attachments?.length ? (input.attachments as unknown as object[]) : undefined,
     },
   });
@@ -497,6 +500,14 @@ async function respond(
     ? greetIfNeeded(ctx.incomingText, reply.text, "")
     : reply.text;
   const text = forMessenger(withHello);
+  /**
+   * Ответ агента сохраняем как «в очереди», а не «отправлено».
+   *
+   * Отправка идёт после и может не удаться: провайдер не принял, сеть легла.
+   * Пока сохранялось «отправлено», такой ответ выглядел доставленным — в
+   * инбоксе он есть, а у пациента его нет, и никто об этом не знает. Отметку
+   * ставит тот, кто отправил (см. lib/agent/unanswered и вебхуки каналов).
+   */
   await saveMessage({
     companyId: ctx.companyId,
     conversationId,
@@ -504,6 +515,7 @@ async function respond(
     direction: "OUT",
     authorType: "BOT",
     body: text,
+    status: "QUEUED",
   });
   return { ...reply, text };
 }
@@ -519,6 +531,8 @@ export async function handlePatientMessage(
     externalId?: string;
     /** Голосовые, фото, видео, документы — см. lib/agent/attachments.ts. */
     attachments?: IncomingAttachment[];
+    /** Сообщение уже сохранено: это повторная попытка ответить. */
+    alreadySaved?: boolean;
     /**
      * Номер, известный из самого канала. В WhatsApp он есть всегда: адрес
      * чата и есть телефон. Спрашивать его отдельно бессмысленно, а без
@@ -654,16 +668,26 @@ export async function handlePatientMessage(
   const body = messageBody(text, attachments);
   if (!body) return null;
 
-  await saveMessage({
-    companyId: ctx.companyId,
-    conversationId: conversation.id,
-    channel: ctx.channel,
-    direction: "IN",
-    authorType: "PATIENT",
-    body,
-    externalId: input.externalId,
-    attachments,
-  });
+  /**
+   * Сообщение уже в переписке — повторная обработка.
+   *
+   * Добор неотвеченных (lib/agent/unanswered) вызывает нас на сообщении,
+   * которое сохранено при первой попытке: тогда обработка или отправка
+   * сорвалась, и ответа человек не получил. Сохранять второй раз нельзя —
+   * упрёмся в уникальный внешний идентификатор, а в переписке появится дубль.
+   */
+  if (!input.alreadySaved) {
+    await saveMessage({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      channel: ctx.channel,
+      direction: "IN",
+      authorType: "PATIENT",
+      body,
+      externalId: input.externalId,
+      attachments,
+    });
+  }
 
   /**
    * Согласие на обработку ПДн — до всего остального (§7). Спрашиваем один раз
