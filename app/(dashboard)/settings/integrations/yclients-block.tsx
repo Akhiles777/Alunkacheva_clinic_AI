@@ -101,6 +101,36 @@ export function YclientsBlock() {
       </div>
 
       {/*
+        Что выгрузка принесла. Таблица выше отвечает «когда», а спрашивают
+        обычно «что»: успешный круг без единого изменения выглядит там ровно
+        так же, как круг с сорока новыми отметками «пришёл».
+      */}
+      <div className="border-border bg-bg rounded-lg border p-3.5">
+        <div className="text-text-subtle text-2xs">Что приехало за сутки</div>
+        <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5 text-sm">
+          <span>
+            новых визитов <b className="num text-text">{state.changes.newVisits}</b>
+          </span>
+          <span>
+            изменилось <b className="num text-text">{state.changes.changedVisits}</b>
+          </span>
+          <span>
+            отмечено «пришёл» <b className="num text-text">{state.changes.arrivedMarked}</b>
+          </span>
+          <span>
+            новых пациентов <b className="num text-text">{state.changes.newPatients}</b>
+          </span>
+        </div>
+        {state.changes.newVisits === 0 &&
+        state.changes.changedVisits === 0 &&
+        state.changes.newPatients === 0 ? (
+          <p className="text-text-subtle mt-2 text-xs">
+            За сутки в YCLIENTS ничего не менялось — выгрузка работает, приносить нечего.
+          </p>
+        ) : null}
+      </div>
+
+      {/*
         Расписание выгрузки. Отметки в таблице выше говорят, когда данные
         приезжали в последний раз, но не говорят, приедут ли они снова:
         остановившееся расписание выглядит там ровно так же, как работающее.

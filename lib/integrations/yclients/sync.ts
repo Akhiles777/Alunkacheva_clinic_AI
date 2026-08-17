@@ -6,6 +6,7 @@ import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
 import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
+import { recordChanged } from "./changed";
 import { pushPendingAppointments } from "./write-back";
 import {
   mapClient,
@@ -479,11 +480,24 @@ async function syncRecordsWindow(
         });
         continue;
       }
-      if (lookups.knownRecordIds.has(row.data.yclientsRecordId as number)) {
+      const recordId = row.data.yclientsRecordId as number;
+      if (lookups.knownRecordIds.has(recordId)) {
+        /**
+         * Переписываем, только если что-то изменилось.
+         *
+         * Последний месяц перечитывается каждым кругом, и безусловное
+         * обновление ставило свежую отметку изменения всем прочитанным
+         * визитам. Ответить «что принесла выгрузка» было нечем: по базе
+         * выходило, что меняется всё сразу и каждые пятнадцать минут.
+         */
+        const existing = lookups.existingRecords.get(recordId);
+        if (existing && !recordChanged({ existing, incoming: row.data, createdAtKnown: row.createdAtKnown })) {
+          continue;
+        }
         // Дату создания не трогаем, если провайдер её не прислал: там заглушка.
         const { createdAtYclients: _stub, ...withoutCreatedAt } = row.data;
         await prisma.appointment.updateMany({
-          where: { companyId, yclientsRecordId: row.data.yclientsRecordId as number },
+          where: { companyId, yclientsRecordId: recordId },
           data: row.createdAtKnown
             ? { ...row.data, deletedAt: null }
             : { ...withoutCreatedAt, deletedAt: null },

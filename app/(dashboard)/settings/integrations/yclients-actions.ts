@@ -38,6 +38,20 @@ export interface YclientsState {
   /** Визиты, которые YCLIENTS не принял: слот занят. */
   conflicts: number;
   /**
+   * Что выгрузка принесла за сутки.
+   *
+   * «Успешно» и время последней выгрузки не отвечают на вопрос, ради которого
+   * на этот экран заходят: изменилось ли хоть что-нибудь. Успешный круг, не
+   * принёсший ни одной новой записи, выглядит там точно так же, как круг,
+   * принёсший сорок отметок «пришёл».
+   */
+  changes: {
+    newVisits: number;
+    changedVisits: number;
+    newPatients: number;
+    arrivedMarked: number;
+  };
+  /**
    * Расписание выгрузки: включено ли, когда прошёл последний круг и чем
    * кончился.
    *
@@ -114,6 +128,23 @@ export async function getYclientsState(): Promise<YclientsState> {
     prisma.appointment.count({ where: { companyId, deletedAt: null, syncState: "CONFLICT" } }),
   ]);
 
+  const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
+  const [newVisits, changedVisits, newPatients, arrivedMarked] = await Promise.all([
+    prisma.appointment.count({ where: { companyId, deletedAt: null, createdAt: { gte: dayAgo } } }),
+    prisma.appointment.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        updatedAt: { gte: dayAgo },
+        createdAt: { lt: dayAgo },
+      },
+    }),
+    prisma.patient.count({ where: { companyId, deletedAt: null, createdAt: { gte: dayAgo } } }),
+    prisma.appointment.count({
+      where: { companyId, deletedAt: null, status: "ARRIVED", updatedAt: { gte: dayAgo } },
+    }),
+  ]);
+
   const sched = schedulerState();
   const last = sched.последниеПрогоны[sched.последниеПрогоны.length - 1] ?? null;
 
@@ -134,6 +165,7 @@ export async function getYclientsState(): Promise<YclientsState> {
     }),
     notPushed,
     conflicts,
+    changes: { newVisits, changedVisits, newPatients, arrivedMarked },
     schedule: {
       on: sched.включён,
       intervalMin: sched.интервалМинут,

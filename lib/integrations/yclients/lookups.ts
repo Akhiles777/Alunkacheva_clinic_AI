@@ -14,6 +14,46 @@ import { prisma } from "@/lib/db";
  * Пациентов много, поэтому они подтягиваются пачкой на страницу — по тем
  * идентификаторам и телефонам, которые в этой странице действительно есть.
  */
+/**
+ * Поля визита, которые пишет выгрузка. Сравниваем именно их: всё остальное
+ * (заметка администратора, привязка к диалогу) выгрузка не трогает.
+ */
+export const EXISTING_SELECT = {
+  yclientsRecordId: true,
+  staffId: true,
+  patientId: true,
+  roomId: true,
+  primaryServiceId: true,
+  startAt: true,
+  endAt: true,
+  durationMin: true,
+  status: true,
+  attendanceRaw: true,
+  revenue: true,
+  isPaid: true,
+  createdAtYclients: true,
+  syncState: true,
+  deletedAt: true,
+} as const;
+
+export interface ExistingRecord {
+  yclientsRecordId: number | null;
+  staffId: string;
+  patientId: string;
+  roomId: string | null;
+  primaryServiceId: string | null;
+  startAt: Date;
+  endAt: Date | null;
+  durationMin: number;
+  status: string;
+  attendanceRaw: number | null;
+  revenue: unknown;
+  isPaid: boolean;
+  createdAtYclients: Date | null;
+  syncState: string;
+  deletedAt: Date | null;
+}
+
 export interface SyncLookups {
   staffByYclientsId: Map<number, string>;
   /**
@@ -33,6 +73,16 @@ export interface SyncLookups {
   patientByPhone: Map<string, string>;
   /** Уже известные визиты: их идентификаторы в YCLIENTS. */
   knownRecordIds: Set<number>;
+  /**
+   * Что у нас записано по уже известным визитам.
+   *
+   * Нужно, чтобы не переписывать то, что не изменилось. Последний месяц
+   * перечитывается каждый круг, и без сравнения каждая выгрузка заново
+   * переписывала сотни строк: лишние записи в базу и, что важнее, отметка
+   * «изменено» вставала у всех подряд. По ней нельзя было ответить на простой
+   * вопрос — а изменилось ли вообще хоть что-нибудь.
+   */
+  existingRecords: Map<number, ExistingRecord>;
   /**
    * Кабинет услуги — когда он у неё ровно один.
    *
@@ -99,6 +149,7 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     patientByYclientsId: new Map(),
     patientByPhone: new Map(),
     knownRecordIds: new Set(),
+    existingRecords: new Map(),
     roomByServiceId,
     priceByYclientsServiceId: new Map(
       services.filter((s) => Number(s.price) > 0).map((s) => [s.yclientsServiceId!, Number(s.price)]),
@@ -136,12 +187,16 @@ export async function primePage(
     page.recordIds.length > 0
       ? prisma.appointment.findMany({
           where: { companyId, yclientsRecordId: { in: page.recordIds } },
-          select: { yclientsRecordId: true },
+          select: EXISTING_SELECT,
         })
       : Promise.resolve([]),
   ]);
 
   for (const p of byId) if (p.yclientsId !== null) lookups.patientByYclientsId.set(p.yclientsId, p.id);
   for (const p of byPhone) lookups.patientByPhone.set(p.phone, p.patientId);
-  for (const a of known) if (a.yclientsRecordId !== null) lookups.knownRecordIds.add(a.yclientsRecordId);
+  for (const a of known) {
+    if (a.yclientsRecordId === null) continue;
+    lookups.knownRecordIds.add(a.yclientsRecordId);
+    lookups.existingRecords.set(a.yclientsRecordId, a);
+  }
 }

@@ -16,6 +16,7 @@ function lookups(over: Partial<SyncLookups> = {}): SyncLookups {
     patientByYclientsId: new Map([[7, "patient-1"]]),
     patientByPhone: new Map([["+79991234567", "patient-phone"]]),
     knownRecordIds: new Set<number>(),
+    existingRecords: new Map(),
     roomByServiceId: new Map<string, string>(),
     priceByYclientsServiceId: new Map<number, number>(),
     ...over,
