@@ -267,6 +267,13 @@ async function upsertClientsPage(companyId: string, dtos: YclientsClient[]): Pro
       yclientsId: p.yclientsId,
       name: p.name,
       firstSeenAt: p.firstSeenAt ?? new Date(),
+      /**
+       * Даты первого визита у клиента нет — значит дату первого обращения мы
+       * не знаем. Ставим день переноса, но помечаем как неточную: иначе вся
+       * старая база разом попадёт в «новых пациентов» того месяца, когда
+       * запустили выгрузку. Ровно это и произошло 14 августа.
+       */
+      firstSeenExact: p.firstSeenAt !== null,
     })),
     skipDuplicates: true,
   });
@@ -332,6 +339,7 @@ export async function upsertClient(companyId: string, dto: YclientsClient): Prom
           yclientsId: c.yclientsId,
           name: c.name,
           firstSeenAt: c.firstSeenAt ?? new Date(),
+          firstSeenExact: c.firstSeenAt !== null,
         },
         select: { id: true },
       })

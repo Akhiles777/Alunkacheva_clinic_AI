@@ -151,8 +151,19 @@ export async function getDashboardMetricsDb(
       where: { companyId, startedAt: { gte: from, lt: to } },
       select: { id: true, sourceId: true },
     }),
+    /**
+     * Новые пациенты — только те, чью дату первого обращения мы действительно
+     * знаем. У клиента, перенесённого из YCLIENTS без визитов, её взять
+     * неоткуда, и в дату попадает день переноса: без этого условия вся старая
+     * база разом становилась притоком августа — 514 карточек в один день.
+     */
     prisma.patient.count({
-      where: { companyId, deletedAt: null, firstSeenAt: { gte: from, lt: to } },
+      where: {
+        companyId,
+        deletedAt: null,
+        firstSeenExact: true,
+        firstSeenAt: { gte: from, lt: to },
+      },
     }),
     prisma.room.findMany({
       where: { companyId, isActive: true },

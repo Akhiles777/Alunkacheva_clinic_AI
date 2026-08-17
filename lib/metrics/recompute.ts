@@ -71,7 +71,9 @@ export async function backfillRooms(companyId: string): Promise<number> {
 export async function backfillFirstSeen(companyId: string): Promise<number> {
   return prisma.$executeRaw`
     UPDATE patients p
-       SET "firstSeenAt" = v.first_visit
+       SET "firstSeenAt" = v.first_visit,
+           -- Визит нашёлся — дата стала известной, метка неточности снимается.
+           "firstSeenExact" = true
       FROM (
         SELECT "patientId", MIN("startAt") AS first_visit
           FROM appointments

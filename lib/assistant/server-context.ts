@@ -54,7 +54,9 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   ] = await Promise.all([
     prisma.patient.count({ where: { companyId, deletedAt: null } }),
     prisma.patient.count({ where: { companyId, deletedAt: null, appointments: { some: { deletedAt: null } } } }),
-    prisma.patient.count({ where: { companyId, deletedAt: null, firstSeenAt: { gte: startOfToday } } }),
+    prisma.patient.count({
+      where: { companyId, deletedAt: null, firstSeenExact: true, firstSeenAt: { gte: startOfToday } },
+    }),
     prisma.appointment.count({ where: { companyId, deletedAt: null } }),
     prisma.appointment.count({ where: { companyId, deletedAt: null, status: "ARRIVED" } }),
     prisma.appointment.count({

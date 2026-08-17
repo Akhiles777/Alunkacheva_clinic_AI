@@ -45,11 +45,21 @@ async function main() {
   // ── Новые пациенты: по дате первого обращения
   const newPatients = await prisma.patient.findMany({
     where: { companyId: company.id, deletedAt: null, firstSeenAt: { gte: from, lt: to } },
-    select: { id: true, firstSeenAt: true, _count: { select: { appointments: true } } },
+    select: {
+      id: true,
+      firstSeenAt: true,
+      firstSeenExact: true,
+      _count: { select: { appointments: true } },
+    },
   });
+  // Карточки, у которых дату первого обращения взять было неоткуда: в отчётах
+  // они больше не считаются новыми, здесь показываем обе цифры.
+  const exact = newPatients.filter((p) => p.firstSeenExact);
   const withVisits = newPatients.filter((p) => p._count.appointments > 0).length;
 
-  console.log(`\n═══ НОВЫЕ ПАЦИЕНТЫ: ${newPatients.length} ═══`);
+  console.log(`\n═══ НОВЫЕ ПАЦИЕНТЫ: ${exact.length} ═══`);
+  console.log(`  (карточек с датой первого обращения в этом месяце всего ${newPatients.length};`);
+  console.log(`   из них ${newPatients.length - exact.length} — перенос базы, дата неизвестна, в отчёт не идут)`);
   console.log(`  из них с визитами в базе: ${withVisits}`);
   console.log(`  без единого визита:       ${newPatients.length - withVisits}`);
 
@@ -71,39 +81,12 @@ async function main() {
   }
 
   /**
-   * Настоящее число новых пациентов — без дня загрузки базы.
-   *
-   * Владелец справедливо спросил: «как понять, кого не считать?». Руками —
-   * никак, поэтому считаем здесь. День загрузки узнаём по двум признакам
-   * сразу: в него пришлась четверть месяца или больше И у этих карточек почти
-   * нет визитов. Один признак ошибётся на удачном дне рекламы, два вместе —
-   * нет: настоящий поток пациентов приходит с визитами.
+   * Раньше здесь считалось «настоящее число новых пациентов без дня загрузки».
+   * Теперь этого не нужно: карточки с неизвестной датой помечены в базе и в
+   * метрику не попадают вовсе — ни здесь, ни в отчётах, ни у аналитика. Две
+   * цифры, каждая из которых называет себя правильной, — худшее, что можно
+   * дать владельцу: он поверит удобной.
    */
-  /**
-   * Порог в полсотни карточек за день. Без него скрипт объявлял загрузкой базы
-   * четыре карточки из шести — на месяце с малым числом новых пациентов любой
-   * день выглядит всплеском. Перенос базы — это сотни строк разом.
-   */
-  const IMPORT_DAY_MIN = 50;
-  const suspect = days.find(([day, count]) => {
-    if (count < IMPORT_DAY_MIN) return false;
-    if (count <= newPatients.length * 0.25) return false;
-    const sameDay = newPatients.filter((p) => p.firstSeenAt.toISOString().slice(0, 10) === day);
-    const withoutVisits = sameDay.filter((p) => p._count.appointments === 0).length;
-    return withoutVisits > sameDay.length * 0.6;
-  });
-
-  if (suspect) {
-    const [day, count] = suspect;
-    const real = newPatients.length - count;
-    console.log(`\n  ${day} — это день загрузки базы из YCLIENTS, а не приток пациентов.`);
-    console.log(`  В карточках, перенесённых без визитов, дату первого обращения взять неоткуда,`);
-    console.log(`  и туда попал день переноса. Такие карточки не новые — они просто старые.`);
-    console.log(`\n  НОВЫХ ПАЦИЕНТОВ ЗА МЕСЯЦ БЕЗ ДНЯ ЗАГРУЗКИ: ${real}`);
-    console.log(`  Именно это число берите в отчёт за ${label}.`);
-  } else {
-    console.log(`\n  дня загрузки базы в этом месяце не видно — число новых пациентов можно брать как есть.`);
-  }
 
   // ── Визиты месяца
   const appts = await prisma.appointment.findMany({
