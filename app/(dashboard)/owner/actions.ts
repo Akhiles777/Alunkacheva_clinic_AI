@@ -5,7 +5,7 @@ import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import type { Appt } from "@/app/_data/store";
 import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
-import { roomOccupancyBetween } from "@/lib/server/analytics";
+import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
 
 /**
  * Серверный отчёт владельца — из БД (проекция Appointment + пациенты). Не мок:
@@ -77,12 +77,19 @@ function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
  * другой вопрос. Владельцу нужен месяц, операционная картина дня — на экране
  * «Сегодня».
  */
-const OWNER_DAYS = 30;
-
-// Не экспортируем: файл серверных действий может отдавать наружу только
-// асинхронные функции, иначе сборка падает.
-function ownerPeriod(now = new Date()): { start: Date; end: Date } {
-  return { start: new Date(now.getTime() - OWNER_DAYS * 24 * 3600 * 1000), end: now };
+/**
+ * Границы берём у отчётов, а не считаем свои.
+ *
+ * Свой расчёт отличался одной мелочью: он заканчивал период текущей минутой, а
+ * отчёты — концом сегодняшнего дня. На загрузке процедурного кабинета это дало
+ * 7% против 6% — знаменатель разный на остаток дня. Мелочь, но владелец видит
+ * два числа под одинаковой подписью «за 30 дней», и объяснить это невозможно.
+ *
+ * Теперь период кабинета владельца — ровно тот же «Месяц», что и в отчётах.
+ */
+function ownerPeriod(): { start: Date; end: Date } {
+  const { from, to } = periodBounds("month");
+  return { start: from, end: to };
 }
 
 async function loadAppts(companyId: string): Promise<Appt[]> {
