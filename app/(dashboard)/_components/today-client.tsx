@@ -54,7 +54,8 @@ export function TodayClient() {
   const day = clinicDay && !clinicDay.closed
     ? { startMinute: clinicDay.startMinute, endMinute: clinicDay.endMinute }
     : undefined;
-  const cabinets = buildCabinets(db.appointments, nowMinute, day);
+  // Кабинеты — из базы клиники: они приходят вместе с рабочим днём.
+  const cabinets = buildCabinets(db.appointments, nowMinute, day, clinicDay?.rooms);
   const freeWindows = clinicDay?.closed ? [] : buildFreeWindows(db.appointments, nowMinute, day);
 
   const scheduled = db.appointments.length;

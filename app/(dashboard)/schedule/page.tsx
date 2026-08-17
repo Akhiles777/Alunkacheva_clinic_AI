@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { VisitNote } from "../_components/visit-note";
 import {
@@ -12,13 +12,17 @@ import {
   type Appt,
 } from "@/app/_data/store";
 import { formatMinute } from "@/lib/metrics/occupancy";
+import { getClinicDayToday } from "./actions";
 import { dateLabelInTz, hasConflict } from "@/lib/schedule";
 
-const ROOMS = [
-  { id: "room-1", name: "Кабинет 1 · процедурный" },
-  { id: "room-2", name: "Кабинет 2 · БОС" },
-  { id: "room-3", name: "Кабинет 3 · остеопат" },
-];
+/**
+ * Кабинеты приходят с сервера вместе с рабочим днём.
+ *
+ * Здесь стоял свой список — «Кабинет 1 · процедурный», «Кабинет 2 · БОС».
+ * Названия не совпадали ни с базой, ни с экраном «Сегодня», ни с отчётами:
+ * четыре места показывали кабинеты клиники четырьмя способами.
+ */
+const FALLBACK_ROOMS: { id: string; name: string }[] = [];
 const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
 const STATUS: Record<Appt["status"], { label: string; cls: string }> = {
@@ -140,6 +144,14 @@ export default function SchedulePage() {
   const [room, setRoom] = useState("all");
   const [doctor, setDoctor] = useState("all");
 
+  // Кабинеты клиники — с сервера, тем же запросом, что и рабочий день.
+  const [rooms, setRooms] = useState<{ id: string; name: string }[]>(FALLBACK_ROOMS);
+  useEffect(() => {
+    getClinicDayToday()
+      .then((d) => setRooms(d.rooms))
+      .catch(() => {});
+  }, []);
+
   const doctors = useMemo(
     () => ["all", ...new Set(db.appointments.map((a) => a.doctor))],
     [db.appointments],
@@ -189,7 +201,7 @@ export default function SchedulePage() {
               className="border-border-input bg-surface rounded-md border px-2.5 py-1.5 text-sm outline-none"
             >
               <option value="all">Все кабинеты</option>
-              {ROOMS.map((r) => (
+              {rooms.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
                 </option>
@@ -213,7 +225,7 @@ export default function SchedulePage() {
       <div className="flex-1 overflow-auto px-7 py-5 max-md:px-5">
         {view === "day" ? (
           <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
-            {ROOMS.filter((r) => room === "all" || r.id === room).map((r) => {
+            {rooms.filter((r) => room === "all" || r.id === room).map((r) => {
               const appts = filtered
                 .filter((a) => a.roomId === r.id)
                 .sort((a, b) => a.startMinute - b.startMinute);

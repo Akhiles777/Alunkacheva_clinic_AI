@@ -1,6 +1,6 @@
 import type { Appt } from "@/app/_data/store";
 import { busyMinutes, type Interval } from "./metrics/occupancy";
-import { CLINIC_DAY, ROOMS, occupies } from "./schedule";
+import { occupies } from "./schedule";
 
 /**
  * Аналитика для кабинета владельца: производительность и часы по сотрудникам,

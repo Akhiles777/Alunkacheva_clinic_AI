@@ -444,15 +444,38 @@ export interface ClinicDayView {
   startMinute: number;
   endMinute: number;
   label: string | null;
+  /** Кабинеты клиники — настоящие, а не зашитые в коде. */
+  rooms: { id: string; name: string; direction: string }[];
 }
 
 export async function getClinicDayToday(): Promise<ClinicDayView> {
   const session = await getSession();
-  const day = await clinicDayFor(session.companyId, new Date());
+  const [day, rooms] = await Promise.all([
+    clinicDayFor(session.companyId, new Date()),
+    /**
+     * Кабинеты — настоящие, из базы клиники.
+     *
+     * Экран «Сегодня» показывал их по списку, зашитому в коде: «Кабинет 1 ·
+     * Процедурный · IV», «Кабинет 2 · БОС-терапия». У клиники названия другие,
+     * и совпадали они только по номеру — то есть по случайности. Всё, что
+     * связано с кабинетами, должно приходить из одного места.
+     */
+    prisma.room.findMany({
+      where: { companyId: session.companyId, isActive: true },
+      orderBy: { sortOrder: "asc" },
+      select: { name: true, sortOrder: true },
+    }),
+  ]);
   return {
     closed: day.window === null,
     startMinute: day.window?.startMinute ?? 0,
     endMinute: day.window?.endMinute ?? 0,
     label: day.label,
+    rooms: rooms.map((r) => ({
+      id: ROOM_KEY(r.sortOrder),
+      name: r.name,
+      // Направление — то, что клиника написала после тире в названии кабинета.
+      direction: r.name.split(/\s+[—–-]\s+/)[1] ?? "",
+    })),
   };
 }

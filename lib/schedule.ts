@@ -124,9 +124,21 @@ function nextFreeStart(appts: Appt[], roomId: string, now: number, day: Interval
   return g.endMinute - start >= MIN_CABINET_GAP ? start : null;
 }
 
-/** Карточки кабинетов «Сегодня» — из стора. */
-export function buildCabinets(appts: Appt[], now: number, day: Interval = CLINIC_DAY): CabinetNow[] {
-  const withStart = ROOMS.map((room) => {
+/**
+ * Карточки кабинетов «Сегодня».
+ *
+ * Список кабинетов приходит снаружи — из базы клиники. Раньше он был зашит
+ * здесь («Кабинет 1 · Процедурный · IV»), совпадал с настоящим только по
+ * номеру, и экран показывал направления, которых у клиники нет. Пустой список
+ * означает, что кабинеты ещё не заведены: тогда и показывать нечего.
+ */
+export function buildCabinets(
+  appts: Appt[],
+  now: number,
+  day: Interval = CLINIC_DAY,
+  rooms: RoomDef[] = ROOMS,
+): CabinetNow[] {
+  const withStart = rooms.map((room) => {
     const roomAppts = appts.filter((a) => a.roomId === room.id);
     const occ = roomAppts.filter(occupies);
     const current = occ.find((a) => a.startMinute <= now && now < a.startMinute + a.durationMin) ?? null;
