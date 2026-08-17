@@ -145,6 +145,27 @@ async function main() {
   }
   console.log(`  значения visit_attendance: ${[...counts].map(([k, v]) => `${k} → ${v}`).join(", ")}`);
 
+  /**
+   * Оплата и дата создания записи. По ним считаются выручка (§8: «по
+   * оплаченным визитам») и «записавшиеся за период». Печатаем сырые значения:
+   * если клиника не отмечает оплату, это видно сразу, и цифру можно не
+   * обещать владельцу.
+   */
+  const payments = new Map<string, number>();
+  const createdFields = new Set<string>();
+  for (const r of records) {
+    const row = r as Record<string, unknown>;
+    const v = String(row.payment_status ?? row.paid_full ?? "нет поля");
+    payments.set(v, (payments.get(v) ?? 0) + 1);
+    for (const k of ["create_date", "created_at", "date_create"]) {
+      if (row[k]) createdFields.add(k);
+    }
+  }
+  console.log(`  значения оплаты: ${[...payments].map(([k, v]) => `${k} → ${v}`).join(", ")}`);
+  console.log(
+    `  поле с датой создания записи: ${createdFields.size ? [...createdFields].join(", ") : "НИ ОДНОГО — «записались за период» будет считаться по дате приёма"}`,
+  );
+
   // Сверяем построчно: что у нас против того, что в источнике.
   const ids = records.map((r) => Number((r as { id?: unknown }).id)).filter(Number.isFinite);
   const ours = await prisma.appointment.findMany({

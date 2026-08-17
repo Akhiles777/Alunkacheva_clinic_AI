@@ -142,7 +142,10 @@ export default async function AnalyticsPage({
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
         <div className="max-w-[820px]">
           {tab === "funnel" ? (
-            <Card title="Воронка обращений" hint="обращение → запись → визит">
+            <Card
+              title="Воронка обращений"
+              hint="обращение — сообщение после суток молчания (§8)"
+            >
               <ul className="flex flex-col gap-4">
                 {m.funnelSteps.map((s) => (
                   <li key={s.key}>
@@ -161,6 +164,15 @@ export default async function AnalyticsPage({
                   </li>
                 ))}
               </ul>
+              {/*
+                Записи, созданные в периоде, — вторая половина ответа на вопрос
+                «сколько записалось». Шаг воронки считает приёмы, приходящиеся
+                на период; человек мог записаться в августе на сентябрь.
+              */}
+              <div className="border-border-soft text-text-muted mt-4 border-t pt-3 text-xs">
+                Записалось за период (по дате записи, а не приёма):{" "}
+                <span className="num text-text font-medium">{formatNumber(m.bookedInPeriod)}</span>
+              </div>
             </Card>
           ) : null}
 
@@ -169,7 +181,11 @@ export default async function AnalyticsPage({
               <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
                 <Card title="Выручка">
                   <div className="readout text-2xl">{formatMoney(m.money.revenue)}</div>
-                  <div className="text-text-subtle mt-1 text-xs">курсами {formatMoney(m.money.courseRevenue)}</div>
+                  {/* Оплаченная часть — рядом, а не вместо: если клиника не
+                      отмечает оплату в YCLIENTS, подмена обнулила бы отчёт. */}
+                  <div className="text-text-subtle mt-1 text-xs">
+                    оплачено {formatMoney(m.money.paidRevenue)}
+                  </div>
                 </Card>
                 <Card title="Средний чек">
                   <div className="readout text-2xl">{formatMoneyPrecise(m.money.avgCheck)}</div>

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { buildFunnel } from "@/lib/metrics/funnel";
 import { busyMinutes, freeGaps, occupancyRate, type Interval } from "@/lib/metrics/occupancy";
+import { countInquiriesFromDb } from "@/lib/metrics/inquiries";
 import { averageCheck, withSourceShares, withStaffShares } from "@/lib/metrics/summary";
 import { closedDatesBetween } from "@/lib/server/clinic-day";
 import { isMonthKey, monthBounds, monthLabel } from "@/lib/metrics/types";
@@ -57,9 +58,68 @@ export function periodLabel(period: PeriodKey): string {
   return isMonthKey(period) ? monthLabel(period) : (PERIOD_LABEL[period] ?? period);
 }
 
-/** Рабочий день клиники: 9:00–21:00, как в расписании. */
-const CLINIC_DAY: Interval = { startMinute: 9 * 60, endMinute: 21 * 60 };
-const CLINIC_MINUTES_PER_DAY = CLINIC_DAY.endMinute - CLINIC_DAY.startMinute;
+/**
+ * График клиники по дням недели.
+ *
+ * Раньше рабочий день был зашит константой 9:00–21:00 — двенадцать часов. У
+ * клиники в справочнике другой график: будни 08:00–16:00, суббота 09:00–16:00.
+ * Загрузка кабинетов делилась на интервал в полтора раза больший, чем
+ * настоящий, и все три кабинета выглядели простаивающими.
+ *
+ * Теперь знаменатель берётся из «Настройки → Клиника». Пустое расписание —
+ * повод показать это честно, а не подставить выдуманные часы: см. FALLBACK_DAY.
+ */
+type Schedule = Map<number, Interval>;
+
+/**
+ * Если расписание не заполнено вовсе. Двенадцать часов — прежнее поведение:
+ * загрузка будет занижена, но экран не сломается и не покажет 100%.
+ */
+const FALLBACK_DAY: Interval = { startMinute: 9 * 60, endMinute: 21 * 60 };
+
+async function loadSchedule(companyId: string): Promise<Schedule> {
+  const rows = await prisma.clinicSchedule.findMany({
+    where: { companyId },
+    select: { weekday: true, startMinute: true, endMinute: true },
+  });
+  const map: Schedule = new Map();
+  for (const r of rows) {
+    if (r.endMinute > r.startMinute) {
+      map.set(r.weekday, { startMinute: r.startMinute, endMinute: r.endMinute });
+    }
+  }
+  return map;
+}
+
+/** Рабочий интервал конкретного дня. Нет в расписании — клиника закрыта. */
+function dayInterval(schedule: Schedule, date: Date): Interval | null {
+  if (schedule.size === 0) return FALLBACK_DAY;
+  // В базе понедельник — 1, воскресенье — 7; в JS воскресенье — 0.
+  const weekday = date.getDay() === 0 ? 7 : date.getDay();
+  return schedule.get(weekday) ?? null;
+}
+
+/**
+ * Рабочие минуты клиники за период — сумма по дням её собственного графика.
+ * Закрытые даты (праздники) в знаменатель не идут: иначе кабинеты выглядят
+ * простаивающими ровно на эти дни.
+ */
+function workingMinutesBetween(
+  from: Date,
+  to: Date,
+  schedule: Schedule,
+  closed?: Set<string>,
+): number {
+  let minutes = 0;
+  const cursor = new Date(from);
+  while (cursor < to) {
+    const key = cursor.toISOString().slice(0, 10);
+    const day = dayInterval(schedule, cursor);
+    if (day && !closed?.has(key)) minutes += day.endMinute - day.startMinute;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return minutes;
+}
 
 function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -123,7 +183,8 @@ export async function getDashboardMetricsDb(
   const now = new Date();
   const { from, to } = periodBounds(period, now);
 
-  const [appts, conversations, newPatients, rooms, sources, closed] = await Promise.all([
+  const [appts, inquiries, newPatients, rooms, sources, closed, schedule, bookedInPeriod] =
+    await Promise.all([
     prisma.appointment.findMany({
       where: { companyId, deletedAt: null, startAt: { gte: from, lt: to } },
       select: {
@@ -132,6 +193,7 @@ export async function getDashboardMetricsDb(
         durationMin: true,
         status: true,
         revenue: true,
+        isPaid: true,
         isFirstVisit: true,
         courseId: true,
         sourceId: true,
@@ -147,10 +209,12 @@ export async function getDashboardMetricsDb(
       },
       orderBy: { startAt: "asc" },
     }),
-    prisma.conversation.findMany({
-      where: { companyId, startedAt: { gte: from, lt: to } },
-      select: { id: true, sourceId: true },
-    }),
+    /**
+     * Обращения — по правилу 24 часов (§8), а не по числу начатых диалогов.
+     * Постоянная пациентка, пишущая каждый месяц в один и тот же чат,
+     * засчитывалась один раз — в месяц первого сообщения.
+     */
+    countInquiriesFromDb(companyId, from, to),
     /**
      * Новые пациенты — только те, чью дату первого обращения мы действительно
      * знаем. У клиента, перенесённого из YCLIENTS без визитов, её взять
@@ -176,11 +240,31 @@ export async function getDashboardMetricsDb(
       select: { id: true, code: true, title: true },
     }),
     closedDatesBetween(companyId, from, to),
+    loadSchedule(companyId),
+    prisma.appointment.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        status: { not: "CANCELLED" },
+        createdAtYclients: { gte: from, lt: to },
+      },
+    }),
   ]);
 
   const booked = appts.filter((a) => a.status !== "CANCELLED");
   const arrived = appts.filter((a) => a.status === "ARRIVED");
   const revenue = arrived.reduce((sum, a) => sum + Number(a.revenue), 0);
+  /**
+   * Оплаченная часть выручки (§8: «сумма по оплаченным визитам»).
+   *
+   * Показываем рядом, а не вместо: клиника может не отмечать оплату в
+   * YCLIENTS, и тогда подмена обнулила бы отчёт. Разрыв между двумя числами —
+   * сам по себе полезный сигнал: он показывает, сколько приёмов состоялось без
+   * зафиксированной оплаты.
+   */
+  const paidRevenue = arrived
+    .filter((a) => a.isPaid)
+    .reduce((sum, a) => sum + Number(a.revenue), 0);
   const courseRevenue = arrived
     .filter((a) => a.courseId)
     .reduce((sum, a) => sum + Number(a.revenue), 0);
@@ -201,7 +285,7 @@ export async function getDashboardMetricsDb(
    */
   const fromDialog = booked.filter((a) => a.conversationId !== null);
   const funnel = {
-    inquiries: conversations.length,
+    inquiries: inquiries.total,
     booked: booked.length,
     arrived: arrived.length,
   };
@@ -228,7 +312,7 @@ export async function getDashboardMetricsDb(
   const sourceStats: SourceStat[] = sources.map((s) => ({
     code: s.code,
     title: s.title,
-    inquiries: conversations.filter((c) => c.sourceId === s.id).length,
+    inquiries: inquiries.bySource.get(s.id) ?? 0,
     booked: booked.filter((a) => a.sourceId === s.id).length,
     share: 0,
   }));
@@ -248,6 +332,13 @@ export async function getDashboardMetricsDb(
     },
     funnel,
     funnelSteps: buildFunnel(funnel),
+    /**
+     * Записи, СОЗДАННЫЕ в периоде (§8), — рядом с записями, приходящимися на
+     * период. Это разные вопросы: «сколько человек записалось в августе» и
+     * «сколько приёмов в августе». Для отдачи рекламы важен первый, для
+     * загрузки клиники — второй, и подменять одно другим нельзя.
+     */
+    bookedInPeriod,
     /** Сколько записей и визитов пришло из переписки — атрибуция §8. */
     fromDialog: {
       booked: fromDialog.length,
@@ -255,6 +346,7 @@ export async function getDashboardMetricsDb(
     },
     money: {
       revenue,
+      paidRevenue,
       courseRevenue,
       avgCheck: averageCheck(revenue, arrived.length),
       newPatients,
@@ -269,7 +361,7 @@ export async function getDashboardMetricsDb(
       returned: arrived.length - first - courseSession,
       total: arrived.length,
     },
-    rooms: buildRoomDays(rooms, booked, from, to, closed),
+    rooms: buildRoomDays(rooms, booked, from, to, closed, schedule),
     sources: withSourceShares(sourceStats),
     staff: withStaffShares(staffStats).sort((a, b) => b.revenue - a.revenue),
     updatedAt: now.toISOString(),
@@ -310,10 +402,16 @@ function buildRoomDays(
   from: Date,
   to: Date,
   closed: Set<string>,
+  schedule: Schedule,
 ): RoomDay[] {
   const days = appts.map((a) => isoDate(a.startAt));
   const shownDate = days.length > 0 ? days[days.length - 1] : isoDate(to);
-  const workingDays = Math.max(1, workingDaysBetween(from, to, closed));
+  // Рабочие минуты периода по графику клиники, а не «двенадцать часов на день».
+  const periodMinutes = Math.max(1, workingMinutesBetween(from, to, schedule, closed));
+  // Окно показываемого дня — по его дню недели: в субботу клиника открывается
+  // позже, и полоса должна начинаться там же, где начинается работа.
+  const shownDay = dayInterval(schedule, new Date(`${shownDate}T12:00:00Z`)) ?? FALLBACK_DAY;
+  const shownMinutes = shownDay.endMinute - shownDay.startMinute;
 
   return rooms.map((room) => {
     const ofRoom = appts.filter((a) => a.roomId === room.id);
@@ -333,21 +431,21 @@ function buildRoomDays(
       };
     });
 
-    const busy = busyMinutes(intervals, CLINIC_DAY);
+    const busy = busyMinutes(intervals, shownDay);
     const periodBusy = ofRoom.reduce((sum, a) => sum + a.durationMin, 0);
 
     return {
       roomId: room.id,
       roomName: room.name,
       date: shownDate,
-      openMinute: CLINIC_DAY.startMinute,
-      closeMinute: CLINIC_DAY.endMinute,
+      openMinute: shownDay.startMinute,
+      closeMinute: shownDay.endMinute,
       intervals,
-      gaps: freeGaps(intervals, CLINIC_DAY, 60),
+      gaps: freeGaps(intervals, shownDay, 60),
       busyMinutes: busy,
-      workingMinutes: CLINIC_MINUTES_PER_DAY,
-      occupancy: occupancyRate(busy, CLINIC_MINUTES_PER_DAY),
-      periodOccupancy: occupancyRate(periodBusy, CLINIC_MINUTES_PER_DAY * workingDays),
+      workingMinutes: shownMinutes,
+      occupancy: occupancyRate(busy, shownMinutes),
+      periodOccupancy: occupancyRate(periodBusy, periodMinutes),
     };
   });
 }
@@ -370,9 +468,18 @@ export async function getServicesLoadDb(
   // Те же границы, что и в основном отчёте — иначе разрезы разъедутся.
   const now = new Date();
   const { from, to } = periodBounds(period, now);
-  const workingDays = Math.max(
+  /**
+   * Рабочие минуты — по графику клиники, той же функцией, что и загрузка
+   * кабинетов. Прежде здесь стоял зашитый двенадцатичасовой день, и два
+   * разреза одного отчёта считали доступное время по-разному.
+   */
+  const [closedDates, schedule] = await Promise.all([
+    closedDatesBetween(companyId, from, to),
+    loadSchedule(companyId),
+  ]);
+  const minutesPerRoom = Math.max(
     1,
-    workingDaysBetween(from, isMonthKey(period) ? to : now, await closedDatesBetween(companyId, from, to)),
+    workingMinutesBetween(from, isMonthKey(period) ? to : now, schedule, closedDates),
   );
 
   const [services, roomCount] = await Promise.all([
@@ -406,7 +513,7 @@ export async function getServicesLoadDb(
        * ноль не отвечает ни на что.
        */
       const roomsForService = s.rooms.length > 0 ? s.rooms.length : roomCount;
-      const available = roomsForService * CLINIC_MINUTES_PER_DAY * workingDays;
+      const available = roomsForService * minutesPerRoom;
       return {
         title: s.title,
         busyMinutes: busy,

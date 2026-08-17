@@ -105,6 +105,14 @@ export interface FunnelStep {
 export interface MoneySummary {
   /** Признанная выручка: разовые визиты целиком + доля курса на сеанс. */
   revenue: number;
+  /**
+   * Из неё — по визитам, отмеченным в YCLIENTS как полностью оплаченные (§8).
+   *
+   * Отдельным числом, а не заменой revenue: если клиника не отмечает оплату,
+   * подмена обнулила бы отчёт. Разрыв между двумя числами показывает, сколько
+   * приёмов состоялось без зафиксированной оплаты.
+   */
+  paidRevenue: number;
   /** Из них признано по курсовым сеансам. */
   courseRevenue: number;
   /** Выручка / пришедшие. */
@@ -201,6 +209,12 @@ export interface DashboardMetrics {
   period: PeriodInfo;
   funnel: FunnelCounts;
   funnelSteps: FunnelStep[];
+  /**
+   * Сколько записей создано в периоде (§8: «записавшиеся» — созданные в
+   * периоде). Отчёт показывает и записи, приходящиеся на период: это разные
+   * вопросы, и подменять один другим нельзя.
+   */
+  bookedInPeriod: number;
   money: MoneySummary;
   visitMix: VisitMix;
   rooms: RoomDay[];

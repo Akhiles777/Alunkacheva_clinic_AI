@@ -479,9 +479,13 @@ async function syncRecordsWindow(
         continue;
       }
       if (lookups.knownRecordIds.has(row.data.yclientsRecordId as number)) {
+        // Дату создания не трогаем, если провайдер её не прислал: там заглушка.
+        const { createdAtYclients: _stub, ...withoutCreatedAt } = row.data;
         await prisma.appointment.updateMany({
           where: { companyId, yclientsRecordId: row.data.yclientsRecordId as number },
-          data: { ...row.data, deletedAt: null },
+          data: row.createdAtKnown
+            ? { ...row.data, deletedAt: null }
+            : { ...withoutCreatedAt, deletedAt: null },
         });
       } else {
         creates.push(row.data);
@@ -504,7 +508,17 @@ async function syncRecordsWindow(
 /** Что делать с записью: удалить у себя или записать данными. */
 type RecordRow =
   | { kind: "deleted"; yclientsRecordId: number }
-  | { kind: "row"; data: Prisma.AppointmentCreateManyInput };
+  | {
+      kind: "row";
+      data: Prisma.AppointmentCreateManyInput;
+      /**
+       * Прислал ли провайдер дату создания записи. Если нет, в data лежит
+       * дата визита — как заглушка для новой строки. Обновлять ею уже
+       * известную дату нельзя: однажды полученная правда не должна теряться
+       * из-за того, что в следующем ответе поля не оказалось.
+       */
+      createdAtKnown: boolean;
+    };
 
 /**
  * Собрать строку визита из ответа YCLIENTS, ничего не спрашивая у базы.
@@ -534,6 +548,7 @@ export function buildRecordRow(
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
   return {
     kind: "row",
+    createdAtKnown: r.createdAtYclients !== null,
     data: {
       companyId,
       yclientsRecordId: r.yclientsRecordId,
@@ -561,7 +576,15 @@ export function buildRecordRow(
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
       revenue: r.revenue,
-      createdAtYclients: r.startAt,
+      isPaid: r.isPaid,
+      /**
+       * Дата создания записи — из YCLIENTS. Здесь стояла дата визита, и
+       * метрика «записались за месяц» на деле показывала «приёмов за месяц»:
+       * записавшийся в августе на сентябрь в августовскую цифру не попадал.
+       * Провайдер поля не прислал — оставляем дату визита, но это видно в
+       * отчёте отдельной оговоркой, а не молча.
+       */
+      createdAtYclients: r.createdAtYclients ?? r.startAt,
       updatedAtYclients: r.startAt,
       // Приехало из YCLIENTS — значит уже там есть.
       syncState: "SYNCED",
@@ -679,6 +702,10 @@ export async function upsertRecord(
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
       revenue: r.revenue,
+      // Оплату обновляем тоже: визит оплачивают после приёма, и без этого
+      // отметка об оплате никогда бы не доехала до уже созданной записи.
+      isPaid: r.isPaid,
+      ...(r.createdAtYclients ? { createdAtYclients: r.createdAtYclients } : {}),
       // Запись могли вернуть из удалённых — снимаем отметку.
       deletedAt: null,
       updatedAtYclients: r.startAt,
@@ -696,7 +723,8 @@ export async function upsertRecord(
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
       revenue: r.revenue,
-      createdAtYclients: r.startAt,
+      isPaid: r.isPaid,
+      createdAtYclients: r.createdAtYclients ?? r.startAt,
       updatedAtYclients: r.startAt,
     },
   });

@@ -48,6 +48,10 @@ export interface AppointmentUpsert {
   durationMin: number;
   status: AppointmentStatus;
   revenue: number;
+  /** Полностью оплачен по данным YCLIENTS — основа выручки (§8). */
+  isPaid: boolean;
+  /** Когда запись создана в YCLIENTS; null — провайдер не сообщил. */
+  createdAtYclients: Date | null;
 }
 
 /** Секунды сеанса YCLIENTS → минуты. Пустое/битое → 0. */
@@ -135,6 +139,37 @@ export function mapRecordStatus(visitAttendance: number | undefined, deleted?: b
   }
 }
 
+/**
+ * Оплачен ли визит.
+ *
+ * §8 определяет выручку как сумму по оплаченным визитам. Провайдер сообщает
+ * оплату по-разному: строкой «paid_full» или числом. Считаем оплаченным только
+ * полную оплату — частичная это ещё не выручка, и записывать её целиком было бы
+ * припиской.
+ *
+ * Неизвестное значение — не оплачено. Ошибиться в сторону занижения безопаснее:
+ * завышенная выручка в отчёте владельца хуже, чем заниженная.
+ */
+export function mapPaid(dto: YclientsRecord): boolean {
+  const raw = dto.payment_status;
+  if (typeof raw === "string") return raw.trim().toLowerCase() === "paid_full";
+  if (typeof raw === "number") return raw === 2;
+  if (typeof dto.paid_full === "number") return dto.paid_full === 1;
+  return false;
+}
+
+/**
+ * Когда запись создана в YCLIENTS. Нет ни одного из известных полей — null:
+ * подставлять дату визита нельзя, иначе метрика «записались за месяц» тихо
+ * превратится в «приёмов за месяц», и никто этого не заметит.
+ */
+export function mapCreatedAt(dto: YclientsRecord): Date | null {
+  const raw = dto.create_date ?? dto.created_at ?? dto.date_create;
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
   const services = dto.services ?? [];
   const revenue = services.reduce((sum, s) => sum + (s.cost ?? 0), 0);
@@ -148,5 +183,7 @@ export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
     durationMin: seanceToMinutes(dto.seance_length),
     status: mapRecordStatus(dto.visit_attendance, dto.deleted),
     revenue,
+    isPaid: mapPaid(dto),
+    createdAtYclients: mapCreatedAt(dto),
   };
 }

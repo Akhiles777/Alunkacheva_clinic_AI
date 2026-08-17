@@ -52,6 +52,25 @@ export interface YclientsRecord {
   client?: { id?: number; phone?: string; name?: string } | null;
   /** -1 не пришёл, 0 создана, 1 пришёл, 2 подтверждена. */
   visit_attendance?: number;
+  /**
+   * Когда запись создана в YCLIENTS. Метрика «записались» считается по ней
+   * (§8), а не по дате визита: человек записывается в августе на сентябрь, и
+   * для отдачи рекламы важен август.
+   *
+   * Имя поля у провайдера в разных версиях разное, поэтому читаем все три —
+   * какое придёт, то и возьмём.
+   */
+  create_date?: string;
+  created_at?: string;
+  date_create?: string;
+  /**
+   * Оплата. Строкой — «paid_full», «paid_not_full», «not_paid»; числом —
+   * 0/1/2 в старых версиях. Разбираем оба вида и храним сырое значение, чтобы
+   * можно было проверить, а не поверить.
+   */
+  payment_status?: string | number;
+  paid_full?: number;
+  prepaid_confirmed?: boolean;
   deleted?: boolean;
   /** id ресурса (кабинета), если запись на ресурс. */
   resource_instances?: { resource_id: number }[];
