@@ -66,8 +66,43 @@ async function main() {
   const days = [...byDay].sort((a, b) => b[1] - a[1]);
   console.log(`\n  дни с наибольшим числом «первых обращений»:`);
   for (const [day, count] of days.slice(0, 5)) {
-    const flag = count > newPatients.length * 0.25 ? "  ← похоже на день выгрузки, а не на поток" : "";
+    const flag = count >= 50 && count > newPatients.length * 0.25 ? "  ← похоже на день загрузки базы" : "";
     console.log(`    ${day}  ${String(count).padStart(4)}${flag}`);
+  }
+
+  /**
+   * Настоящее число новых пациентов — без дня загрузки базы.
+   *
+   * Владелец справедливо спросил: «как понять, кого не считать?». Руками —
+   * никак, поэтому считаем здесь. День загрузки узнаём по двум признакам
+   * сразу: в него пришлась четверть месяца или больше И у этих карточек почти
+   * нет визитов. Один признак ошибётся на удачном дне рекламы, два вместе —
+   * нет: настоящий поток пациентов приходит с визитами.
+   */
+  /**
+   * Порог в полсотни карточек за день. Без него скрипт объявлял загрузкой базы
+   * четыре карточки из шести — на месяце с малым числом новых пациентов любой
+   * день выглядит всплеском. Перенос базы — это сотни строк разом.
+   */
+  const IMPORT_DAY_MIN = 50;
+  const suspect = days.find(([day, count]) => {
+    if (count < IMPORT_DAY_MIN) return false;
+    if (count <= newPatients.length * 0.25) return false;
+    const sameDay = newPatients.filter((p) => p.firstSeenAt.toISOString().slice(0, 10) === day);
+    const withoutVisits = sameDay.filter((p) => p._count.appointments === 0).length;
+    return withoutVisits > sameDay.length * 0.6;
+  });
+
+  if (suspect) {
+    const [day, count] = suspect;
+    const real = newPatients.length - count;
+    console.log(`\n  ${day} — это день загрузки базы из YCLIENTS, а не приток пациентов.`);
+    console.log(`  В карточках, перенесённых без визитов, дату первого обращения взять неоткуда,`);
+    console.log(`  и туда попал день переноса. Такие карточки не новые — они просто старые.`);
+    console.log(`\n  НОВЫХ ПАЦИЕНТОВ ЗА МЕСЯЦ БЕЗ ДНЯ ЗАГРУЗКИ: ${real}`);
+    console.log(`  Именно это число берите в отчёт за ${label}.`);
+  } else {
+    console.log(`\n  дня загрузки базы в этом месяце не видно — число новых пациентов можно брать как есть.`);
   }
 
   // ── Визиты месяца
