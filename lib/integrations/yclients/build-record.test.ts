@@ -17,6 +17,7 @@ function lookups(over: Partial<SyncLookups> = {}): SyncLookups {
     patientByPhone: new Map([["+79991234567", "patient-phone"]]),
     knownRecordIds: new Set<number>(),
     roomByServiceId: new Map<string, string>(),
+    priceByYclientsServiceId: new Map<number, number>(),
     ...over,
   };
 }
@@ -168,5 +169,52 @@ describe("кабинет визита", () => {
     }));
     if (row?.kind !== "row") throw new Error("ожидалась строка");
     expect(row.data.roomId).toBe("room-staff");
+  });
+});
+
+/**
+ * Выручка визита. У клиники тысяча с лишним состоявшихся визитов приходит с
+ * нулевой стоимостью — приёмы по абонементу и записи, где стоимость не
+ * проставили. Выручка специалистов, ведущих курсы, была занижена в разы.
+ */
+describe("выручка визита", () => {
+  const base = {
+    id: 1,
+    staff_id: 10,
+    datetime: "2026-08-17T09:00:00+03:00",
+    seance_length: 3600,
+    client: { id: 7 },
+  };
+
+  it("берёт стоимость из записи, когда она есть", () => {
+    const row = buildRecordRow("c1", { ...base, services: [{ id: 55, cost: 8000 }] }, lookups());
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(Number(row.data.revenue)).toBe(8000);
+  });
+
+  it("нулевая стоимость — берёт цену из справочника клиники", () => {
+    const row = buildRecordRow(
+      "c1",
+      { ...base, services: [{ id: 55, cost: 0 }] },
+      lookups({ priceByYclientsServiceId: new Map([[55, 5000]]) }),
+    );
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(Number(row.data.revenue)).toBe(5000);
+  });
+
+  it("цены нет нигде — ноль, а не выдуманная сумма", () => {
+    const row = buildRecordRow("c1", { ...base, services: [{ id: 55, cost: 0 }] }, lookups());
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(Number(row.data.revenue)).toBe(0);
+  });
+
+  it("стоимость из записи важнее прайса: скидку не затираем", () => {
+    const row = buildRecordRow(
+      "c1",
+      { ...base, services: [{ id: 55, cost: 3000 }] },
+      lookups({ priceByYclientsServiceId: new Map([[55, 5000]]) }),
+    );
+    if (row?.kind !== "row") throw new Error("ожидалась строка");
+    expect(Number(row.data.revenue)).toBe(3000);
   });
 });

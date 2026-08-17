@@ -44,6 +44,15 @@ export interface SyncLookups {
    * нескольких, гадать не будем.
    */
   roomByServiceId: Map<string, string>;
+  /**
+   * Цена услуги из справочника клиники, по идентификатору YCLIENTS.
+   *
+   * Нужна, когда в записи стоимость не проставлена: у клиники таких визитов
+   * тысяча с лишним из четырёх с половиной, и все они давали нулевую выручку.
+   * Заказчик определил выручку прямо: пришёл на услугу за 8000 ₽ — значит
+   * 8000 ₽ (§8). Цену берём ту же, что клиника показывает пациенту.
+   */
+  priceByYclientsServiceId: Map<number, number>;
 }
 
 /** Прочитать справочники клиники один раз за прогон. */
@@ -59,7 +68,7 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     }),
     prisma.service.findMany({
       where: { companyId, yclientsServiceId: { not: null } },
-      select: { id: true, yclientsServiceId: true },
+      select: { id: true, yclientsServiceId: true, price: true },
     }),
     prisma.serviceRoom.findMany({
       where: { service: { companyId } },
@@ -91,6 +100,9 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     patientByPhone: new Map(),
     knownRecordIds: new Set(),
     roomByServiceId,
+    priceByYclientsServiceId: new Map(
+      services.filter((s) => Number(s.price) > 0).map((s) => [s.yclientsServiceId!, Number(s.price)]),
+    ),
   };
 }
 

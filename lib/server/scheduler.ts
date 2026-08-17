@@ -36,21 +36,37 @@ export interface SyncRunInfo {
 }
 
 /**
- * Что произошло на последних кругах. Держим в памяти процесса: это диагностика
- * для экрана состояния, а не данные клиники — переживать перезапуск ей незачем.
+ * Состояние расписания — в globalThis, а не в переменных модуля.
+ *
+ * Next.js собирает instrumentation.ts и обработчики адресов в разные пачки:
+ * модуль загружается дважды, и у каждой копии свои переменные. Из-за этого
+ * экран состояния честно показывал «расписание выключено» при работающем
+ * расписании — притом что выгрузка в это же время шла. Такое расхождение хуже
+ * отсутствия показателя: ему верят и начинают чинить исправное.
+ *
+ * globalThis один на процесс, поэтому обе копии видят одно и то же.
  */
-const history: SyncRunInfo[] = [];
-let running = false;
-let timer: NodeJS.Timeout | null = null;
-let startedAt: Date | null = null;
+interface SchedulerShared {
+  history: SyncRunInfo[];
+  running: boolean;
+  timer: NodeJS.Timeout | null;
+  startedAt: Date | null;
+}
+
+const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clinicScheduler ??= {
+  history: [],
+  running: false,
+  timer: null,
+  startedAt: null,
+}) as SchedulerShared;
 
 export function schedulerState() {
   return {
-    включён: timer !== null,
+    включён: shared.timer !== null,
     интервалМинут: INTERVAL_MIN,
-    работаетСо: startedAt?.toISOString() ?? null,
-    идётСейчас: running,
-    последниеПрогоны: history.slice(-5),
+    работаетСо: shared.startedAt?.toISOString() ?? null,
+    идётСейчас: shared.running,
+    последниеПрогоны: shared.history.slice(-5),
   };
 }
 
@@ -61,10 +77,10 @@ export function schedulerState() {
  * пациента, и без него отчёты показывают прежние значения при новых данных.
  */
 export async function runSyncCycle(): Promise<SyncRunInfo> {
-  if (running) {
+  if (shared.running) {
     return { startedAt: new Date().toISOString(), finishedAt: null, ok: false, ms: null, error: "уже идёт" };
   }
-  running = true;
+  shared.running = true;
   const started = Date.now();
   const info: SyncRunInfo = {
     startedAt: new Date(started).toISOString(),
@@ -106,11 +122,11 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
     info.error = String((e as Error)?.message ?? e).slice(0, 300);
     console.error("[scheduler] выгрузка не удалась:", info.error);
   } finally {
-    running = false;
+    shared.running = false;
     info.finishedAt = new Date().toISOString();
     info.ms = Date.now() - started;
-    history.push(info);
-    if (history.length > 20) history.shift();
+    shared.history.push(info);
+    if (shared.history.length > 20) shared.history.shift();
   }
 
   return info;
@@ -121,16 +137,16 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
  * instrumentation.ts; повторный вызов ничего не делает.
  */
 export function startScheduler(): void {
-  if (timer) return;
+  if (shared.timer) return;
   if (INTERVAL_MIN <= 0) {
     console.warn("[scheduler] SYNC_INTERVAL_MIN <= 0 — синхронизация по расписанию выключена");
     return;
   }
 
-  startedAt = new Date();
-  timer = setInterval(() => void runSyncCycle(), INTERVAL_MIN * 60_000);
+  shared.startedAt = new Date();
+  shared.timer = setInterval(() => void runSyncCycle(), INTERVAL_MIN * 60_000);
   // Таймер не должен держать процесс живым сам по себе — этим занимается сервер.
-  timer.unref?.();
+  shared.timer.unref?.();
 
   setTimeout(() => void runSyncCycle(), FIRST_RUN_DELAY_MS).unref?.();
   console.log(`[scheduler] синхронизация с YCLIENTS каждые ${INTERVAL_MIN} мин`);

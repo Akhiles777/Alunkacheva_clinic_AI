@@ -507,6 +507,30 @@ async function syncRecordsWindow(
 }
 
 /**
+ * Выручка визита.
+ *
+ * Обычно это стоимость услуг из записи YCLIENTS. Но у клиники тысяча с лишним
+ * состоявшихся визитов из четырёх с половиной приходит с нулевой стоимостью:
+ * так выглядят приёмы, оплаченные абонементом, и записи, где администратор
+ * стоимость не проставил. В отчётах это занижало выручку — сильнее всего у
+ * специалистов, которые ведут курсы.
+ *
+ * Заказчик определил выручку прямо: пришёл на услугу за 8000 ₽ — значит
+ * 8000 ₽ (§8). Поэтому при нулевой стоимости берём цену услуги из справочника
+ * клиники — ту же, что видит пациент. Нет и её — оставляем ноль: выдумывать
+ * сумму нельзя.
+ */
+function revenueOf(r: AppointmentUpsert, lookups: SyncLookups): number {
+  if (r.revenue > 0) return r.revenue;
+
+  let sum = 0;
+  for (const yclientsServiceId of r.yclientsServiceIds) {
+    sum += lookups.priceByYclientsServiceId.get(yclientsServiceId) ?? 0;
+  }
+  return sum;
+}
+
+/**
  * Кабинет визита — три источника по убыванию надёжности.
  *
  *   1. Ресурс из записи YCLIENTS. Так и задумано в §2, но клиника кабинеты как
@@ -607,7 +631,7 @@ export function buildRecordRow(
       durationMin: r.durationMin,
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
-      revenue: r.revenue,
+      revenue: revenueOf(r, lookups),
       isPaid: r.isPaid,
       /**
        * Дата создания записи — из YCLIENTS. Здесь стояла дата визита, и
