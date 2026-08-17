@@ -73,7 +73,7 @@ async function main() {
   // ── Визиты месяца
   const appts = await prisma.appointment.findMany({
     where: { companyId: company.id, deletedAt: null, startAt: { gte: from, lt: to } },
-    select: { status: true, isFirstVisit: true, courseId: true, revenue: true, createdAt: true },
+    select: { status: true, isFirstVisit: true, courseId: true, revenue: true, startAt: true },
   });
   const booked = appts.filter((a) => a.status !== "CANCELLED");
   const arrived = appts.filter((a) => a.status === "ARRIVED");
@@ -90,14 +90,27 @@ async function main() {
   console.log(`  повторные:      ${arrived.length - firstVisits - course}`);
   console.log(`  выручка:        ${money(revenue)}`);
 
-  const notMarked = booked.filter((a) => a.status === "CREATED" || a.status === "CONFIRMED").length;
-  const past = booked.filter((a) => a.status !== "ARRIVED" && a.status !== "NO_SHOW").length;
-  if (notMarked > 0) {
-    console.log(
-      `\n  ВНИМАНИЕ: ${notMarked} записей месяца без отметки о посещении ` +
-        `(${past} из них уже прошли по времени). Пока отметки нет, визит не попадает ` +
-        `ни в «пришли», ни в «первичные», ни в выручку.`,
-    );
+  /**
+   * Без отметки — отдельно прошедшие и отдельно будущие.
+   *
+   * Первая версия считала прошедшими все неотмеченные и печатала «134 из них
+   * уже прошли» на месяц, где половина приёмов ещё не наступила. Такая строка
+   * пугает владельца ровно там, где всё в порядке.
+   */
+  const now = new Date();
+  const unmarked = booked.filter((a) => a.status === "CREATED" || a.status === "CONFIRMED");
+  const unmarkedPast = unmarked.filter((a) => a.startAt < now).length;
+  const upcoming = unmarked.length - unmarkedPast;
+
+  if (unmarked.length > 0) {
+    console.log(`\n  без отметки о посещении: ${unmarked.length}`);
+    console.log(`    из них ещё не наступили: ${upcoming}  (это нормально)`);
+    console.log(`    уже прошли, но не отмечены: ${unmarkedPast}`);
+    if (unmarkedPast > 0) {
+      console.log(
+        `    Пока отметки нет, визит не попадает ни в «пришли», ни в «первичные», ни в выручку.`,
+      );
+    }
   }
 
   /**
@@ -113,8 +126,9 @@ async function main() {
       status: { not: "CANCELLED" },
     },
   });
-  console.log(`\n  для сравнения: записей СОЗДАНО в этом месяце — ${createdThisMonth}`);
-  console.log(`  (отчёт показывает записи по дате приёма; человек мог записаться в этом месяце на следующий)`);
+  console.log(`\n  строк заведено у нас в этом месяце: ${createdThisMonth}`);
+  console.log(`  ВНИМАНИЕ: это дата появления строки в нашей базе, а не дата записи в YCLIENTS.`);
+  console.log(`  В месяц выгрузки сюда попадает вся история разом — сравнивать с «записались» нельзя.`);
 
   // ── Обращения из переписки
   const conversations = await prisma.conversation.count({
