@@ -10,6 +10,7 @@ import { recordChanged } from "./changed";
 import { cancelVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
+import { normalizePhone } from "@/lib/phone";
 import {
   mapClient,
   mapRecord,
@@ -602,6 +603,95 @@ export function auditWindow(now: Date, notBefore?: Date): { from: Date; to: Date
 }
 
 /**
+ * Завести специалистов, которых нет в справочнике.
+ *
+ * Уволенных YCLIENTS в списке персонала не отдаёт, а их прошлые визиты
+ * показывает. Такой визит нельзя терять: он состоялся, деньги получены,
+ * кабинет был занят. Карточка заводится выключенной — в загрузку и в списки
+ * выбора он не попадёт, а история сохранится.
+ */
+async function ensureStaff(
+  companyId: string,
+  lookups: SyncLookups,
+  dtos: YclientsRecord[],
+): Promise<void> {
+  const missing = new Map<number, string>();
+  for (const dto of dtos) {
+    if (dto.deleted) continue;
+    if (lookups.staffByYclientsId.has(dto.staff_id)) continue;
+    if (missing.has(dto.staff_id)) continue;
+    missing.set(dto.staff_id, dto.staff?.name?.trim() || `Специалист ${dto.staff_id}`);
+  }
+  if (missing.size === 0) return;
+
+  for (const [yclientsStaffId, name] of missing) {
+    const row = await prisma.staff.upsert({
+      where: { companyId_yclientsStaffId: { companyId, yclientsStaffId } },
+      update: {},
+      create: { companyId, yclientsStaffId, name, isActive: false },
+      select: { id: true },
+    });
+    lookups.staffByYclientsId.set(yclientsStaffId, row.id);
+  }
+}
+
+/**
+ * Завести пациентов, которых нет в базе.
+ *
+ * Матчинг по телефону остаётся главным (§4): сначала ищем по нормализованному
+ * номеру, потом по идентификатору YCLIENTS. Не нашли — заводим карточку из
+ * самой записи. Дата первого обращения помечается неточной: настоящую взять
+ * неоткуда, а без пометки такая карточка стала бы «новым пациентом» месяца
+ * выгрузки (§8).
+ */
+async function ensurePatients(
+  companyId: string,
+  lookups: SyncLookups,
+  dtos: YclientsRecord[],
+): Promise<void> {
+  const needed = dtos.filter((dto) => {
+    if (dto.deleted) return false;
+    const phone = normalizePhone(dto.client?.phone);
+    const byId = dto.client?.id !== undefined && lookups.patientByYclientsId.has(dto.client.id);
+    const byPhone = phone !== null && lookups.patientByPhone.has(phone);
+    return !byId && !byPhone && (dto.client?.id !== undefined || phone !== null);
+  });
+  if (needed.length === 0) return;
+
+  for (const dto of needed) {
+    const phone = normalizePhone(dto.client?.phone);
+    const yclientsId = dto.client?.id ?? null;
+
+    // Второй визит того же незнакомого пациента на этой же странице.
+    if (yclientsId !== null && lookups.patientByYclientsId.has(yclientsId)) continue;
+    if (phone !== null && lookups.patientByPhone.has(phone)) continue;
+
+    try {
+      const created = await prisma.patient.create({
+        data: {
+          companyId,
+          yclientsId,
+          name: dto.client?.name?.trim() || null,
+          firstSeenAt: new Date(dto.datetime),
+          // Дату первого обращения знаем только по этому визиту — это не факт
+          // первого контакта, и в «новых пациентов» такая карточка не идёт.
+          firstSeenExact: false,
+          ...(phone
+            ? { phones: { create: { companyId, phone, isPrimary: true } } }
+            : {}),
+        },
+        select: { id: true },
+      });
+      if (yclientsId !== null) lookups.patientByYclientsId.set(yclientsId, created.id);
+      if (phone !== null) lookups.patientByPhone.set(phone, created.id);
+    } catch {
+      // Гонка с выгрузкой клиентов: карточку успели завести. Найдём её на
+      // следующем круге — терять визит из-за этого нельзя.
+    }
+  }
+}
+
+/**
  * Ключ «один и тот же приём»: пациент, специалист и точное время начала.
  * Три совпадения подряд случайными не бывают.
  */
@@ -611,6 +701,8 @@ function localKey(patientId: string, staffId: string, startAt: Date): string {
 
 interface WindowResult {
   written: number;
+  /** Визиты, которые записать не удалось: их нет в отчётах, и это надо видеть. */
+  skipped: number;
   /** Номера записей, которые YCLIENTS показал за это окно. */
   seenIds: number[];
   /** Можно ли верить окну настолько, чтобы отменять по нему визиты. */
@@ -627,6 +719,7 @@ async function syncRecordsWindow(
   let page = 1;
   let fetched = 0;
   let written = 0;
+  let skipped = 0;
   let totalCount: number | null = null;
   /**
    * Полный список записей окна.
@@ -680,6 +773,22 @@ async function syncRecordsWindow(
      * идентификаторам и телефонам и уже известные визиты. Дальше разбор идёт
      * в памяти.
      */
+    /**
+     * Заводим то, чего не хватает для визита, вместо того чтобы его терять.
+     *
+     * Визит писался, только если и специалист, и пациент уже есть в
+     * справочниках. На боевых данных за месяц так потерялось шестнадцать
+     * записей: уволенного специалиста YCLIENTS в списке персонала не отдаёт, а
+     * его прошлые визиты показывает; новый пациент мог не доехать, если
+     * выгрузка клиентов упала (у неё бывает таймаут 504).
+     *
+     * Потерянный визит — это потерянная выручка, потерянный занятый кабинет и
+     * дыра в отчётах, о которой никто не узнает. Заводим минимальную карточку
+     * из самой записи: имя и телефон в ней есть.
+     */
+    await ensureStaff(companyId, lookups, dtos);
+    await ensurePatients(companyId, lookups, dtos);
+
     await primePage(companyId, lookups, {
       clientIds: dtos.map((d) => d.client?.id).filter((x): x is number => typeof x === "number"),
       phones: dtos
@@ -698,7 +807,16 @@ async function syncRecordsWindow(
     const creates: Prisma.AppointmentCreateManyInput[] = [];
     for (const dto of dtos) {
       const row = buildRecordRow(companyId, dto, lookups);
-      if (!row) continue;
+      if (!row) {
+        /**
+         * Визит всё равно не удалось записать: ни специалиста, ни пациента не
+         * нашли и завести не смогли (у записи нет ни клиента, ни телефона).
+         * Молча терять его нельзя — это выручка и занятый кабинет, которых
+         * потом не хватит в отчётах.
+         */
+        skipped += 1;
+        continue;
+      }
       if (row.kind === "deleted") {
         await prisma.appointment.updateMany({
           where: { companyId, yclientsRecordId: row.yclientsRecordId, deletedAt: null },
@@ -771,7 +889,12 @@ async function syncRecordsWindow(
    * после всех окон. Поэтому окно лишь сообщает, что видело, а решение об
    * отмене принимается один раз, по всей выгрузке.
    */
-  return { written, seenIds, trusted: windowIsTrustworthy({ fetched, totalCount }) };
+  if (skipped > 0) {
+    console.warn(
+      `[выгрузка] ${apiDate(from)}–${apiDate(to)}: не записано ${skipped} визитов — нет ни клиента, ни телефона`,
+    );
+  }
+  return { written, skipped, seenIds, trusted: windowIsTrustworthy({ fetched, totalCount }) };
 }
 
 /**
