@@ -5,6 +5,7 @@ import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
+import { focusLine, focusOf, searchText } from "./focus";
 import { HANDOVER_REPLY, admitsInability, promisesBooking, promisesHuman } from "./booking-promise";
 import { asksForSlot, cantCome, medical, personalTopic, scheduleTopic, wantsHuman, wantsReschedule } from "./triggers";
 import {
@@ -21,7 +22,7 @@ import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
-import { matchServices } from "./service-match";
+import { matchServices, whomFor } from "./service-match";
 import { hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
@@ -373,6 +374,17 @@ async function clinicContext(
     lines.push("", "ПОДХОДИТ ПОД ВОПРОС (цену и длительность бери только отсюда):");
     for (const s of matched) lines.push(`• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
   }
+
+  /**
+   * Что именно спросили — отдельной строкой и до справочника.
+   *
+   * Пациент спросил цену детского приёма у названного врача, а получил весь
+   * раздел справочника: два остеопата, четыре цены. Запись справочника
+   * покрывает несколько случаев сразу, и модель печатала её целиком. Значит
+   * надо прямо сказать, какой из случаев нужен.
+   */
+  const focus = question ? focusLine(focusOf(question, whomFor(question), staff.map((p) => p.name))) : "";
+  if (focus) lines.push("", focus);
 
   lines.push("", "Все услуги и цены:");
   for (const s of services) lines.push(`• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
@@ -1035,7 +1047,18 @@ async function replyToQuestion(
     }
   }
 
-  const context = await clinicContext(ctx.companyId, text, conversation.consentGrantedAt !== null);
+  /**
+   * По какому тексту искать услуги и справку.
+   *
+   * Уточнение вроде «Я же сказал лишь Ирина Алункачева» само по себе означает
+   * одно имя — и справочник честно находил по нему программу «Лотос», где это
+   * имя тоже есть. Ищем уточнение вместе с вопросом, к которому оно относится.
+   */
+  const query = searchText(
+    text,
+    said.filter((t) => t.role === "user").map((t) => t.content),
+  );
+  const context = await clinicContext(ctx.companyId, query, conversation.consentGrantedAt !== null);
   const answer = await answerLLM(
     text,
     context,
@@ -1145,6 +1168,26 @@ async function replyToQuestion(
       text:
         "Время приёма подбирает администратор — передал(а) ему ваш вопрос, он ответит здесь же. " +
         "Чтобы ускорить, пришлите одним сообщением: ФИО, возраст, вес, жалобу и город.",
+      buttons: mainMenu(),
+    });
+  }
+
+  /**
+   * Спросили цену, а мы её знаем — отвечаем сами.
+   *
+   * Сюда попадали повторные вопросы: пациент спросил цену третий раз, потому
+   * что первые два ответа были не про то, а запасной путь отказывался
+   * повторять уже сказанное и звал администратора. С точки зрения человека
+   * платформа не ответила на простой вопрос, ответ на который у неё есть.
+   *
+   * Услуги подбираем тем же кодом, что и для модели: цену выбирает не текст,
+   * а справочник клиники.
+   */
+  const priced = matchServices(query, await getServices(ctx.companyId), 3);
+  if (priced.length > 0) {
+    const list = priced.map((s) => `${s.title} — ${s.price} ₽, ${s.durationMin} мин`).join("\n");
+    return respond(ctx, conversation.id, {
+      text: `${list}\n\nЗаписывает администратор — напишите, кого и на когда, и он подберёт время.`,
       buttons: mainMenu(),
     });
   }
