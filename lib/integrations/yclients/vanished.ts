@@ -65,10 +65,18 @@ export interface VanishResult {
 export async function cancelVanished(
   companyId: string,
   window: { from: Date; to: Date },
+  /**
+   * Все номера, которые YCLIENTS показал за ЭТУ выгрузку целиком, а не только
+   * за это окно.
+   *
+   * Иначе перенос записи на другой месяц выглядит как удаление: в старом окне
+   * её номера уже нет, а в новом он ещё не встретился. Отменили бы живую
+   * запись и сами создали расхождение.
+   */
   seenIds: number[],
-  fetch: WindowFetch,
+  trusted: boolean,
 ): Promise<VanishResult> {
-  if (!windowIsTrustworthy(fetch)) return { cancelled: 0 };
+  if (!trusted) return { cancelled: 0 };
 
   const result = await prisma.appointment.updateMany({
     where: {

@@ -404,8 +404,17 @@ export function PatientCardBody({
                     {visit.doctor} · {VISIT_STATUS[visit.status].label}
                   </span>
                 </span>
+                {/*
+                  Ноль без пояснения читался как «цену не заполнили», и
+                  администратор шёл её искать. Услуга, отданная бесплатно по
+                  скидке, — это факт, и выглядеть он должен как факт.
+                */}
                 {visit.amount > 0 ? (
                   <span className="num text-text-muted flex-none text-xs">{formatMoney(visit.amount)}</span>
+                ) : visit.amountSource === "FREE" ? (
+                  <span className="text-text-muted flex-none text-xs">бесплатно</span>
+                ) : visit.status === "arrived" ? (
+                  <span className="text-text-subtle flex-none text-xs">цена не указана</span>
                 ) : null}
               </li>
             ))}

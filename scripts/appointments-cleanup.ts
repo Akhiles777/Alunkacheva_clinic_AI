@@ -47,23 +47,18 @@ async function main() {
   const from = new Date(Date.UTC(now.getUTCFullYear() - HISTORY_YEARS, now.getUTCMonth(), 1));
   const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 3, 1));
 
-  let totalVanished = 0;
-  let skippedWindows = 0;
   /**
    * Все записи, которые YCLIENTS показал за всю историю.
    *
-   * Нужны, чтобы про задвоенный приём сказать правду. Первая версия скрипта
-   * считала «обе половины есть в YCLIENTS», если у обеих есть НАШ номер
-   * записи, — и советовала чинить в YCLIENTS то, чего там давно нет.
+   * Собираем ПЕРЕД тем, как что-то отменять. Сверять по одному окну нельзя:
+   * запись, перенесённая из июня в август, в июньском окне выглядит удалённой,
+   * хотя жива и лежит в августовском.
    */
   const remoteIds = new Set<number>();
-  /** Окна, которым верить нельзя: по ним вывод о «половина исчезла» неполон. */
   let untrustedAny = false;
 
-  // ── 1. Визиты, которых в YCLIENTS больше нет
-  console.log("── визиты, которых в YCLIENTS больше нет ──");
+  console.log("── читаем YCLIENTS ──");
   for (const window of monthWindows(from, to)) {
-    const seenIds: number[] = [];
     let page = 1;
     let fetched = 0;
     let totalCount: number | null = null;
@@ -75,52 +70,61 @@ async function main() {
       );
       const dtos = res.data ?? [];
       if (typeof res.totalCount === "number") totalCount = res.totalCount;
-      for (const d of dtos) seenIds.push(d.id);
+      for (const d of dtos) remoteIds.add(d.id);
       fetched += dtos.length;
       if (!hasNextPage({ received: dtos.length, pageSize: PAGE_SIZE, fetchedSoFar: fetched, totalCount: res.totalCount, page })) break;
       page += 1;
     }
 
-    const label = apiDate(window.from).slice(0, 7);
-    for (const id of seenIds) remoteIds.add(id);
     if (!windowIsTrustworthy({ fetched, totalCount })) {
+      // Недобранное окно выглядит как массовая отмена. Одна такая ошибка
+      // вычистила бы месяц настоящих визитов, поэтому не отменяем ничего.
       untrustedAny = true;
-      // Недобранное окно выглядит как массовая отмена. Пропускаем: одна такая
-      // ошибка вычистила бы месяц настоящих визитов.
-      skippedWindows += 1;
-      console.log(`  ${label}: пропущено — получено ${fetched}, обещано ${totalCount ?? "?"}`);
-      continue;
-    }
-
-    const candidates = await prisma.appointment.findMany({
-      where: {
-        companyId: company.id,
-        deletedAt: null,
-        startAt: { gte: window.from, lt: window.to },
-        yclientsRecordId: { not: null, notIn: seenIds },
-        status: { not: "CANCELLED" },
-      },
-      select: { yclientsRecordId: true, startAt: true, status: true, revenue: true },
-      orderBy: { startAt: "asc" },
-    });
-    if (candidates.length === 0) continue;
-
-    const money = candidates.reduce((sum, a) => sum + Number(a.revenue), 0);
-    const arrived = candidates.filter((a) => a.status === "ARRIVED").length;
-    console.log(
-      `  ${label}: ${candidates.length} шт (из них «пришёл» ${arrived}), выручки ${money} ₽`,
-    );
-    for (const a of candidates.slice(0, 5)) {
-      console.log(`      запись ${a.yclientsRecordId} · ${a.startAt.toISOString().slice(0, 16)} · ${a.status} · ${Number(a.revenue)} ₽`);
-    }
-    totalVanished += candidates.length;
-
-    if (APPLY) {
-      const done = await cancelVanished(company.id, window, seenIds, { fetched, totalCount });
-      console.log(`      отменено: ${done.cancelled}`);
+      console.log(`  ${apiDate(window.from).slice(0, 7)}: не добрано — получено ${fetched}, обещано ${totalCount ?? "?"}`);
     }
   }
-  console.log(`  всего: ${totalVanished}${skippedWindows ? `, окон пропущено: ${skippedWindows}` : ""}\n`);
+  console.log(`  записей в YCLIENTS: ${remoteIds.size}\n`);
+
+  // ── 1. Визиты, которых в YCLIENTS больше нет
+  console.log("── визиты, которых в YCLIENTS больше нет ──");
+  const ids = [...remoteIds];
+  const vanished = await prisma.appointment.findMany({
+    where: {
+      companyId: company.id,
+      deletedAt: null,
+      startAt: { gte: from, lt: to },
+      yclientsRecordId: { not: null, notIn: ids },
+      status: { not: "CANCELLED" },
+    },
+    select: { yclientsRecordId: true, startAt: true, status: true, revenue: true },
+    orderBy: { startAt: "asc" },
+  });
+
+  if (untrustedAny) {
+    console.log("  часть окон не добрана — отменять нельзя, список ниже неполон и может врать.");
+  }
+  const byMonth = new Map<string, typeof vanished>();
+  for (const a of vanished) {
+    const key = a.startAt.toISOString().slice(0, 7);
+    byMonth.set(key, [...(byMonth.get(key) ?? []), a]);
+  }
+  for (const [month, rows] of [...byMonth.entries()].sort()) {
+    const money = rows.reduce((sum, a) => sum + Number(a.revenue), 0);
+    const arrived = rows.filter((a) => a.status === "ARRIVED").length;
+    console.log(`  ${month}: ${rows.length} шт (из них «пришёл» ${arrived}), выручки ${money} ₽`);
+    for (const a of rows.slice(0, 5)) {
+      console.log(`      запись ${a.yclientsRecordId} · ${a.startAt.toISOString().slice(0, 16)} · ${a.status} · ${Number(a.revenue)} ₽`);
+    }
+  }
+  console.log(`  всего: ${vanished.length}`);
+
+  if (APPLY && vanished.length > 0 && !untrustedAny) {
+    const done = await cancelVanished(company.id, { from, to }, ids, true);
+    console.log(`  отменено: ${done.cancelled}`);
+  } else if (APPLY && untrustedAny) {
+    console.log("  НЕ отменяем: выгрузка неполная. Повторите позже.");
+  }
+  console.log("");
 
   // ── 2. Задвоенные визиты: один пациент, один специалист, одно время
   console.log("── задвоенные визиты ──");
@@ -206,6 +210,48 @@ async function main() {
     "  PRICE_LIST — цена подставлена из прайса, потому что в записи её не было.\n" +
       "  FREE — услуга отдана бесплатно, и это факт, а не пробел.",
   );
+
+  /**
+   * Чем YCLIENTS объясняет нулевую стоимость.
+   *
+   * Правило «ноль по скидке не переписываем прайсом» держится на том, что
+   * провайдер присылает цену до скидки и её размер. Если этих полей в ответе
+   * нет, правило не сработает и бесплатная услуга снова получит цену прайса.
+   * Проверять это надо на живом ответе, а не верить документации.
+   *
+   * Печатаем только служебные поля услуги: ни имён, ни телефонов (§7).
+   */
+  console.log("\n── чем YCLIENTS объясняет нулевую стоимость ──");
+  const probeFrom = new Date(now.getTime() - 60 * 24 * 3600 * 1000);
+  const probe = await client.getPage<YclientsRecord[]>(
+    client.endpoints.records(client.creds.companyId),
+    { start_date: apiDate(probeFrom), end_date: apiDate(now), page: 1, count: PAGE_SIZE },
+  );
+  const zeroCost = (probe.data ?? []).filter((r) =>
+    (r.services ?? []).some((sv) => (sv.cost ?? 0) === 0),
+  );
+  console.log(`  записей с нулевой стоимостью за 60 дней: ${zeroCost.length} из ${(probe.data ?? []).length}`);
+  let withDiscountFields = 0;
+  for (const r of zeroCost.slice(0, 8)) {
+    for (const sv of r.services ?? []) {
+      if ((sv.cost ?? 0) !== 0) continue;
+      const known =
+        (sv.first_cost ?? 0) > 0 || (sv.discount ?? 0) > 0 || (sv.amount ?? 0) > 0 || (sv.cost_to_pay ?? 0) > 0;
+      if (known) withDiscountFields += 1;
+      console.log(
+        `      запись ${r.id}: cost=${sv.cost ?? "нет"} first_cost=${sv.first_cost ?? "нет"} ` +
+          `discount=${sv.discount ?? "нет"} amount=${sv.amount ?? "нет"} cost_to_pay=${sv.cost_to_pay ?? "нет"}` +
+          ` → ${known ? "БЕСПЛАТНО (цена известна)" : "цена неизвестна, возьмём из прайса"}`,
+      );
+    }
+  }
+  if (zeroCost.length > 0 && withDiscountFields === 0) {
+    console.log(
+      "  ВНИМАНИЕ: ни в одной записи нет ни цены до скидки, ни размера скидки.\n" +
+        "  Значит отличить скидку 100% от незаполненной цены по ответу нельзя —\n" +
+        "  напишите мне этот вывод, будем искать признак в другом месте ответа.",
+    );
+  }
 
   await prisma.$disconnect();
 }

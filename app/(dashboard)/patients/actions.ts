@@ -36,6 +36,14 @@ export interface PatientVisitRecord {
   doctor: string;
   status: "arrived" | "no_show" | "cancelled" | "planned";
   amount: number;
+  /**
+   * Откуда взялась сумма.
+   *
+   * Ноль без пояснения читается как «не заполнили», и администратор идёт
+   * искать цену. На деле ноль бывает настоящим: услугу отдали бесплатно по
+   * скидке или акции. Разные вещи должны выглядеть по-разному.
+   */
+  amountSource: "RECORD" | "PRICE_LIST" | "FREE" | "UNKNOWN";
 }
 
 export interface PatientRecord {
@@ -199,6 +207,7 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
           startAt: true,
           status: true,
           revenue: true,
+          revenueSource: true,
           staff: { select: { name: true } },
           primaryService: { select: { title: true } },
         },
@@ -237,6 +246,7 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       doctor: a.staff?.name ?? "—",
       status: VISIT_STATUS_MAP[a.status] ?? "planned",
       amount: Number(a.revenue),
+      amountSource: a.revenueSource,
     })),
   };
 }

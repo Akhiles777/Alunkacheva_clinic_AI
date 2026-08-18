@@ -114,6 +114,8 @@ export interface Visit {
   doctor: string;
   status: "arrived" | "no_show" | "cancelled" | "planned";
   amount: number;
+  /** Откуда сумма: ноль по скидке и незаполненная цена — разные вещи. */
+  amountSource?: "RECORD" | "PRICE_LIST" | "FREE" | "UNKNOWN";
 }
 /** Вложение сообщения: голосовое, фотография, документ. */
 export interface MessageAttachment {

@@ -7,7 +7,8 @@ import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
-import { cancelVanished } from "./vanished";
+import { cancelVanished, windowIsTrustworthy } from "./vanished";
+import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
 import {
   mapClient,
@@ -111,8 +112,32 @@ async function run(
 
 export async function syncServices(companyId: string, client: YclientsClientHandle): Promise<number> {
   const dtos = await client.get<YclientsService[]>(client.endpoints.services(client.creds.companyId));
+
+  /**
+   * Услуги, заведённые в настройках и ещё не связанные с YCLIENTS.
+   *
+   * Именно так справочник и задвоился в прошлый раз: клиника завела услугу
+   * руками, выгрузка не узнала номер и создала вторую строку под тем же
+   * названием. Визиты ссылались на приезжую, кабинет был указан у заведённой —
+   * и кабинет визита не находился.
+   */
+  const unlinked = await prisma.service.findMany({
+    where: { companyId, yclientsServiceId: null },
+    select: { id: true, title: true },
+  });
+
   for (const dto of dtos) {
     const s = mapService(dto);
+    const own = adoptCandidate(s.title, unlinked);
+    if (own) {
+      // Связываем свою строку вместо создания второй. Привязки к кабинетам,
+      // база знаний и ссылки визитов остаются при ней.
+      const linked = await prisma.service.updateMany({
+        where: { id: own, companyId, yclientsServiceId: null },
+        data: { yclientsServiceId: s.yclientsServiceId, title: s.title, price: s.price, durationMin: s.durationMin, isActive: s.isActive },
+      });
+      if (linked.count > 0) continue;
+    }
     await prisma.service.upsert({
       where: { companyId_yclientsServiceId: { companyId, yclientsServiceId: s.yclientsServiceId } },
       update: { title: s.title, price: s.price, durationMin: s.durationMin, kind: s.kind, isActive: s.isActive },
@@ -124,8 +149,26 @@ export async function syncServices(companyId: string, client: YclientsClientHand
 
 export async function syncStaff(companyId: string, client: YclientsClientHandle): Promise<number> {
   const dtos = await client.get<YclientsStaff[]>(client.endpoints.staff(client.creds.companyId));
+
+  // Специалисты, заведённые в настройках и ещё не связанные с YCLIENTS: иначе
+  // рядом с ними появятся вторые, и приёмы разъедутся по двум карточкам.
+  const unlinked = (
+    await prisma.staff.findMany({
+      where: { companyId, yclientsStaffId: null, deletedAt: null },
+      select: { id: true, name: true },
+    })
+  ).map((r) => ({ id: r.id, title: r.name }));
+
   for (const dto of dtos) {
     const s = mapStaff(dto);
+    const own = adoptCandidate(s.name, unlinked);
+    if (own) {
+      const linked = await prisma.staff.updateMany({
+        where: { id: own, companyId, yclientsStaffId: null },
+        data: { yclientsStaffId: s.yclientsStaffId, name: s.name, specialty: s.specialty, isActive: s.isActive },
+      });
+      if (linked.count > 0) continue;
+    }
     await prisma.staff.upsert({
       where: { companyId_yclientsStaffId: { companyId, yclientsStaffId: s.yclientsStaffId } },
       update: { name: s.name, specialty: s.specialty, isActive: s.isActive },
@@ -137,8 +180,29 @@ export async function syncStaff(companyId: string, client: YclientsClientHandle)
 
 export async function syncResources(companyId: string, client: YclientsClientHandle): Promise<number> {
   const dtos = await client.get<YclientsResource[]>(client.endpoints.resources(client.creds.companyId));
+
+  /**
+   * Кабинеты клиника завела у нас руками — в YCLIENTS их как ресурсы не ведут.
+   * Заведут — и без этой связки рядом с тремя кабинетами появятся ещё три, а
+   * загрузка размажется по шести.
+   */
+  const unlinked = (
+    await prisma.room.findMany({
+      where: { companyId, yclientsResourceId: null },
+      select: { id: true, name: true },
+    })
+  ).map((r) => ({ id: r.id, title: r.name }));
+
   for (const dto of dtos) {
     const r = mapResource(dto);
+    const own = adoptCandidate(r.name, unlinked);
+    if (own) {
+      const linked = await prisma.room.updateMany({
+        where: { id: own, companyId, yclientsResourceId: null },
+        data: { yclientsResourceId: r.yclientsResourceId },
+      });
+      if (linked.count > 0) continue;
+    }
     await prisma.room.upsert({
       where: { companyId_yclientsResourceId: { companyId, yclientsResourceId: r.yclientsResourceId } },
       update: { name: r.name },
@@ -424,10 +488,73 @@ export async function syncRecords(companyId: string, client: YclientsClientHandl
   const lookups = await loadLookups(companyId);
 
   let written = 0;
+  /** Всё, что YCLIENTS показал за эту выгрузку — по всем окнам сразу. */
+  const seenAll = new Set<number>();
+  let mainTrusted = true;
+
   for (const window of monthWindows(from, to)) {
-    written += await syncRecordsWindow(companyId, client, window.from, window.to, lookups);
+    const res = await syncRecordsWindow(companyId, client, window.from, window.to, lookups);
+    written += res.written;
+    for (const id of res.seenIds) seenAll.add(id);
+    if (!res.trusted) mainTrusted = false;
   }
+
+  /**
+   * Один месяц истории сверх окна — по кругу.
+   *
+   * Обычная выгрузка перечитывает последний месяц. Значит запись, перенесённую
+   * из июня в август, мы увидим в августе, а её старую копию в июне — нет:
+   * июнь больше не читается. Копия остаётся навсегда, с отметкой «пришёл» и
+   * своей выручкой. Ровно так и появляются дубли, которых в YCLIENTS нет.
+   *
+   * Гонять всю историю каждый круг нельзя — это сотни запросов. Поэтому каждый
+   * час проверяется следующий месяц: за сутки обходится два года, и дальше по
+   * кругу, без чьего-либо участия. Полная выгрузка руками больше не нужна.
+   */
+  const audit = auditWindow(now, from);
+  let auditTrusted = false;
+  if (audit) {
+    const res = await syncRecordsWindow(companyId, client, audit.from, audit.to, lookups);
+    written += res.written;
+    for (const id of res.seenIds) seenAll.add(id);
+    auditTrusted = res.trusted;
+  }
+
+  /**
+   * Сверка — один раз и по всей выгрузке.
+   *
+   * Наши визиты, номеров которых YCLIENTS не показал нигде, там удалены или
+   * отменены. Сравнивать по одному окну нельзя: перенос на другой месяц из
+   * своего окна выглядит точно так же, как удаление.
+   */
+  const ids = [...seenAll];
+  const cancelled =
+    (await cancelVanished(companyId, { from, to }, ids, mainTrusted)).cancelled +
+    (audit ? (await cancelVanished(companyId, audit, ids, auditTrusted)).cancelled : 0);
+  if (cancelled > 0) {
+    console.log(`[выгрузка] отменено ${cancelled} визитов — в YCLIENTS их больше нет`);
+  }
+
   return written;
+}
+
+/**
+ * Какой месяц истории проверяем в этот раз.
+ *
+ * Смещение считается по часам от начала эпохи: каждый час — следующий месяц,
+ * за сутки обходится вся история. Хранить позицию не нужно, а значит нечему и
+ * сбиться при перезапуске.
+ *
+ * Возвращает null, если выбранный месяц и так попадает в обычное окно
+ * выгрузки: перечитывать его второй раз незачем.
+ */
+export function auditWindow(now: Date, notBefore?: Date): { from: Date; to: Date } | null {
+  const months = HISTORY_YEARS * 12;
+  const offset = (Math.floor(now.getTime() / 3600_000) % months) + 1;
+  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1));
+  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset + 1, 1));
+  if (notBefore && to > notBefore) return null;
+  return { from, to };
 }
 
 /**
@@ -438,13 +565,21 @@ function localKey(patientId: string, staffId: string, startAt: Date): string {
   return `${patientId}|${staffId}|${startAt.getTime()}`;
 }
 
+interface WindowResult {
+  written: number;
+  /** Номера записей, которые YCLIENTS показал за это окно. */
+  seenIds: number[];
+  /** Можно ли верить окну настолько, чтобы отменять по нему визиты. */
+  trusted: boolean;
+}
+
 async function syncRecordsWindow(
   companyId: string,
   client: YclientsClientHandle,
   from: Date,
   to: Date,
   lookups: SyncLookups,
-): Promise<number> {
+): Promise<WindowResult> {
   let page = 1;
   let fetched = 0;
   let written = 0;
@@ -585,18 +720,14 @@ async function syncRecordsWindow(
   }
 
   /**
-   * Сверка окна: наши визиты, которых YCLIENTS больше не показывает, отменены
-   * там — значит должны быть отменены и здесь. Иначе отменённая запись
-   * навсегда остаётся у нас с отметкой «пришёл» и с выручкой.
+   * Сверку по этому окну не делаем здесь.
+   *
+   * Запись, перенесённую в другой месяц, из своего окна не отличить от
+   * удалённой: её номера тут нет, а где он есть — станет известно только
+   * после всех окон. Поэтому окно лишь сообщает, что видело, а решение об
+   * отмене принимается один раз, по всей выгрузке.
    */
-  const vanished = await cancelVanished(companyId, { from, to }, seenIds, { fetched, totalCount });
-  if (vanished.cancelled > 0) {
-    console.log(
-      `[выгрузка] ${apiDate(from)}–${apiDate(to)}: отменено ${vanished.cancelled} — в YCLIENTS их больше нет`,
-    );
-  }
-
-  return written;
+  return { written, seenIds, trusted: windowIsTrustworthy({ fetched, totalCount }) };
 }
 
 /**
