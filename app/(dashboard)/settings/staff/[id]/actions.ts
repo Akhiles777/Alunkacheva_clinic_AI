@@ -55,6 +55,15 @@ export interface WeekRow {
 
 export interface StaffMetrics {
   hasSpecialist: boolean;
+  /**
+   * Сколько приёмов оформлено на эту карточку ЗА ВСЁ ВРЕМЯ.
+   *
+   * Нужен, чтобы отличить «специалист не работал последние три месяца» от
+   * «приёмы оформляются на другую его карточку». На экране это одинаковые
+   * нули, а причины разные: первое — факт о человеке, второе — расхождение в
+   * данных, и чинить его надо не разговором с сотрудником.
+   */
+  everAppts: number;
   periodDays: number;
   appts: number;
   /**
@@ -150,6 +159,7 @@ function weekLabel(key: number): string {
 async function buildMetrics(companyId: string, staffId: string | null): Promise<StaffMetrics> {
   const empty: StaffMetrics = {
     hasSpecialist: false,
+    everAppts: 0,
     periodDays: PERIOD_DAYS,
     appts: 0,
     upcoming: 0,
@@ -216,6 +226,15 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
     }),
   ]);
 
+  /**
+   * Приёмы за всё время — по ним видно, пустая карточка или просто тихий
+   * квартал. Отдельным запросом: выбирать всю историю визитов ради одного
+   * числа незачем.
+   */
+  const everAppts = await prisma.appointment.count({
+    where: { companyId, deletedAt: null, staffId },
+  });
+
   const arrivedRows = rows.filter((r) => r.status === "ARRIVED");
   const revenue = arrivedRows.reduce((sum, r) => sum + Number(r.revenue), 0);
   const noShow = rows.filter((r) => r.status === "NO_SHOW").length;
@@ -251,6 +270,7 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
 
   return {
     hasSpecialist: true,
+    everAppts,
     periodDays: PERIOD_DAYS,
     /**
      * «Приёмы» — состоявшиеся, то есть ARRIVED (§8, «Пришедшие»).

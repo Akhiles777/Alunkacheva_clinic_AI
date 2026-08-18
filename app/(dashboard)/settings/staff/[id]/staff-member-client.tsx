@@ -446,6 +446,34 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
           </p>
         ) : (
           <>
+            {/*
+              Ноль по всем показателям объясняем. «Специалист не работал три
+              месяца» и «приёмы оформлены на другую его карточку» на экране
+              выглядят одинаково, а причины разные: второе чинится не
+              разговором с сотрудником, а сверкой справочника.
+            */}
+            {m.everAppts === 0 ? (
+              <p className="border-accent-border bg-accent-tint text-accent-text mb-3 rounded-lg border p-3 text-sm">
+                На эту карточку специалиста не оформлен ни один приём — ни за 90 дней, ни за всё
+                время. Скорее всего приёмы идут на другую его карточку: такое бывает, когда
+                специалист заведён и вручную, и выгрузкой из YCLIENTS. Проверьте, что учётка
+                связана с тем специалистом, который приезжает из YCLIENTS.
+              </p>
+            ) : m.arrived === 0 && m.noShow === 0 && m.upcoming === 0 ? (
+              <p className="text-text-muted mb-3 text-sm">
+                За последние {m.periodDays} дней приёмов не было. Всего на карточке {m.everAppts}{" "}
+                {m.everAppts === 1 ? "приём" : "приёмов"}
+                {m.lastVisitAt
+                  ? `, последний ${new Intl.DateTimeFormat("ru-RU", {
+                      day: "numeric",
+                      month: "long",
+                      year: "numeric",
+                      timeZone: "Europe/Moscow",
+                    }).format(new Date(m.lastVisitAt))}`
+                  : ""}
+                .
+              </p>
+            ) : null}
             <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
               <Tile label="Выручка" value={formatMoney(m.revenue)} hint={`${m.revenueSharePct}% клиники`} />
               <Tile label="Средний чек" value={formatMoney(m.avgCheck)} />
