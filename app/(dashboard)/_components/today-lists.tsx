@@ -15,7 +15,8 @@ export function AttentionList({ items }: { items: AttentionItem[] }) {
   return (
     <ul className="border-border bg-surface divide-border-soft divide-y overflow-hidden rounded-xl border">
       {items.map((item) => (
-        <li key={item.id} className="hover:bg-hover px-4 py-3">
+
+         <li key={item.id} className="hover:bg-hover px-4 py-3">
           <div className="flex items-baseline gap-3">
             <span
               className={`text-2xs ${item.urgent ? "text-accent-text font-medium" : "text-text-subtle"}`}
@@ -29,6 +30,7 @@ export function AttentionList({ items }: { items: AttentionItem[] }) {
           </p>
           <p className="text-text-muted mt-0.5 text-xs leading-snug">{item.detail}</p>
         </li>
+  
       ))}
     </ul>
   );

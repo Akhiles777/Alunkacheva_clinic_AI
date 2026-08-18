@@ -80,7 +80,20 @@ export function patientVisitStats(patient: Patient, now = new Date()): PatientVi
     visitCount: patient.visits.length,
     arrivedCount: dates.length,
     avgIntervalDays: avgIntervalDays(dates),
-    lastVisitDaysAgo: last ? Math.round((startOfDay(now).getTime() - last.getTime()) / DAY) : null,
+    /**
+     * Сколько ДНЕЙ назад был последний визит.
+     *
+     * Считалось «полночь сегодня минус момент визита»: приём сегодня в 14:00
+     * давал минус четырнадцать часов, округление — «−1 дней назад». Отрицательные
+     * дни на экране карточки выглядят как поломка, и справедливо.
+     *
+     * Сравниваем день с днём: визит сегодня — это ноль, а не минус что-то.
+     * Ниже нуля не опускаемся: визит, назначенный на вечер, «минус одним днём»
+     * быть не может.
+     */
+    lastVisitDaysAgo: last
+      ? Math.max(0, Math.round((startOfDay(now).getTime() - startOfDay(last).getTime()) / DAY))
+      : null,
     totalSpent: patient.visits.reduce((sum, v) => sum + (v.status === "arrived" ? v.amount : 0), 0),
   };
 }

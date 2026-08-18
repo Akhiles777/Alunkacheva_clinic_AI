@@ -47,14 +47,33 @@ export function PatientAnalyticsPanel({ patientId }: { patientId: string }) {
   if (patient.notes.some((n) => n.kind === "NO_CONSENT" && !n.resolved)) {
     insights.push("Не подписано согласие на обработку ПДн.");
   }
-  insights.push(`Первое обращение: ${patient.source}, ${patient.firstSeen}.`);
+  /**
+   * Дата, а не «источник и слово».
+   *
+   * На экране выходило «Первое обращение: —, ранее.»: прочерк — это
+   * неизвестный источник, «ранее» — что угодно от вчера до позапрошлого года.
+   * Строка не сообщала ничего. Тот же дефект уже исправлен в карточке
+   * пациента — здесь он остался.
+   */
+  const firstContact = patient.firstSeenAt
+    ? new Intl.DateTimeFormat("ru-RU", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        timeZone: "Europe/Moscow",
+      }).format(new Date(patient.firstSeenAt))
+    : patient.firstSeen === "сегодня"
+      ? "сегодня"
+      : "дата неизвестна";
+  insights.push(`Первое обращение: ${firstContact} · источник: ${patient.source ?? "из YCLIENTS"}.`);
 
   return (
     <div className="flex flex-col gap-4">
       <section className="border-border bg-surface rounded-xl border p-5">
         <h2 className="mb-4 text-sm font-medium">Аналитика</h2>
         <div className="grid grid-cols-2 gap-3">
-          <Tile label="Визитов" value={`${s.arrivedCount} / ${s.visitCount}`} />
+          {/* «7 / 8» читается как дробь. Пришёл семь раз из восьми записей. */}
+          <Tile label="Пришёл" value={`${s.arrivedCount} из ${s.visitCount}`} />
           <Tile
             label="Средний интервал"
             value={s.avgIntervalDays !== null ? `${s.avgIntervalDays} ${pluralDays(s.avgIntervalDays)}` : "—"}
