@@ -17,6 +17,7 @@ const existing: ExistingRecord = {
   attendanceRaw: null,
   // Prisma отдаёт Decimal — объект, а не число: сравнение должно это переживать.
   revenue: { toString: () => "8000" },
+  revenueSource: "RECORD",
   isPaid: false,
   createdAtYclients: new Date("2026-08-10T12:00:00Z"),
   syncState: "SYNCED",
@@ -34,6 +35,7 @@ const incoming = {
   status: "CREATED",
   attendanceRaw: null,
   revenue: 8000,
+  revenueSource: "RECORD",
   isPaid: false,
   createdAtYclients: new Date("2026-08-10T12:00:00Z"),
   syncState: "SYNCED",

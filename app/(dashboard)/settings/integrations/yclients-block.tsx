@@ -131,6 +131,42 @@ export function YclientsBlock() {
       </div>
 
       {/*
+        Качество данных. Бесплатная услуга, посчитанная за 3000 ₽, и дубли —
+        то, что раньше обнаруживалось только в разговоре с клиентом.
+      */}
+      <div className="border-border bg-bg rounded-lg border p-3.5">
+        <div className="text-text-subtle text-2xs">Качество данных по визитам</div>
+        <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5 text-sm">
+          <span>
+            цена подставлена из прайса{" "}
+            <b className="num text-text">{state.quality.priceFromList}</b>
+          </span>
+          <span>
+            отдано бесплатно <b className="num text-text">{state.quality.free}</b>
+          </span>
+          <span>
+            задвоенных приёмов{" "}
+            <b className={`num ${state.quality.duplicateGroups > 0 ? "text-accent-text" : "text-text"}`}>
+              {state.quality.duplicateGroups}
+            </b>
+          </span>
+        </div>
+        {state.quality.duplicateGroups > 0 ? (
+          <p className="text-text-muted mt-2 text-xs">
+            Задвоенный приём — один пациент, один специалист и одно время в двух визитах. Если оба
+            визита есть в YCLIENTS, чинить нужно там: выгрузка вернёт их обратно, потому что
+            расписание ведёт YCLIENTS.
+          </p>
+        ) : null}
+        {state.quality.priceFromList > 0 ? (
+          <p className="text-text-subtle mt-2 text-xs">
+            «Из прайса» — в записи YCLIENTS стоимости не было, и мы взяли цену услуги. Это не
+            ошибка, но и не факт из кассы: чем таких визитов меньше, тем точнее выручка.
+          </p>
+        ) : null}
+      </div>
+
+      {/*
         Расписание выгрузки. Отметки в таблице выше говорят, когда данные
         приезжали в последний раз, но не говорят, приедут ли они снова:
         остановившееся расписание выглядит там ровно так же, как работающее.

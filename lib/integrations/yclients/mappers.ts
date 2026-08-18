@@ -40,6 +40,8 @@ export interface PatientUpsert {
 }
 export interface AppointmentUpsert {
   yclientsRecordId: number;
+  /** Визит YCLIENTS: несколько записей одного прихода делят его номер. */
+  yclientsVisitId: number | null;
   yclientsStaffId: number;
   yclientsResourceId: number | null;
   yclientsServiceIds: number[];
@@ -52,6 +54,18 @@ export interface AppointmentUpsert {
   isPaid: boolean;
   /** Когда запись создана в YCLIENTS; null — провайдер не сообщил. */
   createdAtYclients: Date | null;
+  /**
+   * Знает ли сама запись свою стоимость.
+   *
+   * Ноль в стоимости означает две совершенно разные вещи: «услуга отдана
+   * бесплатно» и «администратор цену не проставил». Первое — факт, который
+   * нельзя переписывать прайсом; второе — пробел, который прайсом закрыть
+   * можно и нужно (§8: пришёл на услугу за 8000 ₽ — значит 8000 ₽).
+   *
+   * Отличаем по следам цены в самой записи: указана цена до скидки, указана
+   * скидка или ненулевая стоимость — запись свою цену знает.
+   */
+  priceKnown: boolean;
 }
 
 /** Секунды сеанса YCLIENTS → минуты. Пустое/битое → 0. */
@@ -170,11 +184,33 @@ export function mapCreatedAt(dto: YclientsRecord): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/**
+ * Есть ли в записи хоть какой-то след цены.
+ *
+ * Скидка 100%: `cost` = 0, но `first_cost` = 3000 и `discount` = 100 — запись
+ * свою цену знает, и ноль в ней настоящий. Незаполненная стоимость: нули и
+ * пустоты во всех полях сразу — тогда цену берём из прайса клиники.
+ */
+export function recordKnowsPrice(dto: YclientsRecord): boolean {
+  const services = dto.services ?? [];
+  if (services.length === 0) return false;
+  return services.some(
+    (s) =>
+      (s.cost ?? 0) > 0 ||
+      (s.first_cost ?? 0) > 0 ||
+      (s.discount ?? 0) > 0 ||
+      (s.amount ?? 0) > 0 ||
+      (s.cost_to_pay ?? 0) > 0,
+  );
+}
+
 export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
   const services = dto.services ?? [];
   const revenue = services.reduce((sum, s) => sum + (s.cost ?? 0), 0);
   return {
     yclientsRecordId: dto.id,
+    yclientsVisitId: typeof dto.visit_id === "number" ? dto.visit_id : null,
+    priceKnown: recordKnowsPrice(dto),
     yclientsStaffId: dto.staff_id,
     yclientsResourceId: dto.resource_instances?.[0]?.resource_id ?? null,
     yclientsServiceIds: services.map((s) => s.id),

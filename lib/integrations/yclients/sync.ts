@@ -7,6 +7,7 @@ import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
+import { cancelVanished } from "./vanished";
 import { pushPendingAppointments } from "./write-back";
 import {
   mapClient,
@@ -429,6 +430,14 @@ export async function syncRecords(companyId: string, client: YclientsClientHandl
   return written;
 }
 
+/**
+ * Ключ «один и тот же приём»: пациент, специалист и точное время начала.
+ * Три совпадения подряд случайными не бывают.
+ */
+function localKey(patientId: string, staffId: string, startAt: Date): string {
+  return `${patientId}|${staffId}|${startAt.getTime()}`;
+}
+
 async function syncRecordsWindow(
   companyId: string,
   client: YclientsClientHandle,
@@ -439,6 +448,42 @@ async function syncRecordsWindow(
   let page = 1;
   let fetched = 0;
   let written = 0;
+  let totalCount: number | null = null;
+  /**
+   * Полный список записей окна.
+   *
+   * Нужен не для вставки — для сверки: всё наше, чего в этом списке нет, в
+   * YCLIENTS отменено или удалено. Удалённая запись оттуда просто перестаёт
+   * приходить, и по одному её состоянию узнать об этом нельзя.
+   */
+  const seenIds: number[] = [];
+
+  /**
+   * Визиты, заведённые у нас и ещё не получившие номер YCLIENTS.
+   *
+   * Второй путь появления дублей. Администратор создал запись в нашей форме,
+   * отправка в YCLIENTS не прошла (не связан специалист, нет телефона), а в
+   * YCLIENTS ту же запись завели руками. Выгрузка не знает её номера и
+   * создаёт ВТОРУЮ строку: один приём, два визита, двойная выручка и два
+   * места в кабинете.
+   *
+   * Совпадение по пациенту, специалисту и точному времени начала — это один и
+   * тот же приём. Тогда не создаём новый визит, а достраиваем существующий:
+   * заметка администратора, привязка к диалогу и источник обращения остаются
+   * при нём.
+   */
+  const orphans = new Map<string, string>();
+  for (const row of await prisma.appointment.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      yclientsRecordId: null,
+      startAt: { gte: from, lt: to },
+    },
+    select: { id: true, patientId: true, staffId: true, startAt: true },
+  })) {
+    orphans.set(localKey(row.patientId, row.staffId, row.startAt), row.id);
+  }
 
   for (;;) {
     const res = await client.getPage<YclientsRecord[]>(client.endpoints.records(client.creds.companyId), {
@@ -448,6 +493,8 @@ async function syncRecordsWindow(
       count: PAGE_SIZE,
     });
     const dtos = res.data ?? [];
+    if (typeof res.totalCount === "number") totalCount = res.totalCount;
+    for (const d of dtos) seenIds.push(d.id);
 
     /**
      * Подтягиваем всё нужное для страницы одним заходом: пациентов по
@@ -503,7 +550,26 @@ async function syncRecordsWindow(
             : { ...withoutCreatedAt, deletedAt: null },
         });
       } else {
-        creates.push(row.data);
+        /**
+         * Не заводим второй визит там, где он уже есть под нашим номером:
+         * достраиваем свой. Иначе один приём превращается в два — с двойной
+         * выручкой и двумя местами в расписании кабинета.
+         */
+        const key = localKey(
+          row.data.patientId as string,
+          row.data.staffId as string,
+          row.data.startAt as Date,
+        );
+        const ownId = orphans.get(key);
+        if (ownId) {
+          orphans.delete(key);
+          await prisma.appointment.updateMany({
+            where: { id: ownId, companyId, yclientsRecordId: null },
+            data: { ...row.data, deletedAt: null },
+          });
+        } else {
+          creates.push(row.data);
+        }
       }
       written += 1;
     }
@@ -517,6 +583,19 @@ async function syncRecordsWindow(
     }
     page += 1;
   }
+
+  /**
+   * Сверка окна: наши визиты, которых YCLIENTS больше не показывает, отменены
+   * там — значит должны быть отменены и здесь. Иначе отменённая запись
+   * навсегда остаётся у нас с отметкой «пришёл» и с выручкой.
+   */
+  const vanished = await cancelVanished(companyId, { from, to }, seenIds, { fetched, totalCount });
+  if (vanished.cancelled > 0) {
+    console.log(
+      `[выгрузка] ${apiDate(from)}–${apiDate(to)}: отменено ${vanished.cancelled} — в YCLIENTS их больше нет`,
+    );
+  }
+
   return written;
 }
 
@@ -533,15 +612,37 @@ async function syncRecordsWindow(
  * 8000 ₽ (§8). Поэтому при нулевой стоимости берём цену услуги из справочника
  * клиники — ту же, что видит пациент. Нет и её — оставляем ноль: выдумывать
  * сумму нельзя.
+ *
+ * НО ноль ≠ ноль. Пациентке сделали скидку 100%, и в записи честно стоит ноль
+ * — а мы подставили ей 3000 ₽ из прайса и записали клинике выручку, которой
+ * не было. Поэтому прайсом закрываем только те записи, где следов цены нет
+ * вовсе; если запись свою цену знает (указана цена до скидки, скидка или
+ * ненулевая стоимость), её ноль — это факт, и трогать его нельзя.
  */
-function revenueOf(r: AppointmentUpsert, lookups: SyncLookups): number {
-  if (r.revenue > 0) return r.revenue;
+function revenueOf(r: AppointmentUpsert, lookups: SyncLookups): RevenueDecision {
+  if (r.revenue > 0) return { amount: r.revenue, source: "RECORD" };
+
+  // Бесплатно по решению клиники: скидка, акция, отработка. Это не пробел.
+  if (r.priceKnown) return { amount: 0, source: "FREE" };
 
   let sum = 0;
   for (const yclientsServiceId of r.yclientsServiceIds) {
     sum += lookups.priceByYclientsServiceId.get(yclientsServiceId) ?? 0;
   }
-  return sum;
+  return sum > 0 ? { amount: sum, source: "PRICE_LIST" } : { amount: 0, source: "UNKNOWN" };
+}
+
+/**
+ * Откуда взялась сумма визита.
+ *
+ * Хранится вместе с визитом, потому что «выручка 3000 ₽» и «выручка 3000 ₽,
+ * подставленная из прайса» — разные утверждения, а на экране они выглядят
+ * одинаково. Без этого разобрать жалобу «почему у неё 3000, если было
+ * бесплатно» можно только гаданием.
+ */
+export interface RevenueDecision {
+  amount: number;
+  source: "RECORD" | "PRICE_LIST" | "FREE" | "UNKNOWN";
 }
 
 /**
@@ -619,6 +720,7 @@ export function buildRecordRow(
   if (!patientId) return null;
 
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
+  const revenue = revenueOf(r, lookups);
   return {
     kind: "row",
     createdAtKnown: r.createdAtYclients !== null,
@@ -645,7 +747,10 @@ export function buildRecordRow(
       durationMin: r.durationMin,
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
-      revenue: revenueOf(r, lookups),
+      yclientsVisitId: r.yclientsVisitId,
+      revenue: revenue.amount,
+      // Откуда сумма: без этого «3000 ₽» и «3000 ₽ из прайса» неразличимы.
+      revenueSource: revenue.source,
       isPaid: r.isPaid,
       /**
        * Дата создания записи — из YCLIENTS. Здесь стояла дата визита, и

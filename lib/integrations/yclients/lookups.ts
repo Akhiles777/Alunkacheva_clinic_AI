@@ -30,6 +30,7 @@ export const EXISTING_SELECT = {
   status: true,
   attendanceRaw: true,
   revenue: true,
+  revenueSource: true,
   isPaid: true,
   createdAtYclients: true,
   syncState: true,
@@ -48,6 +49,7 @@ export interface ExistingRecord {
   status: string;
   attendanceRaw: number | null;
   revenue: unknown;
+  revenueSource: string;
   isPaid: boolean;
   createdAtYclients: Date | null;
   syncState: string;

@@ -182,6 +182,24 @@ enum SyncEntity {
   TRANSACTIONS
 }
 
+/// Откуда взялась сумма визита.
+///
+/// «Выручка 3000 ₽» и «выручка 3000 ₽, подставленная из прайса» — разные
+/// утверждения, а на экране выглядят одинаково. Пациентке сделали скидку 100%,
+/// в записи YCLIENTS честный ноль, а мы поставили ей цену из прайса и записали
+/// клинике выручку, которой не было. Провенанс делает такую подстановку
+/// видимой и проверяемой.
+enum RevenueSource {
+  /// Стоимость пришла из самой записи YCLIENTS.
+  RECORD
+  /// В записи стоимости не было — взяли цену услуги из справочника клиники.
+  PRICE_LIST
+  /// Услуга оказана бесплатно: скидка 100%, акция, отработка.
+  FREE
+  /// Ни стоимости, ни цены в справочнике — сумма неизвестна.
+  UNKNOWN
+}
+
 /// Состояние обратной записи визита в YCLIENTS (§2).
 enum ApptSyncState {
   /// Интеграция выключена — визит живёт только у нас, это нормально.
@@ -234,50 +252,50 @@ model Company {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  patients            Patient[]
-  conversations       Conversation[]
-  messages            Message[]
-  inquiries           Inquiry[]
-  escalations         Escalation[]
-  appointments        Appointment[]
-  appointmentServices AppointmentService[]
-  services            Service[]
-  courses             Course[]
-  staff               Staff[]
-  rooms               Room[]
-  roomSchedules       RoomSchedule[]
-  roomExceptions      RoomScheduleException[]
-  staffUsers          StaffUser[]
-  pushSubscriptions   PushSubscription[]
-  internalChatRooms   InternalChatRoom[]
+  patients                 Patient[]
+  conversations            Conversation[]
+  messages                 Message[]
+  inquiries                Inquiry[]
+  escalations              Escalation[]
+  appointments             Appointment[]
+  appointmentServices      AppointmentService[]
+  services                 Service[]
+  courses                  Course[]
+  staff                    Staff[]
+  rooms                    Room[]
+  roomSchedules            RoomSchedule[]
+  roomExceptions           RoomScheduleException[]
+  staffUsers               StaffUser[]
+  pushSubscriptions        PushSubscription[]
+  internalChatRooms        InternalChatRoom[]
   internalChatParticipants InternalChatParticipant[]
-  internalChatMessages InternalChatMessage[]
-  sources             Source[]
-  webhookEvents       WebhookEvent[]
-  auditLogs           AuditLog[]
-  syncCursors         SyncCursor[]
-  funnelRollups       DailyFunnelRollup[]
-  revenueRollups      DailyRevenueRollup[]
-  roomLoadRollups     DailyRoomLoadRollup[]
-  serviceLoadRollups  DailyServiceLoadRollup[]
-  patientPhones       PatientPhone[]
-  patientRelations    PatientRelation[]
-  patientNotes        PatientNote[]
-  callLogs            CallLog[]
-  messageTemplates    MessageTemplate[]
-  knowledgeEntries    KnowledgeEntry[]
-  settings            Setting[]
-  credentials         Credential[]
-  clinicSchedules     ClinicSchedule[]
-  clinicExceptions    ClinicScheduleException[]
-  serviceRooms        ServiceRoom[]
-  consentDocuments    ConsentDocument[]
-  patientConsents     PatientConsent[]
-  rolePermissions     RolePermission[]
-  userPermissions     UserPermission[]
-  notifications       Notification[]
-  staffRates          StaffRate[]
-  payrollPayouts      PayrollPayout[]
+  internalChatMessages     InternalChatMessage[]
+  sources                  Source[]
+  webhookEvents            WebhookEvent[]
+  auditLogs                AuditLog[]
+  syncCursors              SyncCursor[]
+  funnelRollups            DailyFunnelRollup[]
+  revenueRollups           DailyRevenueRollup[]
+  roomLoadRollups          DailyRoomLoadRollup[]
+  serviceLoadRollups       DailyServiceLoadRollup[]
+  patientPhones            PatientPhone[]
+  patientRelations         PatientRelation[]
+  patientNotes             PatientNote[]
+  callLogs                 CallLog[]
+  messageTemplates         MessageTemplate[]
+  knowledgeEntries         KnowledgeEntry[]
+  settings                 Setting[]
+  credentials              Credential[]
+  clinicSchedules          ClinicSchedule[]
+  clinicExceptions         ClinicScheduleException[]
+  serviceRooms             ServiceRoom[]
+  consentDocuments         ConsentDocument[]
+  patientConsents          PatientConsent[]
+  rolePermissions          RolePermission[]
+  userPermissions          UserPermission[]
+  notifications            Notification[]
+  staffRates               StaffRate[]
+  payrollPayouts           PayrollPayout[]
 
   @@map("companies")
 }
@@ -293,38 +311,38 @@ model Patient {
 
   /// Первое появление в базе с учётом импортированной истории YCLIENTS.
   /// Метрика «новые пациенты» считается по первому появлению любого номера.
-  firstSeenAt  DateTime  @db.Timestamptz(3)
+  firstSeenAt    DateTime  @db.Timestamptz(3)
   /// Известна ли дата первого обращения на самом деле.
   ///
   /// У клиента, перенесённого из YCLIENTS без визитов, взять её неоткуда, и в
   /// firstSeenAt попадает день переноса. Такие карточки не новые — они просто
   /// старые, и в «новых пациентах» им не место: иначе вся база разом
   /// становится притоком того месяца, когда запустили выгрузку.
-  firstSeenExact Boolean @default(true)
-  firstVisitAt DateTime? @db.Timestamptz(3)
-  lastVisitAt  DateTime? @db.Timestamptz(3)
-  sourceId     String?
+  firstSeenExact Boolean   @default(true)
+  firstVisitAt   DateTime? @db.Timestamptz(3)
+  lastVisitAt    DateTime? @db.Timestamptz(3)
+  sourceId       String?
 
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  source        Source?        @relation(fields: [sourceId], references: [id], onDelete: SetNull)
-  conversations Conversation[]
-  inquiries     Inquiry[]
-  appointments  Appointment[] @relation("AppointmentPatient")
-  bookedAppointments Appointment[] @relation("AppointmentBookedByPatient")
-  courses       Course[]
+  company            Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  source             Source?           @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  conversations      Conversation[]
+  inquiries          Inquiry[]
+  appointments       Appointment[]     @relation("AppointmentPatient")
+  bookedAppointments Appointment[]     @relation("AppointmentBookedByPatient")
+  courses            Course[]
   // Телефон вынесен в отдельную таблицу: у пациента несколько номеров,
   // WhatsApp и звонки бывают на разных. Поиск идёт по всем.
-  phones        PatientPhone[]
+  phones             PatientPhone[]
   // Родство: pair (patientId → relatedPatientId). Две стороны отношения.
-  relationsOut  PatientRelation[] @relation("RelationOwner")
-  relationsIn   PatientRelation[] @relation("RelationTarget")
-  notes         PatientNote[]
-  callLogs      CallLog[]
-  consents      PatientConsent[]
+  relationsOut       PatientRelation[] @relation("RelationOwner")
+  relationsIn        PatientRelation[] @relation("RelationTarget")
+  notes              PatientNote[]
+  callLogs           CallLog[]
+  consents           PatientConsent[]
 
   @@unique([companyId, yclientsId])
   @@index([companyId, firstSeenAt])
@@ -523,22 +541,22 @@ model Escalation {
 // ─────────────────────────────────────────────────────────── приёмы
 
 model Appointment {
-  id               String  @id @default(cuid())
-  companyId        String
+  id                  String  @id @default(cuid())
+  companyId           String
   /// Идентификатор записи в YCLIENTS. NULL — визит создан у нас и туда ещё
   /// не отправлен. Выдумывать значение нельзя: локальные номера сталкивались
   /// бы с настоящими при выгрузке и перезаписывали чужие визиты.
-  yclientsRecordId Int?
-  yclientsVisitId  Int?
-  patientId        String
-  staffId          String
-  roomId           String?
-  courseId         String?
-  sourceId         String?
-  conversationId   String?
+  yclientsRecordId    Int?
+  yclientsVisitId     Int?
+  patientId           String
+  staffId             String
+  roomId              String?
+  courseId            String?
+  sourceId            String?
+  conversationId      String?
   /// Основная услуга визита — основной разрез метрик (загрузка по услугам, §8).
   /// Полный перечень услуг визита остаётся в AppointmentService.
-  primaryServiceId String?
+  primaryServiceId    String?
   /// Кто оформил визит за другого посетителя (§3.2). Родственник — bookedBy
   /// Patient; сотрудник-оформитель — bookedBy StaffUser. Оба необязательны.
   bookedByPatientId   String?
@@ -565,10 +583,12 @@ model Appointment {
 
   /// Признанная выручка визита. Для курсовых визитов — доля курса на сеанс,
   /// а не сумма продажи: иначе один платёж за 10 сеансов даёт пик в один день.
-  revenue            Decimal @default(0) @db.Decimal(12, 2)
+  revenue            Decimal       @default(0) @db.Decimal(12, 2)
+  /// Откуда взялась сумма: из записи, из прайса, бесплатно или неизвестно.
+  revenueSource      RevenueSource @default(RECORD)
   /// Фактически оплачено по этому визиту в YCLIENTS (для сверки с revenue).
-  paidAmount         Decimal @default(0) @db.Decimal(12, 2)
-  isPaid             Boolean @default(false)
+  paidAmount         Decimal       @default(0) @db.Decimal(12, 2)
+  isPaid             Boolean       @default(false)
   /// Порядковый номер сеанса внутри курса, 1-based.
   courseSessionIndex Int?
   /// Свободная заметка администратора при записи: отзыв клиента, проблема,
@@ -595,19 +615,19 @@ model Appointment {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  patient        Patient              @relation("AppointmentPatient", fields: [patientId], references: [id], onDelete: Restrict)
-  staff          Staff                @relation(fields: [staffId], references: [id], onDelete: Restrict)
-  room           Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
-  course         Course?              @relation(fields: [courseId], references: [id], onDelete: SetNull)
-  source         Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
-  conversation   Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  primaryService Service?             @relation("AppointmentPrimaryService", fields: [primaryServiceId], references: [id], onDelete: SetNull)
-  bookedByPatient   Patient?          @relation("AppointmentBookedByPatient", fields: [bookedByPatientId], references: [id], onDelete: SetNull)
-  bookedByStaffUser StaffUser?        @relation("AppointmentBookedByStaff", fields: [bookedByStaffUserId], references: [id], onDelete: SetNull)
-  services       AppointmentService[]
-  inquiries      Inquiry[]
-  callLogs       CallLog[]            @relation("CallResultedInAppointment")
+  company           Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient           Patient              @relation("AppointmentPatient", fields: [patientId], references: [id], onDelete: Restrict)
+  staff             Staff                @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  room              Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  course            Course?              @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  source            Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  conversation      Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  primaryService    Service?             @relation("AppointmentPrimaryService", fields: [primaryServiceId], references: [id], onDelete: SetNull)
+  bookedByPatient   Patient?             @relation("AppointmentBookedByPatient", fields: [bookedByPatientId], references: [id], onDelete: SetNull)
+  bookedByStaffUser StaffUser?           @relation("AppointmentBookedByStaff", fields: [bookedByStaffUserId], references: [id], onDelete: SetNull)
+  services          AppointmentService[]
+  inquiries         Inquiry[]
+  callLogs          CallLog[]            @relation("CallResultedInAppointment")
 
   @@unique([companyId, yclientsRecordId])
   @@index([companyId, startAt])
@@ -663,14 +683,14 @@ model Service {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  company             Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  appointmentServices AppointmentService[]
-  courses             Course[]
+  company                Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  appointmentServices    AppointmentService[]
+  courses                Course[]
   // Кабинеты, где услуга может проводиться — знаменатель загрузки по услугам.
-  rooms               ServiceRoom[]
-  primaryForAppointments Appointment[]     @relation("AppointmentPrimaryService")
-  knowledgeEntries    KnowledgeEntry[]
-  callInterests       CallLog[]            @relation("CallServiceInterest")
+  rooms                  ServiceRoom[]
+  primaryForAppointments Appointment[]        @relation("AppointmentPrimaryService")
+  knowledgeEntries       KnowledgeEntry[]
+  callInterests          CallLog[]            @relation("CallServiceInterest")
 
   @@unique([companyId, yclientsServiceId])
   @@index([companyId, kind, isActive])
@@ -735,8 +755,8 @@ model Staff {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  defaultRoom  Room?         @relation("StaffDefaultRoom", fields: [defaultRoomId], references: [id], onDelete: SetNull)
+  company      Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  defaultRoom  Room?           @relation("StaffDefaultRoom", fields: [defaultRoomId], references: [id], onDelete: SetNull)
   appointments Appointment[]
   user         StaffUser?
   rate         StaffRate?
@@ -748,18 +768,18 @@ model Staff {
 }
 
 model Room {
-  id                 String  @id @default(cuid())
-  companyId          String
+  id                     String  @id @default(cuid())
+  companyId              String
   /// В YCLIENTS кабинеты ведутся как ресурсы; может отсутствовать.
-  yclientsResourceId Int?
-  name               String
+  yclientsResourceId     Int?
+  name                   String
   /// Направление кабинета: «IV-терапия», «БОС-терапия», «Остеопатия».
-  direction          String?
+  direction              String?
   /// Наследовать часы работы от клиники (ClinicSchedule) или иметь своё
   /// (RoomSchedule). §3.9, §4.2.
   inheritsClinicSchedule Boolean @default(true)
-  isActive           Boolean @default(true)
-  sortOrder          Int     @default(0)
+  isActive               Boolean @default(true)
+  sortOrder              Int     @default(0)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -842,23 +862,23 @@ model StaffUser {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  company                 Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  staff                   Staff?             @relation(fields: [staffId], references: [id], onDelete: SetNull)
-  subscriptions           PushSubscription[]
-  permissions             UserPermission[]
-  notifications           Notification[]
-  payrollPayouts          PayrollPayout[]
-  conversations           Conversation[]
-  approvedMessages        Message[]          @relation("MessageApprovedBy")
-  acknowledgedEscalations Escalation[]       @relation("EscalationAcknowledgedBy")
-  resolvedEscalations     Escalation[]       @relation("EscalationResolvedBy")
-  auditLogs               AuditLog[]
-  bookedAppointments      Appointment[]      @relation("AppointmentBookedByStaff")
-  createdNotes            PatientNote[]
-  createdCallLogs         CallLog[]
-  knowledgeEdits          KnowledgeEntry[]
-  settingEdits            Setting[]
-  consentDocuments        ConsentDocument[]
+  company                  Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  staff                    Staff?                    @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  subscriptions            PushSubscription[]
+  permissions              UserPermission[]
+  notifications            Notification[]
+  payrollPayouts           PayrollPayout[]
+  conversations            Conversation[]
+  approvedMessages         Message[]                 @relation("MessageApprovedBy")
+  acknowledgedEscalations  Escalation[]              @relation("EscalationAcknowledgedBy")
+  resolvedEscalations      Escalation[]              @relation("EscalationResolvedBy")
+  auditLogs                AuditLog[]
+  bookedAppointments       Appointment[]             @relation("AppointmentBookedByStaff")
+  createdNotes             PatientNote[]
+  createdCallLogs          CallLog[]
+  knowledgeEdits           KnowledgeEntry[]
+  settingEdits             Setting[]
+  consentDocuments         ConsentDocument[]
   internalChatParticipants InternalChatParticipant[]
   internalChatMessages     InternalChatMessage[]
 
@@ -923,24 +943,24 @@ model InternalChatParticipant {
 }
 
 model InternalChatMessage {
-  id        String                  @id @default(cuid())
-  companyId String
-  roomId    String
-  authorId  String
-  kind      InternalChatMessageKind @default(TEXT)
-  body      String                  @default("")
+  id          String                  @id @default(cuid())
+  companyId   String
+  roomId      String
+  authorId    String
+  kind        InternalChatMessageKind @default(TEXT)
+  body        String                  @default("")
   /// Вложения: patient/course/voice. Голос пока хранит короткий dataUrl в JSON;
   /// при подключении object storage формат останется тем же, только появится url.
   attachments Json?
 
-  createdAt DateTime  @default(now()) @db.Timestamptz(3)
-  editedAt  DateTime? @db.Timestamptz(3)
-  deletedAt DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  editedAt    DateTime? @db.Timestamptz(3)
+  deletedAt   DateTime? @db.Timestamptz(3)
   deletedById String?
 
-  company  Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  room     InternalChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  author   StaffUser        @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  company Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  room    InternalChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  author  StaffUser        @relation(fields: [authorId], references: [id], onDelete: Restrict)
 
   @@index([roomId, createdAt])
   @@index([companyId, authorId, createdAt])
@@ -988,13 +1008,13 @@ model Notification {
 /// Ставки оплаты труда сотрудника. Заведены отдельно от Staff: ставка меняется
 /// во времени и относится к расчётам, а не к карточке специалиста.
 model StaffRate {
-  id        String  @id @default(cuid())
-  companyId String
-  staffId   String  @unique
+  id               String       @id @default(cuid())
+  companyId        String
+  staffId          String       @unique
   /// Почасовая ставка.
-  hourlyRate       Decimal @default(0) @db.Decimal(12, 2)
+  hourlyRate       Decimal      @default(0) @db.Decimal(12, 2)
   /// Выплата за процедуру, которую сотрудник получает в конце смены.
-  perProcedureRate Decimal @default(0) @db.Decimal(12, 2)
+  perProcedureRate Decimal      @default(0) @db.Decimal(12, 2)
   /// Какие услуги считаются «процедурой» для этой выплаты.
   procedureKind    ServiceKind?
 
@@ -1012,12 +1032,12 @@ model StaffRate {
 /// Это аванс в счёт начисленного, а не добавка сверху: в конце месяца сумма
 /// вычитается из начисленного по часам.
 model PayrollPayout {
-  id        String   @id @default(cuid())
-  companyId String
-  staffId   String
-  amount    Decimal  @db.Decimal(12, 2)
-  paidAt    DateTime @db.Timestamptz(3)
-  reason    String?
+  id          String   @id @default(cuid())
+  companyId   String
+  staffId     String
+  amount      Decimal  @db.Decimal(12, 2)
+  paidAt      DateTime @db.Timestamptz(3)
+  reason      String?
   createdById String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
@@ -1031,14 +1051,14 @@ model PayrollPayout {
 }
 
 model PushSubscription {
-  id          String  @id @default(cuid())
-  companyId   String
-  staffUserId String
+  id           String    @id @default(cuid())
+  companyId    String
+  staffUserId  String
   /// Endpoint глобально уникален по спецификации Web Push.
-  endpoint    String  @unique
-  p256dh      String
-  auth        String
-  userAgent   String?
+  endpoint     String    @unique
+  p256dh       String
+  auth         String
+  userAgent    String?
   /// Подписки протухают: при 410 Gone запись удаляется, до этого копим отказы.
   failureCount Int       @default(0)
   lastSeenAt   DateTime? @db.Timestamptz(3)
@@ -1176,11 +1196,11 @@ model DailyRevenueRollup {
   date      DateTime @db.Date
   staffId   String
 
-  appointments Int @default(0)
-  arrived      Int @default(0)
-  firstVisits  Int @default(0)
-  courseVisits Int @default(0)
-  returnVisits Int @default(0)
+  appointments  Int     @default(0)
+  arrived       Int     @default(0)
+  firstVisits   Int     @default(0)
+  courseVisits  Int     @default(0)
+  returnVisits  Int     @default(0)
   /// Признанная выручка: разовые визиты целиком + доля курса на сеанс.
   revenue       Decimal @default(0) @db.Decimal(12, 2)
   courseRevenue Decimal @default(0) @db.Decimal(12, 2)
@@ -1561,14 +1581,14 @@ model ConsentDocument {
 
 /// Факт согласия пациента на конкретную версию текста.
 model PatientConsent {
-  id                 String   @id @default(cuid())
-  companyId          String
-  patientId          String
-  documentId         String
-  grantedAt          DateTime @db.Timestamptz(3)
-  channel            Channel?
+  id                String   @id @default(cuid())
+  companyId         String
+  patientId         String
+  documentId        String
+  grantedAt         DateTime @db.Timestamptz(3)
+  channel           Channel?
   /// Ссылка на сообщение-доказательство (скаляр, без relation).
-  evidenceMessageId  String?
+  evidenceMessageId String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 

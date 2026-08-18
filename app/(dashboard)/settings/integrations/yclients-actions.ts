@@ -52,6 +52,21 @@ export interface YclientsState {
     arrivedMarked: number;
   };
   /**
+   * Качество данных по визитам.
+   *
+   * Три жалобы клиники — бесплатная услуга, посчитанная за 3000 ₽, дубли и
+   * отменённые записи, оставшиеся «пришедшими», — объединяет одно: понять,
+   * что данные испортились, было неоткуда. Числа ниже держат это на виду.
+   */
+  quality: {
+    /** Визиты, где цена подставлена из прайса: в записи её не было. */
+    priceFromList: number;
+    /** Визиты, отданные бесплатно: скидка 100%, акция, отработка. */
+    free: number;
+    /** Группы «один пациент, один специалист, одно время» — задвоенные приёмы. */
+    duplicateGroups: number;
+  };
+  /**
    * Расписание выгрузки: включено ли, когда прошёл последний круг и чем
    * кончился.
    *
@@ -145,6 +160,27 @@ export async function getYclientsState(): Promise<YclientsState> {
     }),
   ]);
 
+  const [priceFromList, free, duplicateRows] = await Promise.all([
+    prisma.appointment.count({
+      where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "PRICE_LIST" },
+    }),
+    prisma.appointment.count({
+      where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "FREE" },
+    }),
+    /**
+     * Задвоенные приёмы. Совпадение пациента, специалиста и точного времени
+     * начала случайным не бывает: это один приём, попавший к нам дважды.
+     */
+    prisma.$queryRaw<{ groups: bigint }[]>`
+      SELECT count(*)::bigint AS groups FROM (
+        SELECT 1 FROM appointments
+        WHERE "companyId" = ${companyId} AND "deletedAt" IS NULL AND status <> 'CANCELLED'
+        GROUP BY "patientId", "staffId", "startAt"
+        HAVING count(*) > 1
+      ) t
+    `,
+  ]);
+
   const sched = schedulerState();
   const last = sched.последниеПрогоны[sched.последниеПрогоны.length - 1] ?? null;
 
@@ -166,6 +202,11 @@ export async function getYclientsState(): Promise<YclientsState> {
     notPushed,
     conflicts,
     changes: { newVisits, changedVisits, newPatients, arrivedMarked },
+    quality: {
+      priceFromList,
+      free,
+      duplicateGroups: Number(duplicateRows[0]?.groups ?? 0),
+    },
     schedule: {
       on: sched.включён,
       intervalMin: sched.интервалМинут,

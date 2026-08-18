@@ -46,6 +46,7 @@ export function recordChanged({ existing, incoming, createdAtKnown }: RecordChan
     "status",
     "attendanceRaw",
     "revenue",
+    "revenueSource",
     "isPaid",
     "syncState",
   ] as const;
