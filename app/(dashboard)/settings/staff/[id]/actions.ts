@@ -252,10 +252,15 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
   return {
     hasSpecialist: true,
     periodDays: PERIOD_DAYS,
-    // «Приёмы» — состоявшиеся исходы плюс неявки, без отменённых (§8:
-    // записавшиеся — это визиты со статусом ≠ CANCELLED). Отменённые
-    // показываем отдельной подписью, а не подмешиваем в общее число.
-    appts: settled,
+    /**
+     * «Приёмы» — состоявшиеся, то есть ARRIVED (§8, «Пришедшие»).
+     *
+     * Здесь считались состоявшиеся плюс неявки, в кабинете владельца — все
+     * визиты подряд, в отчётах — только пришедшие. Три числа под одним словом
+     * у одного и того же специалиста. Неявки и отмены стоят рядом отдельными
+     * числами: они отвечают на другие вопросы.
+     */
+    appts: arrivedRows.length,
     upcoming: upcomingRows.length,
     nextVisitAt: upcomingRows[0]?.startAt.toISOString() ?? null,
     arrived: arrivedRows.length,

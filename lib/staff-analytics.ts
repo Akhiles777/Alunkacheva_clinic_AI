@@ -20,20 +20,36 @@ import { occupies } from "./schedule";
 
 export interface DoctorStats {
   name: string;
+  /** Состоявшиеся приёмы: ARRIVED. Одно значение на все экраны. */
   appts: number;
+  /** Записи, время которых ещё не прошло: они ни приём, ни неявка. */
+  planned: number;
   arrived: number;
   noShow: number;
   bookedMinutes: number;
   revenue: number;
 }
 
+/**
+ * Что считать «приёмом» специалиста.
+ *
+ * Здесь было «любой визит периода», в карточке специалиста — «пришли плюс
+ * неявки», в отчётах — «пришли». Три числа под одним словом у одного и того же
+ * человека: сравнить специалистов было нельзя, а разговаривать с ними — тем
+ * более.
+ *
+ * Приём — это состоявшийся приём, то есть ARRIVED (§8, «Пришедшие»). Неявки и
+ * запланированное показываются отдельными числами: они отвечают на другие
+ * вопросы и в одно слово не сворачиваются.
+ */
 export function staffPerformance(appts: Appt[]): DoctorStats[] {
   const map = new Map<string, DoctorStats>();
   for (const a of appts) {
     const cur =
       map.get(a.doctor) ??
-      { name: a.doctor, appts: 0, arrived: 0, noShow: 0, bookedMinutes: 0, revenue: 0 };
-    cur.appts += 1;
+      { name: a.doctor, appts: 0, arrived: 0, noShow: 0, bookedMinutes: 0, revenue: 0, planned: 0 };
+    if (a.status === "arrived") cur.appts += 1;
+    if (a.status === "planned" || a.status === "confirmed") cur.planned += 1;
     if (a.status === "arrived") {
       cur.arrived += 1;
       // Цена визита — только из записи. Запасного прайса по ключевым словам

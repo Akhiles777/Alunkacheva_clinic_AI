@@ -48,7 +48,21 @@ export function sameTitle(a: string, b: string): boolean {
 export function adoptCandidate<T extends { id: string; title: string }>(
   remoteTitle: string,
   ownRows: T[],
+  /**
+   * Номер уже занят другой нашей строкой.
+   *
+   * Значит эта услуга из YCLIENTS давно у нас есть — под своим номером и, судя
+   * по всему, под тем же названием. Связывать вторую строку с тем же номером
+   * нельзя: уникальный ключ этого не позволит, и выгрузка справочника упадёт
+   * целиком. Так и случилось на боевом сервере: «Услуги — ошибка, Unique
+   * constraint failed».
+   *
+   * Задвоение при этом никуда не девается, но чинится оно объединением строк,
+   * а не подменой номера на ходу.
+   */
+  alreadyLinked = false,
 ): string | null {
+  if (alreadyLinked) return null;
   const matches = ownRows.filter((r) => sameTitle(r.title, remoteTitle));
   return matches.length === 1 ? matches[0].id : null;
 }

@@ -55,7 +55,9 @@ export default async function OwnerPage() {
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
           <Tile label="Выручка" value={formatMoney(report.revenue)} />
           <Tile label="Средний чек" value={formatMoney(report.avgCheck)} />
-          <Tile label="Приёмов" value={report.appts} hint={`пришли ${report.arrived}`} />
+          {/* Здесь «Приёмов» — все визиты периода, включая запланированные:
+              это объём работы клиники. Сколько из них состоялось — подписью. */}
+          <Tile label="Визитов" value={report.appts} hint={`пришли ${report.arrived}`} />
           <Tile label="Первичных" value={report.firstVisits} />
           <Tile label="Неявки" value={`${report.noShowRatePct}%`} />
           <Tile label="Загрузка" value={`${report.avgLoadPct}%`} hint="3 кабинета" />
@@ -70,7 +72,8 @@ export default async function OwnerPage() {
                 <thead>
                   <tr className="text-text-subtle text-left text-2xs">
                     <th className="py-2 pr-3 font-normal">Специалист</th>
-                    <th className="py-2 pr-3 text-right font-normal">Приёмы</th>
+                    {/* «Пришли», а не «Приёмы»: одно слово — одно число (§8). */}
+                    <th className="py-2 pr-3 text-right font-normal">Пришли</th>
                     <th className="py-2 pr-3 text-right font-normal">Часы</th>
                     <th className="py-2 text-right font-normal">Выручка</th>
                   </tr>
@@ -81,8 +84,8 @@ export default async function OwnerPage() {
                       <td className="py-2.5 pr-3">
                         <div className="font-medium">{p.name}</div>
                         <div className="text-text-subtle text-2xs">
-                          пришли {p.arrived}
-                          {p.noShow > 0 ? ` · неявок ${p.noShow}` : ""}
+                          {p.noShow > 0 ? `неявок ${p.noShow}` : "неявок нет"}
+                          {p.planned ? ` · впереди ${p.planned}` : ""}
                         </div>
                       </td>
                       <td className="num py-2.5 pr-3 text-right">{p.appts}</td>

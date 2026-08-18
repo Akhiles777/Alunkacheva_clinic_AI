@@ -64,6 +64,9 @@ const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clini
 export function schedulerState() {
   return {
     включён: shared.timer !== null,
+    // Идёт первый круг — это не «не проходил ни одного»: на экране такая
+    // подпись читалась как «расписание не работает» при работающем расписании.
+    первыйКругИдёт: shared.running && shared.history.length === 0,
     интервалМинут: INTERVAL_MIN,
     работаетСо: shared.startedAt?.toISOString() ?? null,
     идётСейчас: shared.running,

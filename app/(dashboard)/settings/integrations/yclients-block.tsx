@@ -190,6 +190,8 @@ export function YclientsBlock() {
                   <span className="text-text-subtle"> — за {Math.round(state.schedule.lastMs / 1000)} с</span>
                 ) : null}
               </>
+            ) : state.schedule.firstRunInFlight ? (
+              " · первый круг идёт сейчас"
             ) : (
               " · первый круг ещё не проходил"
             )}

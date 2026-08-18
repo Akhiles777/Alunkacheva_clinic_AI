@@ -27,16 +27,25 @@ describe("staffPerformance", () => {
       appt({ id: "1", doctor: "Левин А.", status: "arrived", durationMin: 60, price: 8000 }),
       appt({ id: "2", doctor: "Левин А.", status: "no_show", durationMin: 45, price: 8000 }),
       appt({ id: "3", doctor: "Соколова Е.", service: "IV-терапия, капельница", status: "arrived", durationMin: 90, price: 6500 }),
+      appt({ id: "4", doctor: "Левин А.", status: "planned", durationMin: 60, price: 8000 }),
     ];
     const perf = staffPerformance(appts);
     const levin = perf.find((p) => p.name === "Левин А.")!;
-    expect(levin.appts).toBe(2);
+    /**
+     * «Приём» — состоявшийся приём, и только он. Прежде здесь считались
+     * пришедшие вместе с неявками, в карточке специалиста — иначе, в отчётах —
+     * третьим способом: одно слово, три числа у одного человека.
+     */
+    expect(levin.appts).toBe(1);
     expect(levin.arrived).toBe(1);
     expect(levin.noShow).toBe(1);
+    // Запланированное — ни приём, ни неявка: оно ещё не состоялось.
+    expect(levin.planned).toBe(1);
     // Неявка в выручку не идёт: приём не состоялся.
     expect(levin.revenue).toBe(8000);
-    // no_show не занимает кабинет → не идёт в bookedMinutes
-    expect(levin.bookedMinutes).toBe(60);
+    // Часы — по занятому времени: состоявшийся приём и запланированный
+    // кабинет занимают, неявка освобождает его для новой записи.
+    expect(levin.bookedMinutes).toBe(120);
   });
 });
 

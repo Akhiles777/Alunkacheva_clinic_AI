@@ -83,6 +83,8 @@ export interface YclientsState {
     lastError: string | null;
     lastMs: number | null;
     runningNow: boolean;
+    /** Первый круг ещё идёт: результата пока нет, но это не простой. */
+    firstRunInFlight: boolean;
   };
 }
 
@@ -215,6 +217,7 @@ export async function getYclientsState(): Promise<YclientsState> {
       lastError: last?.error ?? null,
       lastMs: last?.ms ?? null,
       runningNow: sched.идётСейчас,
+      firstRunInFlight: sched.первыйКругИдёт,
     },
   };
 }

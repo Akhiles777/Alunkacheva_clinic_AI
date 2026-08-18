@@ -15,6 +15,8 @@ import { weekKeyOf } from "@/lib/metrics/types";
  * та же проекция будет наполняться синком, а этот код не изменится.
  */
 export interface OwnerStaffRow {
+  /** Записи, время которых ещё не прошло. */
+  planned?: number;
   name: string;
   appts: number;
   arrived: number;
@@ -230,6 +232,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     staff: perf.map((p) => ({
       name: p.name,
       appts: p.appts,
+      planned: p.planned,
       arrived: p.arrived,
       noShow: p.noShow,
       hours: p.bookedMinutes / 60,

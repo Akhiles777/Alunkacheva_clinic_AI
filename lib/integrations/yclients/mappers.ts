@@ -56,15 +56,11 @@ export interface AppointmentUpsert {
   /** Когда запись создана в YCLIENTS; null — провайдер не сообщил. */
   createdAtYclients: Date | null;
   /**
-   * Услуга отдана бесплатно: скидка сто процентов.
-   *
-   * Ноль в стоимости означает две разные вещи — «отдали даром» и «цену не
-   * проставили», — и различает их только скидка. Первое трогать нельзя,
-   * второе закрывается прайсом (§8).
+   * Откуда сложилась сумма визита: из записи, из прайса, даром или неизвестно.
+   * Считается по каждой услуге отдельно — визит из подаренной и платной
+   * позиций не бесплатный и не полностью платный.
    */
-  isFree: boolean;
-  /** Цена услуг по прайсу из самой записи: на момент визита, а не сегодняшняя. */
-  listPrice: number;
+  revenueSource: "RECORD" | "FREE" | "PRICE_LIST" | "UNKNOWN";
 }
 
 /** Секунды сеанса YCLIENTS → минуты. Пустое/битое → 0. */
@@ -184,59 +180,75 @@ export function mapCreatedAt(dto: YclientsRecord): Date | null {
 }
 
 /**
- * Бесплатна ли услуга по решению клиники.
+ * Стоимость ОДНОЙ услуги в записи и откуда она взялась.
  *
- * Первая версия считала «цена известна» по любому следу цены — и ошиблась
- * грубо. На боевых данных выяснилось, что YCLIENTS кладёт в запись
- * `first_cost` (цену услуги по прайсу) и `amount` (КОЛИЧЕСТВО, а не деньги)
- * всегда, независимо от того, проставил администратор стоимость или нет:
+ * Считать надо по каждой услуге отдельно. Визит из двух позиций — подаренной и
+ * платной — не бесплатный и не полностью платный: в нём ровно столько денег,
+ * сколько стоит вторая позиция. Правило «весь визит бесплатный или весь
+ * платный» врало бы в обе стороны.
  *
- *   cost=0 first_cost=2800 discount=0   — стоимость не проставлена
- *   cost=0 first_cost=3000 discount=100 — скидка 100%, услуга отдана даром
+ * Порядок источников:
  *
- * По прежнему правилу обе строки становились «бесплатными», и тысяча визитов
- * разом потеряла выручку — три миллиона рублей. Ошибка в ту же сторону, что и
- * исходная жалоба, только больше.
+ *   1. `cost` больше нуля — это факт, дальше не смотрим.
+ *   2. `cost` = 0 и скидка сто процентов — услуга отдана даром, ноль настоящий.
+ *   3. `cost` = 0 без скидки — стоимость не проставлена, берём цену по прайсу
+ *      из самой записи: она относится ко дню визита (§8).
  *
- * Настоящий признак один: скидка сто процентов. Всё остальное с нулевой
- * стоимостью — незаполненная цена, и её место занимает прайс (§8: пришёл на
- * услугу за 8000 ₽ — значит 8000 ₽).
+ * Различает второй и третий случай только скидка. Ни `first_cost`, ни
+ * `amount` не помогают: провайдер кладёт их всегда, и незаполненная стоимость
+ * выглядит по ним точно так же, как подарок. Проверка этого на живых данных
+ * стоила трёх миллионов рублей выручки, обнулённых по ошибке.
  */
-export function serviceIsFree(s: YclientsRecordService): boolean {
-  return (s.cost ?? 0) === 0 && (s.discount ?? 0) >= 100;
+export type ServiceRevenueSource = "RECORD" | "FREE" | "PRICE_LIST" | "UNKNOWN";
+
+export interface ServiceRevenue {
+  amount: number;
+  source: ServiceRevenueSource;
+}
+
+export function serviceRevenue(s: YclientsRecordService): ServiceRevenue {
+  const cost = s.cost ?? 0;
+  if (cost > 0) return { amount: cost, source: "RECORD" };
+  if ((s.discount ?? 0) >= 100) return { amount: 0, source: "FREE" };
+  const list = s.first_cost ?? 0;
+  return list > 0 ? { amount: list, source: "PRICE_LIST" } : { amount: 0, source: "UNKNOWN" };
 }
 
 /**
- * Отдан ли визит целиком бесплатно.
+ * Разбор всех услуг записи: сумма и откуда она сложилась.
  *
- * Достаточно одной платной услуги, чтобы визит перестал быть бесплатным:
- * стоимость визита — сумма его услуг, и обнулять её из-за одной подаренной
- * позиции нельзя.
+ * Подпись визита выбирается по составу: всё даром — «бесплатно»; хоть одна
+ * цена подставлена — «из прайса»; иначе — «из записи». Так на экране видно,
+ * насколько сумме можно верить.
  */
-export function recordIsFree(dto: YclientsRecord): boolean {
+export interface RecordRevenue {
+  amount: number;
+  source: ServiceRevenueSource;
+  /** Услуги, по которым цену взять было неоткуда: ни стоимости, ни прайса. */
+  unpriced: number;
+}
+
+export function recordRevenue(dto: YclientsRecord): RecordRevenue {
   const services = dto.services ?? [];
-  if (services.length === 0) return false;
-  return services.every(serviceIsFree);
-}
+  if (services.length === 0) return { amount: 0, source: "UNKNOWN", unpriced: 0 };
 
-/**
- * Цена услуг по прайсу, как её знает сама запись.
- *
- * Лучше справочника клиники: это цена на момент визита, а прайс с тех пор мог
- * измениться. Используется только там, где стоимость не проставлена.
- */
-export function recordListPrice(dto: YclientsRecord): number {
-  return (dto.services ?? []).reduce((sum, s) => sum + (s.first_cost ?? 0), 0);
+  const parts = services.map(serviceRevenue);
+  const amount = parts.reduce((sum, p) => sum + p.amount, 0);
+  const unpriced = parts.filter((p) => p.source === "UNKNOWN").length;
+
+  if (parts.every((p) => p.source === "FREE")) return { amount: 0, source: "FREE", unpriced };
+  if (parts.some((p) => p.source === "PRICE_LIST")) return { amount, source: "PRICE_LIST", unpriced };
+  if (amount === 0 && unpriced > 0) return { amount: 0, source: "UNKNOWN", unpriced };
+  return { amount, source: "RECORD", unpriced };
 }
 
 export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
   const services = dto.services ?? [];
-  const revenue = services.reduce((sum, s) => sum + (s.cost ?? 0), 0);
+  const money = recordRevenue(dto);
   return {
     yclientsRecordId: dto.id,
     yclientsVisitId: typeof dto.visit_id === "number" ? dto.visit_id : null,
-    isFree: recordIsFree(dto),
-    listPrice: recordListPrice(dto),
+    revenueSource: money.source,
     yclientsStaffId: dto.staff_id,
     yclientsResourceId: dto.resource_instances?.[0]?.resource_id ?? null,
     yclientsServiceIds: services.map((s) => s.id),
@@ -244,7 +256,7 @@ export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
     startAt: new Date(dto.datetime),
     durationMin: seanceToMinutes(dto.seance_length),
     status: mapRecordStatus(dto.visit_attendance, dto.deleted),
-    revenue,
+    revenue: money.amount,
     isPaid: mapPaid(dto),
     createdAtYclients: mapCreatedAt(dto),
   };

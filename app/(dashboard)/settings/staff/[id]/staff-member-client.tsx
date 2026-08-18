@@ -449,7 +449,7 @@ export function StaffMemberClient({ initial }: { initial: StaffMemberView }) {
             <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
               <Tile label="Выручка" value={formatMoney(m.revenue)} hint={`${m.revenueSharePct}% клиники`} />
               <Tile label="Средний чек" value={formatMoney(m.avgCheck)} />
-              <Tile label="Приёмов" value={m.appts} hint={`пришли ${m.arrived}`} />
+              <Tile label="Пришли" value={m.arrived} hint={`неявок ${m.noShow}`} />
               <Tile
                 label="Запланировано"
                 value={m.upcoming}

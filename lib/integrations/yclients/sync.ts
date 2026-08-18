@@ -125,24 +125,52 @@ export async function syncServices(companyId: string, client: YclientsClientHand
     where: { companyId, yclientsServiceId: null },
     select: { id: true, title: true },
   });
+  // Номера, которые уже заняты нашими строками: связывать на них вторую
+  // нельзя — уникальный ключ уронит выгрузку справочника целиком.
+  const taken = new Set(
+    (
+      await prisma.service.findMany({
+        where: { companyId, yclientsServiceId: { not: null } },
+        select: { yclientsServiceId: true },
+      })
+    ).map((r) => r.yclientsServiceId as number),
+  );
+
+  /**
+   * Одна услуга не должна ронять весь справочник.
+   *
+   * На боевом сервере выгрузка услуг упала целиком из-за одной строки, и
+   * следом перестали обновляться цены — а на них держится подстановка выручки.
+   * Собираем сбои и сообщаем в конце: шаг всё равно будет помечен ошибкой и
+   * виден в настройках, но остальные услуги приедут.
+   */
+  const failures: string[] = [];
 
   for (const dto of dtos) {
     const s = mapService(dto);
-    const own = adoptCandidate(s.title, unlinked);
-    if (own) {
-      // Связываем свою строку вместо создания второй. Привязки к кабинетам,
-      // база знаний и ссылки визитов остаются при ней.
-      const linked = await prisma.service.updateMany({
-        where: { id: own, companyId, yclientsServiceId: null },
-        data: { yclientsServiceId: s.yclientsServiceId, title: s.title, price: s.price, durationMin: s.durationMin, isActive: s.isActive },
+    try {
+      const own = adoptCandidate(s.title, unlinked, taken.has(s.yclientsServiceId));
+      if (own) {
+        // Связываем свою строку вместо создания второй. Привязки к кабинетам,
+        // база знаний и ссылки визитов остаются при ней.
+        const linked = await prisma.service.updateMany({
+          where: { id: own, companyId, yclientsServiceId: null },
+          data: { yclientsServiceId: s.yclientsServiceId, title: s.title, price: s.price, durationMin: s.durationMin, isActive: s.isActive },
+        });
+        if (linked.count > 0) continue;
+      }
+      await prisma.service.upsert({
+        where: { companyId_yclientsServiceId: { companyId, yclientsServiceId: s.yclientsServiceId } },
+        update: { title: s.title, price: s.price, durationMin: s.durationMin, kind: s.kind, isActive: s.isActive },
+        create: { companyId, ...s },
       });
-      if (linked.count > 0) continue;
+    } catch (e) {
+      failures.push(`${s.yclientsServiceId}: ${(e as Error)?.message?.slice(0, 120) ?? e}`);
     }
-    await prisma.service.upsert({
-      where: { companyId_yclientsServiceId: { companyId, yclientsServiceId: s.yclientsServiceId } },
-      update: { title: s.title, price: s.price, durationMin: s.durationMin, kind: s.kind, isActive: s.isActive },
-      create: { companyId, ...s },
-    });
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`не сохранилось услуг: ${failures.length}. Первая — ${failures[0]}`);
   }
   return dtos.length;
 }
@@ -158,10 +186,18 @@ export async function syncStaff(companyId: string, client: YclientsClientHandle)
       select: { id: true, name: true },
     })
   ).map((r) => ({ id: r.id, title: r.name }));
+  const taken = new Set(
+    (
+      await prisma.staff.findMany({
+        where: { companyId, yclientsStaffId: { not: null } },
+        select: { yclientsStaffId: true },
+      })
+    ).map((r) => r.yclientsStaffId as number),
+  );
 
   for (const dto of dtos) {
     const s = mapStaff(dto);
-    const own = adoptCandidate(s.name, unlinked);
+    const own = adoptCandidate(s.name, unlinked, taken.has(s.yclientsStaffId));
     if (own) {
       const linked = await prisma.staff.updateMany({
         where: { id: own, companyId, yclientsStaffId: null },
@@ -192,10 +228,18 @@ export async function syncResources(companyId: string, client: YclientsClientHan
       select: { id: true, name: true },
     })
   ).map((r) => ({ id: r.id, title: r.name }));
+  const taken = new Set(
+    (
+      await prisma.room.findMany({
+        where: { companyId, yclientsResourceId: { not: null } },
+        select: { yclientsResourceId: true },
+      })
+    ).map((r) => r.yclientsResourceId as number),
+  );
 
   for (const dto of dtos) {
     const r = mapResource(dto);
-    const own = adoptCandidate(r.name, unlinked);
+    const own = adoptCandidate(r.name, unlinked, taken.has(r.yclientsResourceId));
     if (own) {
       const linked = await prisma.room.updateMany({
         where: { id: own, companyId, yclientsResourceId: null },
@@ -749,19 +793,17 @@ async function syncRecordsWindow(
  * обнулённых по ошибке.
  */
 function revenueOf(r: AppointmentUpsert, lookups: SyncLookups): RevenueDecision {
-  // Стоимость проставлена — это факт из кассы, других источников не нужно.
-  if (r.revenue > 0) return { amount: r.revenue, source: "RECORD" };
-
-  // Скидка сто процентов: услуга отдана даром. Ноль настоящий.
-  if (r.isFree) return { amount: 0, source: "FREE" };
-
   /**
-   * Стоимость не проставлена — подставляем цену.
+   * Сумму по услугам уже посчитал разбор записи — по каждой отдельно: что
+   * даром, то даром, что платно, то платно.
    *
-   * Сначала ту, что несёт сама запись (цена услуги на момент визита), потом
-   * справочник клиники. Запись точнее: прайс с тех пор мог измениться.
+   * Здесь остаётся один случай, который разбору не по силам: у услуги нет ни
+   * проставленной стоимости, ни цены по прайсу в самой записи. Тогда берём
+   * цену из справочника клиники — последний доступный источник.
    */
-  if (r.listPrice > 0) return { amount: r.listPrice, source: "PRICE_LIST" };
+  if (r.revenueSource !== "UNKNOWN") {
+    return { amount: r.revenue, source: r.revenueSource };
+  }
 
   let sum = 0;
   for (const yclientsServiceId of r.yclientsServiceIds) {
