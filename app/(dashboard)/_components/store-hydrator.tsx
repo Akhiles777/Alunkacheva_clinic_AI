@@ -6,6 +6,7 @@ import { hydrateAppointments, hydrateDialogs, hydratePatients } from "@/app/_dat
 import { getPatientRecords } from "../patients/actions";
 import { getConversations } from "../inbox/actions";
 import { getAppointmentsForStore } from "../schedule/actions";
+import { reportMaybeStale } from "@/lib/client/stale-build";
 
 /**
  * Наполнение клиентского стора данными из базы.
@@ -84,4 +85,13 @@ export function StoreHydrator() {
  */
 function reportFailure(e: unknown): void {
   console.warn("[данные] не удалось перечитать:", (e as Error)?.message ?? e);
+  /**
+   * Похоже на старую сборку — говорим сторожу.
+   *
+   * После обновления платформы открытая вкладка работает на прежнем коде, и
+   * серверные действия перестают опознаваться. Здесь ошибка ловится в catch и
+   * до общего обработчика не долетает: вкладка молча замирала на старых
+   * данных, а человек продолжал по ним работать.
+   */
+  reportMaybeStale(e);
 }

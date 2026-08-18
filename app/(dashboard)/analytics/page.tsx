@@ -142,7 +142,15 @@ export default async function AnalyticsPage({
               className="border-border-input bg-surface rounded-md border px-2.5 py-1.5 text-sm outline-none max-md:flex-1"
               aria-label="Отчёт за месяц"
             >
-              <option value="">Выбрать месяц…</option>
+              {/*
+                Пустой выбор сбрасывал период на «Месяц».
+                Нажать «Показать», не выбрав месяц, — обычное дело: кнопка
+                стоит рядом и выглядит как «применить». Период при этом молча
+                становился скользящими тридцатью днями, и вместо выбранной
+                недели на экране оказывался отрезок с двадцатого июля.
+                Теперь пустой выбор означает «ничего не менять».
+              */}
+              <option value={isMonthKey(period) ? "month" : period}>Выбрать месяц…</option>
               {recentMonths(new Date()).map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}

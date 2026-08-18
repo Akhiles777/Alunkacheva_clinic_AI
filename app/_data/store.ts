@@ -12,6 +12,7 @@
  */
 import { useSyncExternalStore } from "react";
 import { normalizePhone, formatPhone } from "@/lib/phone";
+import { reportMaybeStale } from "@/lib/client/stale-build";
 import {
   addNoteDb,
   addPhoneDb,
@@ -477,6 +478,9 @@ export function writeFailed(action: string): (e: unknown) => void {
   return (e: unknown) => {
     const reason = (e as Error)?.message ?? String(e);
     console.error(`[запись] ${action}: ${reason}`);
+    // Не сохранилось из-за старой сборки — вкладку надо обновить, а не
+    // повторять действие: следующее упадёт так же.
+    reportMaybeStale(e);
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("clinic:write-failed", { detail: { action, reason } }));
     }

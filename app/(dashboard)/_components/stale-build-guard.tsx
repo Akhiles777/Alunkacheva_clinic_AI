@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { STALE_BUILD_EVENT, isStaleBuildError } from "@/lib/client/stale-build";
 
 /**
  * Перезагрузка вкладки после выхода новой версии.
@@ -18,16 +19,6 @@ import { useEffect, useState } from "react";
  * повторится, зацикливаться нельзя — лучше показать честное сообщение.
  */
 const RELOADED_KEY = "stale-build-reloaded";
-
-function isStaleBuildError(reason: unknown): boolean {
-  const text =
-    typeof reason === "string"
-      ? reason
-      : reason instanceof Error
-        ? `${reason.message} ${reason.name}`
-        : "";
-  return /Server Action .* was not found|Failed to find Server Action/i.test(text);
-}
 
 export function StaleBuildGuard() {
   const [stuck, setStuck] = useState(false);
@@ -51,8 +42,15 @@ export function StaleBuildGuard() {
 
     const onRejection = (e: PromiseRejectionEvent) => handle(e.reason);
     const onError = (e: ErrorEvent) => handle(e.error ?? e.message);
+    /**
+     * Ошибка, которую уже поймали в своём catch, до сюда не долетает: чтения
+     * данных обёрнуты намеренно. Пусть они говорят о ней сами — иначе вкладка
+     * после обновления молча перестаёт получать свежие данные.
+     */
+    const onReported = () => handle("Server Action was not found on the server");
     window.addEventListener("unhandledrejection", onRejection);
     window.addEventListener("error", onError);
+    window.addEventListener(STALE_BUILD_EVENT, onReported);
 
     // Успешная работа означает, что версия совпала: снимаем отметку, чтобы
     // следующее обновление снова могло перезагрузить вкладку.
@@ -61,6 +59,7 @@ export function StaleBuildGuard() {
     return () => {
       window.removeEventListener("unhandledrejection", onRejection);
       window.removeEventListener("error", onError);
+      window.removeEventListener(STALE_BUILD_EVENT, onReported);
       clearTimeout(t);
     };
   }, []);
