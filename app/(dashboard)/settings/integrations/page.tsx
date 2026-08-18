@@ -2,6 +2,7 @@ import { SettingsHeader } from "../_components/ui";
 import { getIntegrations } from "./actions";
 import { IntegrationsClient } from "./integrations-client";
 import { YclientsBlock } from "./yclients-block";
+import { InstagramBlock } from "./instagram-block";
 
 /**
  * Интеграции — первый серверный срез: данные читаются из БД (таблица
@@ -21,6 +22,7 @@ export default async function IntegrationsSettingsPage() {
         <div className="flex max-w-[760px] flex-col gap-5">
           <IntegrationsClient initial={blocks} />
           <YclientsBlock />
+          <InstagramBlock />
         </div>
       </div>
     </>

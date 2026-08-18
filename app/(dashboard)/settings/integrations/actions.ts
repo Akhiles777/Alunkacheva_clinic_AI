@@ -1,6 +1,8 @@
 "use server";
 
 import { prisma } from "@/lib/db";
+import { absoluteUrl } from "@/lib/server/app-url";
+import { isInstagramEnabled } from "@/lib/integrations/instagram/config";
 import { encryptSecret } from "@/lib/crypto";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
@@ -48,6 +50,27 @@ export interface IntegrationView {
   fields: { keyName: string; label: string; set: boolean }[];
 }
 
+/**
+ * Готовность канала к подключению.
+ *
+ * Половина настройки канала живёт не в базе, а в переменных окружения на
+ * сервере — рубильник, секрет приложения, слово для проверки вебхука. На
+ * экране их не было видно вовсе: заведён токен страницы, поле помечено
+ * галочкой, а сообщения не приходят, и понять почему можно только по ssh.
+ *
+ * Показываем ЧТО задано, но никогда сами значения (§7).
+ */
+export interface ChannelReadiness {
+  provider: ProviderId;
+  title: string;
+  /** Рубильник интеграции на сервере. */
+  enabled: boolean;
+  /** Адрес, который вставляют в кабинете провайдера. Без домена — null. */
+  webhookUrl: string | null;
+  items: { label: string; ok: boolean; hint: string }[];
+  ready: boolean;
+}
+
 function fmtWhen(d: Date | null): string | null {
   if (!d) return null;
   return d.toLocaleString("ru-RU", {
@@ -91,6 +114,51 @@ async function buildView(companyId: string): Promise<IntegrationView[]> {
 export async function getIntegrations(): Promise<IntegrationView[]> {
   const session = await getSession();
   return buildView(session.companyId);
+}
+
+/**
+ * Чего не хватает Instagram Direct, чтобы заработать.
+ *
+ * Четыре условия, и все обязательны: без любого из них сообщения либо не
+ * дойдут, либо будут отвергнуты как неподписанные.
+ */
+export async function getInstagramReadiness(): Promise<ChannelReadiness> {
+  const session = await getSession();
+  const token = await prisma.credential.count({
+    where: { companyId: session.companyId, provider: "instagram", keyName: "page_token" },
+  });
+
+  const items = [
+    {
+      label: "Токен страницы",
+      ok: token > 0,
+      hint: "Заводится здесь же, в полях ниже. Без него платформа не может отвечать пациенту.",
+    },
+    {
+      label: "Секрет приложения (INSTAGRAM_APP_SECRET)",
+      ok: Boolean(process.env.INSTAGRAM_APP_SECRET?.trim()),
+      hint: "Задаётся на сервере. Им подписаны входящие события: без него мы отвергаем всё как чужое.",
+    },
+    {
+      label: "Слово проверки (INSTAGRAM_VERIFY_TOKEN)",
+      ok: Boolean(process.env.INSTAGRAM_VERIFY_TOKEN?.trim()),
+      hint: "Задаётся на сервере и повторяется в кабинете Meta при подключении вебхука.",
+    },
+    {
+      label: "Интеграция включена (INSTAGRAM_ENABLED)",
+      ok: isInstagramEnabled(),
+      hint: "Рубильник. Пока выключен, ни одного обращения к Meta не происходит — так задумано.",
+    },
+  ];
+
+  return {
+    provider: "instagram",
+    title: "Instagram Direct",
+    enabled: isInstagramEnabled(),
+    webhookUrl: absoluteUrl("/api/webhooks/instagram"),
+    items,
+    ready: items.every((i) => i.ok),
+  };
 }
 
 export async function saveCredential(
