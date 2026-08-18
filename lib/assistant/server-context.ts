@@ -54,7 +54,11 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     gaps,
   ] = await Promise.all([
     prisma.patient.count({ where: { companyId, deletedAt: null } }),
-    prisma.patient.count({ where: { companyId, deletedAt: null, appointments: { some: { deletedAt: null } } } }),
+    // «С визитами» — у кого визит СОСТОЯЛСЯ: отменённая запись побывавшим в
+    // клинике не делает. Тот же счёт, что в списке пациентов.
+    prisma.patient.count({
+      where: { companyId, deletedAt: null, appointments: { some: { deletedAt: null, status: "ARRIVED" } } },
+    }),
     prisma.patient.count({
       where: { companyId, deletedAt: null, firstSeenExact: true, firstSeenAt: { gte: startOfToday } },
     }),

@@ -146,7 +146,9 @@ export default async function OwnerPage() {
               <thead>
                 <tr className="text-text-subtle text-left text-2xs">
                   <th className="py-2 pr-3 font-normal">Услуга</th>
-                  <th className="py-2 pr-3 text-right font-normal">Приёмы</th>
+                  {/* «Пришли» — то же слово и то же число, что во всех остальных
+                      разрезах: приём это состоявшийся приём (§8). */}
+                  <th className="py-2 pr-3 text-right font-normal">Пришли</th>
                   <th className="py-2 text-right font-normal">Выручка</th>
                 </tr>
               </thead>

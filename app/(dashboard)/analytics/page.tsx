@@ -288,13 +288,16 @@ export default async function AnalyticsPage({
           ) : null}
 
           {tab === "staff" ? (
-            <Card title="Приёмы и выручка по специалистам" hint="приёмы и выручка — независимо">
+            <Card
+              title="Пришли и выручка по специалистам"
+              hint="считаются состоявшиеся приёмы (§8)"
+            >
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[560px] border-collapse text-sm">
                   <thead>
                     <tr className="border-border-soft border-b text-left">
                       <th className="text-text-subtle py-2 pr-3 text-2xs font-normal">Специалист</th>
-                      <th className="text-text-subtle w-[28%] py-2 pr-3 text-2xs font-normal">Приёмы</th>
+                      <th className="text-text-subtle w-[28%] py-2 pr-3 text-2xs font-normal">Пришли</th>
                       <th className="text-text-subtle w-[32%] py-2 pr-3 text-2xs font-normal">Выручка</th>
                       <th className="text-text-subtle py-2 text-right text-2xs font-normal">Чек</th>
                     </tr>

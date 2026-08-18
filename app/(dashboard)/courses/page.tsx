@@ -68,7 +68,24 @@ export default function CoursesPage() {
 
       <div className="flex-1 overflow-auto px-7 py-5 max-md:px-5">
         {rows.length === 0 ? (
-          <p className="text-text-muted text-sm">В этом разрезе курсов нет.</p>
+          /*
+            Курсы не заводит ни выгрузка YCLIENTS, ни интерфейс — их просто
+            неоткуда взять. Пустая страница без объяснения читается как
+            «данные не доехали», и это уже спрашивали про «Курсовые 0» в
+            отчётах. Пустота, у которой есть причина, должна её называть.
+          */
+          <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+            <p className="text-md font-medium">Курсов пока нет</p>
+            <p className="text-text-muted mt-2 text-sm leading-relaxed">
+              Курс — это оплаченная программа из нескольких сеансов. Из YCLIENTS такие продажи не
+              приходят: там визит и оплата не связаны в программу, поэтому завести курс может
+              только клиника — и такой возможности в платформе ещё нет.
+            </p>
+            <p className="text-text-subtle mt-2 text-sm leading-relaxed">
+              Пока раздел пустой не потому, что данные не доехали, а потому, что их источника не
+              существует. Повторные визиты при этом считаются как обычно — в «Отчётах».
+            </p>
+          </div>
         ) : (
           <ul className="border-border overflow-hidden rounded-xl border">
             {rows.map((c) => (

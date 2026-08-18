@@ -161,15 +161,22 @@ async function patientCounts(companyId: string) {
   return { total, primary, noConsent };
 }
 
+/**
+ * Разрез по услугам. Считаем СОСТОЯВШИЕСЯ приёмы — так же, как везде: приём
+ * это приём, который прошёл (§8). Здесь считались все записи подряд, включая
+ * будущие и неявки, а выручка — только по пришедшим: в одной строке стояли
+ * приёмы по одному определению и деньги по другому.
+ */
 function serviceBreakdown(appts: Appt[]): OwnerServiceRow[] {
   const map = new Map<string, OwnerServiceRow>();
   for (const a of appts) {
+    if (a.status !== "arrived") continue;
     const key = a.service || "—";
     const cur = map.get(key) ?? { service: key, count: 0, revenue: 0 };
     cur.count += 1;
     // Цена визита — из данных, а не из зашитого прайса по ключевым словам:
     // тот показывал остеопатию по 6500 при настоящих 8000.
-    if (a.status === "arrived") cur.revenue += a.price ?? 0;
+    cur.revenue += a.price ?? 0;
     map.set(key, cur);
   }
   return [...map.values()].sort((x, y) => y.revenue - x.revenue);
@@ -362,13 +369,14 @@ export async function getOwnerAiContext(): Promise<string> {
       `без согласия: ${report.patients.noConsent}).`,
   );
   lines.push(
-    `Приёмов за период: ${report.appts} (пришли ${report.arrived}, первичных ${report.firstVisits}, ` +
+    `Визитов за период: ${report.appts} — из них состоялись ${report.arrived} ` +
+      `(первичных ${report.firstVisits}, ` +
       `неявки ${report.noShowRatePct}%). Выручка: ${report.revenue} ₽, средний чек ${report.avgCheck} ₽. ` +
       `Средняя загрузка кабинетов: ${report.avgLoadPct}%.`,
   );
   lines.push(`Воронка: диалогов ${report.funnel.dialogs}, звонков ${report.funnel.calls}.`);
   lines.push("");
-  lines.push("# Выручка по услугам за период");
+  lines.push("# Выручка по услугам за период (считаются состоявшиеся приёмы)");
   // Верхние позиции: полный перечень раздувает запрос, а решения принимают
   // по значимым строкам.
   for (const s of report.services.slice(0, 8)) lines.push(`- ${s.service}: ${s.count} приёмов, ${s.revenue} ₽`);
@@ -376,7 +384,7 @@ export async function getOwnerAiContext(): Promise<string> {
   lines.push("# Сотрудники за период");
   for (const s of report.staff.slice(0, 10)) {
     lines.push(
-      `- ${s.name}: приёмов ${s.appts} (пришли ${s.arrived}, неявок ${s.noShow}); ` +
+      `- ${s.name}: пришли ${s.arrived}, неявок ${s.noShow}, впереди ${s.planned ?? 0}; ` +
         `часы ${s.hours.toFixed(1)}; выручка ${s.revenue} ₽.`,
     );
   }
