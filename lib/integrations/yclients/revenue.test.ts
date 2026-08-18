@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapRecord, recordKnowsPrice } from "./mappers";
+import { mapRecord, recordIsFree, recordListPrice } from "./mappers";
 import type { YclientsRecord } from "./types";
 
 function record(over: Partial<YclientsRecord>): YclientsRecord {
@@ -13,39 +13,61 @@ function record(over: Partial<YclientsRecord>): YclientsRecord {
 }
 
 /**
- * Жалоба клиники: пациентке сделали скидку 100%, а в отчёте у неё встало
- * 3000 ₽. Выгрузка закрывала ценой из прайса ЛЮБОЙ ноль — и настоящую
- * бесплатную услугу тоже.
+ * Строки ниже — из живого ответа YCLIENTS этой клиники. Первая версия правила
+ * считала «цена известна» по любому следу цены и обнулила тысячу визитов на
+ * три миллиона рублей: `first_cost` и `amount` провайдер кладёт всегда, и
+ * незаполненная стоимость выглядела точно так же, как подарок.
  */
-describe("знает ли запись свою цену", () => {
-  it("скидка 100% — цена известна, ноль настоящий", () => {
+describe("бесплатно или цена не проставлена", () => {
+  it("скидка 100% — услуга отдана даром", () => {
     const dto = record({
-      services: [{ id: 5, title: "Приём остеопата", cost: 0, first_cost: 3000, discount: 100 }],
+      services: [{ id: 5, cost: 0, first_cost: 3000, discount: 100, amount: 1, cost_to_pay: 0 }],
     });
-    expect(recordKnowsPrice(dto)).toBe(true);
-    expect(mapRecord(dto).revenue).toBe(0);
-    expect(mapRecord(dto).priceKnown).toBe(true);
+    expect(recordIsFree(dto)).toBe(true);
+    expect(mapRecord(dto).isFree).toBe(true);
   });
 
-  it("стоимость просто не проставили — цена неизвестна", () => {
-    const dto = record({ services: [{ id: 5, title: "Приём остеопата", cost: 0 }] });
-    expect(recordKnowsPrice(dto)).toBe(false);
+  it("цена по прайсу есть, скидки нет — стоимость просто не проставлена", () => {
+    // Ровно эта строка на боевых данных: cost=0 first_cost=2800 discount=0.
+    const dto = record({
+      services: [{ id: 5, cost: 0, first_cost: 2800, discount: 0, amount: 1, cost_to_pay: 0 }],
+    });
+    expect(recordIsFree(dto)).toBe(false);
+    expect(recordListPrice(dto)).toBe(2800);
   });
 
-  it("обычная платная услуга — цена известна", () => {
+  it("количество не путаем с деньгами", () => {
+    // amount — это КОЛИЧЕСТВО услуг. По нему цену определять нельзя.
+    const dto = record({ services: [{ id: 5, cost: 0, amount: 1 }] });
+    expect(recordIsFree(dto)).toBe(false);
+    expect(recordListPrice(dto)).toBe(0);
+  });
+
+  it("обычная платная услуга", () => {
     const dto = record({ services: [{ id: 5, cost: 8000, first_cost: 8000, discount: 0 }] });
-    expect(recordKnowsPrice(dto)).toBe(true);
     expect(mapRecord(dto).revenue).toBe(8000);
+    expect(recordIsFree(dto)).toBe(false);
   });
 
-  it("частичная скидка — берём итоговую стоимость, а не цену до скидки", () => {
+  it("частичная скидка — берём итоговую стоимость", () => {
     const dto = record({ services: [{ id: 5, cost: 2400, first_cost: 3000, discount: 20 }] });
     expect(mapRecord(dto).revenue).toBe(2400);
+    expect(recordIsFree(dto)).toBe(false);
   });
 
-  it("услуг в записи нет — цену взять неоткуда", () => {
-    expect(recordKnowsPrice(record({ services: [] }))).toBe(false);
-    expect(recordKnowsPrice(record({}))).toBe(false);
+  it("одна услуга подарена, вторая платная — визит не бесплатный", () => {
+    const dto = record({
+      services: [
+        { id: 5, cost: 0, first_cost: 3000, discount: 100 },
+        { id: 6, cost: 900, first_cost: 900, discount: 0 },
+      ],
+    });
+    expect(recordIsFree(dto)).toBe(false);
+  });
+
+  it("услуг в записи нет — ни цены, ни подарка", () => {
+    expect(recordIsFree(record({ services: [] }))).toBe(false);
+    expect(recordIsFree(record({}))).toBe(false);
   });
 
   it("номер визита переносится: по нему видно, что записи — один приход", () => {

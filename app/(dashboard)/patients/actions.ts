@@ -547,7 +547,16 @@ export async function getPatientsOverview(): Promise<PatientsOverview> {
         firstSeenAt: { gte: startOfToday },
       },
     }),
-    prisma.patient.count({ where: { companyId, deletedAt: null, appointments: { some: { deletedAt: null } } } }),
+    /**
+     * «С визитами» — у кого визит СОСТОЯЛСЯ.
+     *
+     * Считались любые записи, включая отменённые и неявки: пациент, чью
+     * единственную запись отменили, числился побывавшим в клинике. После
+     * уборки исчезнувших из YCLIENTS записей таких стало заметно больше.
+     */
+    prisma.patient.count({
+      where: { companyId, deletedAt: null, appointments: { some: { deletedAt: null, status: "ARRIVED" } } },
+    }),
     prisma.patient.count({
       where: {
         companyId,

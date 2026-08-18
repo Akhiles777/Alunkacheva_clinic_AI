@@ -10,7 +10,8 @@ import { BookingButton } from "./booking-panel";
 import type { AttentionItem } from "@/app/_data/today";
 import { allCourses, useDb } from "@/app/_data/store";
 import { CHANNEL_LABEL } from "@/app/_data/inbox";
-import { formatMoney, formatNumber } from "@/lib/format";
+import { formatMoney, formatMoneyPrecise, formatNumber } from "@/lib/format";
+import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { buildCabinets, buildFreeWindows, dateLabelInTz, nowMinuteInTz } from "@/lib/schedule";
 import { getClinicDayToday, type ClinicDayView } from "../schedule/actions";
@@ -58,22 +59,39 @@ export function TodayClient() {
     ? []
     : buildFreeWindows(db.appointments, nowMinute, day, clinicDay?.rooms);
 
-  const scheduled = db.appointments.length;
   /**
-   * Первичные ЗАПИСАННЫЕ на сегодня, а не состоявшиеся.
+   * Итоги дня.
    *
-   * В отчётах «первичные» — это пришедшие (§8), и цифры здесь и там разные по
-   * существу: экран дня отвечает на вопрос «кто сегодня придёт впервые», отчёт
-   * — «сколько первичных состоялось». Подпись обязана это различать, иначе
-   * одинаковое слово с разными числами снова читается как ошибка платформы.
+   * Заказчик смотрел на этот экран и не понимал, за какой период он: чисел, по
+   * которым это видно, здесь просто не было — выручка, средний чек и «записей»
+   * одинаково выглядят и за день, и за неделю. Данные всегда были дневные
+   * (стор берёт визиты от полуночи клиники до полуночи), но сказать это должен
+   * экран, а не исходники.
+   *
+   * Определения — те же, что в отчётах (§8): пришедшие — ARRIVED, первичные —
+   * первый визит пациента со статусом «пришёл», повторные — все остальные
+   * пришедшие. Иначе у клиники снова появятся две правды.
    */
-  const firstVisits = db.appointments.filter((a) => a.isFirstVisit).length;
-
-  // Деньги — только по состоявшимся визитам: запланированный визит ещё не
-  // выручка, и показывать его в сводке дня нельзя.
+  const scheduled = db.appointments.length;
   const arrived = db.appointments.filter((a) => a.status === "arrived");
+  const noShow = db.appointments.filter((a) => a.status === "no_show");
+  const ahead = db.appointments.filter((a) => a.status === "planned" || a.status === "confirmed");
+
   const revenue = arrived.reduce((sum, a) => sum + (a.price ?? 0), 0);
-  const avgCheck = arrived.length ? Math.round(revenue / arrived.length) : 0;
+  const avgCheck = averageCheck(revenue, arrived.length);
+
+  // Первичные и повторные — среди ПРИШЕДШИХ, как в отчётах.
+  const firstVisits = arrived.filter((a) => a.isFirstVisit).length;
+  const repeatVisits = arrived.length - firstVisits;
+  /**
+   * Доходимость: пришли ÷ (пришли + неявки).
+   *
+   * Знаменатель — только состоявшиеся исходы, той же функцией, что считает
+   * неявки в кабинете владельца и в карточке специалиста. Запланированный на
+   * вечер приём ещё не мог стать неявкой и показатель разбавлять не должен.
+   */
+  const settled = arrived.length + noShow.length;
+  const arrivalPct = settled > 0 ? 100 - noShowRate(arrived.length, noShow.length) : null;
 
   // «Требует внимания» и «обращения» — из живых диалогов.
   const attention = useMemo(() => {
@@ -155,25 +173,67 @@ export function TodayClient() {
             <BookingButton />
           </div>
         </div>
+        {/*
+          Итоги дня. Раньше здесь стояли выручка, средний чек и «записей» — по
+          ним нельзя понять ни за какой период экран, ни как прошёл день.
+          Заказчику нужно другое: сколько пришло, сколько первичных и повторных
+          и какая доходимость. Подпись «за сегодня» обязательна: одинаковые
+          слова с разными числами на соседних экранах читаются как ошибка.
+        */}
         <div className="text-text-muted mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+          <span className="text-text-subtle">за сегодня:</span>
           <span>
-            Выручка{" "}
+            выручка{" "}
             <b className="num text-text font-medium whitespace-nowrap">{formatMoney(revenue)}</b>
           </span>
           <span aria-hidden className="sep-dot" />
           <span>
             средний чек{" "}
-            <b className="num text-text font-medium whitespace-nowrap">{formatMoney(avgCheck)}</b>
+            <b className="num text-text font-medium whitespace-nowrap">
+              {formatMoneyPrecise(avgCheck)}
+            </b>
           </span>
           <span aria-hidden className="sep-dot" />
           <span>
-            <b className="num text-text font-medium">{formatNumber(scheduled)}</b> записей
+            пришли <b className="num text-text font-medium">{formatNumber(arrived.length)}</b>
+            <span className="text-text-subtle"> из {formatNumber(scheduled)}</span>
           </span>
           <span aria-hidden className="sep-dot" />
           <span>
-            <b className="num text-text font-medium">{formatNumber(firstVisits)}</b> первичных
-            записано
+            первичных <b className="num text-text font-medium">{formatNumber(firstVisits)}</b>
           </span>
+          <span aria-hidden className="sep-dot" />
+          <span>
+            повторных <b className="num text-text font-medium">{formatNumber(repeatVisits)}</b>
+          </span>
+          {noShow.length > 0 ? (
+            <>
+              <span aria-hidden className="sep-dot" />
+              <span>
+                неявок <b className="num text-accent-text font-medium">{formatNumber(noShow.length)}</b>
+              </span>
+            </>
+          ) : null}
+          {arrivalPct !== null ? (
+            <>
+              <span aria-hidden className="sep-dot" />
+              <span title="пришли ÷ (пришли + неявки); запланированное на вечер в счёт не идёт">
+                доходимость <b className="num text-text font-medium">{arrivalPct}%</b>
+              </span>
+            </>
+          ) : null}
+          {ahead.length > 0 ? (
+            <>
+              <span aria-hidden className="sep-dot" />
+              {/*
+                Только количество. «Из них первичных» здесь показывать нельзя:
+                первичность ставится по факту прихода (§8), у ещё не
+                состоявшегося визита её нет — получился бы вечный ноль,
+                неотличимый от настоящего.
+              */}
+              <span className="text-text-subtle">впереди {formatNumber(ahead.length)}</span>
+            </>
+          ) : null}
           <span className="num text-text ml-auto font-medium">{formatMinute(nowMinute)}</span>
         </div>
       </header>

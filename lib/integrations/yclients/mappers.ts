@@ -3,6 +3,7 @@ import type { AppointmentStatus, ServiceKind } from "@/generated/prisma/enums";
 import type {
   YclientsClient,
   YclientsRecord,
+  YclientsRecordService,
   YclientsResource,
   YclientsService,
   YclientsStaff,
@@ -55,17 +56,15 @@ export interface AppointmentUpsert {
   /** Когда запись создана в YCLIENTS; null — провайдер не сообщил. */
   createdAtYclients: Date | null;
   /**
-   * Знает ли сама запись свою стоимость.
+   * Услуга отдана бесплатно: скидка сто процентов.
    *
-   * Ноль в стоимости означает две совершенно разные вещи: «услуга отдана
-   * бесплатно» и «администратор цену не проставил». Первое — факт, который
-   * нельзя переписывать прайсом; второе — пробел, который прайсом закрыть
-   * можно и нужно (§8: пришёл на услугу за 8000 ₽ — значит 8000 ₽).
-   *
-   * Отличаем по следам цены в самой записи: указана цена до скидки, указана
-   * скидка или ненулевая стоимость — запись свою цену знает.
+   * Ноль в стоимости означает две разные вещи — «отдали даром» и «цену не
+   * проставили», — и различает их только скидка. Первое трогать нельзя,
+   * второе закрывается прайсом (§8).
    */
-  priceKnown: boolean;
+  isFree: boolean;
+  /** Цена услуг по прайсу из самой записи: на момент визита, а не сегодняшняя. */
+  listPrice: number;
 }
 
 /** Секунды сеанса YCLIENTS → минуты. Пустое/битое → 0. */
@@ -185,23 +184,49 @@ export function mapCreatedAt(dto: YclientsRecord): Date | null {
 }
 
 /**
- * Есть ли в записи хоть какой-то след цены.
+ * Бесплатна ли услуга по решению клиники.
  *
- * Скидка 100%: `cost` = 0, но `first_cost` = 3000 и `discount` = 100 — запись
- * свою цену знает, и ноль в ней настоящий. Незаполненная стоимость: нули и
- * пустоты во всех полях сразу — тогда цену берём из прайса клиники.
+ * Первая версия считала «цена известна» по любому следу цены — и ошиблась
+ * грубо. На боевых данных выяснилось, что YCLIENTS кладёт в запись
+ * `first_cost` (цену услуги по прайсу) и `amount` (КОЛИЧЕСТВО, а не деньги)
+ * всегда, независимо от того, проставил администратор стоимость или нет:
+ *
+ *   cost=0 first_cost=2800 discount=0   — стоимость не проставлена
+ *   cost=0 first_cost=3000 discount=100 — скидка 100%, услуга отдана даром
+ *
+ * По прежнему правилу обе строки становились «бесплатными», и тысяча визитов
+ * разом потеряла выручку — три миллиона рублей. Ошибка в ту же сторону, что и
+ * исходная жалоба, только больше.
+ *
+ * Настоящий признак один: скидка сто процентов. Всё остальное с нулевой
+ * стоимостью — незаполненная цена, и её место занимает прайс (§8: пришёл на
+ * услугу за 8000 ₽ — значит 8000 ₽).
  */
-export function recordKnowsPrice(dto: YclientsRecord): boolean {
+export function serviceIsFree(s: YclientsRecordService): boolean {
+  return (s.cost ?? 0) === 0 && (s.discount ?? 0) >= 100;
+}
+
+/**
+ * Отдан ли визит целиком бесплатно.
+ *
+ * Достаточно одной платной услуги, чтобы визит перестал быть бесплатным:
+ * стоимость визита — сумма его услуг, и обнулять её из-за одной подаренной
+ * позиции нельзя.
+ */
+export function recordIsFree(dto: YclientsRecord): boolean {
   const services = dto.services ?? [];
   if (services.length === 0) return false;
-  return services.some(
-    (s) =>
-      (s.cost ?? 0) > 0 ||
-      (s.first_cost ?? 0) > 0 ||
-      (s.discount ?? 0) > 0 ||
-      (s.amount ?? 0) > 0 ||
-      (s.cost_to_pay ?? 0) > 0,
-  );
+  return services.every(serviceIsFree);
+}
+
+/**
+ * Цена услуг по прайсу, как её знает сама запись.
+ *
+ * Лучше справочника клиники: это цена на момент визита, а прайс с тех пор мог
+ * измениться. Используется только там, где стоимость не проставлена.
+ */
+export function recordListPrice(dto: YclientsRecord): number {
+  return (dto.services ?? []).reduce((sum, s) => sum + (s.first_cost ?? 0), 0);
 }
 
 export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
@@ -210,7 +235,8 @@ export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
   return {
     yclientsRecordId: dto.id,
     yclientsVisitId: typeof dto.visit_id === "number" ? dto.visit_id : null,
-    priceKnown: recordKnowsPrice(dto),
+    isFree: recordIsFree(dto),
+    listPrice: recordListPrice(dto),
     yclientsStaffId: dto.staff_id,
     yclientsResourceId: dto.resource_instances?.[0]?.resource_id ?? null,
     yclientsServiceIds: services.map((s) => s.id),

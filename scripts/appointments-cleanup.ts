@@ -235,23 +235,20 @@ async function main() {
   for (const r of zeroCost.slice(0, 8)) {
     for (const sv of r.services ?? []) {
       if ((sv.cost ?? 0) !== 0) continue;
-      const known =
-        (sv.first_cost ?? 0) > 0 || (sv.discount ?? 0) > 0 || (sv.amount ?? 0) > 0 || (sv.cost_to_pay ?? 0) > 0;
-      if (known) withDiscountFields += 1;
+      // Бесплатно — только скидка сто процентов. Цена по прайсу и количество
+      // приходят всегда и о подарке не говорят ничего.
+      const free = (sv.discount ?? 0) >= 100;
+      if (free) withDiscountFields += 1;
       console.log(
         `      запись ${r.id}: cost=${sv.cost ?? "нет"} first_cost=${sv.first_cost ?? "нет"} ` +
           `discount=${sv.discount ?? "нет"} amount=${sv.amount ?? "нет"} cost_to_pay=${sv.cost_to_pay ?? "нет"}` +
-          ` → ${known ? "БЕСПЛАТНО (цена известна)" : "цена неизвестна, возьмём из прайса"}`,
+          ` → ${free ? "БЕСПЛАТНО (скидка 100%)" : `цена не проставлена, возьмём ${sv.first_cost ?? 0} ₽`}`,
       );
     }
   }
-  if (zeroCost.length > 0 && withDiscountFields === 0) {
-    console.log(
-      "  ВНИМАНИЕ: ни в одной записи нет ни цены до скидки, ни размера скидки.\n" +
-        "  Значит отличить скидку 100% от незаполненной цены по ответу нельзя —\n" +
-        "  напишите мне этот вывод, будем искать признак в другом месте ответа.",
-    );
-  }
+  console.log(
+    `  из показанных отданы даром: ${withDiscountFields}. Остальным цену подставит прайс.`,
+  );
 
   await prisma.$disconnect();
 }
