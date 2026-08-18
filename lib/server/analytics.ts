@@ -262,7 +262,7 @@ export async function getDashboardMetricsDb(
   const now = new Date();
   const { from, to } = periodBounds(period, now);
 
-  const [appts, inquiries, newPatients, rooms, sources, closed, schedule, roomLoads, bookedInPeriod] =
+  const [appts, inquiries, newPatients, rooms, sources, closed, courses, schedule, roomLoads, bookedInPeriod] =
     await Promise.all([
     prisma.appointment.findMany({
       where: { companyId, deletedAt: null, startAt: { gte: from, lt: to } },
@@ -319,6 +319,7 @@ export async function getDashboardMetricsDb(
       select: { id: true, code: true, title: true },
     }),
     closedDatesBetween(companyId, from, to),
+    prisma.course.count({ where: { companyId } }),
     loadSchedule(companyId),
     roomOccupancyBetween(companyId, from, to),
     prisma.appointment.count({
@@ -433,6 +434,16 @@ export async function getDashboardMetricsDb(
       coursesSold: 0,
       coursesAmount: 0,
     },
+    /**
+     * Ведутся ли курсы вообще.
+     *
+     * Разрез «повторные — курсовые и возвраты» имеет смысл, только если курсы
+     * в системе есть. Их пока не заводит ни выгрузка, ни интерфейс, поэтому
+     * «Курсовые 0» стоит всегда — и выглядит как данные, хотя это структурный
+     * ноль. Показывать число, которое не может стать другим, нельзя: по нему
+     * делают выводы.
+     */
+    coursesTracked: courses > 0,
     visitMix: {
       first,
       courseSession,

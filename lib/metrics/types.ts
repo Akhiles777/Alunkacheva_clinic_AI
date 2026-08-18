@@ -278,6 +278,11 @@ export interface DashboardMetrics {
    */
   bookedInPeriod: number;
   money: MoneySummary;
+  /**
+   * Ведутся ли курсы. Пока их нет, разрез «курсовые/возвраты» показывать
+   * нельзя: ноль в нём структурный, а выглядит как измеренная величина.
+   */
+  coursesTracked: boolean;
   visitMix: VisitMix;
   rooms: RoomDay[];
   sources: SourceStat[];

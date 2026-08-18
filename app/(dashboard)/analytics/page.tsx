@@ -241,16 +241,29 @@ export default async function AnalyticsPage({
                   <div className="readout text-2xl">{formatNumber(m.money.newPatients)}</div>
                 </Card>
               </div>
-              <Card title="Первичные и повторные" hint="повторные разделены на курсовые и возвраты">
+              <Card
+              title="Первичные и повторные"
+              hint={m.coursesTracked ? "повторные разделены на курсовые и возвраты" : "среди пришедших (§8)"}
+            >
                 <div className="border-border flex h-8 overflow-hidden rounded-md border">
                   <div className="bg-accent" style={{ width: `${(m.visitMix.first / m.visitMix.total) * 100}%` }} />
-                  <div className="bg-border-strong" style={{ width: `${(m.visitMix.courseSession / m.visitMix.total) * 100}%` }} />
+                  {m.coursesTracked ? (
+                    <div className="bg-border-strong" style={{ width: `${(m.visitMix.courseSession / m.visitMix.total) * 100}%` }} />
+                  ) : null}
                   <div className="bg-list-gap" style={{ width: `${(m.visitMix.returned / m.visitMix.total) * 100}%` }} />
                 </div>
+                {/*
+                  Курсовые показываем, только если курсы в системе есть. Пока
+                  их не заводит ни выгрузка, ни интерфейс, «Курсовые 0» стоит
+                  всегда — и читается как измеренная величина, хотя это
+                  структурный ноль.
+                */}
                 <div className="text-text-muted mt-2.5 flex flex-wrap gap-x-5 gap-y-1 text-xs">
                   <span>Первичные <span className="num text-text font-medium">{m.visitMix.first}</span></span>
-                  <span>Курсовые <span className="num text-text font-medium">{m.visitMix.courseSession}</span></span>
-                  <span>Возвраты <span className="num text-text font-medium">{m.visitMix.returned}</span></span>
+                  {m.coursesTracked ? (
+                    <span>Курсовые <span className="num text-text font-medium">{m.visitMix.courseSession}</span></span>
+                  ) : null}
+                  <span>Повторные <span className="num text-text font-medium">{m.visitMix.returned}</span></span>
                 </div>
               </Card>
             </div>
