@@ -65,6 +65,14 @@ export interface YclientsState {
     free: number;
     /** Группы «один пациент, один специалист, одно время» — задвоенные приёмы. */
     duplicateGroups: number;
+    /**
+     * Будущие визиты, помеченные в YCLIENTS как состоявшиеся.
+     *
+     * Приём завтра с отметкой «пришёл» состояться не мог: так бывает при
+     * переносе записи — отметка остаётся с прежнего дня. В выручку и в число
+     * пришедших мы такие не берём, но клинике стоит поправить их у себя.
+     */
+    arrivedInFuture: number;
   };
   /**
    * Расписание выгрузки: включено ли, когда прошёл последний круг и чем
@@ -162,12 +170,16 @@ export async function getYclientsState(): Promise<YclientsState> {
     }),
   ]);
 
-  const [priceFromList, free, duplicateRows] = await Promise.all([
+  const [priceFromList, free, arrivedInFuture, duplicateRows] = await Promise.all([
     prisma.appointment.count({
       where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "PRICE_LIST" },
     }),
     prisma.appointment.count({
       where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "FREE" },
+    }),
+    // Отметка «пришёл» из YCLIENTS на визите, время которого ещё не наступило.
+    prisma.appointment.count({
+      where: { companyId, deletedAt: null, attendanceRaw: 1, startAt: { gt: new Date() } },
     }),
     /**
      * Задвоенные приёмы. Совпадение пациента, специалиста и точного времени
@@ -208,6 +220,7 @@ export async function getYclientsState(): Promise<YclientsState> {
       priceFromList,
       free,
       duplicateGroups: Number(duplicateRows[0]?.groups ?? 0),
+      arrivedInFuture,
     },
     schedule: {
       on: sched.включён,

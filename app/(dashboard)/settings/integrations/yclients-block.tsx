@@ -151,6 +151,15 @@ export function YclientsBlock() {
             </b>
           </span>
         </div>
+        {state.quality.arrivedInFuture > 0 ? (
+          <p className="text-text-muted mt-2 text-xs">
+            Визитов в будущем с отметкой «пришёл»:{" "}
+            <b className="num text-accent-text">{state.quality.arrivedInFuture}</b>. Приём, время
+            которого ещё не наступило, состояться не мог — обычно так остаётся отметка с прежней
+            даты после переноса записи. В выручку и в число пришедших мы их не берём; поправить
+            стоит в YCLIENTS.
+          </p>
+        ) : null}
         {state.quality.duplicateGroups > 0 ? (
           <p className="text-text-muted mt-2 text-xs">
             Задвоенный приём — один пациент, один специалист и одно время в двух визитах. Если оба

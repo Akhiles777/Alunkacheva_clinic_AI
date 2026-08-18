@@ -75,7 +75,8 @@ async function main() {
         expected.set(dto.id, {
           amount: rev.amount,
           source: rev.source,
-          arrived: mapRecordStatus(dto.visit_attendance, dto.deleted) === "ARRIVED",
+          // Тем же правилом, что и выгрузка: будущий визит состояться не мог.
+          arrived: mapRecordStatus(dto.visit_attendance, dto.deleted, at) === "ARRIVED",
         });
       }
       fetched += dtos.length;

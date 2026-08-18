@@ -133,3 +133,37 @@ describe("дата первого обращения", () => {
     expect(mapClient({ id: 10, first_visit_date: "не дата" }).firstSeenAt).toBeNull();
   });
 });
+
+/**
+ * Приём девятнадцатого августа был помечен состоявшимся восемнадцатого. Так
+ * бывает при переносе записи — отметка остаётся с прежнего дня — или когда её
+ * ставят заранее. Такой визит даёт выручку, которой ещё нет, и завышает число
+ * пришедших.
+ */
+describe("«пришёл» на визит, который ещё не начался", () => {
+  const now = new Date("2026-08-18T20:00:00+03:00");
+
+  it("завтрашний приём состоявшимся не считается", () => {
+    const tomorrow = new Date("2026-08-19T10:00:00+03:00");
+    expect(mapRecordStatus(1, false, tomorrow, now)).toBe("CONFIRMED");
+  });
+
+  it("приём, который уже прошёл, — состоявшийся", () => {
+    const earlier = new Date("2026-08-18T09:00:00+03:00");
+    expect(mapRecordStatus(1, false, earlier, now)).toBe("ARRIVED");
+  });
+
+  it("приём, начавшийся только что, — состоявшийся", () => {
+    expect(mapRecordStatus(1, false, now, now)).toBe("ARRIVED");
+  });
+
+  it("неявку и отмену правило не трогает", () => {
+    const tomorrow = new Date("2026-08-19T10:00:00+03:00");
+    expect(mapRecordStatus(-1, false, tomorrow, now)).toBe("NO_SHOW");
+    expect(mapRecordStatus(1, true, tomorrow, now)).toBe("CANCELLED");
+  });
+
+  it("без даты визита работает как раньше", () => {
+    expect(mapRecordStatus(1)).toBe("ARRIVED");
+  });
+});

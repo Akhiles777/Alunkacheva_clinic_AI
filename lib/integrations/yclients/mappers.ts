@@ -132,14 +132,36 @@ export function parseYclientsDate(raw: string | null | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** visit_attendance YCLIENTS → наш статус визита. deleted перекрывает всё. */
-export function mapRecordStatus(visitAttendance: number | undefined, deleted?: boolean): AppointmentStatus {
+/**
+ * visit_attendance YCLIENTS → наш статус визита. deleted перекрывает всё.
+ *
+ * Отдельно разбирается «пришёл» на визит, время которого ещё не наступило.
+ * На боевых данных такой нашёлся: приём девятнадцатого августа помечен
+ * состоявшимся восемнадцатого. Так бывает, когда запись переносят на другую
+ * дату — отметка о посещении остаётся с прежнего дня, — или когда её ставят
+ * заранее.
+ *
+ * Считать такой визит состоявшимся нельзя: он даёт выручку, которой ещё нет,
+ * завышает число пришедших и портит доходимость. Отметку из YCLIENTS мы при
+ * этом не теряем — она лежит в attendanceRaw, — а статус ставим тот, что
+ * соответствует действительности: запись подтверждена, но не состоялась.
+ *
+ * Когда время придёт, ближайшая выгрузка поставит «пришёл» сама.
+ */
+export function mapRecordStatus(
+  visitAttendance: number | undefined,
+  deleted?: boolean,
+  /** Начало визита и «сейчас» — чтобы отличить состоявшийся приём от будущего. */
+  startAt?: Date,
+  now: Date = new Date(),
+): AppointmentStatus {
   if (deleted) return "CANCELLED";
   switch (visitAttendance) {
     case -1:
       return "NO_SHOW";
     case 1:
-      return "ARRIVED";
+      // Приём ещё не начался — состояться он не мог.
+      return startAt && startAt.getTime() > now.getTime() ? "CONFIRMED" : "ARRIVED";
     case 2:
       return "CONFIRMED";
     case 0:
@@ -255,7 +277,7 @@ export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
     clientPhoneE164: normalizePhone(dto.client?.phone),
     startAt: new Date(dto.datetime),
     durationMin: seanceToMinutes(dto.seance_length),
-    status: mapRecordStatus(dto.visit_attendance, dto.deleted),
+    status: mapRecordStatus(dto.visit_attendance, dto.deleted, new Date(dto.datetime)),
     revenue: money.amount,
     isPaid: mapPaid(dto),
     createdAtYclients: mapCreatedAt(dto),
