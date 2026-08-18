@@ -99,6 +99,121 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
 }
 
 /**
+ * Записи за выбранный день.
+ *
+ * Стор держит только сегодняшний день — так и задумано: экраны про «сейчас».
+ * Но в расписании можно открыть другой день недели, и подставлять туда
+ * сегодняшние записи нельзя: это была бы неправда о чужом дне.
+ */
+export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
+  const session = await getSession();
+  const start = new Date(`${dateIso}T00:00:00+03:00`);
+  if (Number.isNaN(start.getTime())) return [];
+  const end = new Date(start.getTime() + 24 * 3600 * 1000);
+
+  const rows = await prisma.appointment.findMany({
+    where: {
+      companyId: session.companyId,
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      startAt: { gte: start, lt: end },
+    },
+    include: {
+      staff: { select: { id: true, name: true } },
+      room: { select: { name: true, sortOrder: true } },
+      primaryService: { select: { title: true } },
+      patient: { select: { name: true } },
+    },
+    orderBy: { startAt: "asc" },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    roomId: r.room ? ROOM_KEY(r.room.sortOrder) : null,
+    roomName: r.room?.name ?? "",
+    doctor: r.staff.name,
+    staffId: r.staff.id,
+    service: r.primaryService?.title ?? "",
+    patientId: r.patientId,
+    patientName: r.patient?.name ?? "",
+    startMinute: minuteOfDay(r.startAt),
+    durationMin: r.durationMin,
+    status: TO_STORE[r.status] ?? "planned",
+    isFirstVisit: r.isFirstVisit,
+    price: Number(r.revenue),
+    note: r.note,
+    bookedByName: r.bookedByName,
+  }));
+}
+
+export interface WeekDay {
+  /** «2026-08-18» — по нему открывается день. */
+  date: string;
+  /** «18 августа» — подпись для человека. */
+  label: string;
+  /** Записей на день, кроме отменённых. */
+  count: number;
+  /** Из них состоялись. */
+  arrived: number;
+  isToday: boolean;
+}
+
+/**
+ * Неделя расписания: понедельник — воскресенье, с настоящими числами.
+ *
+ * Здесь стоял мок: даты «20–26 июля» и счётчики [4, 6, 5, 0, 7, 3, 0], зашитые
+ * в код ещё до боевых данных. Четверг подставлял сегодняшнее число записей —
+ * и полоса выглядела живой. Клиника видела чужую неделю июля и верила ей.
+ */
+export async function getScheduleWeek(): Promise<WeekDay[]> {
+  const session = await getSession();
+  const { start: todayStart } = todayRangeMoscow();
+
+  // Понедельник текущей недели клиники.
+  const dow = (new Date(todayStart.getTime() + 3 * 3600 * 1000).getUTCDay() + 6) % 7;
+  const monday = new Date(todayStart.getTime() - dow * 24 * 3600 * 1000);
+  const sunday = new Date(monday.getTime() + 7 * 24 * 3600 * 1000);
+
+  const rows = await prisma.appointment.findMany({
+    where: {
+      companyId: session.companyId,
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      startAt: { gte: monday, lt: sunday },
+    },
+    select: { startAt: true, status: true },
+  });
+
+  const key = (d: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Moscow",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  const label = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    day: "numeric",
+    month: "long",
+  });
+
+  const todayKey = key(new Date());
+  const days: WeekDay[] = [];
+  for (let i = 0; i < 7; i++) {
+    const at = new Date(monday.getTime() + i * 24 * 3600 * 1000);
+    const k = key(at);
+    const ofDay = rows.filter((r) => key(r.startAt) === k);
+    days.push({
+      date: k,
+      label: label.format(at),
+      count: ofDay.length,
+      arrived: ofDay.filter((r) => r.status === "ARRIVED").length,
+      isToday: k === todayKey,
+    });
+  }
+  return days;
+}
+
+/**
  * Заметка по визиту: отзыв пациента, что пошло не так, на что обратить
  * внимание. Заполняет врач или администратор после приёма, читает ИИ-аналитик
  * владельца — поэтому текст живёт на визите, а не в свободном чате.

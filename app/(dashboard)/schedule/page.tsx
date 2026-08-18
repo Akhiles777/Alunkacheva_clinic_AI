@@ -12,7 +12,12 @@ import {
   type Appt,
 } from "@/app/_data/store";
 import { formatMinute } from "@/lib/metrics/occupancy";
-import { getClinicDayToday } from "./actions";
+import {
+  getAppointmentsForDay,
+  getClinicDayToday,
+  getScheduleWeek,
+  type WeekDay,
+} from "./actions";
 import { dateLabelInTz, hasConflict } from "@/lib/schedule";
 
 /**
@@ -32,7 +37,16 @@ const STATUS: Record<Appt["status"], { label: string; cls: string }> = {
   no_show: { label: "не пришёл", cls: "text-accent-text" },
 };
 
-function ApptCard({ appt }: { appt: Appt }) {
+/**
+ * Карточка записи.
+ *
+ * `readOnly` — открыт не сегодняшний день. Отметки «пришёл», «не пришёл» и
+ * перенос времени идут через общий стор, а он держит только сегодня: на чужом
+ * дне кнопка сработала бы в базе, но на экране ничего бы не изменилось —
+ * человек нажал бы второй раз и третий. Лучше не показывать кнопку вовсе, чем
+ * показывать не работающую.
+ */
+function ApptCard({ appt, readOnly = false }: { appt: Appt; readOnly?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [time, setTime] = useState(formatMinute(appt.startMinute));
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +73,7 @@ function ApptCard({ appt }: { appt: Appt }) {
   return (
     <div className="border-border-soft rounded-lg border px-3 py-2.5">
       <div className="flex items-baseline gap-2">
-        {editing ? (
+        {editing && !readOnly ? (
           <input
             autoFocus
             value={time}
@@ -104,6 +118,11 @@ function ApptCard({ appt }: { appt: Appt }) {
         // нужно знать, кому звонить при переносе.
         <div className="text-text-subtle truncate text-2xs">записал(а): {appt.bookedByName}</div>
       ) : null}
+      {readOnly ? (
+        <div className="text-text-subtle mt-2 text-2xs">
+          Отметки и перенос — на сегодняшнем дне
+        </div>
+      ) : (
       <div className="mt-2 flex flex-wrap gap-1.5">
         {!done ? (
           <>
@@ -134,6 +153,7 @@ function ApptCard({ appt }: { appt: Appt }) {
           Перенести
         </button>
       </div>
+      )}
     </div>
   );
 }
@@ -144,6 +164,43 @@ export default function SchedulePage() {
   const [room, setRoom] = useState("all");
   const [doctor, setDoctor] = useState("all");
 
+  /**
+   * Неделя — настоящая, с сервера.
+   *
+   * Здесь стоял мок: даты «20–26 июля» и счётчики, зашитые в код ещё до боевых
+   * данных. Четверг подставлял сегодняшнее число записей, и полоса выглядела
+   * живой — клиника видела чужую неделю июля и верила ей.
+   */
+  const [week, setWeek] = useState<WeekDay[]>([]);
+  useEffect(() => {
+    if (view !== "week") return;
+    getScheduleWeek().then(setWeek).catch(() => {});
+  }, [view]);
+
+  /**
+   * Открытый день. null — сегодня, и тогда данные берутся из общего стора:
+   * он живой и обновляется сам. Другой день грузим отдельно — подставлять
+   * туда сегодняшние записи значило бы рассказывать неправду о чужом дне.
+   */
+  const [openDay, setOpenDay] = useState<WeekDay | null>(null);
+  const [dayAppts, setDayAppts] = useState<Appt[]>([]);
+  useEffect(() => {
+    if (!openDay) return;
+    let alive = true;
+    getAppointmentsForDay(openDay.date)
+      .then((rows) => {
+        if (alive) setDayAppts(rows);
+      })
+      .catch(() => {
+        if (alive) setDayAppts([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [openDay]);
+
+  const source = openDay ? dayAppts : db.appointments;
+
   // Кабинеты клиники — с сервера, тем же запросом, что и рабочий день.
   const [rooms, setRooms] = useState<{ id: string; name: string }[]>(FALLBACK_ROOMS);
   useEffect(() => {
@@ -152,12 +209,9 @@ export default function SchedulePage() {
       .catch(() => {});
   }, []);
 
-  const doctors = useMemo(
-    () => ["all", ...new Set(db.appointments.map((a) => a.doctor))],
-    [db.appointments],
-  );
+  const doctors = useMemo(() => ["all", ...new Set(source.map((a) => a.doctor))], [source]);
 
-  const filtered = db.appointments.filter(
+  const filtered = source.filter(
     (a) => (room === "all" || a.roomId === room) && (doctor === "all" || a.doctor === doctor),
   );
 
@@ -167,7 +221,19 @@ export default function SchedulePage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-baseline gap-3">
             <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Расписание</h1>
-            <p className="text-text-muted text-xs">{dateLabelInTz()}</p>
+            {/* Какой день открыт — подписью: иначе чужой день не отличить от сегодня. */}
+            <p className="text-text-muted text-xs">
+              {openDay ? openDay.label : dateLabelInTz()}
+              {openDay ? (
+                <button
+                  type="button"
+                  onClick={() => setOpenDay(null)}
+                  className="text-accent-text ml-2 underline"
+                >
+                  вернуться к сегодня
+                </button>
+              ) : null}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <div className="border-border inline-flex overflow-hidden rounded-md border">
@@ -240,7 +306,7 @@ export default function SchedulePage() {
                   ) : (
                     <div className="flex flex-col gap-2">
                       {appts.map((a) => (
-                        <ApptCard key={a.id} appt={a} />
+                        <ApptCard key={a.id} appt={a} readOnly={openDay !== null} />
                       ))}
                     </div>
                   )}
@@ -250,26 +316,32 @@ export default function SchedulePage() {
           </div>
         ) : (
           <div className="grid grid-cols-7 gap-2 max-md:grid-cols-2">
-            {WEEKDAYS.map((wd, i) => {
-              // В моке заполнен только четверг (индекс 3); остальные — иллюстративно.
-              const isToday = i === 3;
-              const count = isToday ? db.appointments.length : [4, 6, 5, 0, 7, 3, 0][i];
-              return (
+            {week.length === 0 ? (
+              <p className="text-text-subtle col-span-full text-sm">Загружаем неделю…</p>
+            ) : (
+              week.map((d, i) => (
                 <button
-                  key={wd}
+                  key={d.date}
                   type="button"
-                  onClick={() => setView("day")}
+                  onClick={() => {
+                    setOpenDay(d.isToday ? null : d);
+                    setView("day");
+                  }}
                   className={`border-border rounded-lg border px-3 py-3 text-left ${
-                    isToday ? "bg-accent-tint border-accent-border" : "hover:bg-hover"
+                    d.isToday ? "bg-accent-tint border-accent-border" : "hover:bg-hover"
                   }`}
                 >
-                  <div className={`text-sm font-medium ${isToday ? "text-accent-text" : ""}`}>{wd}</div>
-                  <div className="num text-text-subtle mt-1 text-xs">{23 - 3 + i} июля</div>
-                  <div className="num mt-3 text-xl leading-none">{count}</div>
-                  <div className="text-text-subtle text-2xs">записей</div>
+                  <div className={`text-sm font-medium ${d.isToday ? "text-accent-text" : ""}`}>
+                    {WEEKDAYS[i]}
+                  </div>
+                  <div className="num text-text-subtle mt-1 text-xs">{d.label}</div>
+                  <div className="num mt-3 text-xl leading-none">{d.count}</div>
+                  <div className="text-text-subtle text-2xs">
+                    записей{d.arrived > 0 ? ` · пришли ${d.arrived}` : ""}
+                  </div>
                 </button>
-              );
-            })}
+              ))
+            )}
           </div>
         )}
       </div>
