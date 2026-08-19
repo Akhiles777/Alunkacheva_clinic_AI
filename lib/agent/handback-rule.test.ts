@@ -43,15 +43,18 @@ describe("напоминание сотрудникам", () => {
     expect(shouldRemind({ last: waiting(70), remindedAt: ago(10) }, NOW)).toBe(false);
   });
 
-  it("прошло полчаса с прошлого напоминания — шлём следующее", () => {
-    expect(shouldRemind({ last: waiting(70), remindedAt: ago(31), reminderCount: 1 }, NOW)).toBe(true);
-  });
-
-  it("больше трёх напоминаний об одном и том же не шлём", () => {
-    // Четвёртое перестают читать, а вместе с ним перестают читать и новые.
+  it("напомнили один раз — второго не будет", () => {
+    // Решение заказчика: напоминание — событие, а не фон. Повторы об одном и
+    // том же перестают читать, а вместе с ними перестают читать и новые.
     expect(
       shouldRemind({ last: waiting(200), remindedAt: ago(60), reminderCount: MAX_REMINDERS }, NOW),
     ).toBe(false);
+  });
+
+  it("новое ожидание — снова одно напоминание", () => {
+    // Счётчик сбрасывается любым новым сообщением, иначе он упёрся бы в
+    // предел навсегда.
+    expect(shouldRemind({ last: waiting(31), remindedAt: null, reminderCount: 0 }, NOW)).toBe(true);
   });
 
   it("после суток не напоминаем: диалог забирает агент", () => {

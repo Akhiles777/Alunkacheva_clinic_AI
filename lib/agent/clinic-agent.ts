@@ -9,7 +9,16 @@ import { focusLine, focusOf, searchText } from "./focus";
 import { patientVisitsContext } from "./patient-visits";
 import { HANDBACK_HOURS } from "./handback-rule";
 import { HANDOVER_REPLY, admitsInability, promisesBooking, promisesHuman } from "./booking-promise";
-import { asksForSlot, cantCome, medical, personalTopic, scheduleTopic, wantsHuman, wantsReschedule } from "./triggers";
+import {
+  asksAboutOwnBooking,
+  asksForSlot,
+  cantCome,
+  medical,
+  personalTopic,
+  scheduleTopic,
+  wantsHuman,
+  wantsReschedule,
+} from "./triggers";
 import {
   CONSENT_ACCEPT,
   CONSENT_DECLINE,
@@ -828,7 +837,17 @@ async function replyToQuestion(
     });
   }
 
-  if (personalTopic(text) || wantsHuman(text)) {
+  /**
+   * Вопрос о своей записи агент отвечает сам.
+   *
+   * «К какому специалисту я записана?» — это не жалоба и не просьба перенести:
+   * ответ лежит в базе, агент видит и услугу, и врача, и день. Прежде такой
+   * вопрос уходил человеку по слову «записана», и пациентка слышала «передал
+   * администратору, он подберёт время», которого не просила.
+   *
+   * Жалобы, деньги и анализы это исключение не затрагивает.
+   */
+  if (!asksAboutOwnBooking(text) && (personalTopic(text) || wantsHuman(text))) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба").catch(() => {});
     return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
@@ -1040,7 +1059,7 @@ async function replyToQuestion(
      * значит показать, что предыдущий разговор забыт. Времени агент не
      * называет: это администратор, и он же видит саму запись.
      */
-    if (wantsReschedule(text)) {
+    if (wantsReschedule(text) && !asksAboutOwnBooking(text)) {
       return respond(ctx, conversation.id, {
         text:
           "Поняла, передал(а) администратору — он подберёт время из тех, что вы просите, " +
@@ -1085,9 +1104,19 @@ async function replyToQuestion(
    * распоряжается (§6): рассказать может, перенести — нет.
    */
   const visits = await patientVisitsContext(ctx.companyId, conversation.patientId);
+  /**
+   * Справка целиком — включая записи пациента.
+   *
+   * Проверка чисел сверяется именно с ней. Записи шли отдельной строкой, и
+   * ответ «вы записаны на 21 августа в 11:30» отклонялся как выдуманный: время
+   * визита в справке было, а в той её части, по которой шла сверка, — нет.
+   * Пациентка спрашивала про свою запись и получала «напишите, на какую
+   * услугу вы хотите записаться».
+   */
+  const reference = visits ? `${context}\n\n${visits}` : context;
   const answer = await answerLLM(
     text,
-    visits ? `${context}\n\n${visits}` : context,
+    reference,
     said,
     /**
      * Инструкция из «Настройки → Ассистент» временно отключена.
@@ -1117,7 +1146,7 @@ async function replyToQuestion(
    * Числа в ответе сверяем со справкой. Формулировка — дело модели, цена и
    * часы работы — нет: см. lib/agent/grounding.
    */
-  const invented = answer ? ungroundedNumbers(answer, context) : [];
+  const invented = answer ? ungroundedNumbers(answer, reference) : [];
   if (invented.length > 0) {
     console.error(`[agent] ответ отклонён: чисел нет в справке — ${invented.join(", ")}`);
   }

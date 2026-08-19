@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { medical, scheduleTopic, wantsHuman, cantCome, asksForSlot, wantsReschedule } from "./triggers";
+import {
+  asksAboutOwnBooking,
+  asksForSlot,
+  cantCome,
+  medical,
+  scheduleTopic,
+  wantsHuman,
+  wantsReschedule,
+} from "./triggers";
 
 /**
  * Триггеры эскалации из §6. Проверка появилась после находки: правила были
@@ -174,5 +182,45 @@ describe("перенос записи", () => {
     for (const t of ["Хотела бы записаться к остеопату", "Сколько стоит приём?"]) {
       expect(wantsReschedule(t), t).toBe(false);
     }
+  });
+});
+
+/**
+ * «К какому специалисту я записана?» попадало под правило переноса — слово
+ * «записана» там же — и агент отвечал «передал администратору, он подберёт
+ * время». Пациентка спросила, что у неё за запись, а услышала про подбор
+ * времени, которого не просила.
+ */
+describe("вопрос о своей записи", () => {
+  it("узнаёт вопрос о существующей записи", () => {
+    for (const t of [
+      "Напомните пожалуйста к какому специалисту я записана",
+      "А когда у меня запись?",
+      "Во сколько мой приём?",
+      "Подскажите, куда я записана",
+    ]) {
+      expect(asksAboutOwnBooking(t), t).toBe(true);
+    }
+  });
+
+  it("просьбу перенести вопросом не считает", () => {
+    for (const t of [
+      "Можно перенести мою запись на завтра пораньше?",
+      "Давайте сдвинем запись",
+      "Хочу отменить запись, как это сделать?",
+      "Можно на другое время?",
+    ]) {
+      expect(asksAboutOwnBooking(t), t).toBe(false);
+    }
+  });
+
+  it("жалобы и анализы остаются человеку", () => {
+    expect(asksAboutOwnBooking("Когда будут мои анализы?")).toBe(false);
+    expect(asksAboutOwnBooking("У меня жалоба на приём, когда перезвоните?")).toBe(false);
+  });
+
+  it("новую запись вопросом о своей не считает", () => {
+    expect(asksAboutOwnBooking("Хочу записаться на IV терапию")).toBe(false);
+    expect(asksAboutOwnBooking("Сколько стоит приём остеопата?")).toBe(false);
   });
 });
