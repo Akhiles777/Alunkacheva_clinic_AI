@@ -8,7 +8,19 @@ import { answerLLM, type Turn } from "./llm";
 import { focusLine, focusOf, searchText } from "./focus";
 import { patientVisitsContext } from "./patient-visits";
 import { HANDBACK_HOURS } from "./handback-rule";
-import { HANDOVER_REPLY, admitsInability, promisesBooking, promisesHuman } from "./booking-promise";
+import {
+  HANDOVER_REPLY,
+  admitsInability,
+  bookingPromiseFound,
+  promisesHuman,
+  withoutBookingPromise,
+} from "./booking-promise";
+
+/**
+ * Сколько должно остаться от ответа после чистки, чтобы его стоило отправлять.
+ * Короче — это обрывок фразы, а не ответ: лучше честно передать человеку.
+ */
+const MEANINGFUL_ANSWER_CHARS = 60;
 import {
   asksAboutOwnBooking,
   asksForSlot,
@@ -1156,8 +1168,26 @@ async function replyToQuestion(
    * Обещание записать не отправляем никогда: расписанием агент не
    * распоряжается (§6), а пациент, которому пообещали запись, придёт к
    * закрытой двери.
+   *
+   * Но выбрасывать из-за этого весь ответ — тоже потеря. Модель успевала
+   * назвать услугу, цену и попросить данные, а пациентка получала «записью
+   * занимается администратор» и разговор обрывался на полпути. Требование
+   * заказчика прямое: сначала оформить клиента, потом передавать.
+   *
+   * Поэтому убираем предложения с обещанием и смотрим, что осталось. Осталось
+   * по делу — отправляем его, добавив, кто ставит время. Не осталось ничего —
+   * значит весь ответ и был обещанием, тогда зовём человека.
    */
-  if (answer && promisesBooking(answer)) {
+  const promise = answer ? bookingPromiseFound(answer) : null;
+  if (answer && promise) {
+    const cleaned = withoutBookingPromise(answer);
+    console.warn(`[agent] убрано обещание записать: «${promise}»`);
+    if (cleaned.length >= MEANINGFUL_ANSWER_CHARS) {
+      return respond(ctx, conversation.id, {
+        text: `${cleaned}\n\nВремя подберёт администратор — он напишет здесь же.`,
+        buttons: mainMenu(),
+      });
+    }
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
     return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
   }

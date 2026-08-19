@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { promisesBooking, promisesHuman, admitsInability } from "./booking-promise";
+import { promisesBooking, promisesHuman, admitsInability,
+  bookingPromiseFound,
+  withoutBookingPromise,
+} from "./booking-promise";
 
 /**
  * §6: расписанием агент не распоряжается. Проверка появилась после боевого
@@ -97,5 +100,40 @@ describe("admitsInability", () => {
     ]) {
       expect(admitsInability(t), t).toBe(false);
     }
+  });
+});
+
+/**
+ * Ответ выбрасывался целиком из-за одной фразы: модель успела назвать услугу,
+ * цену и попросить данные, а пациентка получала «записью занимается
+ * администратор» и разговор обрывался на полпути. Заказчик: сначала оформить
+ * клиента, потом передавать.
+ */
+describe("ответ без обещания записать", () => {
+  it("убирает обещание, оставляя суть", () => {
+    const answer =
+      "Детский приём остеопата стоит 4900 ₽ и длится 30 минут. " +
+      "Я запишу вашего сына на завтра. " +
+      "Напишите, пожалуйста, имя и возраст ребёнка и кратко причину обращения.";
+    const cleaned = withoutBookingPromise(answer);
+    expect(cleaned).toContain("4900");
+    expect(cleaned).toContain("имя и возраст");
+    expect(cleaned).not.toContain("запишу");
+    expect(promisesBooking(cleaned)).toBe(false);
+  });
+
+  it("ответ целиком из обещания схлопывается в пустоту", () => {
+    // Тогда отправлять нечего — зовём человека, как и раньше.
+    expect(withoutBookingPromise("Я запишу вас на завтра.").length).toBeLessThan(20);
+  });
+
+  it("правильный ответ не трогает", () => {
+    const ok = "Записью занимается администратор. Приём стоит 4900 ₽.";
+    expect(withoutBookingPromise(ok)).toBe(ok);
+  });
+
+  it("называет найденную фразу — иначе причину не узнать", () => {
+    expect(bookingPromiseFound("Я запишу вас на завтра")).toMatch(/запишу/i);
+    expect(bookingPromiseFound("Приём стоит 4900 ₽")).toBeNull();
   });
 });

@@ -31,6 +31,33 @@ const PROMISE_PATTERNS: RegExp[] = [
   phraseRe("жд[её]м", "вас", "\\d{1,2}[:.]\\d{2}"),
 ];
 
+/** Какая именно фраза обещает распорядиться расписанием. null — обещания нет. */
+export function bookingPromiseFound(text: string): string | null {
+  for (const re of PROMISE_PATTERNS) {
+    const m = re.exec(text);
+    if (m) return m[0];
+  }
+  return null;
+}
+
+/**
+ * Ответ без обещаний записать.
+ *
+ * Выбрасывать ответ целиком — потеря: модель успела назвать услугу, цену и
+ * попросить данные, а пациент вместо этого получал «записью занимается
+ * администратор» и разговор обрывался на полпути. Заказчик прямо сказал:
+ * сначала оформить клиента, потом передавать.
+ *
+ * Поэтому убираем ровно те предложения, где обещание, и оставляем остальное.
+ * Если после чистки не осталось ничего содержательного — значит весь ответ и
+ * был обещанием, и тогда передаём человеку.
+ */
+export function withoutBookingPromise(text: string): string {
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter((s) => !promisesBooking(s));
+  return kept.join(" ").replace(/\s{2,}/g, " ").trim();
+}
+
 /** Есть ли в ответе обещание записать, перенести или подобрать время. */
 export function promisesBooking(text: string): boolean {
   return PROMISE_PATTERNS.some((re) => re.test(text));
