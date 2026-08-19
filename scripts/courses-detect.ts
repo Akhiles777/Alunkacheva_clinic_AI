@@ -13,6 +13,13 @@
  *
  *   npx tsx scripts/courses-detect.ts            # показать, ничего не меняя
  *   npx tsx scripts/courses-detect.ts --apply    # проставить «продаётся курсом»
+ *   npx tsx scripts/courses-detect.ts --apply --skip="КОНТРОЛЬ,БОС/персонал"
+ *
+ * Отметку ставит человек, а не скрипт. «Почти всегда ноль» бывает у трёх
+ * разных вещей: у курса, у приёма для сотрудников и у контрольного визита,
+ * входящего в стоимость основного. Деньги во всех трёх случаях одинаковы —
+ * ноль, — а подпись на экране разная, и выбирает её клиника. Поэтому
+ * `--skip` принимает список услуг, которые трогать не надо.
  *
  * Персональных данных не печатает: только услуги и числа (§7).
  */
@@ -26,6 +33,28 @@ const ZERO_SHARE = 0.5;
 
 const money = (n: number): string => `${Math.round(n).toLocaleString("ru-RU")} ₽`;
 
+const arg = (name: string): string | null => {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3) : null;
+};
+
+/**
+ * Все оплаты услуги в одну строку: сколько раз какая сумма встретилась.
+ *
+ * Медианы мало. По БОС-терапии она показала 2 500 ₽ — цену одного сеанса, и из
+ * этого не видно главного: приходит ли вообще продажа курса целиком (28 000 ₽)
+ * отдельной записью, или клиника проводит курс как-то иначе. Ответ на этот
+ * вопрос меняет то, что мы вправе называть выручкой.
+ */
+function amountsLine(amounts: number[]): string {
+  const counts = new Map<number, number>();
+  for (const a of amounts) counts.set(a, (counts.get(a) ?? 0) + 1);
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0]);
+  const shown = sorted.slice(0, 8).map(([sum, n]) => `${money(sum)} × ${n}`);
+  const rest = sorted.length - shown.length;
+  return shown.join(", ") + (rest > 0 ? `, и ещё ${rest} других сумм` : "");
+}
+
 /** Медиана — устойчивее среднего: один курс на 30 сеансов не сдвинет ответ. */
 function median(xs: number[]): number {
   if (xs.length === 0) return 0;
@@ -36,6 +65,12 @@ function median(xs: number[]): number {
 
 async function main() {
   const apply = process.argv.includes("--apply");
+  const skip = new Set(
+    (arg("skip") ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean),
+  );
   const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
 
   const services = await prisma.service.findMany({
@@ -125,8 +160,9 @@ async function main() {
     );
   }
 
-  const toMark = rows.filter((r) => r.looksCourse && !r.isCourse);
-  const toUnmark = rows.filter((r) => !r.looksCourse && r.isCourse);
+  const skipped = rows.filter((r) => skip.has(r.title));
+  const toMark = rows.filter((r) => r.looksCourse && !r.isCourse && !skip.has(r.title));
+  const toUnmark = rows.filter((r) => !r.looksCourse && r.isCourse && !skip.has(r.title));
 
   console.log("\nчто предлагается:");
   if (toMark.length === 0 && toUnmark.length === 0) {
@@ -134,12 +170,19 @@ async function main() {
   }
   for (const r of toMark) {
     const typical = r.paid.length > 0 ? median(r.paid) : 0;
+    const biggest = r.paid.length > 0 ? Math.max(...r.paid) : 0;
     console.log(
       `  ОТМЕТИТЬ курсовой: ${r.title}\n` +
         `    приёмов ${r.total}, из них без стоимости ${r.zero} (${Math.round(r.share * 100)}%)\n` +
-        `    сеансов в курсе по данным: ${r.sessions}\n` +
-        (typical > 0 ? `    типичная оплата: ${money(typical)}\n` : "    оплат в истории не видно — курсы куплены до выгрузки\n"),
+        `    сеансов после одной оплаты (медиана): ${r.sessions}\n` +
+        (typical > 0
+          ? `    оплат ${r.paid.length}, типичная ${money(typical)}, наибольшая ${money(biggest)}\n` +
+            `    все оплаты: ${amountsLine(r.paid)}\n`
+          : "    оплат в истории не видно — курсы куплены до выгрузки\n"),
     );
+  }
+  for (const r of skipped) {
+    console.log(`  ПРОПУЩЕНО по --skip: ${r.title}`);
   }
   for (const r of toUnmark) {
     console.log(`  СНЯТЬ отметку курса: ${r.title} — приёмов ${r.total}, без стоимости всего ${r.zero}`);
@@ -147,6 +190,7 @@ async function main() {
 
   if (!apply) {
     console.log("\nэто предпросмотр. Чтобы применить: npx tsx scripts/courses-detect.ts --apply");
+    console.log('Отметить не всё: --apply --skip="КОНТРОЛЬ,БОС/персонал"');
     console.log("После этого нужен полный перечёт: npx tsx scripts/yclients-resync.ts --apply");
     return;
   }
