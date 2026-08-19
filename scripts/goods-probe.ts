@@ -57,7 +57,9 @@ async function main() {
     ["одна товарная операция", `/goods_transactions/${cid}/${sale}`, {}],
     ["операции склада", `/storage_operations/${cid}`, { count: 3 }],
     ["документы", `/documents/${cid}`, { start_date: yearAgo, end_date: today, count: 3 }],
-    ["товары филиала", `/goods/${cid}`, { count: 3 }],
+    ["одна кассовая операция", `/transactions/${cid}/${arg("tx") ?? "1653321684"}`, {}],
+    ["проданные позиции", `/sold_items/${cid}`, { count: 3 }],
+    ["операции по товарам", `/goods_operations/${cid}`, { count: 3 }],
     ["продажи абонементов", `/loyalty/abonements/company/${cid}`, { count: 3 }],
   ];
 
@@ -72,6 +74,37 @@ async function main() {
     } catch (e) {
       console.log(`  ✗ ${label} (${path}) — ${(e as Error).message}`);
     }
+  }
+
+  /**
+   * Есть ли курсы в справочнике товаров вообще.
+   *
+   * Справочник читается — значит, если клиника продаёт курс как товар, он там
+   * лежит под своим названием. Это и был бы точный источник: название вместо
+   * догадки по сумме. Показываем всё, что дороже цены одного приёма или
+   * названо курсом.
+   */
+  console.log("\n── товары, похожие на курс ──");
+  try {
+    const goods = await client.get<{ title?: string; actual_cost?: number; cost?: number; good_id?: number }[]>(
+      `/goods/${cid}`,
+      { count: 1000 },
+    );
+    const looksCourse = (goods ?? []).filter((g) => {
+      const price = Math.max(g.actual_cost ?? 0, g.cost ?? 0);
+      return price >= 5000 || /курс|абонемент|сеанс/i.test(g.title ?? "");
+    });
+    console.log(`  всего товаров: ${goods?.length ?? 0}, похожих на курс: ${looksCourse.length}`);
+    for (const g of looksCourse.slice(0, 30)) {
+      console.log(
+        `    ${g.title ?? "—"} — ${Math.max(g.actual_cost ?? 0, g.cost ?? 0)} ₽ · товар #${g.good_id ?? "—"}`,
+      );
+    }
+    if (looksCourse.length === 0) {
+      console.log("    ни одного: курсы продаются не товарами, и названия у продажи нет");
+    }
+  } catch (e) {
+    console.log(`  справочник товаров прочитать не удалось: ${(e as Error).message}`);
   }
 
   console.log(
