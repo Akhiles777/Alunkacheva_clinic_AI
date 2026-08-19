@@ -110,6 +110,31 @@ async function main() {
     );
   }
 
+  /**
+   * Визиты с нулевой длительностью.
+   *
+   * Ещё одна причина нуля в разрезе: приёмы есть, а занятого времени нет.
+   * YCLIENTS присылает длительность сеанса, и если её не проставили, у нас
+   * ложится ноль — услуга выглядит незанятой, кабинет тоже.
+   */
+  const zeroDuration = await prisma.appointment.count({
+    where: {
+      companyId: company.id,
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      startAt: { gte: since },
+      durationMin: { lte: 0 },
+    },
+  });
+  const totalInPeriod = inPeriod.reduce((sum, r) => sum + r._count._all, 0);
+  console.log(`\n── приёмы с нулевой длительностью: ${zeroDuration} из ${totalInPeriod} ──`);
+  if (zeroDuration > 0) {
+    console.log(
+      "  Такие приёмы не занимают времени ни в услуге, ни в кабинете: длительность\n" +
+        "  не проставлена в YCLIENTS. Приёмы видны, часы — нет.",
+    );
+  }
+
   // ── Знаменатель
   const scheduleRows = await prisma.clinicSchedule.count({ where: { companyId: company.id } });
   console.log(

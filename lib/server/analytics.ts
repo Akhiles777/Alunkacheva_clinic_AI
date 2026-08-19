@@ -397,6 +397,25 @@ export async function getDashboardMetricsDb(
     share: 0,
   }));
 
+  /**
+   * Записи, у которых источник не проставлен.
+   *
+   * Разрез строился по справочнику источников, и всё, что мимо него, не
+   * попадало ни в одну строку. Из YCLIENTS источник не приходит вовсе, значит
+   * почти каждая запись клиники была невидима: разрез показывал нули и
+   * выглядел сломанным, хотя записи есть. Та же болезнь, что была у услуг.
+   */
+  const withoutSource = booked.filter((a) => a.sourceId === null).length;
+  if (withoutSource > 0) {
+    sourceStats.push({
+      code: "none",
+      title: "Источник не указан",
+      inquiries: 0,
+      booked: withoutSource,
+      share: 0,
+    });
+  }
+
   return {
     period: {
       key: period,
@@ -409,6 +428,9 @@ export async function getDashboardMetricsDb(
        * по неполному месяцу.
        */
       workingDays: Math.max(1, workingDaysBetween(from, denominatorEnd(period, from, to, now), closed)),
+      // Пустой график означает запасные двенадцать часов в день, и тогда все
+      // доли загрузки занижены — это должно быть видно на экране.
+      scheduleFilled: schedule.size > 0,
     },
     funnel,
     funnelSteps: buildFunnel(funnel),
