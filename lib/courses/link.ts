@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
-import { buildCourses, pricePerSession, type CourseVisit } from "./build";
+import { buildCourses, pricePerSession, type CourseSale, type CourseVisit } from "./build";
+import { coursePurchases, type RawTransaction } from "./purchases";
 
 /**
  * Собрать курсы из выгруженных записей и привязать к ним сеансы.
@@ -46,7 +47,36 @@ const DEFAULT_SESSIONS = 10;
 const courseKey = (patientId: string, purchasedAt: Date): string =>
   `${patientId}|${purchasedAt.getTime()}`;
 
-export async function linkCourses(companyId: string): Promise<LinkCoursesResult> {
+export async function linkCourses(
+  companyId: string,
+  /**
+   * Кассовые операции за период. Курс продаётся не записью приёма, а покупкой
+   * в кассе — без них курсы соберутся только у тех, кому оплату провели
+   * записью, а таких меньшинство.
+   */
+  transactions: RawTransaction[] = [],
+): Promise<LinkCoursesResult> {
+  /**
+   * Продажи по пациентам. Клиента находим по идентификатору YCLIENTS: он есть
+   * и у операции, и у карточки.
+   */
+  const purchases = coursePurchases(transactions);
+  const salesByPatient = new Map<string, CourseSale[]>();
+  if (purchases.length > 0) {
+    const patients = await prisma.patient.findMany({
+      where: { companyId, yclientsId: { in: [...new Set(purchases.map((p) => p.clientId))] } },
+      select: { id: true, yclientsId: true },
+    });
+    const byYclients = new Map(patients.map((p) => [p.yclientsId as number, p.id]));
+    for (const p of purchases) {
+      const patientId = byYclients.get(p.clientId);
+      if (!patientId) continue;
+      const list = salesByPatient.get(patientId) ?? [];
+      list.push({ id: `${p.saleId ?? p.at.getTime()}`, at: p.at, amount: p.amount });
+      salesByPatient.set(patientId, list);
+    }
+  }
+
   const services = await prisma.service.findMany({
     where: { companyId, isCourse: true },
     select: { id: true, title: true, price: true, defaultSessions: true },
@@ -115,6 +145,7 @@ export async function linkCourses(companyId: string): Promise<LinkCoursesResult>
         // оплаты одного приёма. Размер курса — оттуда же, это её решение.
         sessionPrice: Number(service.price),
         sessionsTotal: service.defaultSessions ?? DEFAULT_SESSIONS,
+        sales: salesByPatient.get(patientId) ?? [],
       });
       orphans += plan.orphans.length;
 

@@ -65,6 +65,13 @@ export function looksLikeCourseSale(amount: number, sessionPrice: number): boole
   return amount >= sessionPrice * 1.5;
 }
 
+/** Продажа курса, найденная в кассе: день и сумма. */
+export interface CourseSale {
+  id: string;
+  at: Date;
+  amount: number;
+}
+
 export interface BuildCoursesOptions {
   /**
    * Цена одного сеанса по прайсу клиники. Без неё отличить продажу курса от
@@ -74,7 +81,24 @@ export interface BuildCoursesOptions {
   sessionPrice: number;
   /** Размер курса из справочника клиники: сколько сеансов в нём продаётся. */
   sessionsTotal: number;
+  /**
+   * Продажи курсов этого пациента из кассы.
+   *
+   * Главный источник: курс не продаётся записью приёма, он пробивается
+   * кассовой операцией. Оплата в записи остаётся запасным вариантом — она
+   * встречается, но реже.
+   */
+  sales?: CourseSale[];
 }
+
+/**
+ * Сколько дней после продажи сеанс ещё считается сеансом этого курса.
+ *
+ * Без ограничения покупка годичной давности подобрала бы сеансы, к ней не
+ * относящиеся: человек прошёл курс, через год пришёл снова, а платформа
+ * приписала бы новые сеансы старой продаже.
+ */
+const SALE_WINDOW_DAYS = 180;
 
 /**
  * Разложить визиты пациента по одной курсовой услуге на курсы.
@@ -93,19 +117,50 @@ export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): 
   const orphans: string[] = [];
   let open: PlannedCourse | null = null;
 
+  /** Продажи по возрастанию времени; каждая открывает курс не больше раза. */
+  const sales = [...(opts.sales ?? [])]
+    .filter((s) => looksLikeCourseSale(s.amount, sessionPrice))
+    .sort((a, b) => a.at.getTime() - b.at.getTime());
+  const usedSale = new Set<string>();
+  const windowMs = SALE_WINDOW_DAYS * 24 * 3600 * 1000;
+
+  /** Последняя продажа, случившаяся не позже сеанса и ещё не открытая. */
+  const saleFor = (at: Date): CourseSale | null => {
+    let best: CourseSale | null = null;
+    for (const s of sales) {
+      if (usedSale.has(s.id)) continue;
+      if (s.at.getTime() > at.getTime()) break;
+      if (at.getTime() - s.at.getTime() > windowMs) continue;
+      best = s;
+    }
+    return best;
+  };
+
   for (const v of [...visits].sort((a, b) => a.startAt.getTime() - b.startAt.getTime())) {
     if (v.revenue > 0) {
+      // Оплата в записи — запасной путь: так курс тоже иногда проводят.
       if (!looksLikeCourseSale(v.revenue, sessionPrice)) continue;
       open = { purchasedAt: v.startAt, amount: v.revenue, sessionsTotal: total, visitIds: [v.id] };
       courses.push(open);
       continue;
     }
+
+    // Открытый курс кончился либо его не было — ищем продажу в кассе.
+    if (!open || open.visitIds.length >= open.sessionsTotal) {
+      const sale = saleFor(v.startAt);
+      if (sale) {
+        usedSale.add(sale.id);
+        open = { purchasedAt: sale.at, amount: sale.amount, sessionsTotal: total, visitIds: [] };
+        courses.push(open);
+      }
+    }
+
     if (open && open.visitIds.length < open.sessionsTotal) {
       open.visitIds.push(v.id);
       continue;
     }
-    // Сеансов набралось больше проданного — курс закрыт, а этот сеанс из
-    // какого-то другого. Гадать не будем.
+    // Сеансов набралось больше проданного, а новой продажи нет: этот сеанс из
+    // курса, купленного до выгрузки. Гадать не будем.
     orphans.push(v.id);
   }
 

@@ -13,6 +13,7 @@ import { cancelVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
 import { linkCourses } from "@/lib/courses/link";
+import type { RawTransaction } from "@/lib/courses/purchases";
 import { normalizePhone } from "@/lib/phone";
 import {
   mapClient,
@@ -69,6 +70,7 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
    * первичных в отчётах ноль, а в списке пациентов все выглядят новыми —
    * данные есть, а метрики врут.
    */
+  const now = new Date();
   try {
     const marked = await recomputeVisitKinds(companyId);
     counts.visitKinds = marked.updated;
@@ -80,7 +82,22 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
      * Курсы собираются из записей — после них, а не до: разбор опирается на
      * стоимость визитов, которую только что записала выгрузка.
      */
-    const linked = await linkCourses(companyId);
+    /**
+     * Кассовые операции за год — источник продаж курсов.
+     *
+     * Курс не продаётся записью приёма: его пробивают в кассе, иногда двумя
+     * строками (часть наличными, часть картой). Без этого чтения курсы
+     * собирались бы только у тех, кому оплату провели записью, а таких
+     * меньшинство — у остальных сеансы висели бы без объяснения.
+     *
+     * Неудача чтения курсы не отменяет: соберём по оплатам в записях.
+     */
+    const since = new Date(now.getTime() - 365 * 24 * 3600 * 1000);
+    const transactions = await readTransactions(client, since, now).catch((e) => {
+      errors.push(`Кассовые операции прочитать не удалось: ${(e as Error).message}`);
+      return [] as RawTransaction[];
+    });
+    const linked = await linkCourses(companyId, transactions);
     counts.courseSessions = linked.sessions;
     if (linked.priceless.length > 0) {
       // Молчать нельзя: раздел «Курсы» был бы пуст без объяснимой причины.
@@ -1344,3 +1361,41 @@ export async function upsertRecord(
 // TODO(этап 1): syncCourses (абонементы БОС + ручные IV-курсы, §3.5) и
 // syncTransactions (признание выручки по визитам, §8). У них нетривиальные
 // бизнес-правила — реализуем вместе с воркером роллапов, а не угадываем здесь.
+
+/**
+ * Кассовые операции за период.
+ *
+ * Читаются страницами: за год у клиники их тысячи. Нужны ровно ради одного —
+ * продаж курсов: курс пробивают в кассе, а не записью приёма, и без этих
+ * строк объяснить нулевую стоимость сеансов нечем.
+ */
+async function readTransactions(
+  client: YclientsClientHandle,
+  from: Date,
+  to: Date,
+): Promise<RawTransaction[]> {
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const out: RawTransaction[] = [];
+  let page = 1;
+  for (;;) {
+    const res = await client.getPage<RawTransaction[]>(
+      client.endpoints.transactions(client.creds.companyId),
+      { start_date: day(from), end_date: day(to), page, count: PAGE_SIZE },
+    );
+    const rows = res.data ?? [];
+    out.push(...rows);
+    if (
+      !hasNextPage({
+        received: rows.length,
+        pageSize: PAGE_SIZE,
+        fetchedSoFar: out.length,
+        totalCount: res.totalCount,
+        page,
+      })
+    ) {
+      break;
+    }
+    page += 1;
+  }
+  return out;
+}

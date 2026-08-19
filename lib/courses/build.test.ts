@@ -5,6 +5,7 @@ const day = (d: number): Date => new Date(`2026-08-${String(d).padStart(2, "0")}
 const visit = (id: string, d: number, revenue = 0): CourseVisit => ({ id, startAt: day(d), revenue });
 /** Живые числа клиники: сеанс БОС стоит 2 800 ₽, курс из десяти — 25 000 ₽. */
 const BOS = { sessionPrice: 2800, sessionsTotal: 10 };
+/** «18 августа» в тестах — тот же день, что и в живых данных клиники. */
 
 describe("похожа ли оплата на продажу курса", () => {
   it("цена одного сеанса — это платный приём, а не курс", () => {
@@ -119,5 +120,55 @@ describe("цена сеанса", () => {
 
   it("нулевое число сеансов не роняет расчёт", () => {
     expect(pricePerSession(5000, 0)).toBe(5000);
+  });
+});
+
+describe("курс открывает продажа из кассы", () => {
+  const sale = (id: string, d: number, amount = 28000) => ({ id, at: day(d), amount });
+
+  it("продажа 17 августа подбирает сеансы, начавшиеся следом", () => {
+    // Ровно случай клиники: в записях оплаты БОС нет ни одной, а в кассе
+    // 13 000 + 15 000 одной покупкой — и сеансы со следующего дня.
+    const plan = buildCourses([visit("v1", 18), visit("v2", 19), visit("v3", 20)], {
+      ...BOS,
+      sales: [sale("s1", 17)],
+    });
+    expect(plan.courses).toHaveLength(1);
+    expect(plan.courses[0].amount).toBe(28000);
+    expect(plan.courses[0].purchasedAt).toEqual(day(17));
+    expect(plan.courses[0].visitIds).toEqual(["v1", "v2", "v3"]);
+    expect(plan.orphans).toEqual([]);
+  });
+
+  it("сеанс до продажи к ней не приписывается", () => {
+    const plan = buildCourses([visit("v0", 10), visit("v1", 18)], { ...BOS, sales: [sale("s1", 17)] });
+    expect(plan.orphans).toEqual(["v0"]);
+    expect(plan.courses[0].visitIds).toEqual(["v1"]);
+  });
+
+  it("одна продажа открывает один курс, а не каждый сеанс", () => {
+    const plan = buildCourses(
+      [visit("v1", 18), visit("v2", 19)],
+      { ...BOS, sessionsTotal: 1, sales: [sale("s1", 17)] },
+    );
+    expect(plan.courses).toHaveLength(1);
+    expect(plan.orphans).toEqual(["v2"]);
+  });
+
+  it("вторая продажа открывает второй курс, когда первый израсходован", () => {
+    const plan = buildCourses(
+      [visit("v1", 18), visit("v2", 19), visit("v3", 25)],
+      { ...BOS, sessionsTotal: 2, sales: [sale("s1", 17), sale("s2", 24)] },
+    );
+    expect(plan.courses).toHaveLength(2);
+    expect(plan.courses[1].purchasedAt).toEqual(day(24));
+    expect(plan.courses[1].visitIds).toEqual(["v3"]);
+  });
+
+  it("мелкая покупка курсом не считается", () => {
+    // 2 800 ₽ — цена одного сеанса; в кассе так оплачивают разовый приём.
+    const plan = buildCourses([visit("v1", 18)], { ...BOS, sales: [sale("s1", 17, 2800)] });
+    expect(plan.courses).toEqual([]);
+    expect(plan.orphans).toEqual(["v1"]);
   });
 });
