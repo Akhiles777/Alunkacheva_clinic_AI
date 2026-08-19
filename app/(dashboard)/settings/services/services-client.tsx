@@ -13,6 +13,12 @@ const KIND_OPTIONS: { value: ServiceRow["kind"]; label: string }[] = [
   { value: "OTHER", label: "Другое" },
 ];
 
+/** Пустое поле и мусор в нём — это ноль, а не NaN: NaN базу роняет. */
+function numberOrZero(raw: string): number {
+  const n = Number(raw.replace(/\s/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
 function blankService(): ServiceRow {
   return {
     id: `new-${Date.now()}`,
@@ -34,6 +40,7 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
   const [knownIds] = useState(() => initial.services.map((s) => s.id));
   const { roomOptions } = initial;
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [isPending, startTransition] = useTransition();
 
@@ -70,10 +77,17 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
     startTransition(async () => {
       try {
         const res = await saveServices(services, knownIds);
-        setServices(res.services);
+        if (!res.ok) {
+          setError(res.error);
+          setSaved(false);
+          return;
+        }
+        setServices(res.payload.services);
         setSaved(true);
         setError(null);
+        setNotice(res.notice ?? null);
       } catch (e) {
+        // Сюда долетает только неожиданное: проверки возвращаются данными.
         setError(e instanceof Error ? e.message : "Не удалось сохранить");
       }
     });
@@ -93,6 +107,7 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
       </div>
 
       {error ? <p className="text-accent-text text-sm">{error}</p> : null}
+      {notice ? <p className="text-text-muted text-sm">{notice}</p> : null}
 
       {services.map((s) => (
         <Group key={s.id}>
@@ -128,7 +143,7 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
                   min={5}
                   step={5}
                   value={s.durationMin}
-                  onChange={(e) => patch(s.id, { durationMin: Number(e.target.value) })}
+                  onChange={(e) => patch(s.id, { durationMin: numberOrZero(e.target.value) })}
                   className="border-border-input bg-surface num w-16 rounded-md border px-2 py-1.5 text-sm outline-none"
                 />
                 <span className="text-text-subtle text-2xs">мин</span>
@@ -140,7 +155,12 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
                   min={0}
                   step={100}
                   value={s.price}
-                  onChange={(e) => patch(s.id, { price: Number(e.target.value) })}
+                  /*
+                    Пустое поле даёт NaN, а стереть цену, чтобы набрать новую, —
+                    обычное движение. Раньше на нём сохранение обрывалось
+                    безымянной ошибкой сервера: база не пишет NaN в деньги.
+                  */
+                  onChange={(e) => patch(s.id, { price: numberOrZero(e.target.value) })}
                   className="border-border-input bg-surface num w-24 rounded-md border px-2 py-1.5 text-sm outline-none"
                 />
                 <span className="text-text-subtle text-2xs">₽</span>

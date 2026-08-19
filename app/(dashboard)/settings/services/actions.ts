@@ -31,6 +31,19 @@ export interface ServicesPayload {
   roomOptions: { id: string; label: string }[];
 }
 
+/**
+ * Итог сохранения — данными, а не исключением.
+ *
+ * Проверки здесь адресованы человеку: «выберите кабинет», «укажите размер
+ * курса». Но `throw` из серверного действия Next в проде заменяет на «An error
+ * occurred in the Server Components render» — сообщение до экрана не доезжает
+ * вовсе. Человек видит сбой платформы там, где ему хотели сказать, что
+ * поправить.
+ */
+export type SaveServicesResult =
+  | { ok: true; payload: ServicesPayload; notice?: string }
+  | { ok: false; error: string };
+
 export async function getServices(): Promise<ServicesPayload> {
   const session = await getSession();
   const [services, rooms] = await Promise.all([
@@ -66,20 +79,43 @@ export async function saveServices(
   rows: ServiceRow[],
   /** Идентификаторы, которые экран получил при загрузке (см. idsToDelete). */
   knownIds?: string[],
-): Promise<ServicesPayload> {
+): Promise<SaveServicesResult> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
 
   // Валидация — платформа не даёт сохранить бессмыслицу.
   for (const s of rows) {
-    if (s.title.trim().length === 0) throw new Error("У услуги должно быть название");
+    if (s.title.trim().length === 0) return { ok: false, error: "У услуги должно быть название" };
     if (s.isCourse && (!s.defaultSessions || s.defaultSessions < 1)) {
-      throw new Error(`«${s.title}»: у курсовой услуги укажите размер курса`);
+      return { ok: false, error: `«${s.title}»: у курсовой услуги укажите размер курса` };
     }
-    if (s.roomIds.length === 0) {
-      throw new Error(`«${s.title}»: выберите хотя бы один кабинет`);
+    /**
+     * Пустое поле цены приходит как NaN.
+     *
+     * Стереть цену, чтобы набрать новую, — обычное движение, и именно на нём
+     * сохранение обрывалось: база отказывалась писать NaN в денежное поле, а
+     * человек видел безымянную ошибку сервера. Ловим здесь и говорим словами.
+     */
+    if (!Number.isFinite(s.price) || s.price < 0) {
+      return { ok: false, error: `«${s.title}»: цена должна быть числом` };
+    }
+    if (!Number.isInteger(s.durationMin) || s.durationMin <= 0) {
+      return { ok: false, error: `«${s.title}»: длительность — целое число минут` };
     }
   }
+
+  /**
+   * Кабинет услуги больше не обязателен.
+   *
+   * Требование стояло жёстким: без кабинета сохранение не проходило. Оно
+   * писалось под услуги, заведённые руками, а из YCLIENTS их приехало
+   * шестьдесят восемь — и почти все без кабинета. Одна такая строка запрещала
+   * сохранить весь экран: изменить цену стало нельзя вообще нигде.
+   *
+   * Услуга без кабинета не ломает данные: в знаменателе загрузки по кабинетам
+   * она просто не участвует. Поэтому не запрет, а предупреждение.
+   */
+  const roomless = rows.filter((s) => s.roomIds.length === 0);
 
   const existing = await prisma.service.findMany({
     where: { companyId: session.companyId },
@@ -112,10 +148,12 @@ export async function saveServices(
       prisma.course.count({ where: { serviceId: del.id } }),
     ]);
     if (visits + primary + courses > 0) {
-      throw new Error(
-        `Услугу «${del.title}» удалить нельзя: с ней связано визитов ${Math.max(visits, primary)}, ` +
+      return {
+        ok: false,
+        error:
+          `Услугу «${del.title}» удалить нельзя: с ней связано визитов ${Math.max(visits, primary)}, ` +
           `курсов ${courses}. Деактивируйте её — история сохранится, а из списков она уйдёт.`,
-      );
+      };
     }
   }
 
@@ -177,5 +215,12 @@ export async function saveServices(
     meta: { count: rows.length, deleted: toDelete.length },
   });
 
-  return getServices();
+  return {
+    ok: true,
+    payload: await getServices(),
+    notice:
+      roomless.length > 0
+        ? `Сохранено. У ${roomless.length} услуг не выбран кабинет — в загрузку кабинетов они не попадут.`
+        : undefined,
+  };
 }
