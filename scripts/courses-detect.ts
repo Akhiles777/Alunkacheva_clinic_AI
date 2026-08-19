@@ -199,7 +199,18 @@ async function main() {
   console.log(`клиника: ${company.name}\n`);
   console.log("услуга                                        приёмов  без цены   доля  похоже на курс");
   for (const r of rows) {
-    const mark = r.looksCourse ? (r.isCourse ? "да (уже стоит)" : "ДА — не отмечена") : r.isCourse ? "нет (а отмечена)" : "—";
+    /**
+     * У отмеченной услуги показываем размер курса.
+     *
+     * Он прячется в справочнике и решает всё: при двойке курс из десяти
+     * сеансов разваливается на пять двухсеансовых, а восемь сеансов из десяти
+     * остаются ничьими. Ровно это и случилось: определитель однажды записал
+     * двойку по медиане, и на экране появились «БОС-терапия 1/2».
+     */
+    const size = r.isCourse ? ` [курс ${r.defaultSessions ?? "не задан"}]` : "";
+    const mark =
+      (r.looksCourse ? (r.isCourse ? "да (уже стоит)" : "ДА — не отмечена") : r.isCourse ? "нет (а отмечена)" : "—") +
+      size;
     console.log(
       `  ${r.title.slice(0, 42).padEnd(42)} ${String(r.total).padStart(6)} ${String(r.zero).padStart(9)} ${`${Math.round(r.share * 100)}%`.padStart(6)}  ${mark}`,
     );
@@ -208,6 +219,18 @@ async function main() {
   const skipped = rows.filter((r) => skip.has(r.title));
   const toMark = rows.filter((r) => r.looksCourse && !r.isCourse && !skip.has(r.title));
   const toUnmark = rows.filter((r) => !r.looksCourse && r.isCourse && !skip.has(r.title));
+
+  /** Отмеченные курсовыми, у которых размер курса подозрительно мал. */
+  const tiny = rows.filter((r) => r.isCourse && (r.defaultSessions ?? 0) < 3);
+  if (tiny.length > 0) {
+    console.log(
+      "\n! Размер курса меньше трёх сеансов — почти наверняка неверно:\n" +
+        tiny.map((r) => `    ${r.title}: ${r.defaultSessions ?? "не задан"}`).join("\n") +
+        "\n  Курс из десяти сеансов при двойке разваливается на пять двухсеансовых,\n" +
+        "  и восемь сеансов из десяти остаются ничьими. Задайте число словами клиники:\n" +
+        '    --apply --sessions="БОС-терапия=10"',
+    );
+  }
 
   console.log("\nчто предлагается:");
   if (toMark.length === 0 && toUnmark.length === 0) {
