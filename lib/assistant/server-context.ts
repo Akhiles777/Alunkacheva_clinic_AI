@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { startOfClinicDay } from "@/lib/clinic-time";
+import { revenueByDay } from "@/lib/server/daily-revenue";
 import { getDashboardMetricsDb } from "@/lib/server/analytics";
 
 /**
@@ -129,6 +130,22 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   const avg = gaps[0]?.avg;
   if (typeof avg === "number" && Number.isFinite(avg)) {
     lines.push(`Средний интервал между визитами: ${Math.round(avg)} дней.`);
+  }
+
+  /**
+   * Выручка по дням — тот же срез, что у аналитика владельца.
+   *
+   * Ассистент на вопрос «какая выручка вчера» отвечал, что дневного среза нет.
+   * Данные лежали в базе, просто в сводку не попадали.
+   */
+  const daily = await revenueByDay(companyId, 14, now);
+  const todayKey = daily[daily.length - 1]?.date;
+  const yesterdayKey = daily[daily.length - 2]?.date;
+  lines.push("");
+  lines.push("# Выручка по дням (последние 14 дней)");
+  for (const d of daily) {
+    const mark = d.date === todayKey ? " — СЕГОДНЯ" : d.date === yesterdayKey ? " — ВЧЕРА" : "";
+    lines.push(`- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}`);
   }
 
   lines.push("");

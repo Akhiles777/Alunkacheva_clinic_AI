@@ -8,6 +8,7 @@ import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
 import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
 import { weekKeyOf } from "@/lib/metrics/types";
+import { revenueByDay } from "@/lib/server/daily-revenue";
 
 /**
  * Серверный отчёт владельца — из БД (проекция Appointment + пациенты). Не мок:
@@ -397,6 +398,28 @@ export async function getOwnerAiContext(): Promise<string> {
     lines.push("# Заметки администратора по визитам (отзывы, проблемы, пожелания)");
     for (const a of notes.slice(0, 15)) lines.push(`- ${a.service} у «${a.doctor}»: «${a.note?.slice(0, 200)}»`);
   }
+  /**
+   * Выручка по дням — до гипотез и до заметок.
+   *
+   * На «какая выручка была вчера» аналитик отвечал, что дневного среза в
+   * сводке нет: ему давали только недельные и месячные итоги. Данные при этом
+   * лежали в базе. Дни отмечены словами «вчера» и «сегодня», чтобы модель не
+   * считала даты сама — на этом она ошибается чаще всего.
+   */
+  const daily = await revenueByDay(session.companyId, 30);
+  const todayKey = daily[daily.length - 1]?.date;
+  const yesterdayKey = daily[daily.length - 2]?.date;
+  lines.push("");
+  lines.push("# Выручка по дням (последние 30 дней)");
+  for (const d of daily) {
+    const mark = d.date === todayKey ? " — СЕГОДНЯ" : d.date === yesterdayKey ? " — ВЧЕРА" : "";
+    lines.push(
+      `- ${d.date} (${d.label})${mark}: выручка ${d.revenue} ₽, пришли ${d.arrived}` +
+        `${d.noShow > 0 ? `, неявок ${d.noShow}` : ""}` +
+        `${d.arrived > 0 ? `, средний чек ${d.avgCheck} ₽` : ""}`,
+    );
+  }
+
   lines.push("");
   lines.push("# Уже замеченные гипотезы");
   for (const h of report.hypotheses) lines.push(`- ${h}`);
