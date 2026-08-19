@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildCourses, looksLikeCourseSale, pricePerSession, type CourseVisit } from "./build";
+import {
+  assignSales,
+  buildCourses,
+  looksLikeCourseSale,
+  pricePerSession,
+  type CourseVisit,
+} from "./build";
 
 const day = (d: number): Date => new Date(`2026-08-${String(d).padStart(2, "0")}T09:00:00+03:00`);
 const visit = (id: string, d: number, revenue = 0): CourseVisit => ({ id, startAt: day(d), revenue });
@@ -170,5 +176,58 @@ describe("курс открывает продажа из кассы", () => {
     const plan = buildCourses([visit("v1", 18)], { ...BOS, sales: [sale("s1", 17, 2800)] });
     expect(plan.courses).toEqual([]);
     expect(plan.orphans).toEqual(["v1"]);
+  });
+});
+
+describe("кому принадлежит продажа", () => {
+  const sale = (id: string, d: number, amount = 28000) => ({ id, at: day(d), amount });
+
+  it("одна покупка достаётся одной услуге, а не всем сразу", () => {
+    // Раньше 28 000 ₽ открывали курс и по БОС, и по НАК: у пациента сеансы
+    // обеих, и обе видели одну и ту же операцию.
+    const out = assignSales(
+      [sale("s1", 17)],
+      new Map([
+        ["bos", [day(18), day(19)]],
+        ["nak", [day(25)]],
+      ]),
+    );
+    expect(out.get("bos")).toHaveLength(1);
+    expect(out.get("nak")).toBeUndefined();
+  });
+
+  it("продажа уходит туда, куда пришли первым делом", () => {
+    const out = assignSales(
+      [sale("s1", 17)],
+      new Map([
+        ["bos", [day(25)]],
+        ["nak", [day(18)]],
+      ]),
+    );
+    expect(out.get("nak")).toHaveLength(1);
+    expect(out.get("bos")).toBeUndefined();
+  });
+
+  it("сеансов после покупки нет — продажа остаётся ничьей", () => {
+    // Мог быть куплен товар или разовая услуга: приписывать курсу нельзя.
+    const out = assignSales([sale("s1", 17)], new Map([["bos", [day(10)]]]));
+    expect(out.size).toBe(0);
+  });
+
+  it("покупка слишком давняя для этих сеансов", () => {
+    const out = assignSales([sale("s1", 1)], new Map([["bos", [day(28)]]]), 5);
+    expect(out.size).toBe(0);
+  });
+
+  it("две покупки могут достаться разным услугам", () => {
+    const out = assignSales(
+      [sale("s1", 10), sale("s2", 20)],
+      new Map([
+        ["bos", [day(11)]],
+        ["nak", [day(21)]],
+      ]),
+    );
+    expect(out.get("bos")?.map((s) => s.id)).toEqual(["s1"]);
+    expect(out.get("nak")?.map((s) => s.id)).toEqual(["s2"]);
   });
 });

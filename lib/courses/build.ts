@@ -177,3 +177,49 @@ export function pricePerSession(amount: number, sessionsTotal: number): number {
   const n = Math.max(1, sessionsTotal);
   return Math.round((amount / n) * 100) / 100;
 }
+
+/**
+ * Какой услуге принадлежит продажа.
+ *
+ * Покупка в кассе не говорит, за какую услугу заплатили: у операции есть
+ * клиент, сумма и номер продажи — и всё. Пока каждая услуга разбирала продажи
+ * сама, одна покупка на 28 000 ₽ открывала курс и по БОС, и по НАК: у
+ * пациента бывают сеансы обеих, и обе видели одну и ту же операцию. Курс
+ * удваивался, а вместе с ним и «оплачено вперёд».
+ *
+ * Отдаём продажу той услуге, чей ближайший сеанс после покупки случился
+ * раньше: за что заплатили, к тому и пришли первым делом. Если после покупки
+ * бесплатных сеансов нет ни у одной услуги, продажа остаётся ничьей — это
+ * может быть товар или разовая услуга, и приписывать её курсу нельзя.
+ */
+export function assignSales(
+  sales: CourseSale[],
+  /** Даты бесплатных сеансов пациента по каждой курсовой услуге. */
+  zeroVisitsByService: Map<string, Date[]>,
+  windowDays: number = SALE_WINDOW_DAYS,
+): Map<string, CourseSale[]> {
+  const out = new Map<string, CourseSale[]>();
+  const windowMs = windowDays * 24 * 3600 * 1000;
+
+  for (const sale of [...sales].sort((a, b) => a.at.getTime() - b.at.getTime())) {
+    let bestService: string | null = null;
+    let bestAt = Infinity;
+
+    for (const [serviceId, dates] of zeroVisitsByService) {
+      for (const d of dates) {
+        const gap = d.getTime() - sale.at.getTime();
+        if (gap < 0 || gap > windowMs) continue;
+        if (d.getTime() < bestAt) {
+          bestAt = d.getTime();
+          bestService = serviceId;
+        }
+        break; // даты отсортированы: первая подходящая и есть ближайшая
+      }
+    }
+
+    if (bestService === null) continue;
+    out.set(bestService, [...(out.get(bestService) ?? []), sale]);
+  }
+
+  return out;
+}

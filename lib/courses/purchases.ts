@@ -51,19 +51,34 @@ function clientIdOf(t: RawTransaction): number | null {
  *   - Операции, привязанные к записи или визиту, — оплата конкретного приёма.
  *     Её стоимость уже стоит в самой записи, и считать её продажей курса
  *     значило бы удвоить деньги.
+ *   - Операции без вида проданного (`sold_item_type`). У найденной продажи он
+ *     `goods_transaction` — продан товар/пакет. Пустой вид означает движение
+ *     денег, а не продажу: у расхода он null. Без этого условия наличная
+ *     оплата обычного приёма, которой не проставили номер записи, открывала бы
+ *     пациенту курс, которого он не покупал.
+ *
+ * Повторы отбрасываем по номеру операции. Страницы выгрузки могут прийти
+ * внахлёст, а строки одной продажи складываются: два экземпляра одной и той же
+ * операции превратили бы курс за 28 000 ₽ в курс за 56 000 ₽.
  *
  * Строки с одним `sold_item_id` — одна покупка, разбитая на части оплаты
  * (13 000 наличными и 15 000 картой). Складываем их: курс продан один.
  */
 export function coursePurchases(rows: RawTransaction[]): Purchase[] {
   const byKey = new Map<string, Purchase>();
+  const seen = new Set<number>();
 
   for (const t of rows) {
+    if (typeof t.id === "number") {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+    }
     const amount = t.amount ?? 0;
     if (amount <= 0) continue;
     const clientId = clientIdOf(t);
     if (clientId === null) continue;
     if ((t.record_id ?? 0) > 0 || (t.visit_id ?? 0) > 0) continue;
+    if (typeof t.sold_item_type !== "string" || t.sold_item_type.trim().length === 0) continue;
     const at = t.date ? new Date(t.date) : null;
     if (!at || Number.isNaN(at.getTime())) continue;
 

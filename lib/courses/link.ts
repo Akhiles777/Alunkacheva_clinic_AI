@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/db";
-import { buildCourses, pricePerSession, type CourseSale, type CourseVisit } from "./build";
+import {
+  assignSales,
+  buildCourses,
+  pricePerSession,
+  type CourseSale,
+  type CourseVisit,
+} from "./build";
 import { coursePurchases, type RawTransaction } from "./purchases";
 
 /**
@@ -88,6 +94,54 @@ export async function linkCourses(
   let orphans = 0;
   const priceless: string[] = [];
 
+  /**
+   * Бесплатные сеансы пациента по каждой курсовой услуге — чтобы решить, какой
+   * из них принадлежит покупка. Одна операция в кассе не говорит, за какую
+   * услугу заплатили, и пока каждая услуга разбирала продажи сама, одна
+   * покупка открывала курс и по БОС, и по НАК.
+   */
+  const zeroVisits = new Map<string, Map<string, Date[]>>();
+  if (salesByPatient.size > 0) {
+    const zero = await prisma.appointment.findMany({
+      where: {
+        companyId,
+        deletedAt: null,
+        status: { not: "CANCELLED" },
+        // Только сеансы, оплаченные не сегодня: подарки к курсу не относятся.
+        revenueSource: "PREPAID",
+        patientId: { in: [...salesByPatient.keys()] },
+        OR: [
+          { primaryServiceId: { in: services.map((sv) => sv.id) } },
+          { services: { some: { serviceId: { in: services.map((sv) => sv.id) } } } },
+        ],
+      },
+      select: {
+        patientId: true,
+        startAt: true,
+        primaryServiceId: true,
+        services: { select: { serviceId: true } },
+      },
+      orderBy: { startAt: "asc" },
+    });
+    const courseIds = new Set(services.map((sv) => sv.id));
+    for (const a of zero) {
+      const ids = new Set(a.services.map((x) => x.serviceId));
+      if (a.primaryServiceId) ids.add(a.primaryServiceId);
+      for (const id of ids) {
+        if (!courseIds.has(id)) continue;
+        const perPatient = zeroVisits.get(a.patientId) ?? new Map<string, Date[]>();
+        perPatient.set(id, [...(perPatient.get(id) ?? []), a.startAt]);
+        zeroVisits.set(a.patientId, perPatient);
+      }
+    }
+  }
+
+  /** Продажи, розданные по услугам: пациент → услуга → покупки. */
+  const salesFor = new Map<string, Map<string, CourseSale[]>>();
+  for (const [patientId, sales] of salesByPatient) {
+    salesFor.set(patientId, assignSales(sales, zeroVisits.get(patientId) ?? new Map()));
+  }
+
   for (const service of services) {
     if (Number(service.price) <= 0) priceless.push(service.title);
 
@@ -98,6 +152,12 @@ export async function linkCourses(
           deletedAt: null,
           // Отменённый визит курса не расходует: сеанс просто не состоялся.
           status: { not: "CANCELLED" },
+          /**
+           * Подарок по стопроцентной скидке место в курсе не занимает: за него
+           * не платили ни сегодня, ни при продаже. Иначе курс из десяти
+           * сеансов заканчивался бы на восьмом.
+           */
+          revenueSource: { not: "FREE" },
           OR: [{ primaryServiceId: service.id }, { services: { some: { serviceId: service.id } } }],
         },
         select: {
@@ -145,7 +205,7 @@ export async function linkCourses(
         // оплаты одного приёма. Размер курса — оттуда же, это её решение.
         sessionPrice: Number(service.price),
         sessionsTotal: service.defaultSessions ?? DEFAULT_SESSIONS,
-        sales: salesByPatient.get(patientId) ?? [],
+        sales: salesFor.get(patientId)?.get(service.id) ?? [],
       });
       orphans += plan.orphans.length;
 

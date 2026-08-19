@@ -92,18 +92,33 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
      *
      * Неудача чтения курсы не отменяет: соберём по оплатам в записях.
      */
-    const since = new Date(now.getTime() - 365 * 24 * 3600 * 1000);
+    /**
+     * Двести дней, а не год. Продажа подбирает сеансы не дольше полугода, всё
+     * что раньше — лишние тысячи строк на каждом круге выгрузки, а круг идёт
+     * каждые полчаса.
+     */
+    const since = new Date(now.getTime() - 200 * 24 * 3600 * 1000);
     const transactions = await readTransactions(client, since, now).catch((e) => {
       errors.push(`Кассовые операции прочитать не удалось: ${(e as Error).message}`);
-      return [] as RawTransaction[];
+      return null;
     });
-    const linked = await linkCourses(companyId, transactions);
-    counts.courseSessions = linked.sessions;
-    if (linked.priceless.length > 0) {
-      // Молчать нельзя: раздел «Курсы» был бы пуст без объяснимой причины.
-      errors.push(
-        `Курсы не собраны — нет цены в справочнике: ${linked.priceless.join(", ")}`,
-      );
+    /**
+     * Не прочиталась касса — курсы не трогаем вовсе.
+     *
+     * Пересборка без продаж снесла бы все курсы, собранные в прошлый раз:
+     * следующий удачный круг создал бы их заново, и так по кругу — привязка
+     * сеансов дёргалась бы каждые полчаса, а метрика «что изменилось за сутки»
+     * показывала бы движение там, где ничего не происходило.
+     */
+    if (transactions === null) {
+      counts.courseSessions = 0;
+    } else {
+      const linked = await linkCourses(companyId, transactions);
+      counts.courseSessions = linked.sessions;
+      if (linked.priceless.length > 0) {
+        // Молчать нельзя: раздел «Курсы» был бы пуст без объяснимой причины.
+        errors.push(`Курсы не собраны — нет цены в справочнике: ${linked.priceless.join(", ")}`);
+      }
     }
   } catch (e) {
     errors.push(`VISIT_KINDS: ${(e as Error).message}`);

@@ -416,9 +416,36 @@ async function main() {
   console.log(
     `  сеансов, привязанных к курсу: ${courseSessions} из ${prepaid} курсовых` +
       (prepaid > 0 && courseSessions === 0
-        ? "\n      ни одного курса не собрано: оплаты курса нет в записях либо услуга не отмечена курсовой"
+        ? "\n      ни одного курса не собрано: продажи нет в кассе либо услуга не отмечена курсовой"
         : ""),
   );
+
+  /**
+   * Курс не должен создавать денег.
+   *
+   * Его сумма — это покупка в кассе, а выручка считается по записям YCLIENTS.
+   * Складывать одно с другим нельзя, и проверка стоит здесь, чтобы это
+   * нарушение нашлось само, а не в разговоре с клиентом.
+   */
+  const courseRows = await prisma.course.findMany({
+    where: { companyId: company.id },
+    select: { amount: true, sessionsTotal: true, sessionsUsed: true, purchasedAt: true },
+  });
+  if (courseRows.length > 0) {
+    const inPeriod = courseRows.filter((c) => c.purchasedAt >= from && c.purchasedAt < now);
+    const sum = inPeriod.reduce((s2, c) => s2 + Number(c.amount), 0);
+    console.log(
+      `  курсов всего ${courseRows.length}, продано за период ${inPeriod.length} на ${money(sum)}` +
+        "\n      это НЕ выручка периода: деньги за курс приходят кассой, а выручка" +
+        "\n      считается по записям YCLIENTS — складывать их нельзя",
+    );
+    const broken = courseRows.filter((c) => c.sessionsUsed > c.sessionsTotal);
+    console.log(
+      broken.length === 0
+        ? "  ✓ сеансов в курсе не больше проданного"
+        : `  ✗ у ${broken.length} курсов сеансов больше, чем продано`,
+    );
+  }
 
   console.log(
     `  статусы: ` +
