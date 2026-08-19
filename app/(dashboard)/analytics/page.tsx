@@ -346,12 +346,22 @@ export default async function AnalyticsPage({
                 {servicesLoad.map((s) => (
                   <li key={s.title}>
                     <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
-                      <span className="text-sm">{s.title}</span>
+                      <span className="text-sm">
+                        {s.title}
+                        {/* Выключенная услуга с приёмами раньше пропадала из отчёта
+                            вместе со своими часами. Показываем и объясняем. */}
+                        {s.inactive ? (
+                          <span className="text-text-subtle ml-2 text-2xs">
+                            выключена в справочнике
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="num text-sm font-medium">{formatPercent(s.ratio)}</span>
                     </div>
                     <div className="mt-1.5 flex items-center gap-3">
                       <Bar value={s.ratio} />
-                      <span className="num text-text-subtle w-40 flex-none text-right text-2xs">
+                      <span className="num text-text-subtle w-52 flex-none text-right text-2xs">
+                        {formatNumber(s.appointments)} приёмов ·{" "}
                         {formatDuration(s.busyMinutes)} из {formatDuration(s.availableMinutes)}
                       </span>
                     </div>

@@ -619,6 +619,16 @@ export interface ServiceLoadRow {
   ratio: number;
   busyMinutes: number;
   availableMinutes: number;
+  /** Приёмов за период — по ним и считается занятое время. */
+  appointments: number;
+  /**
+   * Услуга выключена в справочнике, но приёмы по ней были.
+   *
+   * Такая строка раньше пропадала из отчёта целиком вместе со своими часами:
+   * читались только включённые услуги. Прятать работу, которая была,
+   * нельзя — по этому разрезу решают, чем занята клиника.
+   */
+  inactive: boolean;
 }
 
 export async function getServicesLoadDb(
@@ -642,45 +652,87 @@ export async function getServicesLoadDb(
     workingMinutesBetween(from, denominatorEnd(period, from, to, now), schedule, closedDates),
   );
 
-  const [services, roomCount] = await Promise.all([
+  /**
+   * Считаем от ПРИЁМОВ, а не от справочника.
+   *
+   * Раньше отчёт брал включённые услуги и складывал их приёмы через связь. У
+   * клиники «Остеопатия, приём Ирины» показывала ноль минут при тысячах
+   * визитов: приёмы держатся за ту строку справочника, на которую ссылаются
+   * сами записи, а в отчёт попадала другая — заведённая руками или оставшаяся
+   * включённой. Работа, которая была, пропадала с экрана.
+   *
+   * Теперь основа — приёмы периода. Услуга к ним приклеивается, а не наоборот:
+   * ни выключенная строка, ни задвоенная больше не прячут часы.
+   */
+  const [byService, allServices, roomCount] = await Promise.all([
+    prisma.appointment.groupBy({
+      by: ["primaryServiceId"],
+      where: { companyId, deletedAt: null, status: { not: "CANCELLED" }, startAt: { gte: from, lt: to } },
+      _count: { _all: true },
+      _sum: { durationMin: true },
+    }),
     prisma.service.findMany({
-      where: { companyId, isActive: true },
-      select: {
-        id: true,
-        title: true,
-        rooms: { select: { roomId: true } },
-        primaryForAppointments: {
-          where: { deletedAt: null, status: { not: "CANCELLED" }, startAt: { gte: from, lt: to } },
-          select: { durationMin: true },
-        },
-      },
+      where: { companyId },
+      select: { id: true, title: true, isActive: true, rooms: { select: { roomId: true } } },
     }),
     prisma.room.count({ where: { companyId } }),
   ]);
 
-  return services
-    .map((s) => {
-      const busy = s.primaryForAppointments.reduce((sum, a) => sum + a.durationMin, 0);
+  const serviceById = new Map(allServices.map((s) => [s.id, s]));
+  const busyById = new Map(byService.map((r) => [r.primaryServiceId, r]));
 
-      /**
-       * Знаменатель — минуты кабинетов, где услуга может проводиться.
-       *
-       * Привязка «услуга → кабинет» заводится вручную, и у услуг, приехавших
-       * из YCLIENTS, её нет. Раньше это давало ноль в знаменателе, ноль в
-       * доле — и весь отчёт по услугам выглядел пустым при полной базе
-       * визитов. Без привязки считаем, что услуга может идти в любом кабинете
-       * клиники: это приблизительно, но отвечает на вопрос «чем занят день», а
-       * ноль не отвечает ни на что.
-       */
-      const roomsForService = s.rooms.length > 0 ? s.rooms.length : roomCount;
-      const available = roomsForService * minutesPerRoom;
-      return {
-        title: s.title,
-        busyMinutes: busy,
-        availableMinutes: available,
-        ratio: available > 0 ? busy / available : 0,
-      };
-    })
+  /**
+   * В отчёт идут услуги с приёмами и включённые без приёмов. Выключенная и без
+   * приёмов не нужна никому: она только удлиняет список.
+   */
+  const shown = allServices.filter((s) => s.isActive || (busyById.get(s.id)?._count._all ?? 0) > 0);
+
+  const rows: ServiceLoadRow[] = shown.map((s) => {
+    const stat = busyById.get(s.id);
+    const busy = stat?._sum.durationMin ?? 0;
+
+    /**
+     * Знаменатель — минуты кабинетов, где услуга может проводиться.
+     *
+     * Привязка «услуга → кабинет» заводится вручную, и у услуг, приехавших
+     * из YCLIENTS, её нет. Раньше это давало ноль в знаменателе, ноль в
+     * доле — и весь отчёт по услугам выглядел пустым при полной базе
+     * визитов. Без привязки считаем, что услуга может идти в любом кабинете
+     * клиники: это приблизительно, но отвечает на вопрос «чем занят день», а
+     * ноль не отвечает ни на что.
+     */
+    const roomsForService = s.rooms.length > 0 ? s.rooms.length : roomCount;
+    const available = roomsForService * minutesPerRoom;
+    return {
+      title: s.title,
+      busyMinutes: busy,
+      availableMinutes: available,
+      ratio: available > 0 ? busy / available : 0,
+      appointments: stat?._count._all ?? 0,
+      inactive: !s.isActive,
+    };
+  });
+
+  /**
+   * Приёмы, у которых услуга не указана вовсе.
+   *
+   * Их не видно ни одной строкой, и сумма разреза молча не сходится с числом
+   * приёмов за период. Показываем отдельной строкой: пустое место объяснимо,
+   * а расхождение — нет.
+   */
+  const orphan = busyById.get(null);
+  if (orphan && orphan._count._all > 0) {
+    rows.push({
+      title: "Без указанной услуги",
+      busyMinutes: orphan._sum.durationMin ?? 0,
+      availableMinutes: roomCount * minutesPerRoom,
+      ratio: 0,
+      appointments: orphan._count._all,
+      inactive: false,
+    });
+  }
+
+  return rows
     /**
      * Сортируем по занятому времени, а не по доле.
      *
