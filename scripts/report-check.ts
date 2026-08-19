@@ -44,6 +44,8 @@ async function main() {
   // ── 1. Что говорит YCLIENTS
   /** Название услуги → сколько раз названа, из них первой. */
   const remote = new Map<string, { total: number; first: number; ids: Set<number> }>();
+  /** Номера записей YCLIENTS за период — по ним ищем, чего у нас нет. */
+  const remoteIds = new Set<number>();
   let records = 0;
   let multiService = 0;
 
@@ -61,6 +63,7 @@ async function main() {
         const at = new Date(d.datetime);
         if (at < from || at > now) continue;
         records += 1;
+        remoteIds.add(d.id);
         const svc = d.services ?? [];
         if (svc.length > 1) multiService += 1;
         svc.forEach((s, i) => {
@@ -93,10 +96,28 @@ async function main() {
     },
   });
 
+  /**
+   * Записи YCLIENTS, которых у нас нет вовсе, и те, что у нас отменены.
+   *
+   * Без этого разрыв «285 записей там, 266 визитов здесь» выглядит одинаково
+   * и когда визиты отменены (это нормально), и когда они не доехали (это
+   * потеря).
+   */
+  const known = await prisma.appointment.findMany({
+    where: { companyId: company.id, yclientsRecordId: { in: [...remoteIds] } },
+    select: { yclientsRecordId: true, status: true, deletedAt: true },
+  });
+  const knownIds = new Set(known.map((a) => a.yclientsRecordId as number));
+  const cancelledHere = known.filter((a) => a.status === "CANCELLED" || a.deletedAt !== null).length;
+  const missing = [...remoteIds].filter((id) => !knownIds.has(id));
+
   const byPrimary = new Map<string, number>();
   const byComposition = new Map<string, { count: number; minutes: number }>();
   let visitMinutes = 0;
   let compositionMinutes = 0;
+  /** Часы визитов, у которых состав записан: только их и сравниваем. */
+  let composedVisitMinutes = 0;
+  let withComposition = 0;
   let withoutService = 0;
 
   for (const a of ours) {
@@ -105,6 +126,10 @@ async function main() {
     if (p) byPrimary.set(p, (byPrimary.get(p) ?? 0) + 1);
     else if (a.services.length === 0) withoutService += 1;
 
+    if (a.services.length > 0) {
+      withComposition += 1;
+      composedVisitMinutes += a.durationMin;
+    }
     for (const s of a.services) {
       const key = s.service.title;
       const acc = byComposition.get(key) ?? { count: 0, minutes: 0 };
@@ -132,14 +157,32 @@ async function main() {
 
   // ── 3. Сходятся ли итоги
   console.log("\n── сходятся ли итоги ──");
-  const compServices = byComposition.size;
-  console.log(`  визитов у нас: ${ours.length}, записей в YCLIENTS: ${records}`);
-  console.log(`  часы визитов: ${hrs(visitMinutes)}`);
-  if (compServices === 0) {
-    console.log("  состав визитов ещё не записан — нужна полная выгрузка");
+  console.log(`  записей в YCLIENTS: ${records}`);
+  console.log(`  из них у нас есть: ${knownIds.size}` +
+    `${cancelledHere > 0 ? ` (отменённых или удалённых у нас: ${cancelledHere})` : ""}`);
+  console.log(`  визитов в разрезе (не отменённых): ${ours.length}`);
+  if (missing.length > 0) {
+    console.log(
+      `  ✗ НЕ ДОЕХАЛО: ${missing.length} записей — их нет у нас ни в каком виде.\n` +
+        `      номера: ${missing.slice(0, 15).join(", ")}${missing.length > 15 ? " …" : ""}\n` +
+        "      обычно это записи без клиента или без телефона: связать визит не с кем.",
+    );
   } else {
-    console.log(`  часы по составу услуг: ${hrs(compositionMinutes)}`);
-    const diff = compositionMinutes - visitMinutes;
+    console.log("  ✓ все записи YCLIENTS есть у нас");
+  }
+
+  /**
+   * Часы сверяем ТОЛЬКО по визитам, у которых состав услуг записан. Пока
+   * состав заполнен не у всех (до полной выгрузки), сравнение всех часов с
+   * частью состава показывало бы огромное «расхождение» на ровном месте.
+   */
+  console.log(`\n  часы визитов всего: ${hrs(visitMinutes)}`);
+  if (withComposition === 0) {
+    console.log("  состав услуг ещё не записан ни у одного визита — нужна полная выгрузка");
+  } else {
+    console.log(`  визитов с записанным составом: ${withComposition} из ${ours.length}`);
+    console.log(`  их часы: ${hrs(composedVisitMinutes)}, по услугам: ${hrs(compositionMinutes)}`);
+    const diff = compositionMinutes - composedVisitMinutes;
     console.log(
       diff === 0
         ? "  ✓ часы сходятся до минуты"

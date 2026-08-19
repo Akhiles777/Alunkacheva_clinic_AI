@@ -371,9 +371,16 @@ export default async function AnalyticsPage({
                       <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
                         <span className="text-sm">
                           {s.title}
+                          {/*
+                            «Выключена в справочнике» читалось как поломка:
+                            рядом со своей главной услугой клиника видела
+                            тревожное слово. На деле это значит только одно —
+                            услуги нет в актуальном прайсе YCLIENTS, а приёмы
+                            по ней идут.
+                          */}
                           {s.inactive ? (
                             <span className="text-text-subtle ml-2 text-2xs">
-                              выключена в справочнике
+                              нет в актуальном прайсе
                             </span>
                           ) : null}
                         </span>
