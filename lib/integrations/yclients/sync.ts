@@ -717,14 +717,41 @@ async function saveRecordServices(
   touched: number[],
   lookups: SyncLookups,
 ): Promise<void> {
-  if (touched.length === 0) return;
-  const wanted = new Set(touched);
+  const onPage = dtos.map((d) => d.id);
+  if (onPage.length === 0) return;
 
   const appts = await prisma.appointment.findMany({
-    where: { companyId, yclientsRecordId: { in: [...wanted] } },
+    where: { companyId, yclientsRecordId: { in: onPage } },
     select: { id: true, yclientsRecordId: true, durationMin: true },
   });
   const apptByRecord = new Map(appts.map((a) => [a.yclientsRecordId as number, a]));
+
+  /**
+   * Пишем состав не только изменившимся визитам, но и тем, у кого его нет.
+   *
+   * Состав появился в выгрузке позже самих визитов, а переписывается только
+   * то, что изменилось (иначе каждый круг ставил бы свежую отметку изменения
+   * тысяче строк). Из-за этого визит, не менявшийся с тех пор, оставался без
+   * состава навсегда: на сверке за 90 дней он был записан у 155 визитов из
+   * 723, и разрез по услугам считал такие визиты только по основной услуге.
+   *
+   * Один запрос на страницу отвечает, у кого состава нет.
+   */
+  const already = new Set(
+    (
+      await prisma.appointmentService.findMany({
+        where: { companyId, appointmentId: { in: appts.map((a) => a.id) } },
+        select: { appointmentId: true },
+        distinct: ["appointmentId"],
+      })
+    ).map((r) => r.appointmentId),
+  );
+  const changed = new Set(touched);
+  const wanted = new Set(
+    appts.filter((a) => changed.has(a.yclientsRecordId as number) || !already.has(a.id))
+      .map((a) => a.yclientsRecordId as number),
+  );
+  if (wanted.size === 0) return;
 
   const rows: Prisma.AppointmentServiceCreateManyInput[] = [];
   const rewrite: string[] = [];
