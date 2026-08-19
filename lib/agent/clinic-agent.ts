@@ -1166,7 +1166,22 @@ async function replyToQuestion(
    * Числа в ответе сверяем со справкой. Формулировка — дело модели, цена и
    * часы работы — нет: см. lib/agent/grounding.
    */
-  const invented = answer ? ungroundedNumbers(answer, reference) : [];
+  /**
+   * Числа, которые назвал сам пациент, выдумкой не являются.
+   *
+   * Проверка сверяла ответ только со справкой клиники. Мама написала «сыну
+   * 11», агент повторил «11» — и ответ отклонялся как выдуманный, а пациентка
+   * получала «передаю администратору» вместо продолжения записи.
+   *
+   * Берём только реплики пациента, не свои: иначе однажды выдуманная цена
+   * стала бы «подтверждённой» сама собой на следующем шаге.
+   */
+  const saidByPatient = said
+    .filter((t) => t.role === "user")
+    .map((t) => t.content)
+    .join("\n");
+  const grounding = `${reference}\n${saidByPatient}\n${text}`;
+  const invented = answer ? ungroundedNumbers(answer, grounding) : [];
   if (invented.length > 0) {
     console.error(`[agent] ответ отклонён: чисел нет в справке — ${invented.join(", ")}`);
   }
