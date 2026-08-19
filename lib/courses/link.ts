@@ -23,6 +23,14 @@ import { buildCourses, pricePerSession, type CourseVisit } from "./build";
  * на вопрос «что изменилось за сутки» ответить было бы нечем.
  */
 export interface LinkCoursesResult {
+  /**
+   * Услуги, отмеченные курсовыми, но без цены в справочнике.
+   *
+   * По ним курсы не собираются вовсе: отличить продажу курса от оплаты одного
+   * приёма нечем. Молчать об этом нельзя — раздел «Курсы» выглядел бы пустым
+   * без причины.
+   */
+  priceless: string[];
   /** Курсов в базе после пересборки. */
   courses: number;
   /** Визитов, у которых привязка к курсу изменилась. */
@@ -31,6 +39,9 @@ export interface LinkCoursesResult {
   orphans: number;
 }
 
+/** Размер курса, если клиника его не указала. */
+const DEFAULT_SESSIONS = 10;
+
 /** Один ключ курса: пациент и день, когда приняли деньги. */
 const courseKey = (patientId: string, purchasedAt: Date): string =>
   `${patientId}|${purchasedAt.getTime()}`;
@@ -38,15 +49,18 @@ const courseKey = (patientId: string, purchasedAt: Date): string =>
 export async function linkCourses(companyId: string): Promise<LinkCoursesResult> {
   const services = await prisma.service.findMany({
     where: { companyId, isCourse: true },
-    select: { id: true, defaultSessions: true },
+    select: { id: true, title: true, price: true, defaultSessions: true },
   });
-  if (services.length === 0) return { courses: 0, sessions: 0, orphans: 0 };
+  if (services.length === 0) return { courses: 0, sessions: 0, orphans: 0, priceless: [] };
 
   let courses = 0;
   let sessions = 0;
   let orphans = 0;
+  const priceless: string[] = [];
 
   for (const service of services) {
+    if (Number(service.price) <= 0) priceless.push(service.title);
+
     const [appts, existingCourses] = await Promise.all([
       prisma.appointment.findMany({
         where: {
@@ -96,7 +110,12 @@ export async function linkCourses(companyId: string): Promise<LinkCoursesResult>
     for (const a of appts) wanted.set(a.id, { courseId: null, index: null });
 
     for (const [patientId, visits] of byPatient) {
-      const plan = buildCourses(visits, service.defaultSessions ?? 10);
+      const plan = buildCourses(visits, {
+        // Цена сеанса — из прайса клиники: по ней отличаем продажу курса от
+        // оплаты одного приёма. Размер курса — оттуда же, это её решение.
+        sessionPrice: Number(service.price),
+        sessionsTotal: service.defaultSessions ?? DEFAULT_SESSIONS,
+      });
       orphans += plan.orphans.length;
 
       for (const c of plan.courses) {
@@ -166,5 +185,5 @@ export async function linkCourses(companyId: string): Promise<LinkCoursesResult>
     }
   }
 
-  return { courses, sessions, orphans };
+  return { courses, sessions, orphans, priceless };
 }

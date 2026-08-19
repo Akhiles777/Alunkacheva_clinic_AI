@@ -13,7 +13,12 @@
  *
  *   npx tsx scripts/courses-detect.ts            # показать, ничего не меняя
  *   npx tsx scripts/courses-detect.ts --apply    # проставить «продаётся курсом»
- *   npx tsx scripts/courses-detect.ts --apply --skip="КОНТРОЛЬ,БОС/персонал"
+ *   npx tsx scripts/courses-detect.ts --apply --skip="КОНТРОЛЬ"
+ *   npx tsx scripts/courses-detect.ts --apply --sessions="БОС-терапия=10"
+ *
+ * `--sessions` задаёт размер курса словами клиники. Выводить его из суммы
+ * нельзя: курс БОС — десять сеансов, сеанс стоит 2 800 ₽, а продают курс за
+ * 25 000 ₽ со скидкой, и деление дало бы девять.
  *
  * Отметку ставит человек, а не скрипт. «Почти всегда ноль» бывает у трёх
  * разных вещей: у курса, у приёма для сотрудников и у контрольного визита,
@@ -65,6 +70,18 @@ function median(xs: number[]): number {
 
 async function main() {
   const apply = process.argv.includes("--apply");
+  /** Размер курса словами клиники: «БОС-терапия=10». */
+  const sessionsArg = new Map<string, number>(
+    (arg("sessions") ?? "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .map((pair) => {
+        const i = pair.lastIndexOf("=");
+        return [pair.slice(0, i).trim(), Number(pair.slice(i + 1))] as const;
+      })
+      .filter(([title, n]) => title.length > 0 && Number.isFinite(n) && n >= 1),
+  );
   const skip = new Set(
     (arg("skip") ?? "")
       .split(",")
@@ -146,12 +163,24 @@ async function main() {
     .map((sv) => {
       const s = stats.get(sv.id) ?? { total: 0, zero: 0, gifted: 0, paidAmounts: [], runs: [], open: new Map() };
       const share = s.total > 0 ? s.zero / s.total : 0;
-      const sessions = Math.max(2, median(s.runs));
+      /**
+       * Оценка размера курса: наибольшая оплата, делённая на цену сеанса.
+       *
+       * Именно оценка. Раньше здесь стояла медиана числа сеансов после
+       * оплаты — она давала двойку, и на экране появлялись «БОС-терапия 1/2».
+       * Теперь считаем по деньгам, но точное число всё равно называет
+       * клиника: курс продаётся со скидкой, и деление ошибается на сеанс.
+       */
+      const price = Number(sv.price);
+      const biggest = s.paidAmounts.length > 0 ? Math.max(...s.paidAmounts) : 0;
+      const guess = price > 0 && biggest > 0 ? Math.round(biggest / price) : 0;
+      const sessions = sessionsArg.get(sv.title) ?? (guess >= 2 ? guess : 10);
       return {
         ...sv,
         total: s.total,
         zero: s.zero,
         gifted: s.gifted,
+        price,
         share,
         paid: s.paidAmounts,
         sessions,
@@ -190,7 +219,8 @@ async function main() {
     console.log(
       `  ОТМЕТИТЬ курсовой: ${r.title}\n` +
         `    приёмов ${r.total}, из них без стоимости ${r.zero} (${Math.round(r.share * 100)}%)\n` +
-        `    сеансов после одной оплаты (медиана): ${r.sessions}\n` +
+        `    цена сеанса по справочнику: ${r.price > 0 ? money(r.price) : "НЕ ЗАДАНА — курсы не соберутся"}\n` +
+        `    размер курса: ${r.sessions}${sessionsArg.has(r.title) ? " (задан вами)" : " — оценка, уточните в «Настройки → Услуги»"}\n` +
         (r.gifted > 0 ? `    отдано даром по скидке 100%: ${r.gifted}\n` : "") +
         (typical > 0
           ? `    оплат ${r.paid.length}, типичная ${money(typical)}, наибольшая ${money(biggest)}\n` +
@@ -217,6 +247,20 @@ async function main() {
       where: { id: r.id },
       data: { isCourse: true, defaultSessions: r.defaultSessions ?? r.sessions },
     });
+  }
+  /**
+   * Размер курса, названный клиникой, ставим и уже отмеченным услугам.
+   * Иначе исправить однажды записанную неверную цифру можно было бы только
+   * руками в настройках, а именно она и рисовала «1/2».
+   */
+  for (const [title, n] of sessionsArg) {
+    const row = rows.find((r) => r.title === title);
+    if (!row) {
+      console.log(`  ! услуги «${title}» в справочнике нет — размер курса не задан`);
+      continue;
+    }
+    await prisma.service.update({ where: { id: row.id }, data: { defaultSessions: n } });
+    console.log(`  размер курса «${title}»: ${n}`);
   }
   for (const r of toUnmark) {
     await prisma.service.update({ where: { id: r.id }, data: { isCourse: false } });

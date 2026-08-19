@@ -80,7 +80,14 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
      * Курсы собираются из записей — после них, а не до: разбор опирается на
      * стоимость визитов, которую только что записала выгрузка.
      */
-    counts.courseSessions = (await linkCourses(companyId)).sessions;
+    const linked = await linkCourses(companyId);
+    counts.courseSessions = linked.sessions;
+    if (linked.priceless.length > 0) {
+      // Молчать нельзя: раздел «Курсы» был бы пуст без объяснимой причины.
+      errors.push(
+        `Курсы не собраны — нет цены в справочнике: ${linked.priceless.join(", ")}`,
+      );
+    }
   } catch (e) {
     errors.push(`VISIT_KINDS: ${(e as Error).message}`);
   }

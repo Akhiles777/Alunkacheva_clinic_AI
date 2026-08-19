@@ -123,6 +123,21 @@ export function TodayClient() {
     setDir("fwd");
     setDayBack(0);
   };
+  /**
+   * Выбор дня датой. Считаем смещение от сегодняшнего дня клиники, а не от
+   * полуночи браузера: на телефоне в другом поясе иначе открывался бы соседний
+   * день.
+   */
+  const pickDay = (value: string) => {
+    if (todayMs === null || !value) return;
+    for (let back = 0; back <= MAX_DAYS_BACK; back += 1) {
+      if (dayKeyBack(todayMs, back) === value) {
+        setDir(back > dayBack ? "back" : "fwd");
+        setDayBack(back);
+        return;
+      }
+    }
+  };
 
   // Исключения расписания (праздник, санитарный день) приходят с сервера:
   // они меняют и полосу кабинетов, и список свободных окон.
@@ -283,6 +298,20 @@ export function TodayClient() {
                 >
                   ‹
                 </button>
+                {/*
+                  Выбор даты, а не только шаг стрелкой: чтобы попасть на день
+                  двухнедельной давности, стрелку пришлось бы нажать
+                  четырнадцать раз.
+                */}
+                <input
+                  type="date"
+                  aria-label="Выбрать день"
+                  value={todayMs === null ? "" : dayKeyBack(todayMs, dayBack)}
+                  min={todayMs === null ? undefined : dayKeyBack(todayMs, MAX_DAYS_BACK)}
+                  max={todayMs === null ? undefined : dayKeyBack(todayMs, 0)}
+                  onChange={(e) => pickDay(e.target.value)}
+                  className="num text-text-muted hover:text-text w-[112px] cursor-pointer rounded-full bg-transparent px-1.5 text-center text-xs outline-none"
+                />
                 <button
                   type="button"
                   onClick={goForward}

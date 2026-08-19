@@ -413,7 +413,26 @@ export function PatientCardBody({
                   утверждение о деньгах, которых мы не видели.
                 */}
                 {visit.amount > 0 ? (
-                  <span className="num text-text-muted flex-none text-xs">{formatMoney(visit.amount)}</span>
+                  /*
+                    У запланированного визита это ожидание, а не деньги. После
+                    приёма YCLIENTS обнуляет стоимость, если сеанс закрыт
+                    курсом, — и в истории рядом оказываются «2 800 ₽» на
+                    завтра и «бесплатно» вчера. Разницу должен называть экран,
+                    иначе она читается как потерянная цена.
+                  */
+                  <span
+                    className={`num flex-none text-xs ${
+                      visit.status === "arrived" ? "text-text-muted" : "text-text-subtle"
+                    }`}
+                    title={
+                      visit.status === "arrived"
+                        ? "стоимость из записи YCLIENTS"
+                        : "цена по записи; после приёма она обнулится, если сеанс закроют курсом"
+                    }
+                  >
+                    {formatMoney(visit.amount)}
+                    {visit.status === "arrived" ? "" : " ожидается"}
+                  </span>
                 ) : visit.courseSession ? (
                   <span className="text-text-muted flex-none text-xs">
                     курс {visit.courseSession.index}/{visit.courseSession.total}
