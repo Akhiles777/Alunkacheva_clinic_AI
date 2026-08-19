@@ -6,6 +6,8 @@ import { getServices } from "./booking";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { focusLine, focusOf, searchText } from "./focus";
+import { patientVisitsContext } from "./patient-visits";
+import { HANDBACK_HOURS } from "./handback-rule";
 import { HANDOVER_REPLY, admitsInability, promisesBooking, promisesHuman } from "./booking-promise";
 import { asksForSlot, cantCome, medical, personalTopic, scheduleTopic, wantsHuman, wantsReschedule } from "./triggers";
 import {
@@ -52,8 +54,15 @@ import { stuckInMisunderstanding } from "./confusion";
 /**
  * Пауза агента после того, как сотрудник ответил вручную (§6.4). Время, а не
  * флаг: пауза должна истекать сама, иначе диалог навсегда останется без бота.
+ *
+ * Ровно столько же, сколько ждёт возврат диалога агенту, и это одно число не
+ * случайно. Прежде пауза была двенадцать часов, а статус «ведёт человек»
+ * снимать было некому: с двенадцатого часа по двадцать четвёртый агент уже
+ * отвечал, а диалог всё ещё числился за сотрудником — и добор неотвеченных
+ * его обходил. Поведение и статус расходились, и понять по экрану, кто ведёт
+ * разговор, было нельзя.
  */
-export const HUMAN_TAKEOVER_HOURS = 12;
+export const HUMAN_TAKEOVER_HOURS = HANDBACK_HOURS;
 
 export function humanTakeoverUntil(from: Date = new Date()): Date {
   return new Date(from.getTime() + HUMAN_TAKEOVER_HOURS * 3600 * 1000);
@@ -171,6 +180,15 @@ async function saveMessage(input: {
     data: {
       lastMessageAt: new Date(),
       ...(input.direction === "IN" ? { lastPatientMessageAt: new Date() } : {}),
+      /**
+       * Новое сообщение — новое ожидание.
+       *
+       * Счётчик напоминаний считает одно конкретное ожидание ответа. Без
+       * сброса он упирался бы в предел навсегда: администратор ответил,
+       * пациент написал через день — и о нём уже не напомнят ни разу.
+       */
+      remindedAt: null,
+      reminderCount: 0,
     },
   });
 }
@@ -784,7 +802,7 @@ export async function handlePatientMessage(
  */
 async function replyToQuestion(
   ctx: AgentContext,
-  conversation: { id: string; consentGrantedAt: Date | null },
+  conversation: { id: string; consentGrantedAt: Date | null; patientId: string | null },
   text: string,
 ): Promise<AgentReply | null> {
   const settings = await assistantMode(ctx.companyId);
@@ -1059,9 +1077,17 @@ async function replyToQuestion(
     said.filter((t) => t.role === "user").map((t) => t.content),
   );
   const context = await clinicContext(ctx.companyId, query, conversation.consentGrantedAt !== null);
+  /**
+   * Записи самого пациента — если карточка привязана.
+   *
+   * На «а во сколько я записана?» агент отвечал общими словами и звал
+   * администратора, хотя ответ лежит в базе. Расписанием он по-прежнему не
+   * распоряжается (§6): рассказать может, перенести — нет.
+   */
+  const visits = await patientVisitsContext(ctx.companyId, conversation.patientId);
   const answer = await answerLLM(
     text,
-    context,
+    visits ? `${context}\n\n${visits}` : context,
     said,
     /**
      * Инструкция из «Настройки → Ассистент» временно отключена.
@@ -1378,7 +1404,7 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
     if (pending) {
       const conv = await prisma.conversation.findUnique({
         where: { id: conversationId },
-        select: { id: true, consentGrantedAt: true },
+        select: { id: true, consentGrantedAt: true, patientId: true },
       });
       const answer = conv ? await replyToQuestion(ctx, conv, pending) : null;
       if (answer) {

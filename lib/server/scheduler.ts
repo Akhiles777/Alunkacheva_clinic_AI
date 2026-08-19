@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { syncAll } from "@/lib/integrations/yclients/sync";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { answerUnanswered } from "@/lib/agent/unanswered";
+import { handBackAndRemind } from "@/lib/agent/handback";
 
 /**
  * Синхронизация с YCLIENTS по расписанию — внутри приложения.
@@ -116,6 +117,18 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
        * ответа. Причины разные — провайдер не принял отправку, модель ответила
        * ошибкой, обработка упала. Проверяем результат, а не причины.
        */
+      /**
+       * Диалоги, которые ведёт человек: вернуть агенту через сутки тишины и
+       * напомнить о тех, где пациент ждёт больше получаса.
+       *
+       * До добора неотвеченных: диалог, вернувшийся агенту, тем же кругом
+       * получит ответ, а не следующим через пятнадцать минут.
+       */
+      const handback = await handBackAndRemind(company.id).catch((e) => {
+        console.error("[scheduler] возврат диалогов не удался:", (e as Error)?.message ?? e);
+        return null;
+      });
+
       const sweep = await answerUnanswered(company.id).catch((e) => {
         console.error("[scheduler] добор не удался:", (e as Error)?.message ?? e);
         return null;
@@ -127,6 +140,7 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
         пересчитано: kinds.updated,
         кабинетовПроставлено: rooms,
         датПервогоОбращения: firstSeen,
+        возвратДиалогов: handback,
         доборНеотвеченных: sweep,
       });
     }

@@ -471,7 +471,14 @@ export async function sendMessageDb(
       where: { id: conversationId },
       // Сотрудник ответил вручную — агент замолкает на 12 часов (§6.4).
       // Бот, перебивающий администратора, — худший баг в этой системе.
-      data: { status: "HUMAN_TAKEOVER", lastMessageAt: new Date(), botPausedUntil: humanTakeoverUntil() },
+      data: {
+        status: "HUMAN_TAKEOVER",
+        lastMessageAt: new Date(),
+        botPausedUntil: humanTakeoverUntil(),
+        // Сотрудник ответил — ожидание кончилось, напоминания начинаются заново.
+        remindedAt: null,
+        reminderCount: 0,
+      },
     }),
   ]);
 
