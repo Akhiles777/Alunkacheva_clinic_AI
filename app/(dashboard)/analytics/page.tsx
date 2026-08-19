@@ -352,33 +352,58 @@ export default async function AnalyticsPage({
           ) : null}
 
           {tab === "services" ? (
-            <Card title="Загрузка по услугам" hint="основной разрез: занято / доступно в кабинетах услуги">
+            <Card
+              title="Загрузка по услугам"
+              hint="основной разрез: занято / доступно в кабинетах услуги"
+            >
+              {/*
+                Услуги без приёмов — одной строкой внизу, а не тридцатью
+                полосками по нулю. Прежде список открывался стеной нулей, и
+                среди них терялось то, чем клиника действительно занята; а
+                услуги с приёмами, но выключенные в справочнике, не
+                показывались вовсе — вместе со своими часами.
+              */}
               <ul className="flex flex-col gap-3.5">
-                {servicesLoad.map((s) => (
-                  <li key={s.title}>
-                    <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
-                      <span className="text-sm">
-                        {s.title}
-                        {/* Выключенная услуга с приёмами раньше пропадала из отчёта
-                            вместе со своими часами. Показываем и объясняем. */}
-                        {s.inactive ? (
-                          <span className="text-text-subtle ml-2 text-2xs">
-                            выключена в справочнике
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className="num text-sm font-medium">{formatPercent(s.ratio)}</span>
-                    </div>
-                    <div className="mt-1.5 flex items-center gap-3">
-                      <Bar value={s.ratio} />
-                      <span className="num text-text-subtle w-52 flex-none text-right text-2xs">
-                        {formatNumber(s.appointments)} приёмов ·{" "}
-                        {formatDuration(s.busyMinutes)} из {formatDuration(s.availableMinutes)}
-                      </span>
-                    </div>
-                  </li>
-                ))}
+                {servicesLoad
+                  .filter((s) => s.appointments > 0)
+                  .map((s) => (
+                    <li key={s.title}>
+                      <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
+                        <span className="text-sm">
+                          {s.title}
+                          {s.inactive ? (
+                            <span className="text-text-subtle ml-2 text-2xs">
+                              выключена в справочнике
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="num text-sm font-medium">{formatPercent(s.ratio)}</span>
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-3">
+                        <Bar value={s.ratio} />
+                        <span className="num text-text-subtle w-52 flex-none text-right text-2xs">
+                          {formatNumber(s.appointments)} приёмов ·{" "}
+                          {formatDuration(s.busyMinutes)} из {formatDuration(s.availableMinutes)}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
               </ul>
+
+              {(() => {
+                const idle = servicesLoad.filter((s) => s.appointments === 0);
+                if (idle.length === 0) return null;
+                return (
+                  <div className="border-border-soft mt-4 border-t pt-3.5">
+                    <div className="text-text-subtle text-2xs">
+                      Без приёмов за период — {formatNumber(idle.length)}
+                    </div>
+                    <p className="text-text-muted mt-1 text-xs leading-relaxed">
+                      {idle.map((s) => s.title).join(" · ")}
+                    </p>
+                  </div>
+                );
+              })()}
             </Card>
           ) : null}
 
