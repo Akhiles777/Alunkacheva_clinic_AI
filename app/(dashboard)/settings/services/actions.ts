@@ -100,6 +100,20 @@ export async function saveServices(
   }
 }
 
+/**
+ * Что стоит поправить, но что сохранению не мешает.
+ *
+ * Молчать нельзя: услуга без кабинета выпадает из загрузки по кабинетам, без
+ * длительности — из подсказок при записи. Но и запрещать сохранение из-за
+ * этого нельзя — экран станет неработоспособным целиком.
+ */
+function noticeFor(roomless: number, noDuration: number): string | undefined {
+  const parts: string[] = [];
+  if (roomless > 0) parts.push(`у ${roomless} не выбран кабинет`);
+  if (noDuration > 0) parts.push(`у ${noDuration} не указана длительность`);
+  return parts.length > 0 ? `Сохранено. Но ${parts.join(", ")}.` : undefined;
+}
+
 async function save(
   companyId: string,
   userId: string | null,
@@ -122,10 +136,25 @@ async function save(
     if (!Number.isFinite(s.price) || s.price < 0) {
       return { ok: false, error: `«${s.title}»: цена должна быть числом` };
     }
-    if (!Number.isInteger(s.durationMin) || s.durationMin <= 0) {
-      return { ok: false, error: `«${s.title}»: длительность — целое число минут` };
-    }
   }
+
+  /**
+   * Длительность не запрещает сохранение.
+   *
+   * Здесь стояла жёсткая проверка «целое число больше нуля», и одна услуга из
+   * YCLIENTS без длительности — «Остео массаж» — запрещала сохранить весь
+   * экран. Это ровно та же ошибка, что была с кабинетом: правило под услуги,
+   * заведённые руками, применялось к шестидесяти восьми импортированным.
+   *
+   * Мусор приводим к нулю, о нуле предупреждаем. Услуга без длительности
+   * данные не портит: время визита берётся из записи YCLIENTS, а не из
+   * справочника.
+   */
+  const clean = rows.map((s) => ({
+    ...s,
+    durationMin: Number.isFinite(s.durationMin) && s.durationMin > 0 ? Math.round(s.durationMin) : 0,
+  }));
+  const noDuration = clean.filter((s) => s.durationMin === 0);
 
   /**
    * Кабинет услуги больше не обязателен.
@@ -138,13 +167,13 @@ async function save(
    * Услуга без кабинета не ломает данные: в знаменателе загрузки по кабинетам
    * она просто не участвует. Поэтому не запрет, а предупреждение.
    */
-  const roomless = rows.filter((s) => s.roomIds.length === 0);
+  const roomless = clean.filter((s) => s.roomIds.length === 0);
 
   const existing = await prisma.service.findMany({
     where: { companyId },
     select: { id: true, title: true },
   });
-  const submitted = rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id);
+  const submitted = clean.filter((r) => !r.id.startsWith("new-")).map((r) => r.id);
   /**
    * Удаляем только то, что было на экране при его загрузке и не вернулось.
    * Услуги, приехавшие из YCLIENTS уже после, сохранение со старой вкладки
@@ -184,7 +213,7 @@ async function save(
     for (const del of toDelete) {
       await tx.service.delete({ where: { id: del.id } });
     }
-    for (const r of rows) {
+    for (const r of clean) {
       const data = {
         title: r.title.trim(),
         kind: r.kind,
@@ -235,15 +264,12 @@ async function save(
     actorId: userId,
     action: "SETTINGS_UPDATE",
     entityType: "services",
-    meta: { count: rows.length, deleted: toDelete.length },
+    meta: { count: clean.length, deleted: toDelete.length },
   });
 
   return {
     ok: true,
     payload: await getServices(),
-    notice:
-      roomless.length > 0
-        ? `Сохранено. У ${roomless.length} услуг не выбран кабинет — в загрузку кабинетов они не попадут.`
-        : undefined,
+    notice: noticeFor(roomless.length, noDuration.length),
   };
 }
