@@ -11,14 +11,21 @@
  * попадается один платный, и он крупный. Так выглядит БОС-терапия: 28 000 ₽
  * в день продажи и девять нулей следом.
  *
- *   npx tsx scripts/courses-detect.ts            # показать, ничего не меняя
- *   npx tsx scripts/courses-detect.ts --apply    # проставить «продаётся курсом»
- *   npx tsx scripts/courses-detect.ts --apply --skip="КОНТРОЛЬ"
+ *   npx tsx scripts/courses-detect.ts                      # только показать
+ *   npx tsx scripts/courses-detect.ts --apply --mark="БОС-терапия"
  *   npx tsx scripts/courses-detect.ts --apply --sessions="БОС-терапия=10"
+ *   npx tsx scripts/courses-detect.ts --apply --not-course="КОНТРОЛЬ"
+ *
+ * Сам скрипт ничего не отмечает. Раньше `--apply` проставлял всё, что похоже
+ * на курс, — и однажды пометил курсовой «КОНТРОЛЬ», у которого 74% приёмов
+ * без цены просто потому, что контрольный визит входит в стоимость основного.
+ * Снять отметку в настройках было мало: следующий запуск ставил её заново.
+ * Теперь отмечает только то, что названо в `--mark`.
  *
  * `--sessions` задаёт размер курса словами клиники. Выводить его из суммы
  * нельзя: курс БОС — десять сеансов, сеанс стоит 2 800 ₽, а продают курс за
- * 25 000 ₽ со скидкой, и деление дало бы девять.
+ * 25 000 ₽ со скидкой, и деление дало бы девять. Размер курса живёт в
+ * «Настройки → Услуги» — это карточка услуги, а не догадка скрипта.
  *
  * Отметку ставит человек, а не скрипт. «Почти всегда ноль» бывает у трёх
  * разных вещей: у курса, у приёма для сотрудников и у контрольного визита,
@@ -82,12 +89,17 @@ async function main() {
       })
       .filter(([title, n]) => title.length > 0 && Number.isFinite(n) && n >= 1),
   );
-  const skip = new Set(
-    (arg("skip") ?? "")
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean),
-  );
+  const names = (name: string): Set<string> =>
+    new Set(
+      (arg(name) ?? "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean),
+    );
+  /** Что отметить курсовым — только по явному указанию. */
+  const mark = names("mark");
+  /** Что перестать считать курсовым. */
+  const unmark = names("not-course");
   const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
 
   const services = await prisma.service.findMany({
@@ -216,9 +228,10 @@ async function main() {
     );
   }
 
-  const skipped = rows.filter((r) => skip.has(r.title));
-  const toMark = rows.filter((r) => r.looksCourse && !r.isCourse && !skip.has(r.title));
-  const toUnmark = rows.filter((r) => !r.looksCourse && r.isCourse && !skip.has(r.title));
+  const toMark = rows.filter((r) => mark.has(r.title) && !r.isCourse);
+  const toUnmark = rows.filter((r) => unmark.has(r.title) && r.isCourse);
+  /** Похожие на курс, но не названные: только подсказка, не действие. */
+  const candidates = rows.filter((r) => r.looksCourse && !r.isCourse && !mark.has(r.title));
 
   /** Отмеченные курсовыми, у которых размер курса подозрительно мал. */
   const tiny = rows.filter((r) => r.isCourse && (r.defaultSessions ?? 0) < 3);
@@ -232,11 +245,9 @@ async function main() {
     );
   }
 
-  console.log("\nчто предлагается:");
-  if (toMark.length === 0 && toUnmark.length === 0) {
-    console.log("  ничего — справочник уже совпадает с тем, как услуги ведут себя в записях");
-  }
-  for (const r of toMark) {
+  console.log("\nпохоже на курс, но решает клиника:");
+  if (candidates.length === 0) console.log("  ничего нового");
+  for (const r of candidates) {
     const typical = r.paid.length > 0 ? median(r.paid) : 0;
     const biggest = r.paid.length > 0 ? Math.max(...r.paid) : 0;
     console.log(
@@ -251,8 +262,10 @@ async function main() {
           : "    оплат в истории нет вовсе\n"),
     );
   }
-  for (const r of skipped) {
-    console.log(`  ПРОПУЩЕНО по --skip: ${r.title}`);
+  if (toMark.length > 0 || toUnmark.length > 0) {
+    console.log("\nбудет сделано:");
+    for (const r of toMark) console.log(`  отметить курсовой: ${r.title}`);
+    for (const r of toUnmark) console.log(`  снять отметку курса: ${r.title}`);
   }
   for (const r of toUnmark) {
     console.log(`  СНЯТЬ отметку курса: ${r.title} — приёмов ${r.total}, без стоимости всего ${r.zero}`);

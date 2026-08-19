@@ -51,7 +51,22 @@ async function main() {
   console.log(`\nкурсор RECORDS сброшен, читаем историю заново…`);
 
   const started = Date.now();
-  const result = await syncAll(company.id);
+  /**
+   * Кассу читаем за тот же срок, что и записи.
+   *
+   * Обычный круг берёт последние двести дней — этого хватает свежим сеансам.
+   * Но у пациента бывают курсы годичной давности, и их продажи в кассе тоже
+   * надо найти: без них десять сеансов ноября висят «по курсу» без номера и
+   * без покупки. Полный перечёт на то и полный.
+   */
+  const first = await prisma.appointment.findFirst({
+    where: { companyId: company.id },
+    orderBy: { startAt: "asc" },
+    select: { startAt: true },
+  });
+  const transactionsSince = first?.startAt ?? new Date(Date.now() - 3 * 365 * 24 * 3600 * 1000);
+  console.log(`кассу читаем с ${transactionsSince.toISOString().slice(0, 10)}`);
+  const result = await syncAll(company.id, { transactionsSince });
   console.log(`выгрузка: ${JSON.stringify(result.counts)}`);
   if (result.errors.length > 0) console.log(`ошибки: ${result.errors.join("; ")}`);
 

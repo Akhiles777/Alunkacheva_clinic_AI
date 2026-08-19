@@ -48,7 +48,19 @@ export interface SyncResult {
   errors: string[];
 }
 
-export async function syncAll(companyId: string): Promise<SyncResult> {
+export interface SyncOptions {
+  /**
+   * С какой даты читать кассу.
+   *
+   * Обычный круг берёт последние двести дней: продажа подбирает сеансы не
+   * дольше полугода, а круг идёт каждые полчаса. Полный перечёт истории
+   * должен читать кассу за тот же срок, что и записи, — иначе курсы находятся
+   * только у свежих сеансов, а у прошлогодних их взять неоткуда.
+   */
+  transactionsSince?: Date;
+}
+
+export async function syncAll(companyId: string, options: SyncOptions = {}): Promise<SyncResult> {
   const client = await getYclientsClient(companyId);
   if (!client) return { skipped: true, counts: {}, errors: [] };
 
@@ -92,12 +104,9 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
      *
      * Неудача чтения курсы не отменяет: соберём по оплатам в записях.
      */
-    /**
-     * Двести дней, а не год. Продажа подбирает сеансы не дольше полугода, всё
-     * что раньше — лишние тысячи строк на каждом круге выгрузки, а круг идёт
-     * каждые полчаса.
-     */
-    const since = new Date(now.getTime() - 200 * 24 * 3600 * 1000);
+    // Двести дней на обычном круге; полный перечёт задаёт свой срок.
+    const since =
+      options.transactionsSince ?? new Date(now.getTime() - 200 * 24 * 3600 * 1000);
     const transactions = await readTransactions(client, since, now).catch((e) => {
       errors.push(`Кассовые операции прочитать не удалось: ${(e as Error).message}`);
       return null;
