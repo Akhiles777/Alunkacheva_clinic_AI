@@ -184,34 +184,64 @@ export function pricePerSession(amount: number, sessionsTotal: number): number {
  * Покупка в кассе не говорит, за какую услугу заплатили: у операции есть
  * клиент, сумма и номер продажи — и всё.
  *
- * Здесь стояла догадка: отдавали услуге, к которой пациент пришёл первым
- * делом после покупки. На большинстве случаев она угадывает, но именно
- * «угадывает»: человек купил курс БОС и в тот же день сходил на НАК — и курс
- * оказывался приписан не туда. Догадка о деньгах клиента — не то, что можно
- * показывать владельцу как факт.
+ * Сначала здесь стояла догадка: отдавали услуге, к которой пациент пришёл
+ * первым делом после покупки. Она угадывает в большинстве случаев, но именно
+ * «угадывает», а догадка о деньгах клиента не должна выглядеть фактом.
  *
- * Поэтому теперь привязываем только тогда, когда выбора нет: после покупки у
- * пациента есть бесплатные сеансы РОВНО ОДНОЙ курсовой услуги. Два кандидата
- * — продажа остаётся неразобранной, и о ней говорится вслух. Ни одного —
- * продажа к курсам отношения не имеет: мог быть куплен товар.
+ * Потом было строгое «привязываем, только если кандидат один». Честно — и
+ * бесполезно: пациент, купивший курс БОС и курс НАК, не получал ни одного,
+ * хотя купил оба.
+ *
+ * Теперь спрашиваем у самой суммы. Курс из десяти сеансов по 2 800 ₽ стоит
+ * около 28 000 ₽ — и покупка на 28 000 ₽ ни при каких условиях не курс НАК по
+ * 1 000 ₽ за сеанс. Цена сеанса берётся не из справочника, а из того, что
+ * клиника реально брала за одиночный приём этой услуги: в справочнике у одной
+ * услуги цена стоит за сеанс, у другой — за весь курс, и полагаться на неё
+ * нельзя.
+ *
+ * Допуск широкий: курс почти всегда продают со скидкой (25 000 вместо 28 000).
+ * Если по сумме подходит ровно одна услуга — это она. Если несколько или ни
+ * одной, а кандидат при этом единственный — тоже она. Во всех остальных
+ * случаях продажа остаётся неразобранной: молчание честнее выдумки.
  */
+
+/** Насколько сумма покупки может отличаться от плановой цены курса. */
+const PRICE_TOLERANCE = 0.35;
+
+export interface ServiceCandidate {
+  /** Даты бесплатных сеансов пациента по этой услуге. */
+  dates: Date[];
+  /**
+   * Плановая цена курса: цена одного сеанса × число сеансов в курсе.
+   *
+   * Ноль означает «неизвестна» — тогда услуга участвует только как кандидат
+   * по сеансам, но сумму подтвердить нечем.
+   */
+  planPrice: number;
+}
+
 export interface SaleAssignment {
-  /** Услуга → её продажи. Только однозначные. */
+  /** Услуга → её продажи. Только те, где сомнений не осталось. */
   byService: Map<string, CourseSale[]>;
   /**
-   * Продажи, у которых кандидатов больше одного.
+   * Продажи, которые нельзя отнести к одной услуге.
    *
-   * Их курс не создаётся вовсе. Молчать нельзя: пациент прошёл курс, а в
+   * Курс по ним не создаётся. Молчать нельзя: пациент прошёл курс, а в
    * разделе его нет — это выглядит как потеря данных, а не как честное «мы не
    * знаем, за какую из двух услуг заплатили».
    */
   ambiguous: CourseSale[];
 }
 
+/** Похожа ли сумма на плановую цену курса этой услуги. */
+export function priceMatches(amount: number, planPrice: number): boolean {
+  if (planPrice <= 0 || amount <= 0) return false;
+  return Math.abs(amount - planPrice) <= planPrice * PRICE_TOLERANCE;
+}
+
 export function assignSales(
   sales: CourseSale[],
-  /** Даты бесплатных сеансов пациента по каждой курсовой услуге. */
-  zeroVisitsByService: Map<string, Date[]>,
+  candidates: Map<string, ServiceCandidate>,
   windowDays: number = SALE_WINDOW_DAYS,
 ): SaleAssignment {
   const byService = new Map<string, CourseSale[]>();
@@ -219,22 +249,29 @@ export function assignSales(
   const windowMs = windowDays * 24 * 3600 * 1000;
 
   for (const sale of [...sales].sort((a, b) => a.at.getTime() - b.at.getTime())) {
-    const candidates: string[] = [];
-    for (const [serviceId, dates] of zeroVisitsByService) {
-      const fits = dates.some((d) => {
+    /** Услуги, на которые пациент ходил в срок после покупки. */
+    const reachable: string[] = [];
+    for (const [serviceId, info] of candidates) {
+      const fits = info.dates.some((d) => {
         const gap = d.getTime() - sale.at.getTime();
         return gap >= 0 && gap <= windowMs;
       });
-      if (fits) candidates.push(serviceId);
+      if (fits) reachable.push(serviceId);
     }
+    if (reachable.length === 0) continue; // продажа не про курс — это молчание
 
-    if (candidates.length === 1) {
-      const serviceId = candidates[0];
-      byService.set(serviceId, [...(byService.get(serviceId) ?? []), sale]);
-    } else if (candidates.length > 1) {
+    // Сумма покупки — самый сильный довод: спрашиваем сначала её.
+    const byPrice = reachable.filter((id) =>
+      priceMatches(sale.amount, candidates.get(id)?.planPrice ?? 0),
+    );
+    const winner =
+      byPrice.length === 1 ? byPrice[0] : reachable.length === 1 ? reachable[0] : null;
+
+    if (winner === null) {
       ambiguous.push(sale);
+      continue;
     }
-    // Кандидатов нет — продажа не про курс. Это нормально и молчания стоит.
+    byService.set(winner, [...(byService.get(winner) ?? []), sale]);
   }
 
   return { byService, ambiguous };

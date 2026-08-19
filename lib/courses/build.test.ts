@@ -3,6 +3,7 @@ import {
   assignSales,
   buildCourses,
   looksLikeCourseSale,
+  priceMatches,
   pricePerSession,
   type CourseVisit,
 } from "./build";
@@ -181,58 +182,109 @@ describe("курс открывает продажа из кассы", () => {
 
 describe("кому принадлежит продажа", () => {
   const sale = (id: string, d: number, amount = 28000) => ({ id, at: day(d), amount });
+  /** Курс БОС: сеанс 2 800 ₽, десять сеансов — плановая цена 28 000 ₽. */
+  const bos = (dates: number[]) => ({ dates: dates.map(day), planPrice: 28000 });
+  /** Курс НАК: сеанс 1 000 ₽, десять сеансов — 10 000 ₽. */
+  const nak = (dates: number[]) => ({ dates: dates.map(day), planPrice: 10000 });
 
   it("кандидат один — привязываем", () => {
-    const out = assignSales([sale("s1", 17)], new Map([["bos", [day(18), day(19)]]]));
+    const out = assignSales([sale("s1", 17)], new Map([["bos", bos([18, 19])]]));
     expect(out.byService.get("bos")).toHaveLength(1);
     expect(out.ambiguous).toEqual([]);
   });
 
-  it("кандидатов двое — не гадаем", () => {
-    // Купил курс БОС и в тот же день сходил на НАК: догадка «куда пришёл
-    // первым делом» приписала бы курс не туда.
+  it("сумма покупки решает, какой это курс", () => {
+    // Пациент купил оба курса и ходит на оба. Раньше это давало ноль курсов:
+    // кандидатов двое — значит не разбираем. Но 28 000 ₽ ни при каких
+    // условиях не курс НАК по 1 000 ₽ за сеанс.
     const out = assignSales(
-      [sale("s1", 17)],
+      [sale("s1", 17, 28000), sale("s2", 17, 10000)],
       new Map([
-        ["bos", [day(18)]],
-        ["nak", [day(18)]],
+        ["bos", bos([18, 20])],
+        ["nak", nak([18, 21])],
+      ]),
+    );
+    expect(out.byService.get("bos")?.map((x) => x.id)).toEqual(["s1"]);
+    expect(out.byService.get("nak")?.map((x) => x.id)).toEqual(["s2"]);
+    expect(out.ambiguous).toEqual([]);
+  });
+
+  it("скидка на курс привязку не ломает", () => {
+    // 25 000 вместо 28 000 — обычное дело.
+    const out = assignSales(
+      [sale("s1", 17, 25000)],
+      new Map([
+        ["bos", bos([18])],
+        ["nak", nak([18])],
+      ]),
+    );
+    expect(out.byService.get("bos")).toHaveLength(1);
+  });
+
+  it("две услуги с похожей ценой — не гадаем", () => {
+    const out = assignSales(
+      [sale("s1", 17, 28000)],
+      new Map([
+        ["bos", bos([18])],
+        ["двойник", { dates: [day(18)], planPrice: 27000 }],
       ]),
     );
     expect(out.byService.size).toBe(0);
     expect(out.ambiguous).toHaveLength(1);
   });
 
-  it("порядок сеансов на решение не влияет", () => {
-    // Раньше побеждал тот, чей сеанс раньше, — то есть случайность.
+  it("сумма не подходит ни одной, а кандидатов двое — не гадаем", () => {
     const out = assignSales(
-      [sale("s1", 17)],
+      [sale("s1", 17, 90000)],
       new Map([
-        ["bos", [day(25)]],
-        ["nak", [day(18)]],
+        ["bos", bos([18])],
+        ["nak", nak([18])],
       ]),
     );
     expect(out.byService.size).toBe(0);
     expect(out.ambiguous).toHaveLength(1);
+  });
+
+  it("плановой цены нет — решаем по единственному кандидату", () => {
+    const out = assignSales(
+      [sale("s1", 17)],
+      new Map([["bos", { dates: [day(18)], planPrice: 0 }]]),
+    );
+    expect(out.byService.get("bos")).toHaveLength(1);
   });
 
   it("сеансов после покупки нет — продажа не про курс", () => {
     // Мог быть куплен товар: молчим, а не считаем это неразобранным.
-    const out = assignSales([sale("s1", 17)], new Map([["bos", [day(10)]]]));
+    const out = assignSales([sale("s1", 17)], new Map([["bos", bos([10])]]));
     expect(out.byService.size).toBe(0);
     expect(out.ambiguous).toEqual([]);
   });
 
   it("покупка слишком давняя для этих сеансов", () => {
-    const out = assignSales([sale("s1", 1)], new Map([["bos", [day(28)]]]), 5);
+    const out = assignSales([sale("s1", 1)], new Map([["bos", bos([28])]]), 5);
     expect(out.byService.size).toBe(0);
     expect(out.ambiguous).toEqual([]);
   });
+});
 
-  it("две покупки при одной услуге достаются ей обе", () => {
-    const out = assignSales(
-      [sale("s1", 10), sale("s2", 20)],
-      new Map([["bos", [day(11), day(21)]]]),
-    );
-    expect(out.byService.get("bos")?.map((x) => x.id)).toEqual(["s1", "s2"]);
+describe("сумма против плановой цены курса", () => {
+  it("совпадение в точку", () => {
+    expect(priceMatches(28000, 28000)).toBe(true);
+  });
+
+  it("скидка в одиннадцать процентов — то же самое", () => {
+    expect(priceMatches(25000, 28000)).toBe(true);
+  });
+
+  it("цена одного сеанса курсом не притворится", () => {
+    expect(priceMatches(2800, 28000)).toBe(false);
+  });
+
+  it("чужой курс не подойдёт", () => {
+    expect(priceMatches(10000, 28000)).toBe(false);
+  });
+
+  it("плановая цена неизвестна — сравнивать не с чем", () => {
+    expect(priceMatches(28000, 0)).toBe(false);
   });
 });

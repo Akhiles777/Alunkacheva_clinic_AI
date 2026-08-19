@@ -5,6 +5,7 @@ import {
   pricePerSession,
   type CourseSale,
   type CourseVisit,
+  type ServiceCandidate,
 } from "./build";
 import { coursePurchases, type RawTransaction } from "./purchases";
 
@@ -31,11 +32,12 @@ import { coursePurchases, type RawTransaction } from "./purchases";
  */
 export interface LinkCoursesResult {
   /**
-   * Услуги, отмеченные курсовыми, но без цены в справочнике.
+   * Услуги, отмеченные курсовыми, но без цены сеанса.
    *
-   * По ним курсы не собираются вовсе: отличить продажу курса от оплаты одного
-   * приёма нечем. Молчать об этом нельзя — раздел «Курсы» выглядел бы пустым
-   * без причины.
+   * Ни одного платного приёма в записях и пусто в справочнике — отличить
+   * продажу курса от оплаты одного приёма нечем, и курсы по такой услуге не
+   * собираются. Молчать об этом нельзя: раздел «Курсы» выглядел бы пустым без
+   * причины.
    */
   priceless: string[];
   /** Курсов в базе после пересборки. */
@@ -95,6 +97,42 @@ export async function linkCourses(
     where: { companyId, isCourse: true },
     select: { id: true, title: true, price: true, defaultSessions: true },
   });
+
+  /**
+   * Цена одного сеанса — из того, что клиника реально брала за одиночный приём.
+   *
+   * В справочнике полагаться на цену нельзя: у «БОС-терапия» там стоит 2 800 ₽
+   * за сеанс, а у «БОС-терапия, курс» — 28 000 ₽ за весь курс. Одно поле, два
+   * разных смысла, и различить их можно только по записям.
+   *
+   * Медиана, а не среднее: среди оплат этой услуги попадаются и продажи курса
+   * записью (25 000 ₽), среднее они бы утащили в потолок.
+   */
+  const sessionPrices = new Map<string, number>();
+  if (services.length > 0) {
+    const paid = await prisma.appointment.findMany({
+      where: {
+        companyId,
+        deletedAt: null,
+        status: { not: "CANCELLED" },
+        revenue: { gt: 0 },
+        primaryServiceId: { in: services.map((sv) => sv.id) },
+      },
+      select: { primaryServiceId: true, revenue: true },
+    });
+    const amounts = new Map<string, number[]>();
+    for (const a of paid) {
+      const id = a.primaryServiceId;
+      if (!id) continue;
+      amounts.set(id, [...(amounts.get(id) ?? []), Number(a.revenue)]);
+    }
+    for (const sv of services) {
+      const list = (amounts.get(sv.id) ?? []).sort((x, y) => x - y);
+      const observed = list.length > 0 ? list[Math.floor(list.length / 2)] : 0;
+      // Приёмов ещё не было — остаётся справочник, other источника нет.
+      sessionPrices.set(sv.id, observed > 0 ? observed : Number(sv.price));
+    }
+  }
   if (services.length === 0) {
     return { courses: 0, sessions: 0, orphans: 0, priceless: [], ambiguous: 0 };
   }
@@ -110,7 +148,7 @@ export async function linkCourses(
    * услугу заплатили, и пока каждая услуга разбирала продажи сама, одна
    * покупка открывала курс и по БОС, и по НАК.
    */
-  const zeroVisits = new Map<string, Map<string, Date[]>>();
+  const zeroVisits = new Map<string, Map<string, ServiceCandidate>>();
   if (salesByPatient.size > 0) {
     const zero = await prisma.appointment.findMany({
       where: {
@@ -134,13 +172,21 @@ export async function linkCourses(
       orderBy: { startAt: "asc" },
     });
     const courseIds = new Set(services.map((sv) => sv.id));
+    const sizeOf = new Map(services.map((sv) => [sv.id, sv.defaultSessions ?? DEFAULT_SESSIONS]));
+    const planPriceOf = (id: string): number =>
+      (sessionPrices.get(id) ?? 0) * (sizeOf.get(id) ?? DEFAULT_SESSIONS);
     for (const a of zero) {
       const ids = new Set(a.services.map((x) => x.serviceId));
       if (a.primaryServiceId) ids.add(a.primaryServiceId);
       for (const id of ids) {
         if (!courseIds.has(id)) continue;
-        const perPatient = zeroVisits.get(a.patientId) ?? new Map<string, Date[]>();
-        perPatient.set(id, [...(perPatient.get(id) ?? []), a.startAt]);
+        const perPatient = zeroVisits.get(a.patientId) ?? new Map<string, ServiceCandidate>();
+        const found = perPatient.get(id);
+        perPatient.set(id, {
+          dates: [...(found?.dates ?? []), a.startAt],
+          // Плановая цена курса: цена сеанса × число сеансов из карточки услуги.
+          planPrice: found?.planPrice ?? planPriceOf(id),
+        });
         zeroVisits.set(a.patientId, perPatient);
       }
     }
@@ -162,7 +208,8 @@ export async function linkCourses(
   }
 
   for (const service of services) {
-    if (Number(service.price) <= 0) priceless.push(service.title);
+    const sessionPrice = sessionPrices.get(service.id) ?? 0;
+    if (sessionPrice <= 0) priceless.push(service.title);
 
     const [appts, existingCourses] = await Promise.all([
       prisma.appointment.findMany({
@@ -220,9 +267,9 @@ export async function linkCourses(
 
     for (const [patientId, visits] of byPatient) {
       const plan = buildCourses(visits, {
-        // Цена сеанса — из прайса клиники: по ней отличаем продажу курса от
-        // оплаты одного приёма. Размер курса — оттуда же, это её решение.
-        sessionPrice: Number(service.price),
+        // Цена сеанса — из записей клиники, а не из справочника: там у одной
+        // услуги цена за сеанс, у другой за весь курс.
+        sessionPrice,
         sessionsTotal: service.defaultSessions ?? DEFAULT_SESSIONS,
         sales: salesFor.get(patientId)?.get(service.id) ?? [],
       });
