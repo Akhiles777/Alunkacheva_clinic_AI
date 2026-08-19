@@ -12,6 +12,7 @@ import { splitVisitMinutes } from "./split-visit";
 import { cancelVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
+import { linkCourses } from "@/lib/courses/link";
 import { normalizePhone } from "@/lib/phone";
 import {
   mapClient,
@@ -20,6 +21,7 @@ import {
   mapService,
   mapStaff,
   type AppointmentUpsert,
+  type ServiceRevenueSource,
 } from "./mappers";
 import type {
   YclientsClient,
@@ -41,7 +43,7 @@ import type {
  */
 export interface SyncResult {
   skipped: boolean;
-  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen", number>>;
+  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "courseSessions", number>>;
   errors: string[];
 }
 
@@ -74,6 +76,11 @@ export async function syncAll(companyId: string): Promise<SyncResult> {
     counts.rooms = await backfillRooms(companyId);
     // Дата первого обращения не позже первого визита: чиним уже загруженные.
     counts.firstSeen = await backfillFirstSeen(companyId);
+    /**
+     * Курсы собираются из записей — после них, а не до: разбор опирается на
+     * стоимость визитов, которую только что записала выгрузка.
+     */
+    counts.courseSessions = (await linkCourses(companyId)).sessions;
   } catch (e) {
     errors.push(`VISIT_KINDS: ${(e as Error).message}`);
   }
@@ -1004,39 +1011,26 @@ async function syncRecordsWindow(
 /**
  * Выручка визита.
  *
- * Обычно это стоимость услуг из записи YCLIENTS. Но у клиники тысяча с лишним
- * состоявшихся визитов приходит с нулевой стоимостью: администратор её не
- * проставил. Заказчик определил выручку прямо: пришёл на услугу за 8000 ₽ —
- * значит 8000 ₽ (§8), поэтому такой ноль закрывается ценой услуги.
+ * Это стоимость услуг из записи YCLIENTS — и ничего больше. Разбор записи уже
+ * посчитал её по каждой услуге отдельно: что даром, то даром, что платно, то
+ * платно, а деньги, принятые не сегодня, сегодня не считаются.
  *
- * И ровно один случай, когда ноль трогать нельзя: скидка сто процентов.
- * Пациентке отдали приём даром, а в отчёте у неё стояло 3000 ₽ — выручка,
- * которой не было.
+ * Здесь остаётся одно уточнение. Нулевая стоимость означает разное в
+ * зависимости от услуги. У курсовой (БОС-терапия, IV-терапия) ноль законен:
+ * пациент заплатил за весь курс в день продажи, сеанс эти деньги
+ * отрабатывает. У обычной услуги ноль означает, что цену забыли проставить, —
+ * и это надо показать администратору, а не спрятать за словом «курс».
  *
- * Различает эти два случая только размер скидки. Ни цена по прайсу, ни
- * количество в записи не помогают: YCLIENTS кладёт их всегда, и по ним
- * незаполненная стоимость выглядит точно так же, как подарок. Одна проверка
- * этого вывода на живых данных стоила трёх миллионов рублей выручки,
- * обнулённых по ошибке.
+ * Сумма от этого не меняется: в обоих случаях ноль. Раньше такой ноль
+ * закрывался ценой из прайса, и платформа считала курсовые деньги заново на
+ * каждом сеансе — за день выходило 61 280 ₽ вместо 43 480 ₽ (§8).
  */
 function revenueOf(r: AppointmentUpsert, lookups: SyncLookups): RevenueDecision {
-  /**
-   * Сумму по услугам уже посчитал разбор записи — по каждой отдельно: что
-   * даром, то даром, что платно, то платно.
-   *
-   * Здесь остаётся один случай, который разбору не по силам: у услуги нет ни
-   * проставленной стоимости, ни цены по прайсу в самой записи. Тогда берём
-   * цену из справочника клиники — последний доступный источник.
-   */
-  if (r.revenueSource !== "UNKNOWN") {
+  if (r.revenueSource !== "PREPAID") {
     return { amount: r.revenue, source: r.revenueSource };
   }
-
-  let sum = 0;
-  for (const yclientsServiceId of r.yclientsServiceIds) {
-    sum += lookups.priceByYclientsServiceId.get(yclientsServiceId) ?? 0;
-  }
-  return sum > 0 ? { amount: sum, source: "PRICE_LIST" } : { amount: 0, source: "UNKNOWN" };
+  const course = r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id));
+  return { amount: 0, source: course ? "PREPAID" : "UNKNOWN" };
 }
 
 /**
@@ -1049,7 +1043,7 @@ function revenueOf(r: AppointmentUpsert, lookups: SyncLookups): RevenueDecision 
  */
 export interface RevenueDecision {
   amount: number;
-  source: "RECORD" | "PRICE_LIST" | "FREE" | "UNKNOWN";
+  source: ServiceRevenueSource;
 }
 
 /**

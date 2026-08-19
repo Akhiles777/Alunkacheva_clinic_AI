@@ -138,8 +138,13 @@ export function YclientsBlock() {
         <div className="text-text-subtle text-2xs">Качество данных по визитам</div>
         <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5 text-sm">
           <span>
-            цена подставлена из прайса{" "}
-            <b className="num text-text">{state.quality.priceFromList}</b>
+            сеансов по курсу <b className="num text-text">{state.quality.courseSessions}</b>
+          </span>
+          <span>
+            цена не проставлена{" "}
+            <b className={`num ${state.quality.priceMissing > 0 ? "text-accent-text" : "text-text"}`}>
+              {state.quality.priceMissing}
+            </b>
           </span>
           <span>
             отдано бесплатно <b className="num text-text">{state.quality.free}</b>
@@ -167,10 +172,18 @@ export function YclientsBlock() {
             расписание ведёт YCLIENTS.
           </p>
         ) : null}
-        {state.quality.priceFromList > 0 ? (
+        {state.quality.courseSessions > 0 ? (
           <p className="text-text-subtle mt-2 text-xs">
-            «Из прайса» — в записи YCLIENTS стоимости не было, и мы взяли цену услуги. Это не
-            ошибка, но и не факт из кассы: чем таких визитов меньше, тем точнее выручка.
+            «По курсу» — стоимость в записи нулевая, потому что деньги клиника получила в день
+            продажи курса. Выручку такой сеанс не даёт: она уже посчитана тогда. Курсовыми услуги
+            назначаются в «Настройки → Услуги».
+          </p>
+        ) : null}
+        {state.quality.priceMissing > 0 ? (
+          <p className="text-text-muted mt-2 text-xs">
+            «Цена не проставлена» — в записи YCLIENTS стоимости нет, и услуга не курсовая. Мы такой
+            приём считаем за ноль: подставлять цену из прайса нельзя, это выдуманные деньги.
+            Поправить стоит в YCLIENTS — тогда выручка вырастет на настоящую сумму.
           </p>
         ) : null}
       </div>

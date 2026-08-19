@@ -43,7 +43,7 @@ export interface PatientVisitRecord {
    * искать цену. На деле ноль бывает настоящим: услугу отдали бесплатно по
    * скидке или акции. Разные вещи должны выглядеть по-разному.
    */
-  amountSource: "RECORD" | "PRICE_LIST" | "FREE" | "UNKNOWN";
+  amountSource: "RECORD" | "PRICE_LIST" | "PREPAID" | "FREE" | "UNKNOWN";
 }
 
 export interface PatientRecord {
@@ -208,6 +208,8 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
           status: true,
           revenue: true,
           revenueSource: true,
+          courseSessionIndex: true,
+          course: { select: { sessionsTotal: true } },
           staff: { select: { name: true } },
           primaryService: { select: { title: true } },
         },
@@ -247,6 +249,14 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       status: VISIT_STATUS_MAP[a.status] ?? "planned",
       amount: Number(a.revenue),
       amountSource: a.revenueSource,
+      /**
+       * Номер сеанса в курсе — то, что администратор называет пациенту вслух.
+       * Без него у сеанса курса в карточке стоял необъяснимый ноль.
+       */
+      courseSession:
+        a.courseSessionIndex && a.course
+          ? { index: a.courseSessionIndex, total: a.course.sessionsTotal }
+          : null,
     })),
   };
 }

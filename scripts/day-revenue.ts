@@ -61,14 +61,20 @@ async function main() {
   }
 
   const total = rows.reduce((s, r) => s + Number(r.revenue), 0);
+  // Строки старого правила: цена подставлена из прайса. После полного перечёта
+  // их не остаётся, и оба итога ниже совпадают.
   const substituted = rows.filter((r) => r.revenueSource === "PRICE_LIST");
   const subSum = substituted.reduce((s, r) => s + Number(r.revenue), 0);
   const fromRecords = total - subSum;
+  const courseSessions = rows.filter((r) => r.revenueSource === "PREPAID");
+  const missing = rows.filter((r) => r.revenueSource === "UNKNOWN");
 
   console.log("\n── итоги дня ──");
   console.log(`  всего у нас:                 ${money(total)}`);
   console.log(`  из них стоимость из записи:  ${money(fromRecords)} (${rows.length - substituted.length} приёмов)`);
   console.log(`  подставлено из прайса:       ${money(subSum)} (${substituted.length} приёмов)`);
+  console.log(`  сеансов по курсу:            ${courseSessions.length} — денег дня не дают, оплачены при продаже`);
+  console.log(`  цена не проставлена:         ${missing.length} — правится в YCLIENTS`);
 
   if (substituted.length > 0) {
     console.log("\n  подставленные приёмы:");

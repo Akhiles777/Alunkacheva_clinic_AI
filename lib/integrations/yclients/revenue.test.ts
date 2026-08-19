@@ -13,10 +13,15 @@ function record(over: Partial<YclientsRecord>): YclientsRecord {
 }
 
 /**
- * Строки ниже — из живого ответа YCLIENTS этой клиники. Первое правило считало
- * «цена известна» по любому следу цены и обнулило тысячу визитов на три
- * миллиона рублей: `first_cost` и `amount` провайдер кладёт всегда, и
- * незаполненная стоимость выглядела точно так же, как подарок.
+ * Строки ниже — из живого ответа YCLIENTS этой клиники.
+ *
+ * Правило здесь переписывалось дважды, оба раза дорого. Первое считало «цена
+ * известна» по любому следу цены и обнулило тысячу визитов на три миллиона
+ * рублей: `first_cost` и `amount` провайдер кладёт всегда. Второе закрывало
+ * ноль ценой из прайса — и считало деньги курса заново на каждом сеансе:
+ * 61 280 ₽ за день там, где клиника называет 43 480 ₽.
+ *
+ * Отсюда нынешнее: платит только `cost`. Ноль остаётся нулём.
  */
 describe("стоимость одной услуги", () => {
   it("стоимость проставлена — это факт", () => {
@@ -33,17 +38,19 @@ describe("стоимость одной услуги", () => {
     });
   });
 
-  it("цена по прайсу есть, скидки нет — стоимость не проставлена", () => {
+  it("цена по прайсу есть, скидки нет — деньги приняты не сегодня", () => {
     // Ровно эта строка на боевых данных: cost=0 first_cost=2800 discount=0.
+    // Так выглядит сеанс курса БОС: 2 800 ₽ — цена по прайсу, но заплачены они
+    // в день продажи курса. Подставить их сюда значит посчитать дважды.
     expect(serviceRevenue({ id: 1, cost: 0, first_cost: 2800, discount: 0, amount: 1 })).toEqual({
-      amount: 2800,
-      source: "PRICE_LIST",
+      amount: 0,
+      source: "PREPAID",
     });
   });
 
   it("количество не путаем с деньгами", () => {
     // amount — это КОЛИЧЕСТВО услуг, а не сумма.
-    expect(serviceRevenue({ id: 1, cost: 0, amount: 1 })).toEqual({ amount: 0, source: "UNKNOWN" });
+    expect(serviceRevenue({ id: 1, cost: 0, amount: 1 })).toEqual({ amount: 0, source: "PREPAID" });
   });
 
   it("частичная скидка — берём итоговую стоимость", () => {
@@ -61,7 +68,7 @@ describe("стоимость визита из нескольких услуг",
         { id: 6, cost: 900, first_cost: 900, discount: 0 },
       ],
     });
-    expect(recordRevenue(dto)).toEqual({ amount: 900, source: "RECORD", unpriced: 0 });
+    expect(recordRevenue(dto)).toEqual({ amount: 900, source: "RECORD", prepaid: 0 });
     expect(mapRecord(dto).revenue).toBe(900);
   });
 
@@ -72,22 +79,32 @@ describe("стоимость визита из нескольких услуг",
         { id: 6, cost: 0, first_cost: 900, discount: 100 },
       ],
     });
-    expect(recordRevenue(dto)).toEqual({ amount: 0, source: "FREE", unpriced: 0 });
+    expect(recordRevenue(dto)).toEqual({ amount: 0, source: "FREE", prepaid: 0 });
   });
 
-  it("подставленная цена помечает весь визит: сумме верить меньше", () => {
+  it("платный приём и сеанс курса рядом — считаем только платный", () => {
+    // Осмотр за 8 000 ₽ и заодно сеанс из оплаченного курса. В кассу этого дня
+    // легли 8 000, а не 8 900: девятьсот клиника получила при продаже курса.
     const dto = record({
       services: [
         { id: 5, cost: 8000, first_cost: 8000, discount: 0 },
         { id: 6, cost: 0, first_cost: 900, discount: 0 },
       ],
     });
-    expect(recordRevenue(dto)).toEqual({ amount: 8900, source: "PRICE_LIST", unpriced: 0 });
+    expect(recordRevenue(dto)).toEqual({ amount: 8000, source: "RECORD", prepaid: 1 });
   });
 
-  it("цену взять неоткуда — ноль и честная пометка", () => {
+  it("весь визит по курсу — ноль и честная пометка", () => {
     const dto = record({ services: [{ id: 5, cost: 0 }] });
-    expect(recordRevenue(dto)).toEqual({ amount: 0, source: "UNKNOWN", unpriced: 1 });
+    expect(recordRevenue(dto)).toEqual({ amount: 0, source: "PREPAID", prepaid: 1 });
+  });
+
+  it("шесть сеансов БОС не создают выручки дня", () => {
+    // День, с которого всё началось: платформа показывала 61 280 ₽, клиника
+    // называла 43 480 ₽. Разница — ровно эти сеансы.
+    const session = () => record({ services: [{ id: 9, cost: 0, first_cost: 2800, discount: 0 }] });
+    const sum = [1, 2, 3, 4, 5, 6].reduce((acc) => acc + recordRevenue(session()).amount, 0);
+    expect(sum).toBe(0);
   });
 
   it("услуг в записи нет", () => {

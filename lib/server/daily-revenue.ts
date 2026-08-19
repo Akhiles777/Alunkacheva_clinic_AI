@@ -32,6 +32,14 @@ export interface RevenueDay {
   revenue: number;
   avgCheck: number;
   /**
+   * Приёмы, денег в этот день не принёсшие: сеансы оплаченного курса.
+   *
+   * Без этого числа день читается неверно. «Восемь приёмов, 12 000 ₽» выглядит
+   * как провал или как потерянные данные, хотя шесть из восьми — сеансы курса,
+   * оплаченного в день продажи. Средний чек по ним тоже не считается.
+   */
+  courseSessions: number;
+  /**
    * Из чего сложился день: по специалистам и по услугам.
    *
    * Дневного итога мало. Владелец, увидев «18 августа — 87 900 ₽», сразу
@@ -82,6 +90,7 @@ export async function revenueByDay(
       startAt: true,
       status: true,
       revenue: true,
+      revenueSource: true,
       staff: { select: { name: true } },
       primaryService: { select: { title: true } },
     },
@@ -91,6 +100,7 @@ export async function revenueByDay(
     arrived: number;
     noShow: number;
     revenue: number;
+    courseSessions: number;
     staff: Map<string, RevenueSlice>;
     service: Map<string, RevenueSlice>;
   }
@@ -98,6 +108,7 @@ export async function revenueByDay(
     arrived: 0,
     noShow: 0,
     revenue: 0,
+    courseSessions: 0,
     staff: new Map(),
     service: new Map(),
   });
@@ -109,6 +120,7 @@ export async function revenueByDay(
     if (r.status === "ARRIVED") {
       acc.arrived += 1;
       acc.revenue += Number(r.revenue);
+      if (r.revenueSource === "PREPAID") acc.courseSessions += 1;
 
       const add = (map: Map<string, RevenueSlice>, name: string) => {
         const cur = map.get(name) ?? { name, arrived: 0, revenue: 0 };
@@ -142,6 +154,7 @@ export async function revenueByDay(
       noShow: v.noShow,
       revenue: v.revenue,
       avgCheck: averageCheck(v.revenue, v.arrived),
+      courseSessions: v.courseSessions,
       byStaff: detailed ? [...v.staff.values()].sort(bySize) : [],
       byService: detailed ? [...v.service.values()].sort(bySize) : [],
     });

@@ -115,8 +115,10 @@ export interface Visit {
   doctor: string;
   status: "arrived" | "no_show" | "cancelled" | "planned";
   amount: number;
-  /** Откуда сумма: ноль по скидке и незаполненная цена — разные вещи. */
-  amountSource?: "RECORD" | "PRICE_LIST" | "FREE" | "UNKNOWN";
+  /** Откуда сумма: подарок, сеанс курса и незаполненная цена — разные нули. */
+  amountSource?: "RECORD" | "PRICE_LIST" | "PREPAID" | "FREE" | "UNKNOWN";
+  /** Сеанс курса: какой по счёту и сколько всего оплачено. */
+  courseSession?: { index: number; total: number } | null;
 }
 /** Вложение сообщения: голосовое, фотография, документ. */
 export interface MessageAttachment {

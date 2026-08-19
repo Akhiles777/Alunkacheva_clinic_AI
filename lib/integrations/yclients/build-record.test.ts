@@ -17,9 +17,9 @@ function lookups(over: Partial<SyncLookups> = {}): SyncLookups {
     patientByPhone: new Map([["+79991234567", "patient-phone"]]),
     knownRecordIds: new Set<number>(),
     existingRecords: new Map(),
+    courseYclientsServiceIds: new Set<number>(),
     durationByYclientsServiceId: new Map(),
     roomByServiceId: new Map<string, string>(),
-    priceByYclientsServiceId: new Map<number, number>(),
     ...over,
   };
 }
@@ -194,14 +194,20 @@ describe("выручка визита", () => {
     expect(Number(row.data.revenue)).toBe(8000);
   });
 
-  it("нулевая стоимость — берёт цену из справочника клиники", () => {
-    const row = buildRecordRow(
+  it("курсовая услуга помечена «по курсу», обычная — «цена не проставлена»", () => {
+    // Сумма одна и та же — ноль. Разная только подпись, и она нужна: по
+    // курсовому нулю делать нечего, а забытую цену администратор доставит.
+    const course = buildRecordRow(
       "c1",
       { ...base, services: [{ id: 55, cost: 0 }] },
-      lookups({ priceByYclientsServiceId: new Map([[55, 5000]]) }),
+      lookups({ courseYclientsServiceIds: new Set([55]) }),
     );
-    if (row?.kind !== "row") throw new Error("ожидалась строка");
-    expect(Number(row.data.revenue)).toBe(5000);
+    if (course?.kind !== "row") throw new Error("ожидалась строка");
+    expect(course.data.revenueSource).toBe("PREPAID");
+
+    const plain = buildRecordRow("c1", { ...base, services: [{ id: 55, cost: 0 }] }, lookups());
+    if (plain?.kind !== "row") throw new Error("ожидалась строка");
+    expect(plain.data.revenueSource).toBe("UNKNOWN");
   });
 
   it("цены нет нигде — ноль, а не выдуманная сумма", () => {
@@ -210,12 +216,8 @@ describe("выручка визита", () => {
     expect(Number(row.data.revenue)).toBe(0);
   });
 
-  it("стоимость из записи важнее прайса: скидку не затираем", () => {
-    const row = buildRecordRow(
-      "c1",
-      { ...base, services: [{ id: 55, cost: 3000 }] },
-      lookups({ priceByYclientsServiceId: new Map([[55, 5000]]) }),
-    );
+  it("стоимость из записи берётся как есть: скидку не затираем", () => {
+    const row = buildRecordRow("c1", { ...base, services: [{ id: 55, cost: 3000 }] }, lookups());
     if (row?.kind !== "row") throw new Error("ожидалась строка");
     expect(Number(row.data.revenue)).toBe(3000);
   });

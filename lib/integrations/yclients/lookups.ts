@@ -97,14 +97,14 @@ export interface SyncLookups {
    */
   roomByServiceId: Map<string, string>;
   /**
-   * Цена услуги из справочника клиники, по идентификатору YCLIENTS.
+   * Услуги, которые клиника продаёт курсом (БОС-терапия, IV-терапия).
    *
-   * Нужна, когда в записи стоимость не проставлена: у клиники таких визитов
-   * тысяча с лишним из четырёх с половиной, и все они давали нулевую выручку.
-   * Заказчик определил выручку прямо: пришёл на услугу за 8000 ₽ — значит
-   * 8000 ₽ (§8). Цену берём ту же, что клиника показывает пациенту.
+   * По ним нулевая стоимость в записи законна: деньги приняты в день продажи
+   * курса, а сеанс их отрабатывает. По остальным услугам ноль означает, что
+   * цену забыли проставить, — и это надо показать администратору, а не молча
+   * приравнять к курсу.
    */
-  priceByYclientsServiceId: Map<number, number>;
+  courseYclientsServiceIds: Set<number>;
   /**
    * Длительность услуги из справочника.
    *
@@ -127,7 +127,12 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     }),
     prisma.service.findMany({
       where: { companyId, yclientsServiceId: { not: null } },
-      select: { id: true, yclientsServiceId: true, price: true, durationMin: true },
+      select: {
+        id: true,
+        yclientsServiceId: true,
+        durationMin: true,
+        isCourse: true,
+      },
     }),
     prisma.serviceRoom.findMany({
       where: { service: { companyId } },
@@ -160,8 +165,8 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     knownRecordIds: new Set(),
     existingRecords: new Map(),
     roomByServiceId,
-    priceByYclientsServiceId: new Map(
-      services.filter((s) => Number(s.price) > 0).map((s) => [s.yclientsServiceId!, Number(s.price)]),
+    courseYclientsServiceIds: new Set(
+      services.filter((s) => s.isCourse).map((s) => s.yclientsServiceId!),
     ),
     durationByYclientsServiceId: new Map(
       services.filter((s) => s.durationMin > 0).map((s) => [s.yclientsServiceId!, s.durationMin]),

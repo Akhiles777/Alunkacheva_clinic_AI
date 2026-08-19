@@ -120,12 +120,11 @@ async function main() {
       continue;
     }
     /**
-     * Сравниваем только те, где стоимость посчитана самой записью или
-     * подарена. Подстановку из справочника скрипт повторить не может — цену
-     * он не читает, — и её расхождение расхождением не является.
+     * Строки, оставшиеся от старого правила, не сверяем: там цена подставлена
+     * из прайса, а YCLIENTS отдаёт по этой записи ноль. Расхождением это не
+     * является — это ровно то, что чинит полный перечёт.
      */
-    if (e.source === "UNKNOWN" || own.revenueSource === "UNKNOWN") continue;
-    if (e.source === "PRICE_LIST" && own.revenueSource === "PRICE_LIST" && e.amount === 0) continue;
+    if (own.revenueSource === "PRICE_LIST") continue;
     if (Math.abs(Number(own.revenue) - e.amount) > 0.005) {
       wrong.push({ id, ours: Number(own.revenue), theirs: e.amount, source: `${own.revenueSource}/${e.source}` });
     }

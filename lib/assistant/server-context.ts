@@ -143,9 +143,20 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   const yesterdayKey = daily[daily.length - 2]?.date;
   lines.push("");
   lines.push("# Выручка по дням (последние 14 дней)");
+  /**
+   * Сеансы курса называем прямо. Иначе день «восемь приёмов, 12 000 ₽»
+   * выглядит как провал или как потерянные данные, и объяснять это владельцу
+   * приходится вручную.
+   */
+  lines.push(
+    "Выручка дня — деньги, принятые в этот день. Курс оплачивается целиком при " +
+      "продаже, поэтому его сеансы в другие дни выручки не дают: они помечены " +
+      "отдельно и в средний чек не входят.",
+  );
   for (const d of daily) {
     const mark = d.date === todayKey ? " — СЕГОДНЯ" : d.date === yesterdayKey ? " — ВЧЕРА" : "";
-    lines.push(`- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}`);
+    const course = d.courseSessions > 0 ? `, из них по курсу ${d.courseSessions}` : "";
+    lines.push(`- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}${course}`);
   }
 
   lines.push("");

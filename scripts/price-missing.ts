@@ -48,7 +48,7 @@ async function main() {
       companyId: company.id,
       deletedAt: null,
       status: "ARRIVED",
-      revenueSource: { in: ["PRICE_LIST", "UNKNOWN"] },
+      revenueSource: { in: ["UNKNOWN", "PRICE_LIST"] },
       startAt: { gte: from },
     },
     orderBy: { startAt: "desc" },
@@ -65,7 +65,8 @@ async function main() {
   if (CSV) {
     console.log("Запись YCLIENTS;Дата;Специалист;Услуга;Подставлено;Основание");
     for (const r of rows) {
-      const why = r.revenueSource === "PRICE_LIST" ? "цена по прайсу" : "цены нет нигде";
+      const why =
+        r.revenueSource === "PRICE_LIST" ? "старая подстановка из прайса" : "цена не проставлена";
       console.log(
         [
           r.yclientsRecordId ?? "",
@@ -92,7 +93,8 @@ async function main() {
    * стоимость не проставляют чаще всего». Одна строка сразу называет и услугу,
    * и подставленную цену — по ней видно, та ли это цена.
    */
-  console.log("── цену подставили из прайса ──");
+  console.log("── строки старого правила: цена была подставлена из прайса ──");
+  console.log("   после полного перечёта их остаться не должно\n");
   const byService = new Map<string, { n: number; sum: number; prices: Set<number> }>();
   for (const r of substituted) {
     const key = r.primaryService?.title ?? "услуга не указана";

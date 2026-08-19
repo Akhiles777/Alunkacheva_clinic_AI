@@ -60,7 +60,7 @@ export interface AppointmentUpsert {
    * Считается по каждой услуге отдельно — визит из подаренной и платной
    * позиций не бесплатный и не полностью платный.
    */
-  revenueSource: "RECORD" | "FREE" | "PRICE_LIST" | "UNKNOWN";
+  revenueSource: ServiceRevenueSource;
 }
 
 /** Секунды сеанса YCLIENTS → минуты. Пустое/битое → 0. */
@@ -211,17 +211,27 @@ export function mapCreatedAt(dto: YclientsRecord): Date | null {
  *
  * Порядок источников:
  *
- *   1. `cost` больше нуля — это факт, дальше не смотрим.
- *   2. `cost` = 0 и скидка сто процентов — услуга отдана даром, ноль настоящий.
- *   3. `cost` = 0 без скидки — стоимость не проставлена, берём цену по прайсу
- *      из самой записи: она относится ко дню визита (§8).
+ *   1. `cost` больше нуля — деньги приняты в этот день, это факт.
+ *   2. `cost` = 0 и скидка сто процентов — услуга отдана даром.
+ *   3. `cost` = 0 без скидки — деньги по этой услуге приняты не сегодня.
  *
- * Различает второй и третий случай только скидка. Ни `first_cost`, ни
- * `amount` не помогают: провайдер кладёт их всегда, и незаполненная стоимость
- * выглядит по ним точно так же, как подарок. Проверка этого на живых данных
- * стоила трёх миллионов рублей выручки, обнулённых по ошибке.
+ * Третий случай раньше закрывался ценой из прайса: считалось, что
+ * администратор просто не проставил стоимость. На живых данных это оказалось
+ * неверно. Так выглядит сеанс курса: пациент заплатил 28 000 ₽ за десять
+ * сеансов БОС в день продажи, и в записи каждого сеанса стоит ноль — потому
+ * что деньги уже получены. Подставляя цену, платформа считала одни и те же
+ * рубли одиннадцать раз: за день выходило 61 280 ₽ там, где клиника называет
+ * 43 480 ₽.
+ *
+ * Поэтому ноль остаётся нулём. Выручку курса даёт запись, в которой стоимость
+ * проставлена — день продажи (§8).
+ *
+ * Ни `first_cost`, ни `amount` тут не помощники: провайдер кладёт их всегда, и
+ * сеанс курса выглядит по ним ровно как подарок и как забытая цена. Одна
+ * проверка этого вывода на живых данных стоила трёх миллионов рублей выручки,
+ * обнулённых по ошибке.
  */
-export type ServiceRevenueSource = "RECORD" | "FREE" | "PRICE_LIST" | "UNKNOWN";
+export type ServiceRevenueSource = "RECORD" | "FREE" | "PREPAID" | "UNKNOWN";
 
 export interface ServiceRevenue {
   amount: number;
@@ -232,36 +242,38 @@ export function serviceRevenue(s: YclientsRecordService): ServiceRevenue {
   const cost = s.cost ?? 0;
   if (cost > 0) return { amount: cost, source: "RECORD" };
   if ((s.discount ?? 0) >= 100) return { amount: 0, source: "FREE" };
-  const list = s.first_cost ?? 0;
-  return list > 0 ? { amount: list, source: "PRICE_LIST" } : { amount: 0, source: "UNKNOWN" };
+  return { amount: 0, source: "PREPAID" };
 }
 
 /**
  * Разбор всех услуг записи: сумма и откуда она сложилась.
  *
- * Подпись визита выбирается по составу: всё даром — «бесплатно»; хоть одна
- * цена подставлена — «из прайса»; иначе — «из записи». Так на экране видно,
- * насколько сумме можно верить.
+ * Подпись визита выбирается по составу: всё даром — «бесплатно»; денег нет ни
+ * по одной услуге и подарком это не объявлено — «оплачено раньше»; иначе
+ * «из записи». Так на экране видно, почему у визита стоит ноль, и жалобу
+ * «почему приём бесплатный» можно разобрать, а не угадывать.
  */
 export interface RecordRevenue {
   amount: number;
   source: ServiceRevenueSource;
-  /** Услуги, по которым цену взять было неоткуда: ни стоимости, ни прайса. */
-  unpriced: number;
+  /** Услуги, деньги по которым в этой записи не лежат: сеансы курса. */
+  prepaid: number;
 }
 
 export function recordRevenue(dto: YclientsRecord): RecordRevenue {
   const services = dto.services ?? [];
-  if (services.length === 0) return { amount: 0, source: "UNKNOWN", unpriced: 0 };
+  if (services.length === 0) return { amount: 0, source: "UNKNOWN", prepaid: 0 };
 
   const parts = services.map(serviceRevenue);
   const amount = parts.reduce((sum, p) => sum + p.amount, 0);
-  const unpriced = parts.filter((p) => p.source === "UNKNOWN").length;
+  const prepaid = parts.filter((p) => p.source === "PREPAID").length;
 
-  if (parts.every((p) => p.source === "FREE")) return { amount: 0, source: "FREE", unpriced };
-  if (parts.some((p) => p.source === "PRICE_LIST")) return { amount, source: "PRICE_LIST", unpriced };
-  if (amount === 0 && unpriced > 0) return { amount: 0, source: "UNKNOWN", unpriced };
-  return { amount, source: "RECORD", unpriced };
+  if (parts.every((p) => p.source === "FREE")) return { amount: 0, source: "FREE", prepaid };
+  // Платная услуга в визите есть — значит деньги этого дня в записи лежат,
+  // даже если рядом стоит сеанс курса.
+  if (amount > 0) return { amount, source: "RECORD", prepaid };
+  if (prepaid > 0) return { amount: 0, source: "PREPAID", prepaid };
+  return { amount: 0, source: "UNKNOWN", prepaid };
 }
 
 export function mapRecord(dto: YclientsRecord): AppointmentUpsert {

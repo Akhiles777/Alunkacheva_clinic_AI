@@ -59,8 +59,10 @@ export interface YclientsState {
    * что данные испортились, было неоткуда. Числа ниже держат это на виду.
    */
   quality: {
-    /** Визиты, где цена подставлена из прайса: в записи её не было. */
-    priceFromList: number;
+    /** Сеансы курса: деньги приняты в день продажи, у сеанса ноль законен. */
+    courseSessions: number;
+    /** Визиты, где цену забыли проставить: ноль без объяснения. */
+    priceMissing: number;
     /** Визиты, отданные бесплатно: скидка 100%, акция, отработка. */
     free: number;
     /** Группы «один пациент, один специалист, одно время» — задвоенные приёмы. */
@@ -170,9 +172,21 @@ export async function getYclientsState(): Promise<YclientsState> {
     }),
   ]);
 
-  const [priceFromList, free, arrivedInFuture, duplicateRows] = await Promise.all([
+  const [courseSessions, priceMissing, free, arrivedInFuture, duplicateRows] = await Promise.all([
     prisma.appointment.count({
-      where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "PRICE_LIST" },
+      where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "PREPAID" },
+    }),
+    /**
+     * Ноль без объяснения. Раньше такие визиты закрывались ценой из прайса и с
+     * экрана исчезали — вместе с ними исчезал повод сходить и проставить цену.
+     */
+    prisma.appointment.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        status: "ARRIVED",
+        revenueSource: { in: ["UNKNOWN", "PRICE_LIST"] },
+      },
     }),
     prisma.appointment.count({
       where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "FREE" },
@@ -217,7 +231,8 @@ export async function getYclientsState(): Promise<YclientsState> {
     conflicts,
     changes: { newVisits, changedVisits, newPatients, arrivedMarked },
     quality: {
-      priceFromList,
+      courseSessions,
+      priceMissing,
       free,
       duplicateGroups: Number(duplicateRows[0]?.groups ?? 0),
       arrivedInFuture,
