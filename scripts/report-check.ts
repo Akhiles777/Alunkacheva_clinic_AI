@@ -46,6 +46,15 @@ async function main() {
   const remote = new Map<string, { total: number; first: number; ids: Set<number> }>();
   /** Номера записей YCLIENTS за период — по ним ищем, чего у нас нет. */
   const remoteIds = new Set<number>();
+  /**
+   * Приметы каждой записи: по ним объясняем, почему визит не доехал. Список
+   * номеров сам по себе ничего не говорит — открывать два десятка записей
+   * руками никто не станет.
+   */
+  const remoteInfo = new Map<
+    number,
+    { staffId: number; clientId: number | null; phone: string | null; services: number; at: string }
+  >();
   let records = 0;
   let multiService = 0;
 
@@ -64,6 +73,13 @@ async function main() {
         if (at < from || at > now) continue;
         records += 1;
         remoteIds.add(d.id);
+        remoteInfo.set(d.id, {
+          staffId: d.staff_id,
+          clientId: d.client?.id ?? null,
+          phone: d.client?.phone?.trim() || null,
+          services: (d.services ?? []).length,
+          at: d.datetime,
+        });
         const svc = d.services ?? [];
         if (svc.length > 1) multiService += 1;
         svc.forEach((s, i) => {
@@ -162,11 +178,40 @@ async function main() {
     `${cancelledHere > 0 ? ` (отменённых или удалённых у нас: ${cancelledHere})` : ""}`);
   console.log(`  визитов в разрезе (не отменённых): ${ours.length}`);
   if (missing.length > 0) {
-    console.log(
-      `  ✗ НЕ ДОЕХАЛО: ${missing.length} записей — их нет у нас ни в каком виде.\n` +
-        `      номера: ${missing.slice(0, 15).join(", ")}${missing.length > 15 ? " …" : ""}\n` +
-        "      обычно это записи без клиента или без телефона: связать визит не с кем.",
+    /**
+     * Причину называем сразу. Визит пишется, только если нашлись и специалист,
+     * и пациент: без клиента и без телефона связать его не с кем, а
+     * неизвестный специалист теперь заводится сам — если этого не произошло,
+     * дело в другом, и это надо видеть отдельно.
+     */
+    const staffIds = [...new Set(missing.map((id) => remoteInfo.get(id)?.staffId).filter((x): x is number => typeof x === "number"))];
+    const knownStaff = new Set(
+      (
+        await prisma.staff.findMany({
+          where: { companyId: company.id, yclientsStaffId: { in: staffIds } },
+          select: { yclientsStaffId: true },
+        })
+      ).map((r) => r.yclientsStaffId as number),
     );
+
+    const reasons = new Map<string, number[]>();
+    for (const id of missing) {
+      const info = remoteInfo.get(id);
+      const why = !info
+        ? "нет данных о записи"
+        : !info.clientId && !info.phone
+          ? "у записи нет ни клиента, ни телефона"
+          : !knownStaff.has(info.staffId)
+            ? `специалист ${info.staffId} не заведён у нас`
+            : "причина не очевидна — нужен разбор";
+      reasons.set(why, [...(reasons.get(why) ?? []), id]);
+    }
+
+    console.log(`  ✗ НЕ ДОЕХАЛО: ${missing.length} записей — их нет у нас ни в каком виде.`);
+    for (const [why, ids] of [...reasons.entries()].sort((a, b) => b[1].length - a[1].length)) {
+      console.log(`      ${ids.length} — ${why}`);
+      console.log(`          номера: ${ids.slice(0, 10).join(", ")}${ids.length > 10 ? " …" : ""}`);
+    }
   } else {
     console.log("  ✓ все записи YCLIENTS есть у нас");
   }
