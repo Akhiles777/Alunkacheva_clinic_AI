@@ -42,7 +42,12 @@ async function main() {
       yclientsServiceId: true,
       isActive: true,
       rooms: { select: { roomId: true } },
-      _count: { select: { primaryForAppointments: true } },
+      /**
+       * Визиты считаем по обеим связям. Состав визита раньше не заполнялся, и
+       * проверка «есть ли визиты» смотрела только на основную услугу; теперь
+       * услуга может быть второй в записи — тогда она видна только здесь.
+       */
+      _count: { select: { primaryForAppointments: true, appointmentServices: true } },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -78,10 +83,14 @@ async function main() {
 
     for (const extra of extras) {
       const withRooms = extra.rooms.length > 0 && main.rooms.length === 0;
-      const hasVisits = extra._count.primaryForAppointments > 0;
+      const visits = Math.max(
+        extra._count.primaryForAppointments,
+        extra._count.appointmentServices,
+      );
+      const hasVisits = visits > 0;
 
       console.log(
-        `  ${main.title.slice(0, 40).padEnd(42)} дубль: визитов ${extra._count.primaryForAppointments}, ` +
+        `  ${main.title.slice(0, 40).padEnd(42)} дубль: визитов ${visits}, ` +
           `кабинетов ${extra.rooms.length}${withRooms ? " → перенесём" : ""}` +
           `${hasVisits ? " · на дубле есть визиты, выключать не будем" : ""}`,
       );

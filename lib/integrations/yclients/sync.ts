@@ -8,6 +8,7 @@ import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/met
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
 import { serviceRevenue } from "./mappers";
+import { splitVisitMinutes } from "./split-visit";
 import { cancelVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
@@ -740,16 +741,27 @@ async function saveRecordServices(
 
     rewrite.push(appt.id);
 
-    const total = parts.reduce((sum, p) => sum + p.minutes, 0);
+    /**
+     * Одна и та же услуга в записи дважды — обычное дело: две капельницы за
+     * приём. Пара «визит + услуга» уникальна, поэтому вторую строку база
+     * молча отбросила бы вместе с её временем и деньгами. Складываем заранее.
+     */
+    const merged = new Map<string, { minutes: number; amount: number; quantity: number }>();
     for (const p of parts) {
-      const share = total > 0 ? p.minutes / total : 1 / parts.length;
-      rows.push({
-        companyId,
-        appointmentId: appt.id,
-        serviceId: p.serviceId,
-        priceCharged: p.money.amount,
-        durationMin: Math.round(appt.durationMin * share),
-      });
+      const acc = merged.get(p.serviceId) ?? { minutes: 0, amount: 0, quantity: 0 };
+      acc.minutes += p.minutes;
+      acc.amount += p.money.amount;
+      acc.quantity += 1;
+      merged.set(p.serviceId, acc);
+    }
+
+    // Деление вынесено отдельно и покрыто тестами: сумма частей обязана
+    // совпадать с длительностью визита, иначе разрезы разъедутся.
+    for (const row of splitVisitMinutes(
+      [...merged.entries()].map(([serviceId, v]) => ({ serviceId, ...v })),
+      appt.durationMin,
+    )) {
+      rows.push({ companyId, appointmentId: appt.id, ...row });
     }
   }
 

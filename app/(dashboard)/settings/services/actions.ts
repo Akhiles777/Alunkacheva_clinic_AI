@@ -97,13 +97,24 @@ export async function saveServices(
   const toDelete = existing.filter((e) => removable.has(e.id));
 
   for (const del of toDelete) {
-    const [visits, courses] = await Promise.all([
+    /**
+     * Считаем визиты по обеим связям.
+     *
+     * Проверялась только таблица состава визита, а она не заполнялась вовсе —
+     * счёт всегда выходил нулевым, и услугу с сотней приёмов можно было
+     * удалить. Визиты при этом не пропадали, но теряли услугу: в разрезе они
+     * оседали строкой «без указанной услуги», и понять, что это была за
+     * работа, становилось нельзя.
+     */
+    const [visits, primary, courses] = await Promise.all([
       prisma.appointmentService.count({ where: { serviceId: del.id } }),
+      prisma.appointment.count({ where: { primaryServiceId: del.id } }),
       prisma.course.count({ where: { serviceId: del.id } }),
     ]);
-    if (visits + courses > 0) {
+    if (visits + primary + courses > 0) {
       throw new Error(
-        `Услугу «${del.title}» удалить нельзя: с ней связано визитов ${visits}, курсов ${courses}. Деактивируйте её.`,
+        `Услугу «${del.title}» удалить нельзя: с ней связано визитов ${Math.max(visits, primary)}, ` +
+          `курсов ${courses}. Деактивируйте её — история сохранится, а из списков она уйдёт.`,
       );
     }
   }
