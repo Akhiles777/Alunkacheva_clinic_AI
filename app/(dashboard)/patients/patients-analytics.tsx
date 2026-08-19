@@ -107,7 +107,11 @@ export function PatientsAnalytics() {
               </div>
             </div>
             <div>
-              <div className="text-text-subtle text-2xs">Деньги в остатке по курсам</div>
+              {/*
+                Это не будущая выручка: деньги за курс клиника получила в день
+                продажи. Здесь — сколько из них ещё не отработано сеансами.
+              */}
+              <div className="text-text-subtle text-2xs">Оплачено вперёд, не отработано</div>
               <div className="readout mt-1 text-lg">{formatMoney(moneyLeft)}</div>
             </div>
             <div>

@@ -72,8 +72,18 @@ export interface Course {
   total: number;
   status: "active" | "stalled" | "done";
   lastVisit: string;
+  /** Сколько суток назад был последний сеанс; null — сеансов ещё не было. */
+  daysAgo?: number | null;
   /** Появилась будущая запись — курс уходит из «выпавших». Задаётся при записи. */
   hasFuture?: boolean;
+  /**
+   * Цена одного сеанса — из самого курса, а не из таблицы в коде.
+   *
+   * Здесь стоял зашитый прайс с названиями услуг, которых у клиники нет
+   * («IV-терапия, экспресс»), и всё, что в него не попадало, оценивалось в
+   * 5 000 ₽. На экране это выглядело как деньги, посчитанные по данным.
+   */
+  pricePerSession?: number;
 }
 
 export interface Appt {
@@ -412,6 +422,25 @@ export function hydrateDialogs(records: DialogRecord[]) {
 /** Гидрация расписания из БД (проекция Appointment) — единый источник. */
 export function hydrateAppointments(appts: Appt[]) {
   commit({ ...db, appointments: appts });
+}
+
+/**
+ * Курсы пациентов из базы.
+ *
+ * Приходят отдельным списком, а не внутри карточки: курс нужен экранам, где
+ * карточка не открыта — «Курсы», аналитика пациентов, строка «выпали из курса»
+ * на «Сегодня». Раньше все они читали пустой список и молча ничего не
+ * показывали.
+ */
+export function hydrateCourses(records: (Course & { patientId: string })[]) {
+  const byPatient = new Map<string, Course[]>();
+  for (const { patientId, ...course } of records) {
+    byPatient.set(patientId, [...(byPatient.get(patientId) ?? []), course]);
+  }
+  commit({
+    ...db,
+    patients: db.patients.map((p) => ({ ...p, courses: byPatient.get(p.id) ?? [] })),
+  });
 }
 
 // ─────────────────────────────────────────────── производные
@@ -773,13 +802,6 @@ export function startDialog(input: {
 
 // ─────────────────────────────────────────────── курсы (плоский список)
 
-const COURSE_PRICE: Record<string, number> = {
-  "IV-терапия, капельница": 6500,
-  "IV-терапия, экспресс": 4500,
-  "БОС-терапия, курс": 5000,
-  "Остеопатия, курс": 4200,
-};
-
 function daysSince(label: string): number | null {
   if (label === "сегодня") return 0;
   const m = /(\d+)\s+дн/.exec(label);
@@ -819,7 +841,7 @@ export function allCourses(patients: Patient[] = db.patients): CourseView[] {
     for (const c of p.courses) {
       const remaining = Math.max(c.total - c.used, 0);
       const hasFuture = c.hasFuture ?? c.status !== "stalled";
-      const price = COURSE_PRICE[c.title] ?? 5000;
+      const price = c.pricePerSession ?? 0;
       out.push({
         patientId: p.id,
         patientName: p.name,
@@ -831,7 +853,7 @@ export function allCourses(patients: Patient[] = db.patients): CourseView[] {
         remaining,
         status: c.status,
         lastVisit: c.lastVisit,
-        daysAgo: daysSince(c.lastVisit),
+        daysAgo: c.daysAgo ?? daysSince(c.lastVisit),
         hasFuture,
         moneyLeft: remaining * price,
         stalled: c.status === "stalled" && !hasFuture,

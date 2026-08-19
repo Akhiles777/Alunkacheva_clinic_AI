@@ -2,10 +2,16 @@
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-import { hydrateAppointments, hydrateDialogs, hydratePatients } from "@/app/_data/store";
+import {
+  hydrateAppointments,
+  hydrateCourses,
+  hydrateDialogs,
+  hydratePatients,
+} from "@/app/_data/store";
 import { getPatientRecords } from "../patients/actions";
 import { getConversations } from "../inbox/actions";
 import { getAppointmentsForStore } from "../schedule/actions";
+import { getCoursesForStore } from "../courses/actions";
 import { reportMaybeStale } from "@/lib/client/stale-build";
 
 /**
@@ -39,9 +45,17 @@ export function StoreHydrator() {
     const load = () => {
       // Скрытая вкладка данных не показывает: незачем и запрашивать.
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      /**
+       * Курсы — после пациентов: они приклеиваются к уже загруженным
+       * карточкам. Иначе первый круг раскладывал бы их по пустому списку.
+       */
       getPatientRecords()
         .then((records) => {
-          if (alive) hydratePatients(records);
+          if (!alive) return;
+          hydratePatients(records);
+          return getCoursesForStore().then((courses) => {
+            if (alive) hydrateCourses(courses);
+          });
         })
         .catch(reportFailure);
       getConversations()

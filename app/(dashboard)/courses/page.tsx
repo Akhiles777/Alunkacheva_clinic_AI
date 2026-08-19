@@ -47,7 +47,7 @@ export default function CoursesPage() {
         <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Курсы</h1>
         <p className="text-text-muted mt-1.5 max-w-[70ch] text-xs leading-relaxed max-md:hidden">
           Выпавшие из графика — потерянные деньги: курс идёт, а будущей записи нет.
-          Список отсортирован по деньгам в остатке. «Написать» открывает диалог, не
+          Список отсортирован по неотработанной сумме. «Написать» открывает диалог, не
           уводя со страницы; из списка убирает только реальная будущая запись.
         </p>
         <div className="mt-3.5 flex flex-wrap gap-1.5">
@@ -69,21 +69,22 @@ export default function CoursesPage() {
       <div className="flex-1 overflow-auto px-7 py-5 max-md:px-5">
         {rows.length === 0 ? (
           /*
-            Курсы не заводит ни выгрузка YCLIENTS, ни интерфейс — их просто
-            неоткуда взять. Пустая страница без объяснения читается как
-            «данные не доехали», и это уже спрашивали про «Курсовые 0» в
-            отчётах. Пустота, у которой есть причина, должна её называть.
+            Пустота, у которой есть причина, должна её называть. Раньше причина
+            была одна — курсов не существовало нигде. Теперь они собираются из
+            записей, и пусто может быть по двум разным поводам: услуга не
+            отмечена курсовой либо оплаты курса нет в записях.
           */
           <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
             <p className="text-md font-medium">Курсов пока нет</p>
             <p className="text-text-muted mt-2 text-sm leading-relaxed">
-              Курс — это оплаченная программа из нескольких сеансов. Из YCLIENTS такие продажи не
-              приходят: там визит и оплата не связаны в программу, поэтому завести курс может
-              только клиника — и такой возможности в платформе ещё нет.
+              Курс собирается из записей YCLIENTS: оплаченный визит открывает его, следующие
+              сеансы с нулевой стоимостью к нему прикрепляются. Поэтому пусто здесь бывает по двум
+              причинам: услуга не отмечена курсовой в «Настройки → Услуги» либо оплаты курса нет в
+              записях — тогда сеансы считаются просто бесплатными.
             </p>
             <p className="text-text-subtle mt-2 text-sm leading-relaxed">
-              Пока раздел пустой не потому, что данные не доехали, а потому, что их источника не
-              существует. Повторные визиты при этом считаются как обычно — в «Отчётах».
+              Новых денег курс не создаёт: его сумма — это стоимость записи дня продажи, уже
+              учтённая в выручке того дня. Он нужен, чтобы объяснить нули у остальных сеансов.
             </p>
           </div>
         ) : (
@@ -122,7 +123,7 @@ export default function CoursesPage() {
 
                 <div className="num w-24 flex-none text-right text-sm max-md:flex max-md:w-full max-md:items-baseline max-md:justify-between max-md:text-left">
                   <span>{formatMoney(c.moneyLeft)}</span>
-                  <span className="text-text-subtle text-2xs">в остатке</span>
+                  <span className="text-text-subtle text-2xs">оплачено, не отработано</span>
                 </div>
 
                 <div className="flex flex-none gap-2 max-md:w-full">
