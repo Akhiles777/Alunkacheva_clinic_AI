@@ -105,6 +105,13 @@ export interface SyncLookups {
    * 8000 ₽ (§8). Цену берём ту же, что клиника показывает пациенту.
    */
   priceByYclientsServiceId: Map<number, number>;
+  /**
+   * Длительность услуги из справочника.
+   *
+   * Нужна, чтобы разделить время визита между его услугами: у записи
+   * длительность одна на весь приём, а услуг в ней бывает несколько.
+   */
+  durationByYclientsServiceId: Map<number, number>;
 }
 
 /** Прочитать справочники клиники один раз за прогон. */
@@ -120,7 +127,7 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     }),
     prisma.service.findMany({
       where: { companyId, yclientsServiceId: { not: null } },
-      select: { id: true, yclientsServiceId: true, price: true },
+      select: { id: true, yclientsServiceId: true, price: true, durationMin: true },
     }),
     prisma.serviceRoom.findMany({
       where: { service: { companyId } },
@@ -155,6 +162,9 @@ export async function loadLookups(companyId: string): Promise<SyncLookups> {
     roomByServiceId,
     priceByYclientsServiceId: new Map(
       services.filter((s) => Number(s.price) > 0).map((s) => [s.yclientsServiceId!, Number(s.price)]),
+    ),
+    durationByYclientsServiceId: new Map(
+      services.filter((s) => s.durationMin > 0).map((s) => [s.yclientsServiceId!, s.durationMin]),
     ),
   };
 }

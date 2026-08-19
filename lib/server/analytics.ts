@@ -686,12 +686,25 @@ export async function getServicesLoadDb(
    * Теперь основа — приёмы периода. Услуга к ним приклеивается, а не наоборот:
    * ни выключенная строка, ни задвоенная больше не прячут часы.
    */
-  const [byService, allServices, roomCount] = await Promise.all([
-    prisma.appointment.groupBy({
-      by: ["primaryServiceId"],
+  /**
+   * Считаем по ВСЕМ услугам визита, а не по первой.
+   *
+   * Визит помнил только основную услугу, и запись из двух услуг теряла вторую
+   * целиком: услуга, которая всегда идёт второй, показывала ноль приёмов
+   * навсегда — при том что её делают каждый день.
+   *
+   * Состав визита теперь пишет выгрузка. Пока он записан не у всех визитов
+   * (старые данные до первой полной выгрузки), опираемся на основную услугу —
+   * иначе разрез опустел бы на время перехода.
+   */
+  const [appts, allServices, roomCount] = await Promise.all([
+    prisma.appointment.findMany({
       where: { companyId, deletedAt: null, status: { not: "CANCELLED" }, startAt: { gte: from, lt: to } },
-      _count: { _all: true },
-      _sum: { durationMin: true },
+      select: {
+        durationMin: true,
+        primaryServiceId: true,
+        services: { select: { serviceId: true, durationMin: true } },
+      },
     }),
     prisma.service.findMany({
       where: { companyId },
@@ -700,28 +713,55 @@ export async function getServicesLoadDb(
     prisma.room.count({ where: { companyId } }),
   ]);
 
-  const serviceById = new Map(allServices.map((s) => [s.id, s]));
-  const busyById = new Map(byService.map((r) => [r.primaryServiceId, r]));
+  /** Занятые минуты и число приёмов по каждой услуге. */
+  const busyById = new Map<string, { minutes: number; count: number }>();
+  let orphanCount = 0;
+  let orphanMinutes = 0;
+
+  for (const a of appts) {
+    const parts = a.services.length > 0
+      ? a.services
+      : a.primaryServiceId
+        ? [{ serviceId: a.primaryServiceId, durationMin: a.durationMin }]
+        : [];
+    if (parts.length === 0) {
+      orphanCount += 1;
+      orphanMinutes += a.durationMin;
+      continue;
+    }
+
+    /**
+     * Время визита делим между его услугами пропорционально их длительности.
+     * Так сумма часов по услугам сходится с занятым временем кабинета: два
+     * разреза одного периода не должны давать разные итоги.
+     */
+    const total = parts.reduce((sum, p) => sum + p.durationMin, 0);
+    for (const p of parts) {
+      const share = total > 0 ? p.durationMin / total : 1 / parts.length;
+      const acc = busyById.get(p.serviceId) ?? { minutes: 0, count: 0 };
+      acc.minutes += a.durationMin * share;
+      acc.count += 1;
+      busyById.set(p.serviceId, acc);
+    }
+  }
 
   /**
    * В отчёт идут услуги с приёмами и включённые без приёмов. Выключенная и без
    * приёмов не нужна никому: она только удлиняет список.
    */
-  const shown = allServices.filter((s) => s.isActive || (busyById.get(s.id)?._count._all ?? 0) > 0);
+  const shown = allServices.filter((s) => s.isActive || (busyById.get(s.id)?.count ?? 0) > 0);
 
   const rows: ServiceLoadRow[] = shown.map((s) => {
     const stat = busyById.get(s.id);
-    const busy = stat?._sum.durationMin ?? 0;
+    const busy = Math.round(stat?.minutes ?? 0);
 
     /**
      * Знаменатель — минуты кабинетов, где услуга может проводиться.
      *
      * Привязка «услуга → кабинет» заводится вручную, и у услуг, приехавших
-     * из YCLIENTS, её нет. Раньше это давало ноль в знаменателе, ноль в
-     * доле — и весь отчёт по услугам выглядел пустым при полной базе
-     * визитов. Без привязки считаем, что услуга может идти в любом кабинете
-     * клиники: это приблизительно, но отвечает на вопрос «чем занят день», а
-     * ноль не отвечает ни на что.
+     * из YCLIENTS, её нет. Без привязки считаем, что услуга может идти в
+     * любом кабинете клиники: это приблизительно, но отвечает на вопрос
+     * «чем занят день», а ноль не отвечает ни на что.
      */
     const roomsForService = s.rooms.length > 0 ? s.rooms.length : roomCount;
     const available = roomsForService * minutesPerRoom;
@@ -730,7 +770,7 @@ export async function getServicesLoadDb(
       busyMinutes: busy,
       availableMinutes: available,
       ratio: available > 0 ? busy / available : 0,
-      appointments: stat?._count._all ?? 0,
+      appointments: stat?.count ?? 0,
       inactive: !s.isActive,
     };
   });
@@ -742,14 +782,13 @@ export async function getServicesLoadDb(
    * приёмов за период. Показываем отдельной строкой: пустое место объяснимо,
    * а расхождение — нет.
    */
-  const orphan = busyById.get(null);
-  if (orphan && orphan._count._all > 0) {
+  if (orphanCount > 0) {
     rows.push({
       title: "Без указанной услуги",
-      busyMinutes: orphan._sum.durationMin ?? 0,
+      busyMinutes: orphanMinutes,
       availableMinutes: roomCount * minutesPerRoom,
       ratio: 0,
-      appointments: orphan._count._all,
+      appointments: orphanCount,
       inactive: false,
     });
   }

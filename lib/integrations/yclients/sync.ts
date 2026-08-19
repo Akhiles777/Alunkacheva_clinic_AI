@@ -7,6 +7,7 @@ import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
+import { serviceRevenue } from "./mappers";
 import { cancelVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
@@ -692,6 +693,78 @@ async function ensurePatients(
 }
 
 /**
+ * Записать состав услуг визитов страницы.
+ *
+ * Пишем только для тех записей, которые в этом проходе изменились: остальным
+ * состав тот же, а лишние записи в базу дороже, чем кажется.
+ *
+ * Длительность визита делим между его услугами пропорционально их
+ * длительности в справочнике. Так сумма часов по услугам сходится с занятым
+ * временем кабинета: если делить нечем — поровну. Иначе разрез по услугам и
+ * разрез по кабинетам показывали бы разные итоги за один период.
+ */
+async function saveRecordServices(
+  companyId: string,
+  dtos: YclientsRecord[],
+  touched: number[],
+  lookups: SyncLookups,
+): Promise<void> {
+  if (touched.length === 0) return;
+  const wanted = new Set(touched);
+
+  const appts = await prisma.appointment.findMany({
+    where: { companyId, yclientsRecordId: { in: [...wanted] } },
+    select: { id: true, yclientsRecordId: true, durationMin: true },
+  });
+  const apptByRecord = new Map(appts.map((a) => [a.yclientsRecordId as number, a]));
+
+  const rows: Prisma.AppointmentServiceCreateManyInput[] = [];
+  const rewrite: string[] = [];
+
+  for (const dto of dtos) {
+    if (!wanted.has(dto.id)) continue;
+    const appt = apptByRecord.get(dto.id);
+    if (!appt) continue;
+
+    const parts = (dto.services ?? [])
+      .map((sv) => ({
+        serviceId: lookups.serviceByYclientsId.get(sv.id),
+        money: serviceRevenue(sv),
+        // Длительность услуги из справочника: у записи она одна на весь визит.
+        minutes: lookups.durationByYclientsServiceId.get(sv.id) ?? 0,
+      }))
+      .filter((p): p is { serviceId: string; money: ReturnType<typeof serviceRevenue>; minutes: number } =>
+        typeof p.serviceId === "string",
+      );
+    if (parts.length === 0) continue;
+
+    rewrite.push(appt.id);
+
+    const total = parts.reduce((sum, p) => sum + p.minutes, 0);
+    for (const p of parts) {
+      const share = total > 0 ? p.minutes / total : 1 / parts.length;
+      rows.push({
+        companyId,
+        appointmentId: appt.id,
+        serviceId: p.serviceId,
+        priceCharged: p.money.amount,
+        durationMin: Math.round(appt.durationMin * share),
+      });
+    }
+  }
+
+  if (rewrite.length === 0) return;
+  /**
+   * Переписываем целиком: из записи услугу могли убрать, и оставшаяся строка
+   * приписала бы визиту работу, которой не было.
+   */
+  await prisma.$transaction([
+    prisma.appointmentService.deleteMany({ where: { companyId, appointmentId: { in: rewrite } } }),
+    prisma.appointmentService.createMany({ data: rows, skipDuplicates: true }),
+  ]);
+}
+
+/**
  * Ключ «один и тот же приём»: пациент, специалист и точное время начала.
  * Три совпадения подряд случайными не бывают.
  */
@@ -805,6 +878,12 @@ async function syncRecordsWindow(
      * обращений к базе. Уже известные обновляем поштучно — их немного.
      */
     const creates: Prisma.AppointmentCreateManyInput[] = [];
+    /**
+     * Записи, которые в этом проходе создали или изменили. Только для них
+     * перепишем состав услуг: остальным он не менялся, а лишние записи в базу
+     * — это те же грабли, что были с самими визитами.
+     */
+    const touched: number[] = [];
     for (const dto of dtos) {
       const row = buildRecordRow(companyId, dto, lookups);
       if (!row) {
@@ -846,6 +925,7 @@ async function syncRecordsWindow(
             ? { ...row.data, deletedAt: null }
             : { ...withoutCreatedAt, deletedAt: null },
         });
+        touched.push(recordId);
       } else {
         /**
          * Не заводим второй визит там, где он уже есть под нашим номером:
@@ -867,12 +947,24 @@ async function syncRecordsWindow(
         } else {
           creates.push(row.data);
         }
+        touched.push(recordId);
       }
       written += 1;
     }
     if (creates.length > 0) {
       await prisma.appointment.createMany({ data: creates, skipDuplicates: true });
     }
+
+    /**
+     * Состав услуг визита.
+     *
+     * До сих пор визит помнил ТОЛЬКО первую услугу записи, а таблица связи не
+     * заполнялась вовсе. Запись из двух услуг теряла вторую целиком: услуга,
+     * которая всегда идёт второй, показывала ноль приёмов навсегда — при том
+     * что её делают каждый день. Ровно это и увидел заказчик в разрезе по
+     * услугам.
+     */
+    await saveRecordServices(companyId, dtos, touched, lookups);
 
     fetched += dtos.length;
     if (!hasNextPage({ received: dtos.length, pageSize: PAGE_SIZE, fetchedSoFar: fetched, totalCount: res.totalCount, page })) {

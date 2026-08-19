@@ -56,6 +56,7 @@ async function main() {
     _sum: { durationMin: true },
   });
   const byId = new Map(inPeriod.map((r) => [r.primaryServiceId, r]));
+  const totalInPeriod = inPeriod.reduce((sum, r) => sum + r._count._all, 0);
 
   console.log("── услуги с приёмами за период ──");
   const withVisits = services
@@ -77,6 +78,36 @@ async function main() {
     console.log(
       `\n  ВНИМАНИЕ: ${hidden.length} услуг с приёмами выключены. Отчёт показывает только\n` +
         "  включённые, поэтому их часы пропадают из разреза целиком.",
+    );
+  }
+
+  /**
+   * Состав визитов: сколько услуг записано у визита.
+   *
+   * Визит помнил только первую услугу записи, а таблица связи не заполнялась
+   * вовсе — вторая услуга терялась целиком. Здесь видно, заполнилась ли она
+   * после выгрузки и сколько визитов состоят больше чем из одной услуги.
+   */
+  const [linked, multi] = await Promise.all([
+    prisma.appointment.count({
+      where: { companyId: company.id, deletedAt: null, startAt: { gte: since }, services: { some: {} } },
+    }),
+    prisma.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*)::bigint AS n FROM (
+        SELECT "appointmentId" FROM appointment_services
+        GROUP BY "appointmentId" HAVING count(*) > 1
+      ) t
+    `,
+  ]);
+  console.log(
+    `\n── состав визитов ──\n` +
+      `  визитов с записанным составом услуг: ${linked} из ${totalInPeriod}\n` +
+      `  визитов больше чем из одной услуги: ${Number(multi[0]?.n ?? 0)}`,
+  );
+  if (linked === 0) {
+    console.log(
+      "  Состав ещё не записан: он появляется при выгрузке. До этого разрез\n" +
+        "  считается по основной услуге визита, как раньше.",
     );
   }
 
@@ -126,7 +157,6 @@ async function main() {
       durationMin: { lte: 0 },
     },
   });
-  const totalInPeriod = inPeriod.reduce((sum, r) => sum + r._count._all, 0);
   console.log(`\n── приёмы с нулевой длительностью: ${zeroDuration} из ${totalInPeriod} ──`);
   if (zeroDuration > 0) {
     console.log(
