@@ -96,6 +96,8 @@ async function main() {
   interface Stat {
     total: number;
     zero: number;
+    /** Отдано даром по стопроцентной скидке — это не оплата и не курс. */
+    gifted: number;
     paidAmounts: number[];
     /** Сеансы каждого пациента подряд после оплаты — оценка длины курса. */
     runs: number[];
@@ -103,7 +105,7 @@ async function main() {
   }
   const stats = new Map<string, Stat>();
   const stat = (id: string): Stat => {
-    const s = stats.get(id) ?? { total: 0, zero: 0, paidAmounts: [], runs: [], open: new Map() };
+    const s = stats.get(id) ?? { total: 0, zero: 0, gifted: 0, paidAmounts: [], runs: [], open: new Map() };
     stats.set(id, s);
     return s;
   };
@@ -120,6 +122,13 @@ async function main() {
       if (zero) {
         s.zero += 1;
         s.open.set(a.patientId, (s.open.get(a.patientId) ?? 0) + 1);
+      } else if (a.revenueSource === "FREE") {
+        /**
+         * Подарок по стопроцентной скидке. В список оплат его класть нельзя:
+         * в разбивке он вылезал строкой «0 ₽ × 18» и читался как оплата на
+         * ноль рублей — а это ровно противоположное утверждение.
+         */
+        s.gifted += 1;
       } else {
         s.paidAmounts.push(Number(a.revenue));
         const run = s.open.get(a.patientId);
@@ -135,13 +144,14 @@ async function main() {
 
   const rows = services
     .map((sv) => {
-      const s = stats.get(sv.id) ?? { total: 0, zero: 0, paidAmounts: [], runs: [], open: new Map() };
+      const s = stats.get(sv.id) ?? { total: 0, zero: 0, gifted: 0, paidAmounts: [], runs: [], open: new Map() };
       const share = s.total > 0 ? s.zero / s.total : 0;
       const sessions = Math.max(2, median(s.runs));
       return {
         ...sv,
         total: s.total,
         zero: s.zero,
+        gifted: s.gifted,
         share,
         paid: s.paidAmounts,
         sessions,
@@ -175,10 +185,11 @@ async function main() {
       `  ОТМЕТИТЬ курсовой: ${r.title}\n` +
         `    приёмов ${r.total}, из них без стоимости ${r.zero} (${Math.round(r.share * 100)}%)\n` +
         `    сеансов после одной оплаты (медиана): ${r.sessions}\n` +
+        (r.gifted > 0 ? `    отдано даром по скидке 100%: ${r.gifted}\n` : "") +
         (typical > 0
           ? `    оплат ${r.paid.length}, типичная ${money(typical)}, наибольшая ${money(biggest)}\n` +
             `    все оплаты: ${amountsLine(r.paid)}\n`
-          : "    оплат в истории не видно — курсы куплены до выгрузки\n"),
+          : "    оплат в истории нет вовсе\n"),
     );
   }
   for (const r of skipped) {
