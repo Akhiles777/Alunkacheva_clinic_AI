@@ -245,7 +245,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
             <button
               type="button"
               onClick={() => returnToBot(dialog.id)}
-              title="Снять паузу агента: после ручного ответа он молчит 12 часов"
+              title="Снять паузу агента: после ручного ответа он молчит сутки, потом диалог возвращается сам"
               className="border-border text-text-muted hover:bg-hover flex-none rounded-md border px-2.5 py-1 text-2xs"
             >
               Вернуть агенту
