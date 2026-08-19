@@ -63,6 +63,15 @@ async function main() {
     }
   >();
   let multiService = 0;
+  /**
+   * Названия услуг по каждой записи — чтобы посчитать их позже.
+   *
+   * Считать сразу нельзя: сравнивать наш состав со ВСЕМИ записями YCLIENTS
+   * бессмысленно. Часть из них мы не держим намеренно — блокировки времени,
+   * отменённые визиты, приёмы без клиента. Колонка «ТЕРЯЕМ» из-за этого была
+   * красной всегда, а проверка, которая всегда красная, перестаёт читаться.
+   */
+  const servicesByRecord = new Map<number, string[]>();
 
   for (const w of monthWindows(from, now)) {
     let page = 1;
@@ -88,6 +97,10 @@ async function main() {
         });
         const svc = d.services ?? [];
         if (svc.length > 1) multiService += 1;
+        servicesByRecord.set(
+          d.id,
+          svc.map((s) => s.title?.trim() || `услуга ${s.id}`),
+        );
         svc.forEach((s, i) => {
           const key = s.title?.trim() || `услуга ${s.id}`;
           const acc = remote.get(key) ?? { total: 0, first: 0, ids: new Set<number>() };
@@ -139,6 +152,21 @@ async function main() {
   const cancelledHere = known.filter((a) => a.status === "CANCELLED" || a.deletedAt !== null).length;
   const missing = [...remoteIds].filter((id) => !knownIds.has(id));
 
+  /**
+   * Записи, состав которых обязан быть у нас: те, что мы держим и не отменили.
+   * Всё остальное в сравнении не участвует — оно учтено отдельными строками
+   * ниже, с названной причиной.
+   */
+  const counted = new Set(
+    known.filter((a) => a.status !== "CANCELLED" && a.deletedAt === null)
+      .map((a) => a.yclientsRecordId as number),
+  );
+  const expected = new Map<string, number>();
+  for (const [id, titles] of servicesByRecord) {
+    if (!counted.has(id)) continue;
+    for (const t of titles) expected.set(t, (expected.get(t) ?? 0) + 1);
+  }
+
   const byPrimary = new Map<string, number>();
   const byComposition = new Map<string, { count: number; minutes: number }>();
   let visitMinutes = 0;
@@ -171,17 +199,26 @@ async function main() {
   console.log("── услуги: YCLIENTS против нашей базы ──");
   console.log("   названа = сколько раз услуга указана в записях");
   console.log("   первой  = сколько раз она была ПЕРВОЙ (только их видел старый отчёт)\n");
+  console.log("   ждём  = сколько раз она названа в записях, которые мы держим\n");
   const rows = [...remote.entries()].sort((a, b) => b[1].total - a[1].total);
+  let lostTotal = 0;
   for (const [title, r] of rows) {
     const primary = byPrimary.get(title) ?? 0;
     const comp = byComposition.get(title)?.count ?? 0;
-    const lost = r.total - Math.max(primary, comp);
+    const want = expected.get(title) ?? 0;
+    const lost = want - Math.max(primary, comp);
+    if (lost > 0) lostTotal += lost;
     console.log(
       `  ${title}\n` +
-        `      названа ${r.total} (первой ${r.first}) · у нас основной ${primary}, в составе ${comp}` +
+        `      названа ${r.total} (первой ${r.first}, ждём ${want}) · у нас основной ${primary}, в составе ${comp}` +
         `${lost > 0 ? `  ← ТЕРЯЕМ ${lost}` : ""}`,
     );
   }
+  console.log(
+    lostTotal === 0
+      ? "\n  ✓ состав визитов совпадает с YCLIENTS по всем услугам"
+      : `\n  ✗ всего теряем ${lostTotal} упоминаний услуг — состав визита неполон`,
+  );
 
   // ── 3. Сходятся ли итоги
   console.log("\n── сходятся ли итоги ──");
