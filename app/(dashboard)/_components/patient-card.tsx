@@ -437,6 +437,18 @@ export function PatientCardBody({
                   <span className="text-text-muted flex-none text-xs">
                     курс {visit.courseSession.index}/{visit.courseSession.total}
                   </span>
+                ) : visit.paidEarlier && visit.status === "arrived" ? (
+                  /*
+                    Ноль в записи дня, но YCLIENTS помечает визит оплаченным:
+                    деньги приняты раньше, при продаже курса. Писать «бесплатно»
+                    здесь неправда — клиника их получила, просто в другой день.
+                  */
+                  <span
+                    className="text-text-muted flex-none text-xs"
+                    title="оплачено раньше — при продаже курса; выручку даёт день продажи"
+                  >
+                    по курсу
+                  </span>
                 ) : visit.status === "arrived" ? (
                   <span className="text-text-muted flex-none text-xs">бесплатно</span>
                 ) : null}

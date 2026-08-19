@@ -82,7 +82,30 @@ export async function saveServices(
 ): Promise<SaveServicesResult> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
+  try {
+    return await save(session.companyId, session.userId, rows, knownIds);
+  } catch (e) {
+    /**
+     * Настоящая причина — на экран, а не в пустоту.
+     *
+     * Любое исключение из серверного действия Next в проде подменяет на «An
+     * error occurred in the Server Components render»: сообщение до человека
+     * не доезжает, и починить нельзя ничего — даже когда причина простая,
+     * вроде запрещённого значения в поле. Персональных данных в тексте
+     * ошибки нет, это сообщение базы или валидатора (§7).
+     */
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[настройки/услуги] сохранение не удалось:", message);
+    return { ok: false, error: `Не удалось сохранить: ${message}` };
+  }
+}
 
+async function save(
+  companyId: string,
+  userId: string | null,
+  rows: ServiceRow[],
+  knownIds?: string[],
+): Promise<SaveServicesResult> {
   // Валидация — платформа не даёт сохранить бессмыслицу.
   for (const s of rows) {
     if (s.title.trim().length === 0) return { ok: false, error: "У услуги должно быть название" };
@@ -118,7 +141,7 @@ export async function saveServices(
   const roomless = rows.filter((s) => s.roomIds.length === 0);
 
   const existing = await prisma.service.findMany({
-    where: { companyId: session.companyId },
+    where: { companyId },
     select: { id: true, title: true },
   });
   const submitted = rows.filter((r) => !r.id.startsWith("new-")).map((r) => r.id);
@@ -175,7 +198,7 @@ export async function saveServices(
       let serviceId = r.id;
       if (r.id.startsWith("new-")) {
         const created = await tx.service.create({
-          data: { companyId: session.companyId, yclientsServiceId: null, ...data },
+          data: { companyId, yclientsServiceId: null, ...data },
         });
         serviceId = created.id;
       } else {
@@ -195,7 +218,7 @@ export async function saveServices(
       }
       for (const roomId of toAdd) {
         await tx.serviceRoom.create({
-          data: { companyId: session.companyId, serviceId, roomId },
+          data: { companyId, serviceId, roomId },
         });
       }
     }
@@ -208,8 +231,8 @@ export async function saveServices(
   );
 
   await writeAudit({
-    companyId: session.companyId,
-    actorId: session.userId,
+    companyId,
+    actorId: userId,
     action: "SETTINGS_UPDATE",
     entityType: "services",
     meta: { count: rows.length, deleted: toDelete.length },

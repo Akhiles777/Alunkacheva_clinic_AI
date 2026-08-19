@@ -208,6 +208,7 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
           status: true,
           revenue: true,
           revenueSource: true,
+          isPaid: true,
           courseSessionIndex: true,
           course: { select: { sessionsTotal: true } },
           staff: { select: { name: true } },
@@ -249,6 +250,14 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       status: VISIT_STATUS_MAP[a.status] ?? "planned",
       amount: Number(a.revenue),
       amountSource: a.revenueSource,
+      /**
+       * Деньги по визиту приняты, хотя в записи дня стоит ноль.
+       *
+       * YCLIENTS помечает такой сеанс `paid_full`: стоимость услуги известна,
+       * оплата прошла раньше — при продаже курса. Без этого признака сеанс
+       * курса и приём, за который клиника денег не брала, выглядят одинаково.
+       */
+      paidEarlier: a.isPaid,
       /**
        * Номер сеанса в курсе — то, что администратор называет пациенту вслух.
        * Без него у сеанса курса в карточке стоял необъяснимый ноль.

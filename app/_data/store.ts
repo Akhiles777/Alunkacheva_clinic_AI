@@ -129,6 +129,8 @@ export interface Visit {
   amountSource?: "RECORD" | "PRICE_LIST" | "PREPAID" | "FREE" | "UNKNOWN";
   /** Сеанс курса: какой по счёту и сколько всего оплачено. */
   courseSession?: { index: number; total: number } | null;
+  /** Оплачен раньше (курс, абонемент) — в записи дня ноль, но деньги были. */
+  paidEarlier?: boolean;
 }
 /** Вложение сообщения: голосовое, фотография, документ. */
 export interface MessageAttachment {
