@@ -418,6 +418,18 @@ export async function getOwnerAiContext(): Promise<string> {
         `${d.noShow > 0 ? `, неявок ${d.noShow}` : ""}` +
         `${d.arrived > 0 ? `, средний чек ${d.avgCheck} ₽` : ""}`,
     );
+    /**
+     * Из чего сложился день. Без этого на «а почему столько» аналитик снова
+     * упирался бы в стену: сумма есть, состава нет.
+     */
+    if (d.byStaff.length > 0) {
+      lines.push(
+        `    по специалистам: ${d.byStaff.map((x) => `${x.name} — ${x.revenue} ₽ (${x.arrived})`).join("; ")}`,
+      );
+      lines.push(
+        `    по услугам: ${d.byService.map((x) => `${x.name} — ${x.revenue} ₽ (${x.arrived})`).join("; ")}`,
+      );
+    }
   }
 
   lines.push("");

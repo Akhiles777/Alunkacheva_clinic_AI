@@ -16,6 +16,12 @@ import { averageCheck } from "@/lib/metrics/summary";
  * клиники появится ещё одна правда о деньгах.
  */
 
+export interface RevenueSlice {
+  name: string;
+  arrived: number;
+  revenue: number;
+}
+
 export interface RevenueDay {
   /** «2026-08-18». */
   date: string;
@@ -25,6 +31,16 @@ export interface RevenueDay {
   noShow: number;
   revenue: number;
   avgCheck: number;
+  /**
+   * Из чего сложился день: по специалистам и по услугам.
+   *
+   * Дневного итога мало. Владелец, увидев «18 августа — 87 900 ₽», сразу
+   * спрашивает, из чего это, и упирается в ту же стену: в сводке лежит только
+   * сумма. Разрезы даём по нескольким последним дням — за месяц это была бы
+   * простыня, которую модель всё равно не удержит.
+   */
+  byStaff: RevenueSlice[];
+  byService: RevenueSlice[];
 }
 
 const dayLabel = new Intl.DateTimeFormat("ru-RU", {
@@ -45,7 +61,13 @@ const dayKey = new Intl.DateTimeFormat("en-CA", {
  * тоже возвращаются: «в среду не было ни одного приёма» — это ответ, а
  * пропущенная строка выглядит как потерянные данные.
  */
-export async function revenueByDay(companyId: string, days = 30, now = new Date()): Promise<RevenueDay[]> {
+export async function revenueByDay(
+  companyId: string,
+  days = 30,
+  now = new Date(),
+  /** По скольким последним дням давать разрез «из чего сложилось». */
+  detailDays = 7,
+): Promise<RevenueDay[]> {
   const from = startOfClinicDay(new Date(now.getTime() - (days - 1) * 24 * 3600 * 1000));
   const to = new Date(startOfClinicDay(now).getTime() + 24 * 3600 * 1000);
 
@@ -56,28 +78,63 @@ export async function revenueByDay(companyId: string, days = 30, now = new Date(
       status: { in: ["ARRIVED", "NO_SHOW"] },
       startAt: { gte: from, lt: to },
     },
-    select: { startAt: true, status: true, revenue: true },
+    select: {
+      startAt: true,
+      status: true,
+      revenue: true,
+      staff: { select: { name: true } },
+      primaryService: { select: { title: true } },
+    },
   });
 
-  const byDay = new Map<string, { arrived: number; noShow: number; revenue: number }>();
+  interface DayAcc {
+    arrived: number;
+    noShow: number;
+    revenue: number;
+    staff: Map<string, RevenueSlice>;
+    service: Map<string, RevenueSlice>;
+  }
+  const empty = (): DayAcc => ({
+    arrived: 0,
+    noShow: 0,
+    revenue: 0,
+    staff: new Map(),
+    service: new Map(),
+  });
+
+  const byDay = new Map<string, DayAcc>();
   for (const r of rows) {
     const key = dayKey.format(r.startAt);
-    const acc = byDay.get(key) ?? { arrived: 0, noShow: 0, revenue: 0 };
+    const acc = byDay.get(key) ?? empty();
     if (r.status === "ARRIVED") {
       acc.arrived += 1;
       acc.revenue += Number(r.revenue);
+
+      const add = (map: Map<string, RevenueSlice>, name: string) => {
+        const cur = map.get(name) ?? { name, arrived: 0, revenue: 0 };
+        cur.arrived += 1;
+        cur.revenue += Number(r.revenue);
+        map.set(name, cur);
+      };
+      add(acc.staff, r.staff?.name ?? "специалист не указан");
+      add(acc.service, r.primaryService?.title ?? "услуга не указана");
     } else {
       acc.noShow += 1;
     }
     byDay.set(key, acc);
   }
 
+  const bySize = (a: RevenueSlice, b: RevenueSlice) => b.revenue - a.revenue || b.arrived - a.arrived;
+
   const out: RevenueDay[] = [];
   for (let i = 0; i < days; i++) {
     const at = new Date(from.getTime() + i * 24 * 3600 * 1000);
     if (at >= to) break;
     const key = dayKey.format(at);
-    const v = byDay.get(key) ?? { arrived: 0, noShow: 0, revenue: 0 };
+    const v = byDay.get(key) ?? empty();
+    // Разрезы — только по последним дням: за месяц это простыня, которую
+    // модель всё равно не удержит, а вопросы задают про свежее.
+    const detailed = i >= days - detailDays;
     out.push({
       date: key,
       label: dayLabel.format(at),
@@ -85,6 +142,8 @@ export async function revenueByDay(companyId: string, days = 30, now = new Date(
       noShow: v.noShow,
       revenue: v.revenue,
       avgCheck: averageCheck(v.revenue, v.arrived),
+      byStaff: detailed ? [...v.staff.values()].sort(bySize) : [],
+      byService: detailed ? [...v.service.values()].sort(bySize) : [],
     });
   }
   return out;
