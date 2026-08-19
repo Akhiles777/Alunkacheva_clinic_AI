@@ -14,7 +14,8 @@ import { formatMoney, formatMoneyPrecise, formatNumber } from "@/lib/format";
 import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { buildCabinets, buildFreeWindows, dateLabelInTz, nowMinuteInTz } from "@/lib/schedule";
-import { getClinicDayToday, type ClinicDayView } from "../schedule/actions";
+import { getClinicDay, getAppointmentsForDay, type ClinicDayView } from "../schedule/actions";
+import { clinicDateKey } from "@/lib/clinic-time";
 
 /**
  * «Сегодня» из ЕДИНОГО источника — стора db.appointments (как страница
@@ -25,6 +26,23 @@ import { getClinicDayToday, type ClinicDayView } from "../schedule/actions";
  * экране светилась выдуманная выручка и обращения от людей, которых в клинике
  * нет.
  */
+/** Насколько далеко назад можно листать: дальше — «Отчёты» и «Аналитика». */
+const MAX_DAYS_BACK = 30;
+
+/** «18 августа» — короткая подпись дня для строки итогов. */
+function dayLabelShort(at: Date): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    day: "numeric",
+    month: "long",
+  }).format(at);
+}
+
+/** Ключ дня «столько-то суток назад» от заданного момента, в поясе клиники. */
+function dayKeyBack(fromMs: number, back: number): string {
+  return clinicDateKey(new Date(fromMs - back * 24 * 3600 * 1000));
+}
+
 export function TodayClient() {
   const db = useDb();
 
@@ -32,8 +50,20 @@ export function TodayClient() {
   // иначе SSR и клиент рендерят разную минуту и рушат гидрацию. Начальное
   // значение детерминировано (начало дня) и одинаково на сервере и клиенте.
   const [nowMinute, setNowMinute] = useState(9 * 60);
+  /**
+   * Момент «сейчас», зафиксированный после монтирования.
+   *
+   * От него отсчитываются прошедшие дни. Спрашивать время прямо в теле
+   * компонента нельзя: рендер обязан быть предсказуемым, а `Date.now()` на
+   * каждом проходе даёт новый ответ — при перерисовке экран мог бы уехать на
+   * другой день.
+   */
+  const [todayMs, setTodayMs] = useState<number | null>(null);
   useEffect(() => {
-    const update = () => setNowMinute(nowMinuteInTz());
+    const update = () => {
+      setNowMinute(nowMinuteInTz());
+      setTodayMs(Date.now());
+    };
     const raf = requestAnimationFrame(update); // не синхронно в теле эффекта
     const t = setInterval(update, 30_000);
     return () => {
@@ -41,23 +71,100 @@ export function TodayClient() {
       clearInterval(t);
     };
   }, []);
+  /**
+   * Какой день показан: 0 — сегодня, дальше — назад по суткам.
+   *
+   * «Сегодня» отвечал только на вопрос «как идёт день», а «как прошёл вчерашний»
+   * приходилось искать в отчётах — другим экраном, с другими подписями и другим
+   * периодом. Один и тот же вопрос не должен требовать двух разных мест.
+   *
+   * Сегодняшний день берём из общего стора: он и так обновляется сам каждую
+   * минуту. Прошедшие читаем с сервера по требованию — держать их в сторе
+   * незачем, они не меняются.
+   */
+  const [dayBack, setDayBack] = useState(0);
+  const [dir, setDir] = useState<"back" | "fwd">("back");
+  /**
+   * Загруженный день лежит вместе со своим ключом.
+   *
+   * Иначе при быстром листании на экран попадали числа предыдущего запроса:
+   * ответы приходят не в том порядке, в каком уходили. Ключ отвечает на
+   * вопрос «эти данные точно про тот день, который показан».
+   */
+  const [loaded, setLoaded] = useState<{ key: string; rows: typeof db.appointments } | null>(null);
+
+  useEffect(() => {
+    if (dayBack === 0 || todayMs === null) return;
+    const key = dayKeyBack(todayMs, dayBack);
+    let alive = true;
+    getAppointmentsForDay(key)
+      .then((rows) => {
+        if (alive) setLoaded({ key, rows });
+      })
+      .catch(() => {
+        // Пустой день и несостоявшееся чтение выглядят одинаково. Показать
+        // пустой день честнее, чем оставить на экране числа другого.
+        if (alive) setLoaded({ key, rows: [] });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [dayBack, todayMs]);
+
+  const goBack = () => {
+    setDir("back");
+    setDayBack((d) => Math.min(MAX_DAYS_BACK, d + 1));
+  };
+  const goForward = () => {
+    setDir("fwd");
+    setDayBack((d) => Math.max(0, d - 1));
+  };
+  const goToday = () => {
+    setDir("fwd");
+    setDayBack(0);
+  };
+
   // Исключения расписания (праздник, санитарный день) приходят с сервера:
   // они меняют и полосу кабинетов, и список свободных окон.
   const [clinicDay, setClinicDay] = useState<ClinicDayView | null>(null);
   useEffect(() => {
-    getClinicDayToday().then(setClinicDay).catch(() => {});
-  }, []);
+    let alive = true;
+    // График дня — того дня, который показан: у субботы своё окно, а в
+    // праздник клиника закрыта. Подставлять сюда сегодняшнее окно нельзя.
+    getClinicDay(dayBack === 0 || todayMs === null ? undefined : dayKeyBack(todayMs, dayBack))
+      .then((d) => {
+        if (alive) setClinicDay(d);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [dayBack, todayMs]);
 
-  const date = dateLabelInTz();
+  const isToday = dayBack === 0;
+  const wantKey = isToday || todayMs === null ? null : dayKeyBack(todayMs, dayBack);
+  const pastAppts = loaded !== null && loaded.key === wantKey ? loaded.rows : null;
+  /** День ещё едет с сервера — приглушаем, а не мигаем пустотой. */
+  const dayPending = !isToday && pastAppts === null;
+  /** Визиты показанного дня: сегодняшние из стора, прошедшие — с сервера. */
+  const appts = isToday ? db.appointments : (pastAppts ?? []);
+  const shownAt = new Date((todayMs ?? 0) - dayBack * 24 * 3600 * 1000);
+  const date = isToday ? dateLabelInTz() : dateLabelInTz("Europe/Moscow", shownAt);
   // Рабочее окно дня — с учётом исключений: в праздник свободных окон нет.
   const day = clinicDay && !clinicDay.closed
     ? { startMinute: clinicDay.startMinute, endMinute: clinicDay.endMinute }
     : undefined;
   // Кабинеты — из базы клиники: они приходят вместе с рабочим днём.
-  const cabinets = buildCabinets(db.appointments, nowMinute, day, clinicDay?.rooms);
-  const freeWindows = clinicDay?.closed
-    ? []
-    : buildFreeWindows(db.appointments, nowMinute, day, clinicDay?.rooms);
+  /**
+   * Для прошедшего дня «сейчас» — его конец: полоса показывает день целиком,
+   * а не обрубок до текущей минуты. Метка «сейчас» на вчерашней полосе —
+   * неправда о том дне.
+   */
+  const stripMinute = isToday ? nowMinute : (day?.endMinute ?? 24 * 60);
+  const cabinets = buildCabinets(appts, stripMinute, day, clinicDay?.rooms);
+  // Свободные окна — вопрос про «куда записать», он есть только у сегодня.
+  const freeWindows =
+    !isToday || clinicDay?.closed ? [] : buildFreeWindows(appts, nowMinute, day, clinicDay?.rooms);
 
   /**
    * Итоги дня.
@@ -72,10 +179,12 @@ export function TodayClient() {
    * первый визит пациента со статусом «пришёл», повторные — все остальные
    * пришедшие. Иначе у клиники снова появятся две правды.
    */
-  const scheduled = db.appointments.length;
-  const arrived = db.appointments.filter((a) => a.status === "arrived");
-  const noShow = db.appointments.filter((a) => a.status === "no_show");
-  const ahead = db.appointments.filter((a) => a.status === "planned" || a.status === "confirmed");
+  const scheduled = appts.length;
+  const arrived = appts.filter((a) => a.status === "arrived");
+  const noShow = appts.filter((a) => a.status === "no_show");
+  const ahead = isToday
+    ? appts.filter((a) => a.status === "planned" || a.status === "confirmed")
+    : [];
 
   const revenue = arrived.reduce((sum, a) => sum + (a.price ?? 0), 0);
   const avgCheck = averageCheck(revenue, arrived.length);
@@ -154,8 +263,47 @@ export function TodayClient() {
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Сегодня</h1>
-            <p className="text-text-muted mt-1 text-xs">
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">
+                {isToday ? "Сегодня" : "День"}
+              </h1>
+              {/*
+                Листалка дней. «Сегодня» отвечал только на вопрос «как идёт
+                день», а «как прошёл вчерашний» приходилось искать в отчётах —
+                другим экраном и с другими подписями. Один вопрос не должен
+                требовать двух разных мест.
+              */}
+              <div className="border-border bg-bg flex items-center gap-0.5 rounded-full border p-0.5">
+                <button
+                  type="button"
+                  onClick={goBack}
+                  disabled={dayBack >= MAX_DAYS_BACK}
+                  aria-label="Предыдущий день"
+                  className="text-text-muted hover:bg-list-gap hover:text-text flex size-6 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-35"
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  onClick={goForward}
+                  disabled={isToday}
+                  aria-label="Следующий день"
+                  className="text-text-muted hover:bg-list-gap hover:text-text flex size-6 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-35"
+                >
+                  ›
+                </button>
+              </div>
+              {!isToday ? (
+                <button
+                  type="button"
+                  onClick={goToday}
+                  className="text-accent-text hover:bg-accent-tint rounded-full px-2 py-0.5 text-xs transition-colors"
+                >
+                  вернуться к сегодня
+                </button>
+              ) : null}
+            </div>
+            <p key={`d-${dayBack}`} className={`text-text-muted mt-1 text-xs day-in-${dir}`}>
               {date}
               {clinicDay?.closed ? (
                 <span className="text-accent-text ml-2 font-medium">
@@ -180,8 +328,11 @@ export function TodayClient() {
           и какая доходимость. Подпись «за сегодня» обязательна: одинаковые
           слова с разными числами на соседних экранах читаются как ошибка.
         */}
-        <div className="text-text-muted mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
-          <span className="text-text-subtle">за сегодня:</span>
+        <div
+          key={`sum-${dayBack}`}
+          className={`text-text-muted mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs day-in-${dir} ${dayPending ? "day-pending" : ""}`}
+        >
+          <span className="text-text-subtle">{isToday ? "за сегодня:" : `за ${dayLabelShort(shownAt)}:`}</span>
           <span>
             выручка{" "}
             <b className="num text-text font-medium whitespace-nowrap">{formatMoney(revenue)}</b>
@@ -234,29 +385,45 @@ export function TodayClient() {
               <span className="text-text-subtle">впереди {formatNumber(ahead.length)}</span>
             </>
           ) : null}
-          <span className="num text-text ml-auto font-medium">{formatMinute(nowMinute)}</span>
+          {isToday ? (
+            <span className="num text-text ml-auto font-medium">{formatMinute(nowMinute)}</span>
+          ) : (
+            <span className="text-text-subtle ml-auto">день завершён</span>
+          )}
         </div>
       </header>
 
       <div className="flex-1 overflow-auto px-7 pt-6 pb-11 max-md:px-5">
-        <div className="mb-6">
-          <TodayAlerts />
-        </div>
-        <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
+        {/*
+          Тревоги, обращения и свободные окна — про «сейчас», а не про
+          показанный день. Под шапкой прошедшего дня они читались бы как его
+          состояние, а это неправда: диалог ждёт ответа сегодня, а не в прошлый
+          вторник.
+        */}
+        {isToday ? (
+          <div className="mb-6">
+            <TodayAlerts />
+          </div>
+        ) : null}
+        <div key={`cab-${dayBack}`} className={`grid grid-cols-3 gap-4 max-lg:grid-cols-1 day-in-${dir} ${dayPending ? "day-pending" : ""}`}>
           {cabinets.map((cabinet) => (
             <CabinetCard key={cabinet.id} cabinet={cabinet} />
           ))}
         </div>
 
-        <section className="mt-[26px]">
-          <div className="mb-[13px] flex items-baseline gap-2.5">
-            <h2 className="text-base font-medium">Ближайшие свободные окна</h2>
-            <span className="text-text-subtle text-xs">по всем кабинетам, до конца дня</span>
-          </div>
-          <FreeWindows windows={freeWindows} />
-        </section>
+        {isToday ? (
+          <section className="mt-[26px]">
+            <div className="mb-[13px] flex items-baseline gap-2.5">
+              <h2 className="text-base font-medium">Ближайшие свободные окна</h2>
+              <span className="text-text-subtle text-xs">по всем кабинетам, до конца дня</span>
+            </div>
+            <FreeWindows windows={freeWindows} />
+          </section>
+        ) : null}
 
-        <div className="mt-8 grid grid-cols-2 gap-x-8 gap-y-6 max-lg:grid-cols-1">
+        <div
+          className={`mt-8 grid grid-cols-2 gap-x-8 gap-y-6 max-lg:grid-cols-1 ${isToday ? "" : "hidden"}`}
+        >
           <section>
             <div className="mb-3.5 flex items-baseline justify-between">
               <h2 className="text-base font-medium">Требует внимания</h2>

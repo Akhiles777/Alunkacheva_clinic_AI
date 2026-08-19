@@ -155,7 +155,13 @@ async function main() {
         share,
         paid: s.paidAmounts,
         sessions,
-        looksCourse: s.total >= MIN_VISITS && share >= ZERO_SHARE,
+        /**
+         * Курс открывает оплата. Услуга, по которой не заплатили ни разу, курс
+         * образовать не может в принципе — сколько бы нулей у неё ни было:
+         * подпись «курс» ставится только там, где продажа есть в данных.
+         * Предлагать такую услугу бессмысленно.
+         */
+        looksCourse: s.total >= MIN_VISITS && share >= ZERO_SHARE && s.paidAmounts.length > 0,
       };
     })
     .filter((r) => r.total > 0)

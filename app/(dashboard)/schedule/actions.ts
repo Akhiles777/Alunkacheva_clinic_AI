@@ -586,9 +586,21 @@ export interface ClinicDayView {
 }
 
 export async function getClinicDayToday(): Promise<ClinicDayView> {
+  return getClinicDay();
+}
+
+/**
+ * Рабочий день клиники на выбранную дату.
+ *
+ * «Сегодня» умеет листать назад, и брать для вчерашнего дня сегодняшнее окно
+ * нельзя: у субботы другой график, а в праздник клиника закрыта. Полоса
+ * кабинетов и подпись дня должны говорить о том дне, который показан.
+ */
+export async function getClinicDay(dateIso?: string): Promise<ClinicDayView> {
   const session = await getSession();
+  const at = dateIso ? new Date(`${dateIso}T12:00:00+03:00`) : new Date();
   const [day, rooms] = await Promise.all([
-    clinicDayFor(session.companyId, new Date()),
+    clinicDayFor(session.companyId, Number.isNaN(at.getTime()) ? new Date() : at),
     /**
      * Кабинеты — настоящие, из базы клиники.
      *

@@ -286,6 +286,8 @@ async function main() {
       status: true,
       isFirstVisit: true,
       revenue: true,
+      revenueSource: true,
+      courseId: true,
       durationMin: true,
       roomId: true,
       staffId: true,
@@ -330,6 +332,56 @@ async function main() {
   if (noSource > 0) {
     console.log(`  источники: ${noSource} из ${full.length} визитов без источника — строкой «не указан»`);
   }
+
+  /**
+   * Откуда взялась каждая сумма.
+   *
+   * Главная проверка после отказа от подстановки цен. Обязано выполняться:
+   * весь ноль лежит в бесплатных и курсовых, а деньги — только в записях
+   * YCLIENTS. Строка PRICE_LIST здесь означает, что полный перечёт не
+   * доделан: такие визиты всё ещё показывают выдуманные рубли.
+   */
+  console.log("\n── откуда суммы визитов ──");
+  const srcAcc = new Map<string, { n: number; sum: number }>();
+  for (const a of arrived) {
+    const acc = srcAcc.get(a.revenueSource) ?? { n: 0, sum: 0 };
+    acc.n += 1;
+    acc.sum += Number(a.revenue);
+    srcAcc.set(a.revenueSource, acc);
+  }
+  const LABEL: Record<string, string> = {
+    RECORD: "стоимость из записи YCLIENTS",
+    PREPAID: "сеанс курса — оплачен в день продажи",
+    FREE: "подарок, скидка 100%",
+    UNKNOWN: "бесплатно: стоимости в записи нет",
+    PRICE_LIST: "СТАРОЕ ПРАВИЛО, цена из прайса",
+  };
+  for (const [src, v] of [...srcAcc.entries()].sort((a, b) => b[1].sum - a[1].sum)) {
+    console.log(`  ${src.padEnd(11)} ${String(v.n).padStart(5)} визитов · ${money(v.sum)} — ${LABEL[src] ?? "?"}`);
+  }
+  const stale = srcAcc.get("PRICE_LIST");
+  if (stale) {
+    console.log(
+      `  ✗ ${stale.n} визитов на ${money(stale.sum)} остались со старым правилом.\n` +
+        "      Нужен полный перечёт: npx tsx scripts/yclients-resync.ts --apply",
+    );
+  }
+  const zeroSources = ["PREPAID", "FREE", "UNKNOWN"];
+  const leaked = zeroSources.filter((k) => (srcAcc.get(k)?.sum ?? 0) !== 0);
+  console.log(
+    leaked.length === 0
+      ? "  ✓ бесплатные и курсовые визиты выручки не создают"
+      : `  ✗ у ${leaked.join(", ")} ненулевая сумма — это выдуманные деньги`,
+  );
+
+  const courseSessions = arrived.filter((a) => a.courseId !== null).length;
+  const prepaid = srcAcc.get("PREPAID")?.n ?? 0;
+  console.log(
+    `  сеансов, привязанных к курсу: ${courseSessions} из ${prepaid} курсовых` +
+      (prepaid > 0 && courseSessions === 0
+        ? "\n      ни одного курса не собрано: оплаты курса нет в записях либо услуга не отмечена курсовой"
+        : ""),
+  );
 
   console.log(
     `  статусы: ` +

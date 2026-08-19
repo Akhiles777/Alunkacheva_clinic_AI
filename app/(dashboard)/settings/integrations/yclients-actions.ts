@@ -61,8 +61,8 @@ export interface YclientsState {
   quality: {
     /** Сеансы курса: деньги приняты в день продажи, у сеанса ноль законен. */
     courseSessions: number;
-    /** Визиты, где цену забыли проставить: ноль без объяснения. */
-    priceMissing: number;
+    /** Приёмы без стоимости в записи: клиника провела их бесплатно. */
+    freeOfCharge: number;
     /** Визиты, отданные бесплатно: скидка 100%, акция, отработка. */
     free: number;
     /** Группы «один пациент, один специалист, одно время» — задвоенные приёмы. */
@@ -172,13 +172,15 @@ export async function getYclientsState(): Promise<YclientsState> {
     }),
   ]);
 
-  const [courseSessions, priceMissing, free, arrivedInFuture, duplicateRows] = await Promise.all([
+  const [courseSessions, freeOfCharge, free, arrivedInFuture, duplicateRows] = await Promise.all([
     prisma.appointment.count({
       where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "PREPAID" },
     }),
     /**
-     * Ноль без объяснения. Раньше такие визиты закрывались ценой из прайса и с
-     * экрана исчезали — вместе с ними исчезал повод сходить и проставить цену.
+     * Стоимости в записи нет, и это решение клиники, а не пробел: приём
+     * сотруднику, контрольный визит в стоимости основного, сеанс без оплаты.
+     * Раньше такие визиты закрывались ценой из прайса и превращались в
+     * выручку, которой не было.
      */
     prisma.appointment.count({
       where: {
@@ -232,7 +234,7 @@ export async function getYclientsState(): Promise<YclientsState> {
     changes: { newVisits, changedVisits, newPatients, arrivedMarked },
     quality: {
       courseSessions,
-      priceMissing,
+      freeOfCharge,
       free,
       duplicateGroups: Number(duplicateRows[0]?.groups ?? 0),
       arrivedInFuture,

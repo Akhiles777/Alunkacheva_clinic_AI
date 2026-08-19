@@ -141,10 +141,7 @@ export function YclientsBlock() {
             сеансов по курсу <b className="num text-text">{state.quality.courseSessions}</b>
           </span>
           <span>
-            цена не проставлена{" "}
-            <b className={`num ${state.quality.priceMissing > 0 ? "text-accent-text" : "text-text"}`}>
-              {state.quality.priceMissing}
-            </b>
+            бесплатных приёмов <b className="num text-text">{state.quality.freeOfCharge}</b>
           </span>
           <span>
             отдано бесплатно <b className="num text-text">{state.quality.free}</b>
@@ -179,11 +176,11 @@ export function YclientsBlock() {
             назначаются в «Настройки → Услуги».
           </p>
         ) : null}
-        {state.quality.priceMissing > 0 ? (
-          <p className="text-text-muted mt-2 text-xs">
-            «Цена не проставлена» — в записи YCLIENTS стоимости нет, и услуга не курсовая. Мы такой
-            приём считаем за ноль: подставлять цену из прайса нельзя, это выдуманные деньги.
-            Поправить стоит в YCLIENTS — тогда выручка вырастет на настоящую сумму.
+        {state.quality.freeOfCharge > 0 ? (
+          <p className="text-text-subtle mt-2 text-xs">
+            «Бесплатных» — в записи YCLIENTS стоимости нет: приём сотруднику, контрольный визит в
+            стоимости основного, сеанс без оплаты. Считаем такой приём за ноль — подставлять цену
+            из прайса нельзя, это была бы выручка, которой клиника не получала.
           </p>
         ) : null}
       </div>

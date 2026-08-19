@@ -406,22 +406,20 @@ export function PatientCardBody({
                 </span>
                 {/*
                   Ноль без пояснения читался как «цену не заполнили», и
-                  администратор шёл её искать. Нулей же три разных: подарок по
-                  скидке, сеанс оплаченного курса и действительно забытая цена.
-                  Первые два — факт, и выглядеть должны как факт.
+                  администратор шёл её искать. Решение владельца простое: где
+                  цены нет — там бесплатно. Подпись «курс» ставится только
+                  там, где оплата курса есть в данных: сеанс, к которому не
+                  нашлось продажи, называть курсом нельзя — это было бы
+                  утверждение о деньгах, которых мы не видели.
                 */}
                 {visit.amount > 0 ? (
                   <span className="num text-text-muted flex-none text-xs">{formatMoney(visit.amount)}</span>
-                ) : visit.amountSource === "FREE" ? (
-                  <span className="text-text-muted flex-none text-xs">бесплатно</span>
-                ) : visit.amountSource === "PREPAID" ? (
+                ) : visit.courseSession ? (
                   <span className="text-text-muted flex-none text-xs">
-                    {visit.courseSession
-                      ? `курс ${visit.courseSession.index}/${visit.courseSession.total}`
-                      : "по курсу"}
+                    курс {visit.courseSession.index}/{visit.courseSession.total}
                   </span>
                 ) : visit.status === "arrived" ? (
-                  <span className="text-text-subtle flex-none text-xs">цена не указана</span>
+                  <span className="text-text-muted flex-none text-xs">бесплатно</span>
                 ) : null}
               </li>
             ))}
