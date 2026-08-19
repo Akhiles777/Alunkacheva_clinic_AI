@@ -182,21 +182,28 @@ describe("курс открывает продажа из кассы", () => {
 describe("кому принадлежит продажа", () => {
   const sale = (id: string, d: number, amount = 28000) => ({ id, at: day(d), amount });
 
-  it("одна покупка достаётся одной услуге, а не всем сразу", () => {
-    // Раньше 28 000 ₽ открывали курс и по БОС, и по НАК: у пациента сеансы
-    // обеих, и обе видели одну и ту же операцию.
+  it("кандидат один — привязываем", () => {
+    const out = assignSales([sale("s1", 17)], new Map([["bos", [day(18), day(19)]]]));
+    expect(out.byService.get("bos")).toHaveLength(1);
+    expect(out.ambiguous).toEqual([]);
+  });
+
+  it("кандидатов двое — не гадаем", () => {
+    // Купил курс БОС и в тот же день сходил на НАК: догадка «куда пришёл
+    // первым делом» приписала бы курс не туда.
     const out = assignSales(
       [sale("s1", 17)],
       new Map([
-        ["bos", [day(18), day(19)]],
-        ["nak", [day(25)]],
+        ["bos", [day(18)]],
+        ["nak", [day(18)]],
       ]),
     );
-    expect(out.get("bos")).toHaveLength(1);
-    expect(out.get("nak")).toBeUndefined();
+    expect(out.byService.size).toBe(0);
+    expect(out.ambiguous).toHaveLength(1);
   });
 
-  it("продажа уходит туда, куда пришли первым делом", () => {
+  it("порядок сеансов на решение не влияет", () => {
+    // Раньше побеждал тот, чей сеанс раньше, — то есть случайность.
     const out = assignSales(
       [sale("s1", 17)],
       new Map([
@@ -204,30 +211,28 @@ describe("кому принадлежит продажа", () => {
         ["nak", [day(18)]],
       ]),
     );
-    expect(out.get("nak")).toHaveLength(1);
-    expect(out.get("bos")).toBeUndefined();
+    expect(out.byService.size).toBe(0);
+    expect(out.ambiguous).toHaveLength(1);
   });
 
-  it("сеансов после покупки нет — продажа остаётся ничьей", () => {
-    // Мог быть куплен товар или разовая услуга: приписывать курсу нельзя.
+  it("сеансов после покупки нет — продажа не про курс", () => {
+    // Мог быть куплен товар: молчим, а не считаем это неразобранным.
     const out = assignSales([sale("s1", 17)], new Map([["bos", [day(10)]]]));
-    expect(out.size).toBe(0);
+    expect(out.byService.size).toBe(0);
+    expect(out.ambiguous).toEqual([]);
   });
 
   it("покупка слишком давняя для этих сеансов", () => {
     const out = assignSales([sale("s1", 1)], new Map([["bos", [day(28)]]]), 5);
-    expect(out.size).toBe(0);
+    expect(out.byService.size).toBe(0);
+    expect(out.ambiguous).toEqual([]);
   });
 
-  it("две покупки могут достаться разным услугам", () => {
+  it("две покупки при одной услуге достаются ей обе", () => {
     const out = assignSales(
       [sale("s1", 10), sale("s2", 20)],
-      new Map([
-        ["bos", [day(11)]],
-        ["nak", [day(21)]],
-      ]),
+      new Map([["bos", [day(11), day(21)]]]),
     );
-    expect(out.get("bos")?.map((s) => s.id)).toEqual(["s1"]);
-    expect(out.get("nak")?.map((s) => s.id)).toEqual(["s2"]);
+    expect(out.byService.get("bos")?.map((x) => x.id)).toEqual(["s1", "s2"]);
   });
 });

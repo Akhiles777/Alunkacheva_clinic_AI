@@ -439,6 +439,10 @@ async function main() {
         "\n      это НЕ выручка периода: деньги за курс приходят кассой, а выручка" +
         "\n      считается по записям YCLIENTS — складывать их нельзя",
     );
+    const oversold = courseRows.filter((c) => Number(c.amount) <= 0);
+    if (oversold.length > 0) {
+      console.log(`  ✗ ${oversold.length} курсов с нулевой суммой — покупка потерялась`);
+    }
     const broken = courseRows.filter((c) => c.sessionsUsed > c.sessionsTotal);
     console.log(
       broken.length === 0

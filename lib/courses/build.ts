@@ -182,44 +182,60 @@ export function pricePerSession(amount: number, sessionsTotal: number): number {
  * Какой услуге принадлежит продажа.
  *
  * Покупка в кассе не говорит, за какую услугу заплатили: у операции есть
- * клиент, сумма и номер продажи — и всё. Пока каждая услуга разбирала продажи
- * сама, одна покупка на 28 000 ₽ открывала курс и по БОС, и по НАК: у
- * пациента бывают сеансы обеих, и обе видели одну и ту же операцию. Курс
- * удваивался, а вместе с ним и «оплачено вперёд».
+ * клиент, сумма и номер продажи — и всё.
  *
- * Отдаём продажу той услуге, чей ближайший сеанс после покупки случился
- * раньше: за что заплатили, к тому и пришли первым делом. Если после покупки
- * бесплатных сеансов нет ни у одной услуги, продажа остаётся ничьей — это
- * может быть товар или разовая услуга, и приписывать её курсу нельзя.
+ * Здесь стояла догадка: отдавали услуге, к которой пациент пришёл первым
+ * делом после покупки. На большинстве случаев она угадывает, но именно
+ * «угадывает»: человек купил курс БОС и в тот же день сходил на НАК — и курс
+ * оказывался приписан не туда. Догадка о деньгах клиента — не то, что можно
+ * показывать владельцу как факт.
+ *
+ * Поэтому теперь привязываем только тогда, когда выбора нет: после покупки у
+ * пациента есть бесплатные сеансы РОВНО ОДНОЙ курсовой услуги. Два кандидата
+ * — продажа остаётся неразобранной, и о ней говорится вслух. Ни одного —
+ * продажа к курсам отношения не имеет: мог быть куплен товар.
  */
+export interface SaleAssignment {
+  /** Услуга → её продажи. Только однозначные. */
+  byService: Map<string, CourseSale[]>;
+  /**
+   * Продажи, у которых кандидатов больше одного.
+   *
+   * Их курс не создаётся вовсе. Молчать нельзя: пациент прошёл курс, а в
+   * разделе его нет — это выглядит как потеря данных, а не как честное «мы не
+   * знаем, за какую из двух услуг заплатили».
+   */
+  ambiguous: CourseSale[];
+}
+
 export function assignSales(
   sales: CourseSale[],
   /** Даты бесплатных сеансов пациента по каждой курсовой услуге. */
   zeroVisitsByService: Map<string, Date[]>,
   windowDays: number = SALE_WINDOW_DAYS,
-): Map<string, CourseSale[]> {
-  const out = new Map<string, CourseSale[]>();
+): SaleAssignment {
+  const byService = new Map<string, CourseSale[]>();
+  const ambiguous: CourseSale[] = [];
   const windowMs = windowDays * 24 * 3600 * 1000;
 
   for (const sale of [...sales].sort((a, b) => a.at.getTime() - b.at.getTime())) {
-    let bestService: string | null = null;
-    let bestAt = Infinity;
-
+    const candidates: string[] = [];
     for (const [serviceId, dates] of zeroVisitsByService) {
-      for (const d of dates) {
+      const fits = dates.some((d) => {
         const gap = d.getTime() - sale.at.getTime();
-        if (gap < 0 || gap > windowMs) continue;
-        if (d.getTime() < bestAt) {
-          bestAt = d.getTime();
-          bestService = serviceId;
-        }
-        break; // даты отсортированы: первая подходящая и есть ближайшая
-      }
+        return gap >= 0 && gap <= windowMs;
+      });
+      if (fits) candidates.push(serviceId);
     }
 
-    if (bestService === null) continue;
-    out.set(bestService, [...(out.get(bestService) ?? []), sale]);
+    if (candidates.length === 1) {
+      const serviceId = candidates[0];
+      byService.set(serviceId, [...(byService.get(serviceId) ?? []), sale]);
+    } else if (candidates.length > 1) {
+      ambiguous.push(sale);
+    }
+    // Кандидатов нет — продажа не про курс. Это нормально и молчания стоит.
   }
 
-  return out;
+  return { byService, ambiguous };
 }

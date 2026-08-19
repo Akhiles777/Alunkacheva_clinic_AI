@@ -44,6 +44,14 @@ export interface LinkCoursesResult {
   sessions: number;
   /** Сеансов, продажу которых в данных найти не удалось. */
   orphans: number;
+  /**
+   * Продажи, которые нельзя отнести к одной услуге.
+   *
+   * После покупки у пациента сеансы двух курсовых услуг сразу, и за какую из
+   * них заплатили — из кассовой операции не видно. Курс по такой продаже не
+   * создаём: догадка о деньгах клиента не должна выглядеть фактом.
+   */
+  ambiguous: number;
 }
 
 /** Размер курса, если клиника его не указала. */
@@ -87,7 +95,9 @@ export async function linkCourses(
     where: { companyId, isCourse: true },
     select: { id: true, title: true, price: true, defaultSessions: true },
   });
-  if (services.length === 0) return { courses: 0, sessions: 0, orphans: 0, priceless: [] };
+  if (services.length === 0) {
+    return { courses: 0, sessions: 0, orphans: 0, priceless: [], ambiguous: 0 };
+  }
 
   let courses = 0;
   let sessions = 0;
@@ -138,8 +148,17 @@ export async function linkCourses(
 
   /** Продажи, розданные по услугам: пациент → услуга → покупки. */
   const salesFor = new Map<string, Map<string, CourseSale[]>>();
+  /**
+   * Продажи, у которых кандидатов больше одного.
+   *
+   * Курс по ним не создаётся: приписать деньги наугад к одной из двух услуг
+   * значит показать владельцу догадку под видом факта. Считаем их и называем.
+   */
+  let ambiguous = 0;
   for (const [patientId, sales] of salesByPatient) {
-    salesFor.set(patientId, assignSales(sales, zeroVisits.get(patientId) ?? new Map()));
+    const assigned = assignSales(sales, zeroVisits.get(patientId) ?? new Map());
+    salesFor.set(patientId, assigned.byService);
+    ambiguous += assigned.ambiguous.length;
   }
 
   for (const service of services) {
@@ -276,5 +295,5 @@ export async function linkCourses(
     }
   }
 
-  return { courses, sessions, orphans, priceless };
+  return { courses, sessions, orphans, priceless, ambiguous };
 }
