@@ -53,9 +53,15 @@ async function main() {
    */
   const remoteInfo = new Map<
     number,
-    { staffId: number; clientId: number | null; phone: string | null; services: number; at: string }
+    {
+      staffId: number;
+      clientId: number | null;
+      phone: string | null;
+      services: number;
+      minutes: number;
+      at: string;
+    }
   >();
-  let records = 0;
   let multiService = 0;
 
   for (const w of monthWindows(from, now)) {
@@ -71,13 +77,13 @@ async function main() {
         if (d.deleted) continue;
         const at = new Date(d.datetime);
         if (at < from || at > now) continue;
-        records += 1;
         remoteIds.add(d.id);
         remoteInfo.set(d.id, {
           staffId: d.staff_id,
           clientId: d.client?.id ?? null,
           phone: d.client?.phone?.trim() || null,
           services: (d.services ?? []).length,
+          minutes: Math.round((d.seance_length ?? 0) / 60),
           at: d.datetime,
         });
         const svc = d.services ?? [];
@@ -97,6 +103,12 @@ async function main() {
     }
   }
 
+  /**
+   * Считаем УНИКАЛЬНЫЕ номера. Окна выгрузки соседствуют по датам, и запись на
+   * стыке приходила дважды: итог получался больше настоящего, а разрыв с нашей
+   * базой — страшнее, чем есть.
+   */
+  const records = remoteIds.size;
   console.log(`── записей в YCLIENTS за период: ${records} ──`);
   console.log(`   из них с несколькими услугами: ${multiService}\n`);
 
@@ -209,7 +221,18 @@ async function main() {
 
     console.log(`  ✗ НЕ ДОЕХАЛО: ${missing.length} записей — их нет у нас ни в каком виде.`);
     for (const [why, ids] of [...reasons.entries()].sort((a, b) => b[1].length - a[1].length)) {
+      /**
+       * Есть ли у записи услуги — по этому видно, визит это или блокировка
+       * времени. Администратор закрывает окно в расписании записью без
+       * клиента: комната занята, но приёма нет. Лечится это по-разному.
+       */
+      const withServices = ids.filter((id) => (remoteInfo.get(id)?.services ?? 0) > 0).length;
+      const minutes = ids.reduce((sum, id) => sum + (remoteInfo.get(id)?.minutes ?? 0), 0);
       console.log(`      ${ids.length} — ${why}`);
+      console.log(
+        `          из них с услугами ${withServices}, без услуг ${ids.length - withServices}` +
+          ` · всего ${Math.round(minutes / 60)} ч`,
+      );
       console.log(`          номера: ${ids.slice(0, 10).join(", ")}${ids.length > 10 ? " …" : ""}`);
     }
   } else {
@@ -235,6 +258,73 @@ async function main() {
     );
   }
   if (withoutService > 0) console.log(`  визитов без услуги вовсе: ${withoutService}`);
+
+  /**
+   * Остальные разрезы одного и того же периода.
+   *
+   * Смысл проверки один: числа, которые обязаны совпадать, должны совпадать.
+   * Разошлись — значит два экрана покажут разное, и доверия не будет ни
+   * одному. Именно так этот проект и обжигался: «205 против 215», «21 против
+   * 23», «неявки 0%».
+   */
+  console.log("\n── остальные разрезы ──");
+  const full = await prisma.appointment.findMany({
+    where: { companyId: company.id, deletedAt: null, startAt: { gte: from, lt: now } },
+    select: {
+      status: true,
+      isFirstVisit: true,
+      revenue: true,
+      durationMin: true,
+      roomId: true,
+      staffId: true,
+      sourceId: true,
+      primaryServiceId: true,
+    },
+  });
+  const arrived = full.filter((a) => a.status === "ARRIVED");
+  const money = (n: number) => `${Math.round(n).toLocaleString("ru-RU")} ₽`;
+
+  // Первичные и повторные обязаны в сумме давать пришедших (§8).
+  const first = arrived.filter((a) => a.isFirstVisit).length;
+  const repeat = arrived.length - first;
+  console.log(`  пришедшие: ${arrived.length} = первичные ${first} + повторные ${repeat}` +
+    `${first + repeat === arrived.length ? "  ✓" : "  ✗"}`);
+
+  // Выручка по визитам должна совпадать с суммой по специалистам и по услугам.
+  const revTotal = arrived.reduce((s2, a) => s2 + Number(a.revenue), 0);
+  const byStaff = new Map<string, number>();
+  const bySvc = new Map<string | null, number>();
+  for (const a of arrived) {
+    byStaff.set(a.staffId, (byStaff.get(a.staffId) ?? 0) + Number(a.revenue));
+    bySvc.set(a.primaryServiceId, (bySvc.get(a.primaryServiceId) ?? 0) + Number(a.revenue));
+  }
+  const revStaff = [...byStaff.values()].reduce((s2, v) => s2 + v, 0);
+  const revSvc = [...bySvc.values()].reduce((s2, v) => s2 + v, 0);
+  console.log(
+    `  выручка: визиты ${money(revTotal)} · по специалистам ${money(revStaff)} · по услугам ${money(revSvc)}` +
+      `${revTotal === revStaff && revTotal === revSvc ? "  ✓" : "  ✗ РАСХОЖДЕНИЕ"}`,
+  );
+
+  // Кабинеты: визит либо в кабинете, либо без него — третьего нет.
+  const withRoom = full.filter((a) => a.roomId !== null).length;
+  const noRoom = full.length - withRoom;
+  console.log(
+    `  кабинеты: ${withRoom} визитов с кабинетом + ${noRoom} без = ${full.length}` +
+      (noRoom > 0 ? `\n      ${noRoom} визитов в загрузку кабинетов не попадают вовсе` : "  ✓"),
+  );
+
+  // Источники: без источника визит не виден ни в одной строке разреза.
+  const noSource = full.filter((a) => a.sourceId === null).length;
+  if (noSource > 0) {
+    console.log(`  источники: ${noSource} из ${full.length} визитов без источника — строкой «не указан»`);
+  }
+
+  console.log(
+    `  статусы: ` +
+      [...new Map(full.map((a) => [a.status, full.filter((x) => x.status === a.status).length])).entries()]
+        .map(([k, v]) => `${k} ${v}`)
+        .join(" · "),
+  );
 
   await prisma.$disconnect();
 }
