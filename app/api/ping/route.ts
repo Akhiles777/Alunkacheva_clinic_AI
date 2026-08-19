@@ -14,5 +14,17 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ ok: true, at: new Date().toISOString() });
+  /**
+   * Отпечаток сборки — чтобы вкладка узнала, что устарела.
+   *
+   * Значение подставляется в бандл на сборке, поэтому у старой вкладки оно
+   * своё, а здесь — нынешнее. Сравнение этих двух строк и есть единственный
+   * надёжный способ поймать «Failed to find Server Action»: в проде текст
+   * этой ошибки до браузера не доезжает.
+   */
+  return NextResponse.json({
+    ok: true,
+    at: new Date().toISOString(),
+    build: process.env.NEXT_PUBLIC_BUILD_ID ?? null,
+  });
 }

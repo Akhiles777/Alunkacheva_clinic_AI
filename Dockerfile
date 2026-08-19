@@ -32,6 +32,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # передаётся аргументом сборки.
 ARG NEXT_PUBLIC_VAPID_PUBLIC=""
 ENV NEXT_PUBLIC_VAPID_PUBLIC=${NEXT_PUBLIC_VAPID_PUBLIC}
+# Автономная сборка нужна образу — и только ему. На сервере под pm2 приложение
+# поднимается через `next start`, а он с ней не работает и предупреждает об
+# этом при каждом запуске.
+ENV NEXT_OUTPUT=standalone
 RUN npm run build
 
 

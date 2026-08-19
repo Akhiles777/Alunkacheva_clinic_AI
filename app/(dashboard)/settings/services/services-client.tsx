@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Field, Group, Toggle } from "../_components/ui";
 import { saveServices, type ServiceRow, type ServicesPayload } from "./actions";
+import { reportMaybeStale } from "@/lib/client/stale-build";
 
 const KIND_OPTIONS: { value: ServiceRow["kind"]; label: string }[] = [
   { value: "OSTEOPATHY", label: "Остеопатия" },
@@ -87,8 +88,18 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
         setError(null);
         setNotice(res.notice ?? null);
       } catch (e) {
-        // Сюда долетает только неожиданное: проверки возвращаются данными.
-        setError(e instanceof Error ? e.message : "Не удалось сохранить");
+        /**
+         * Сюда долетает только неожиданное: проверки возвращаются данными.
+         * Чаще всего это устаревшая вкладка — серверного действия с таким
+         * идентификатором на новой сборке уже нет. Говорим сторожу, он
+         * предложит обновиться.
+         */
+        reportMaybeStale(e);
+        setError(
+          e instanceof Error
+            ? `${e.message} Если ошибка повторяется, обновите страницу: возможно, вышла новая версия.`
+            : "Не удалось сохранить",
+        );
       }
     });
   }

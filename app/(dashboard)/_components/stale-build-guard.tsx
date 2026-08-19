@@ -56,10 +56,42 @@ export function StaleBuildGuard() {
     // следующее обновление снова могло перезагрузить вкладку.
     const t = setTimeout(() => sessionStorage.removeItem(RELOADED_KEY), 15_000);
 
+    /**
+     * Спрашиваем версию у сервера, а не ждём ошибки.
+     *
+     * Ждать было бесполезно: в проде Next заменяет «Failed to find Server
+     * Action» безымянным сообщением о сбое рендера, и распознать её по тексту
+     * нельзя. Человек видел «Не удалось сохранить» и не мог ничего сделать —
+     * ровно так и не сохранялась цена услуги.
+     *
+     * Отпечаток сборки вшит в бандл, поэтому у старой вкладки он свой.
+     * Расхождение — точный признак, без догадок по строкам.
+     */
+    const mine = process.env.NEXT_PUBLIC_BUILD_ID;
+    const check = () => {
+      if (!mine || document.visibilityState === "hidden") return;
+      fetch("/api/ping", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: { build?: string | null } | null) => {
+          if (data?.build && data.build !== mine) handle("Failed to find Server Action");
+        })
+        .catch(() => {
+          // Сеть отвалилась — это не новая версия, перезагружать нельзя.
+        });
+    };
+    const poll = setInterval(check, 120_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    check();
+
     return () => {
       window.removeEventListener("unhandledrejection", onRejection);
       window.removeEventListener("error", onError);
       window.removeEventListener(STALE_BUILD_EVENT, onReported);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(poll);
       clearTimeout(t);
     };
   }, []);

@@ -434,8 +434,24 @@ export function PatientCardBody({
                   оплаченного курса и приём, за который клиника денег не брала.
                 */}
                 {visit.status !== "arrived" ? null : visit.amount > 0 ? (
-                  <span className="num text-text-muted flex-none text-xs">
-                    {formatMoney(visit.amount)}
+                  /*
+                    День продажи курса — это тоже приём, и его сумма и есть
+                    цена всего курса. Без пометки в истории видно только
+                    «25 000 ₽» рядом с сеансами по 0 ₽, и понять, откуда взялась
+                    сумма и что она закрывает, нельзя.
+                  */
+                  <span className="flex-none text-right">
+                    <span className="num text-text-muted block text-xs">
+                      {formatMoney(visit.amount)}
+                    </span>
+                    {visit.courseSession?.index === 1 ? (
+                      <span
+                        className="text-accent-text block text-2xs"
+                        title={`оплата курса из ${visit.courseSession.total} сеансов`}
+                      >
+                        оплата курса
+                      </span>
+                    ) : null}
                   </span>
                 ) : visit.courseSession ? (
                   <span className="text-text-muted flex-none text-xs">
