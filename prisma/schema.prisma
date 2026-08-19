@@ -274,6 +274,7 @@ model Company {
   internalChatRooms        InternalChatRoom[]
   internalChatParticipants InternalChatParticipant[]
   internalChatMessages     InternalChatMessage[]
+  aiChats                  AiChat[]
   sources                  Source[]
   webhookEvents            WebhookEvent[]
   auditLogs                AuditLog[]
@@ -854,6 +855,55 @@ model RoomScheduleException {
 
 // ─────────────────────────────────────────────────────────── сотрудники
 
+/// Сохранённый разговор владельца с ИИ-аналитиком.
+///
+/// Отдельно от Conversation/Message: там пациентские внешние каналы, они
+/// участвуют в воронке обращений, 24-часовых окнах и правилах агента (§5).
+/// Разбор бизнеса владельцем туда не относится.
+///
+/// Каждый чат — своя задача: «выручка за квартал», «загрузка кабинетов».
+/// Поэтому история хранится, а не живёт до перезагрузки страницы.
+model AiChat {
+  id        String  @id @default(cuid())
+  companyId String
+  /// Владелец разговора. Чаты не общие: у каждого свой список.
+  userId    String
+  /// Заголовок. Первый раз ставится из первого вопроса, дальше правится руками.
+  title     String
+
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+  lastMessageAt DateTime  @default(now()) @db.Timestamptz(3)
+  /// Мягкое удаление: разбор мог понадобиться в разговоре с клиентом.
+  deletedAt     DateTime? @db.Timestamptz(3)
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user     StaffUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages AiChatMessage[]
+
+  @@index([companyId, userId, lastMessageAt])
+  @@map("ai_chats")
+}
+
+enum AiChatRole {
+  USER
+  ASSISTANT
+}
+
+model AiChatMessage {
+  id     String     @id @default(cuid())
+  chatId String
+  role   AiChatRole
+  text   String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  chat AiChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+  @@map("ai_chat_messages")
+}
+
 model StaffUser {
   id           String    @id @default(cuid())
   companyId    String
@@ -884,6 +934,7 @@ model StaffUser {
   resolvedEscalations      Escalation[]              @relation("EscalationResolvedBy")
   auditLogs                AuditLog[]
   bookedAppointments       Appointment[]             @relation("AppointmentBookedByStaff")
+  aiChats                  AiChat[]
   createdNotes             PatientNote[]
   createdCallLogs          CallLog[]
   knowledgeEdits           KnowledgeEntry[]

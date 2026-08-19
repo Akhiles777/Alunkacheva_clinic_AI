@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { CabinetCard } from "./cabinet-card";
+import { DayPicker } from "./day-picker";
 import { FreeWindows } from "./free-windows";
 import { AttentionList, InquiryList } from "./today-lists";
 import { TodayAlerts } from "./today-alerts";
@@ -299,19 +300,21 @@ export function TodayClient() {
                   ‹
                 </button>
                 {/*
-                  Выбор даты, а не только шаг стрелкой: чтобы попасть на день
+                  Календарь, а не только шаг стрелкой: чтобы попасть на день
                   двухнедельной давности, стрелку пришлось бы нажать
                   четырнадцать раз.
                 */}
-                <input
-                  type="date"
-                  aria-label="Выбрать день"
-                  value={todayMs === null ? "" : dayKeyBack(todayMs, dayBack)}
-                  min={todayMs === null ? undefined : dayKeyBack(todayMs, MAX_DAYS_BACK)}
-                  max={todayMs === null ? undefined : dayKeyBack(todayMs, 0)}
-                  onChange={(e) => pickDay(e.target.value)}
-                  className="num text-text-muted hover:text-text w-[112px] cursor-pointer rounded-full bg-transparent px-1.5 text-center text-xs outline-none"
-                />
+                {todayMs === null ? (
+                  <span className="text-text-subtle px-2.5 py-1 text-xs">…</span>
+                ) : (
+                  <DayPicker
+                    value={dayKeyBack(todayMs, dayBack)}
+                    min={dayKeyBack(todayMs, MAX_DAYS_BACK)}
+                    max={dayKeyBack(todayMs, 0)}
+                    label={dayLabelShort(shownAt)}
+                    onPick={pickDay}
+                  />
+                )}
                 <button
                   type="button"
                   onClick={goForward}

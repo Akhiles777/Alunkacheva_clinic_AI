@@ -257,3 +257,45 @@ button {
 .page-enter {
   animation: page-enter 0.26s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
+
+/*
+  Крутящийся индикатор загрузки.
+  Кольцо с разрывом: акцентная дуга поверх спокойного кольца. Скорость
+  умеренная — быстрое вращение выглядит тревожно, а экран может ждать секунду.
+*/
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spinner {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2.5px solid var(--list-gap);
+  border-top-color: var(--accent);
+  animation: spin 0.75s linear infinite;
+}
+/* Мелкий вариант — внутри кнопок и строк. */
+.spinner-sm {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
+/* Календарь выбора дня: появляется мягко, а не выпрыгивает. */
+@keyframes day-pop {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.day-pop {
+  animation: day-pop 0.16s ease-out both;
+  transform-origin: top left;
+}

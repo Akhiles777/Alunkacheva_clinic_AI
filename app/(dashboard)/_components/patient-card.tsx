@@ -65,6 +65,15 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="text-text-subtle mb-2.5 text-2xs">{children}</div>;
 }
 
+/** Время визита в поясе клиники: «13:40». */
+function visitTime(iso: string): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(iso));
+}
+
 export function PatientCardBody({
   patientId,
   editable = false,
@@ -399,59 +408,49 @@ export function PatientCardBody({
               <li key={visit.id} className="flex items-baseline gap-3">
                 <span className="num text-text-subtle w-16 flex-none text-xs">{visit.date}</span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm">{visit.service}</span>
+                  <span className="block truncate text-sm">
+                    {/*
+                      Время визита обязательно. Без него два сеанса одного дня —
+                      а на курсе это обычное дело — выглядят одинаковыми
+                      строками, и карточка читается как задвоенная.
+                    */}
+                    {visit.at ? (
+                      <span className="num text-text-subtle mr-1.5">{visitTime(visit.at)}</span>
+                    ) : null}
+                    {visit.service}
+                  </span>
                   <span className={`text-2xs ${VISIT_STATUS[visit.status].cls}`}>
                     {visit.doctor} · {VISIT_STATUS[visit.status].label}
                   </span>
                 </span>
                 {/*
-                  Ноль без пояснения читался как «цену не заполнили», и
-                  администратор шёл её искать. Решение владельца простое: где
-                  цены нет — там бесплатно. Подпись «курс» ставится только
-                  там, где оплата курса есть в данных: сеанс, к которому не
-                  нашлось продажи, называть курсом нельзя — это было бы
-                  утверждение о деньгах, которых мы не видели.
+                  Деньги показываем только у состоявшегося приёма.
+                  У запланированного стоит цена из записи, но денег ещё не
+                  было, а у пациента на курсе она к тому же обнулится при
+                  закрытии сеанса — «2 800 ₽ ожидается» напротив сеанса, за
+                  который заплачено месяц назад, вводит в заблуждение.
+
+                  Нулей три, и они разные: подарок по скидке, сеанс
+                  оплаченного курса и приём, за который клиника денег не брала.
                 */}
-                {visit.amount > 0 ? (
-                  /*
-                    У запланированного визита это ожидание, а не деньги. После
-                    приёма YCLIENTS обнуляет стоимость, если сеанс закрыт
-                    курсом, — и в истории рядом оказываются «2 800 ₽» на
-                    завтра и «бесплатно» вчера. Разницу должен называть экран,
-                    иначе она читается как потерянная цена.
-                  */
-                  <span
-                    className={`num flex-none text-xs ${
-                      visit.status === "arrived" ? "text-text-muted" : "text-text-subtle"
-                    }`}
-                    title={
-                      visit.status === "arrived"
-                        ? "стоимость из записи YCLIENTS"
-                        : "цена по записи; после приёма она обнулится, если сеанс закроют курсом"
-                    }
-                  >
+                {visit.status !== "arrived" ? null : visit.amount > 0 ? (
+                  <span className="num text-text-muted flex-none text-xs">
                     {formatMoney(visit.amount)}
-                    {visit.status === "arrived" ? "" : " ожидается"}
                   </span>
                 ) : visit.courseSession ? (
                   <span className="text-text-muted flex-none text-xs">
                     курс {visit.courseSession.index}/{visit.courseSession.total}
                   </span>
-                ) : visit.paidEarlier && visit.status === "arrived" ? (
-                  /*
-                    Ноль в записи дня, но YCLIENTS помечает визит оплаченным:
-                    деньги приняты раньше, при продаже курса. Писать «бесплатно»
-                    здесь неправда — клиника их получила, просто в другой день.
-                  */
+                ) : visit.amountSource === "PREPAID" ? (
                   <span
                     className="text-text-muted flex-none text-xs"
                     title="оплачено раньше — при продаже курса; выручку даёт день продажи"
                   >
                     по курсу
                   </span>
-                ) : visit.status === "arrived" ? (
+                ) : (
                   <span className="text-text-muted flex-none text-xs">бесплатно</span>
-                ) : null}
+                )}
               </li>
             ))}
           </ul>
