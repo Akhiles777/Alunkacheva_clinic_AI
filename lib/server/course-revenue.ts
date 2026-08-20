@@ -23,8 +23,14 @@ import { prisma } from "@/lib/db";
  * выручкой того визита, и добавить их сюда значит удвоить одни и те же рубли.
  */
 
-/** Курсы, чьи деньги в выручке визитов НЕ лежат: куплены в кассе. */
-const PAID_IN_CASH = { origin: "YCLIENTS" } as const;
+/**
+ * Покупки, которые считаются выручкой.
+ *
+ * Похожие на курс по сумме — товар и разовая оплата в выручку курсов не идут.
+ * Оплата курса записью приёма сюда не попадает вовсе: у неё нет кассовой
+ * операции, её деньги уже в стоимости визита.
+ */
+const COUNTED = { isCourse: true } as const;
 export interface CoursePurchaseRow {
   id: string;
   /** Момент покупки. */
@@ -50,33 +56,41 @@ export async function coursePurchasesBetween(
   from: Date,
   to: Date,
 ): Promise<CoursePurchaseRow[]> {
-  const rows = await prisma.course.findMany({
-    where: { companyId, ...PAID_IN_CASH, purchasedAt: { gte: from, lt: to } },
+  const rows = await prisma.coursePurchase.findMany({
+    where: { companyId, ...COUNTED, purchasedAt: { gte: from, lt: to } },
     orderBy: { purchasedAt: "asc" },
     select: {
       id: true,
       purchasedAt: true,
       amount: true,
-      sessionsTotal: true,
-      service: { select: { title: true } },
       patient: { select: { name: true } },
-      appointments: { select: { staffId: true, staff: { select: { name: true } } } },
+      course: {
+        select: {
+          sessionsTotal: true,
+          service: { select: { title: true } },
+          appointments: { select: { staffId: true, staff: { select: { name: true } } } },
+        },
+      },
     },
   });
   return rows.map((r) => {
-    // Специалист курса — тот, кто провёл больше всего его сеансов.
-    const ids = r.appointments.map((a) => a.staffId).filter((x): x is string => Boolean(x));
+    /**
+     * Услуга и специалист известны, только когда покупка собралась в курс —
+     * то есть когда пациент начал ходить. До этого деньги есть, а чьи они —
+     * ещё неизвестно, и выдумывать нечего.
+     */
+    const visits = r.course?.appointments ?? [];
+    const ids = visits.map((a) => a.staffId).filter((x): x is string => Boolean(x));
     const staffId =
       ids.sort((a, b) => ids.filter((x) => x === b).length - ids.filter((x) => x === a).length)[0] ?? null;
-    const staffName = r.appointments.find((a) => a.staffId === staffId)?.staff?.name ?? null;
     return {
       id: r.id,
       at: r.purchasedAt,
       amount: Number(r.amount),
-      serviceTitle: r.service.title,
-      sessionsTotal: r.sessionsTotal,
+      serviceTitle: r.course?.service.title ?? "Курс (услуга не определена)",
+      sessionsTotal: r.course?.sessionsTotal ?? 0,
       patientName: r.patient.name,
-      staffName,
+      staffName: visits.find((a) => a.staffId === staffId)?.staff?.name ?? null,
       staffId,
     };
   });
@@ -88,8 +102,8 @@ export async function coursesSoldBetween(
   from: Date,
   to: Date,
 ): Promise<number> {
-  const agg = await prisma.course.aggregate({
-    where: { companyId, ...PAID_IN_CASH, purchasedAt: { gte: from, lt: to } },
+  const agg = await prisma.coursePurchase.aggregate({
+    where: { companyId, ...COUNTED, purchasedAt: { gte: from, lt: to } },
     _sum: { amount: true },
   });
   return Number(agg._sum.amount ?? 0);

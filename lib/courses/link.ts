@@ -3,6 +3,7 @@ import { startOfClinicDay } from "@/lib/clinic-time";
 import {
   assignSales,
   buildCourses,
+  planForAmount,
   pricePerSession,
   recentSessionPrice,
   type CoursePlanOption,
@@ -114,14 +115,15 @@ export async function linkCourses(
    */
   const purchases = coursePurchases(transactions);
   const salesByPatient = new Map<string, CourseSale[]>();
+  let patientByYclients = new Map<number, string>();
   if (purchases.length > 0) {
     const patients = await prisma.patient.findMany({
       where: { companyId, yclientsId: { in: [...new Set(purchases.map((p) => p.clientId))] } },
       select: { id: true, yclientsId: true },
     });
-    const byYclients = new Map(patients.map((p) => [p.yclientsId as number, p.id]));
+    patientByYclients = new Map(patients.map((p) => [p.yclientsId as number, p.id]));
     for (const p of purchases) {
-      const patientId = byYclients.get(p.clientId);
+      const patientId = patientByYclients.get(p.clientId);
       if (!patientId) continue;
       const list = salesByPatient.get(patientId) ?? [];
       /**
@@ -300,6 +302,46 @@ export async function linkCourses(
     }
   }
 
+  /**
+   * Сохраняем покупки до того, как разбираться, чей это курс.
+   *
+   * Деньги пришли в день продажи — это выручка того дня, и она не должна
+   * ждать первого сеанса. Раньше продажа жила только внутри курса, а курс
+   * появлялся, когда пациент начинал ходить: покупка двадцатого августа за
+   * 26 000 ₽ с первым сеансом позже в выручке двадцатого не появлялась вовсе.
+   *
+   * Похожа ли сумма на курс, решают планы всех курсовых услуг клиники: товар
+   * и разовая оплата в выручку курсов не идут.
+   */
+  /** Варианты курса услуги — те же, что видит раздача продаж. */
+  const declaredPlans = (id: string): CoursePlanOption[] => {
+    const fromDirectory = declared.get(id);
+    if (fromDirectory && fromDirectory.length > 0) return fromDirectory;
+    const size = services.find((sv) => sv.id === id)?.defaultSessions ?? DEFAULT_SESSIONS;
+    const price = (sessionPrices.get(id) ?? 0) * size;
+    return price > 0 ? [{ price, sessions: size }] : [];
+  };
+
+  const everyPlan = services.flatMap((sv) => declaredPlans(sv.id));
+  for (const p of purchases) {
+    const patientId = patientByYclients.get(p.clientId);
+    if (!patientId || p.saleId === null) continue;
+    const data = {
+      amount: p.amount,
+      purchasedAt: p.at,
+      isCourse: planForAmount(p.amount, everyPlan) !== null,
+    };
+    await prisma.coursePurchase
+      .upsert({
+        where: { companyId_yclientsSaleId: { companyId, yclientsSaleId: p.saleId } },
+        create: { companyId, patientId, yclientsSaleId: p.saleId, ...data },
+        update: data,
+      })
+      .catch(() => {
+        // Одна неудачная строка не должна валить сборку курсов целиком.
+      });
+  }
+
   /** Продажи, розданные по услугам: пациент → услуга → покупки. */
   const salesFor = new Map<string, Map<string, CourseSale[]>>();
   /**
@@ -314,15 +356,6 @@ export async function linkCourses(
     salesFor.set(patientId, assigned.byService);
     ambiguous += assigned.ambiguous.length;
   }
-
-  /** Варианты курса услуги — те же, что видит раздача продаж. */
-  const declaredPlans = (id: string): CoursePlanOption[] => {
-    const fromDirectory = declared.get(id);
-    if (fromDirectory && fromDirectory.length > 0) return fromDirectory;
-    const size = services.find((sv) => sv.id === id)?.defaultSessions ?? DEFAULT_SESSIONS;
-    const price = (sessionPrices.get(id) ?? 0) * size;
-    return price > 0 ? [{ price, sessions: size }] : [];
-  };
 
   for (const service of services) {
     /**
@@ -468,6 +501,25 @@ export async function linkCourses(
         }
         keep.add(courseId);
         courses += 1;
+
+        /**
+         * Связываем покупку с собравшимся курсом.
+         *
+         * По этой связи разрез по услугам и людям узнаёт, чей это курс.
+         * Покупка без связи в общей выручке остаётся, а в разрезах стоит
+         * отдельной строкой — деньги есть, а чьи они, пока неизвестно.
+         */
+        if (c.fromSale && c.saleId) {
+          const saleId = Number(c.saleId);
+          if (Number.isFinite(saleId)) {
+            await prisma.coursePurchase
+              .updateMany({
+                where: { companyId, yclientsSaleId: saleId },
+                data: { courseId },
+              })
+              .catch(() => {});
+          }
+        }
 
         // Номер сеанса — то, что администратор называет пациенту вслух.
         c.visitIds.forEach((id, i) => wanted.set(id, { courseId, index: i + 1 }));

@@ -363,18 +363,14 @@ export async function getDashboardMetricsDb(
    * на то, что клиника заработала на курсах, а специалист, который их ведёт,
    * выглядит бесполезным.
    */
-  const coursesSold = await prisma.course.findMany({
-    where: {
-      companyId,
-      /**
-       * Только купленные в кассе. Курс иногда проводят оплатой в самой записи
-       * приёма — эти деньги уже посчитаны выручкой визита, и добавить их сюда
-       * значит удвоить одни и те же рубли.
-       */
-      origin: "YCLIENTS",
-      purchasedAt: { gte: from, lt: to },
-    },
-    select: { amount: true, appointments: { select: { staffId: true } } },
+  /**
+   * Продажи в кассе, а не курсы: деньги приходят в день покупки и не ждут
+   * первого сеанса. Оплата курса записью приёма сюда не попадает вовсе — её
+   * деньги уже посчитаны выручкой того визита.
+   */
+  const coursesSold = await prisma.coursePurchase.findMany({
+    where: { companyId, isCourse: true, purchasedAt: { gte: from, lt: to } },
+    select: { amount: true, course: { select: { appointments: { select: { staffId: true } } } } },
   });
   const coursesAmount = coursesSold.reduce((sum, c) => sum + Number(c.amount), 0);
   const courseRevenue = coursesAmount;
@@ -419,7 +415,7 @@ export async function getDashboardMetricsDb(
    */
   const courseByStaff = new Map<string, { amount: number; count: number }>();
   for (const c of coursesSold) {
-    const staffIds = c.appointments.map((a) => a.staffId);
+    const staffIds = (c.course?.appointments ?? []).map((a) => a.staffId);
     const top = staffIds.sort(
       (a, b) =>
         staffIds.filter((x) => x === b).length - staffIds.filter((x) => x === a).length,

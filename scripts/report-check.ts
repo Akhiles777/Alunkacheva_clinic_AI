@@ -475,11 +475,28 @@ async function main() {
     },
   });
   if (courseRows.length > 0) {
-    const inPeriod = courseRows.filter(
-      // Оплаченные записью в выручку не добавляются: они уже в стоимости визита.
-      (c) => c.origin === "YCLIENTS" && c.purchasedAt >= from && c.purchasedAt < now,
-    );
-    const sum = inPeriod.reduce((s2, c) => s2 + Number(c.amount), 0);
+    /**
+     * Выручку дают покупки, а не курсы: деньги приходят в день продажи и не
+     * ждут первого сеанса. Оплата курса записью приёма сюда не попадает —
+     * её деньги уже посчитаны выручкой того визита.
+     */
+    const purchases = await prisma.coursePurchase.findMany({
+      where: { companyId: company.id, purchasedAt: { gte: from, lt: now } },
+      select: { amount: true, isCourse: true, courseId: true },
+    });
+    const inPeriod = purchases.filter((p) => p.isCourse);
+    const sum = inPeriod.reduce((s2, p) => s2 + Number(p.amount), 0);
+    const notCourse = purchases.length - inPeriod.length;
+    const unlinked = inPeriod.filter((p) => p.courseId === null).length;
+    if (notCourse > 0) {
+      console.log(`  покупок, не похожих на курс: ${notCourse} — в выручку курсов не идут`);
+    }
+    if (unlinked > 0) {
+      console.log(
+        `  покупок без собравшегося курса: ${unlinked} — деньги в выручке есть,\n` +
+          "      но услуга и специалист неизвестны, пока пациент не начал ходить",
+      );
+    }
     const byRecord = courseRows.filter(
       (c) => c.origin !== "YCLIENTS" && c.purchasedAt >= from && c.purchasedAt < now,
     ).length;
