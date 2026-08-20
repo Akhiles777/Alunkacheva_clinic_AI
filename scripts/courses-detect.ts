@@ -16,6 +16,11 @@
  *   npx tsx scripts/courses-detect.ts --apply --sessions="БОС-терапия=10"
  *   npx tsx scripts/courses-detect.ts --apply --not-course="КОНТРОЛЬ"
  *
+ * Несколько названий разделяются ТОЧКОЙ С ЗАПЯТОЙ, а не запятой: запятая
+ * встречается внутри названий («БОС-терапия, курс»). Флаг можно и повторить.
+ * Проще же всего отметить услугу курсовой прямо в «Настройки → Услуги» —
+ * галочкой в её карточке.
+ *
  * Сам скрипт ничего не отмечает. Раньше `--apply` проставлял всё, что похоже
  * на курс, — и однажды пометил курсовой «КОНТРОЛЬ», у которого 74% приёмов
  * без цены просто потому, что контрольный визит входит в стоимость основного.
@@ -45,10 +50,21 @@ const ZERO_SHARE = 0.5;
 
 const money = (n: number): string => `${Math.round(n).toLocaleString("ru-RU")} ₽`;
 
-const arg = (name: string): string | null => {
-  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
-  return hit ? hit.slice(name.length + 3) : null;
-};
+/**
+ * Все значения флага: его можно повторять.
+ *
+ * Разделитель — точка с запятой, а НЕ запятая. Запятая стоит внутри названий:
+ * «БОС-терапия, курс». Разбор по запятой превращал одно имя в два — «БОС-терапия»
+ * и «курс», — и команда снимала отметку с настоящей услуги вместо карточки
+ * курса. Ровно это и случилось на боевой базе.
+ */
+function names(flag: string): string[] {
+  return process.argv
+    .filter((a) => a.startsWith(`--${flag}=`))
+    .flatMap((a) => a.slice(flag.length + 3).split(";"))
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
 
 /**
  * Все оплаты услуги в одну строку: сколько раз какая сумма встретилась.
@@ -79,27 +95,17 @@ async function main() {
   const apply = process.argv.includes("--apply");
   /** Размер курса словами клиники: «БОС-терапия=10». */
   const sessionsArg = new Map<string, number>(
-    (arg("sessions") ?? "")
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean)
+    names("sessions")
       .map((pair) => {
         const i = pair.lastIndexOf("=");
         return [pair.slice(0, i).trim(), Number(pair.slice(i + 1))] as const;
       })
       .filter(([title, n]) => title.length > 0 && Number.isFinite(n) && n >= 1),
   );
-  const names = (name: string): Set<string> =>
-    new Set(
-      (arg(name) ?? "")
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean),
-    );
   /** Что отметить курсовым — только по явному указанию. */
-  const mark = names("mark");
+  const mark = new Set(names("mark"));
   /** Что перестать считать курсовым. */
-  const unmark = names("not-course");
+  const unmark = new Set(names("not-course"));
   const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
 
   const services = await prisma.service.findMany({
@@ -262,6 +268,22 @@ async function main() {
           : "    оплат в истории нет вовсе\n"),
     );
   }
+  /**
+   * Названия, которых в справочнике нет.
+   *
+   * Молчать нельзя: команда прошла бы «успешно», ничего не сделав, — и
+   * человек считал бы, что услуга отмечена. А чаще всего это опечатка или
+   * запятая внутри названия, разобранная как разделитель.
+   */
+  const known = new Set(rows.map((r) => r.title));
+  const unknown = [...mark, ...unmark].filter((t) => !known.has(t));
+  if (unknown.length > 0) {
+    console.log("\n! таких услуг в справочнике нет (проверьте название целиком):");
+    for (const t of unknown) console.log(`    «${t}»`);
+    console.log("  разделитель между названиями — точка с запятой, не запятая:");
+    console.log('    --not-course="БОС-терапия, курс;Нейромедитация"');
+  }
+
   if (toMark.length > 0 || toUnmark.length > 0) {
     console.log("\nбудет сделано:");
     for (const r of toMark) console.log(`  отметить курсовой: ${r.title}`);

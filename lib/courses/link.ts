@@ -10,6 +10,7 @@ import {
   type ServiceCandidate,
 } from "./build";
 import { coursePurchases, type RawTransaction } from "./purchases";
+import { coursePriceByService } from "./product";
 
 /**
  * Собрать курсы из выгруженных записей и привязать к ним сеансы.
@@ -125,6 +126,32 @@ export async function linkCourses(
   const guessedPrice: string[] = [];
 
   /**
+   * Цена курса, объявленная клиникой в справочнике.
+   *
+   * Рядом с «БОС-терапия» за 2 800 ₽ там лежит «БОС-терапия, курс» за 28 000 ₽.
+   * Клиника уже сказала, сколько стоит её курс, — считать это самим значит
+   * спрашивать о том, на что ответ есть.
+   */
+  const catalogue = (
+    await prisma.service.findMany({
+      where: { companyId },
+      select: {
+        id: true,
+        title: true,
+        price: true,
+        _count: { select: { primaryForAppointments: true, appointmentServices: true } },
+      },
+    })
+  ).map((sv) => ({
+    id: sv.id,
+    title: sv.title,
+    price: Number(sv.price),
+    visits: sv._count.primaryForAppointments + sv._count.appointmentServices,
+  }));
+  const declared = coursePriceByService(catalogue);
+  const visitsOf = new Map(catalogue.map((sv) => [sv.id, sv.visits]));
+
+  /**
    * Цена одного сеанса — из того, что клиника реально брала за одиночный приём.
    *
    * В справочнике полагаться на цену нельзя: у «БОС-терапия» там стоит 2 800 ₽
@@ -156,8 +183,16 @@ export async function linkCourses(
     }
     for (const sv of services) {
       const observed = recentSessionPrice(amounts.get(sv.id) ?? []);
-      // Платных приёмов не было — остаётся справочник, другого источника нет.
-      if (observed <= 0 && Number(sv.price) > 0) guessedPrice.push(sv.title);
+      /**
+       * Платных приёмов не было — цена сеанса берётся из справочника, а там у
+       * одной услуги она стоит за сеанс, у другой за весь курс. Молчать нельзя.
+       *
+       * Кроме случая, когда цену курса клиника объявила отдельной карточкой:
+       * тогда оценка по цене сеанса не нужна вовсе.
+       */
+      if (observed <= 0 && Number(sv.price) > 0 && !declared.has(sv.id)) {
+        guessedPrice.push(sv.title);
+      }
       sessionPrices.set(sv.id, observed > 0 ? observed : Number(sv.price));
     }
   }
@@ -201,7 +236,8 @@ export async function linkCourses(
     const courseIds = new Set(services.map((sv) => sv.id));
     const sizeOf = new Map(services.map((sv) => [sv.id, sv.defaultSessions ?? DEFAULT_SESSIONS]));
     const planPriceOf = (id: string): number =>
-      (sessionPrices.get(id) ?? 0) * (sizeOf.get(id) ?? DEFAULT_SESSIONS);
+      // Объявленная клиникой цена курса важнее нашей оценки по цене сеанса.
+      declared.get(id) ?? (sessionPrices.get(id) ?? 0) * (sizeOf.get(id) ?? DEFAULT_SESSIONS);
     for (const a of zero) {
       const ids = new Set(a.services.map((x) => x.serviceId));
       if (a.primaryServiceId) ids.add(a.primaryServiceId);
@@ -235,6 +271,15 @@ export async function linkCourses(
   }
 
   for (const service of services) {
+    /**
+     * Карточка курса приёмов не знает.
+     *
+     * «БОС-терапия, курс» — это цена и размер курса, а ходят люди на
+     * «БОС-терапия». Сеансов у такой карточки нет и быть не может, курсов по
+     * ней не соберётся никогда — и предупреждать о её цене не о чем.
+     */
+    if ((visitsOf.get(service.id) ?? 0) === 0) continue;
+
     const sessionPrice = sessionPrices.get(service.id) ?? 0;
     if (sessionPrice <= 0) priceless.push(service.title);
 
@@ -304,7 +349,9 @@ export async function linkCourses(
          * Цена сеанса — из записей клиники, а не из справочника: там у одной
          * услуги цена стоит за сеанс, у другой за весь курс.
          */
-        planPrice: sessionPrice * (service.defaultSessions ?? DEFAULT_SESSIONS),
+        planPrice:
+          declared.get(service.id) ??
+          sessionPrice * (service.defaultSessions ?? DEFAULT_SESSIONS),
         sessionsTotal: service.defaultSessions ?? DEFAULT_SESSIONS,
         sales: salesFor.get(patientId)?.get(service.id) ?? [],
       });
