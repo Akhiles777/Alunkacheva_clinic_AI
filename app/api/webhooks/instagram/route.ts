@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
+import { markDelivery } from "@/lib/agent/unanswered";
 import { isInstagramEnabled, INSTAGRAM_PROVIDER } from "@/lib/integrations/instagram/config";
 import { parseWebhook, verifyChallenge, verifySignature } from "@/lib/integrations/instagram/webhook";
 import { sendInstagram } from "@/lib/integrations/instagram/client";
@@ -106,6 +107,17 @@ export async function POST(req: Request) {
           // Ответ не ушёл. Сообщение пациента уже сохранено и видно
           // администратору — это лучше, чем потерять обращение целиком.
           console.error("[instagram] ответ не доставлен:", sent.error);
+        }
+        /**
+         * Отмечаем исход отправки на самом сообщении.
+         *
+         * Без отметки ответ навсегда оставался «в очереди», и добор
+         * недоставленных проходил мимо: он ищет пометку «не доставлено», а
+         * ставить её было некому. Тот же пробел был в Telegram — там ответы
+         * пациенту терялись молча и не повторялись никогда.
+         */
+        if (reply.conversationId) {
+          await markDelivery(companyId, reply.conversationId, reply.text, sent.ok).catch(() => {});
         }
       }
       outcome.принято += 1;
