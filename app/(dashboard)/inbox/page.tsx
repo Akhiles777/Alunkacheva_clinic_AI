@@ -48,10 +48,26 @@ function Attachment({ a }: { a: DialogAttachmentRecord }) {
   if (a.kind === "voice" || a.kind === "audio") {
     return (
       <div>
-        <audio controls preload="none" src={a.href} className="w-full max-w-[260px]" />
-        {a.durationSec ? (
-          <div className="text-text-subtle num text-2xs">{formatDuration(a.durationSec)}</div>
-        ) : null}
+        <audio controls preload="metadata" src={a.href} className="w-full max-w-[260px]" />
+        <div className="flex items-baseline gap-2">
+          {a.durationSec ? (
+            <span className="text-text-subtle num text-2xs">{formatDuration(a.durationSec)}</span>
+          ) : null}
+          {/*
+            Запасной путь на случай, когда браузер не умеет этот звук.
+            WhatsApp шлёт голосовые в Ogg Opus; Safari его не проигрывает, и
+            проигрыватель там останется немым при целом файле. Ссылка даёт
+            сотруднику услышать пациента, а не гадать.
+          */}
+          <a
+            href={a.href}
+            target="_blank"
+            rel="noreferrer"
+            className="text-text-subtle hover:text-accent-text text-2xs underline decoration-dotted"
+          >
+            не играет — открыть файл
+          </a>
+        </div>
       </div>
     );
   }
