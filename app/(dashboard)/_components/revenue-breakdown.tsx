@@ -16,6 +16,11 @@ import type { Appt } from "@/app/_data/store";
  * такая же операция дня: подарок по скидке, сеанс оплаченного курса или приём,
  * за который клиника денег не брала. Спрятать их значило бы ответить на вопрос
  * «из чего сложилась выручка» наполовину.
+ *
+ * Но и называть их «без оплаты» нельзя. За сеанс курса клиника получила деньги
+ * — при продаже курса; ноль стоит в записи дня, а не в кассе. Подпись читалась
+ * как ошибка платформы, а была неправдой о деньгах клиники. Каждый ноль теперь
+ * называет свою причину.
  */
 export function RevenueBreakdown({
   appts,
@@ -38,8 +43,12 @@ export function RevenueBreakdown({
     .filter((a) => a.status === "arrived")
     .sort((a, b) => a.startMinute - b.startMinute);
   const total = rows.reduce((sum, a) => sum + (a.price ?? 0), 0);
-  const paid = rows.filter((a) => (a.price ?? 0) > 0);
-  const free = rows.length - paid.length;
+  const byCourse = rows.filter((a) => (a.price ?? 0) === 0 && a.amountSource === "PREPAID").length;
+  const free = rows.filter((a) => (a.price ?? 0) === 0 && a.amountSource !== "PREPAID").length;
+  const notes = [
+    byCourse > 0 ? `по курсу ${byCourse}` : null,
+    free > 0 ? `бесплатно ${free}` : null,
+  ].filter(Boolean);
 
   return (
     <div className="fixed inset-0 z-40 flex items-start justify-center p-4 sm:p-8">
@@ -59,7 +68,7 @@ export function RevenueBreakdown({
             <h2 className="text-sm font-medium">Операции за {dateLabel}</h2>
             <p className="text-text-subtle mt-0.5 text-2xs">
               состоявшихся приёмов {rows.length}
-              {free > 0 ? `, из них без оплаты ${free}` : ""}
+              {notes.length > 0 ? `, из них ${notes.join(", ")}` : ""}
             </p>
           </div>
           <button
@@ -95,12 +104,26 @@ export function RevenueBreakdown({
                   <span className="num text-text-muted flex-none text-xs">
                     {formatMoney(a.price ?? 0)}
                   </span>
+                ) : a.courseSession ? (
+                  <span
+                    className="text-text-subtle flex-none text-2xs"
+                    title="оплачен при продаже курса — деньги дал день покупки"
+                  >
+                    курс {a.courseSession.index}/{a.courseSession.total}
+                  </span>
+                ) : a.amountSource === "PREPAID" ? (
+                  <span
+                    className="text-text-subtle flex-none text-2xs"
+                    title="оплачен при продаже курса — деньги дал день покупки"
+                  >
+                    по курсу
+                  </span>
                 ) : (
                   <span
                     className="text-text-subtle flex-none text-2xs"
-                    title="сеанс курса, подарок по скидке или приём без оплаты — деньги этого дня он не даёт"
+                    title="подарок по скидке или приём, за который клиника денег не брала"
                   >
-                    без оплаты
+                    бесплатно
                   </span>
                 )}
               </li>

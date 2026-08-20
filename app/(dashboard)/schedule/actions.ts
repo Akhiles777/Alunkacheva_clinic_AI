@@ -66,6 +66,7 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
       room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true } },
       patient: { select: { name: true } },
+      course: { select: { sessionsTotal: true } },
     },
     orderBy: { startAt: "asc" },
   });
@@ -93,6 +94,18 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     status: TO_STORE[r.status] ?? "planned",
     isFirstVisit: r.isFirstVisit,
     price: Number(r.revenue),
+    /**
+     * Откуда взялась сумма и какой это сеанс курса.
+     *
+     * Без этого разбор выручки писал «без оплаты» напротив сеанса курса —
+     * приёма, за который клиника получила деньги при продаже. Подпись читалась
+     * как ошибка, а была неправдой: ноль дня и отсутствие оплаты — разные вещи.
+     */
+    amountSource: r.revenueSource,
+    courseSession:
+      r.courseSessionIndex && r.course
+        ? { index: r.courseSessionIndex, total: r.course.sessionsTotal }
+        : null,
     note: r.note,
     bookedByName: r.bookedByName,
   }));
@@ -123,6 +136,7 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
       room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true } },
       patient: { select: { name: true } },
+      course: { select: { sessionsTotal: true } },
     },
     orderBy: { startAt: "asc" },
   });
@@ -140,6 +154,18 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
     status: TO_STORE[r.status] ?? "planned",
     isFirstVisit: r.isFirstVisit,
     price: Number(r.revenue),
+    /**
+     * Откуда взялась сумма и какой это сеанс курса.
+     *
+     * Без этого разбор выручки писал «без оплаты» напротив сеанса курса —
+     * приёма, за который клиника получила деньги при продаже. Подпись читалась
+     * как ошибка, а была неправдой: ноль дня и отсутствие оплаты — разные вещи.
+     */
+    amountSource: r.revenueSource,
+    courseSession:
+      r.courseSessionIndex && r.course
+        ? { index: r.courseSessionIndex, total: r.course.sessionsTotal }
+        : null,
     note: r.note,
     bookedByName: r.bookedByName,
   }));

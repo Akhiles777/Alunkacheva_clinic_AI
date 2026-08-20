@@ -106,6 +106,10 @@ export interface Appt {
   isFirstVisit: boolean;
   /** Цена визита (по умолчанию — цена услуги из настроек, можно изменить). */
   price?: number;
+  /** Откуда сумма: подарок, сеанс курса и незаполненная цена — разные нули. */
+  amountSource?: "RECORD" | "PRICE_LIST" | "PREPAID" | "FREE" | "UNKNOWN";
+  /** Сеанс курса: какой по счёту и сколько всего оплачено. */
+  courseSession?: { index: number; total: number } | null;
   /** «Дополнительно»: отзыв клиента, проблема, примечание. Анализируется ИИ. */
   note?: string | null;
   /**
