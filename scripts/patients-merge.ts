@@ -13,7 +13,14 @@
  * ключом не бывает: тёзок в базе десятки.
  *
  *   npx tsx scripts/patients-merge.ts             # показать, ничего не меняя
- *   npx tsx scripts/patients-merge.ts --apply
+ *   npx tsx scripts/patients-merge.ts --apply     # склеить те, что делят номер
+ *   npx tsx scripts/patients-merge.ts --apply --name="Багаутдинова Зумруд"
+ *
+ * Телефон ловит не все дубли. У одной пациентки номер в карточке записан с
+ * ошибкой — «+7 796 …», такого кода не бывает, — и общего номера у её двух
+ * карточек нет вовсе. Такие пары скрипт показывает отдельно, как подозрение по
+ * имени, и склеивает только по прямому указанию: имя ключом не бывает, тёзок в
+ * базе десятки, а склейка необратима для истории пациента.
  *
  * Телефон печатается последними четырьмя цифрами (§7).
  */
@@ -46,6 +53,92 @@ function keeperOf(cards: Card[]): Card {
       b.purchases - a.purchases ||
       a.createdAt.getTime() - b.createdAt.getTime(),
   )[0];
+}
+
+/**
+ * Подозрение по имени: одинаковое ФИО, но общего телефона нет.
+ *
+ * Так выглядит дубль, у которого номер записан с ошибкой. Имя ключом не
+ * бывает — на «Самира» в базе пять разных людей, — поэтому сами такие пары не
+ * склеиваем: показываем и ждём прямого указания.
+ */
+async function byNameSuspects(companyId: string, apply: boolean): Promise<void> {
+  const wanted = process.argv
+    .find((a) => a.startsWith("--name="))
+    ?.slice("--name=".length)
+    .trim();
+
+  const rows = await prisma.patient.findMany({
+    where: { companyId, deletedAt: null, NOT: { name: null } },
+    select: {
+      id: true,
+      name: true,
+      yclientsId: true,
+      createdAt: true,
+      _count: { select: { appointments: true, conversations: true, coursePurchases: true } },
+      phones: { select: { phone: true } },
+    },
+  });
+
+  const byName = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const key = (r.name ?? "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
+    if (key.length === 0) continue;
+    byName.set(key, [...(byName.get(key) ?? []), r]);
+  }
+
+  const suspects = [...byName.entries()].filter(([, list]) => {
+    if (list.length < 2) return false;
+    // Общий номер уже разобран выше — здесь только те, у кого его нет.
+    const phones = list.flatMap((r) => r.phones.map((p) => p.phone));
+    return new Set(phones).size === phones.length;
+  });
+
+  if (suspects.length === 0) return;
+  console.log(`\n── одинаковое имя, но телефоны разные: ${suspects.length} ──`);
+  console.log("   это может быть и дубль с ошибкой в номере, и просто тёзки\n");
+  for (const [key, list] of suspects) {
+    console.log(`  «${list[0].name}»`);
+    for (const r of list) {
+      console.log(
+        `      ${tail(r.phones[0]?.phone ?? "")} · YCLIENTS ${r.yclientsId ?? "—"}` +
+          ` · визитов ${r._count.appointments} · диалогов ${r._count.conversations}`,
+      );
+    }
+    if (!apply || !wanted || wanted.toLowerCase() !== key) {
+      console.log(`      склеить: --apply --name="${list[0].name}"`);
+      continue;
+    }
+
+    const cards: Card[] = list.map((r) => ({
+      id: r.id,
+      name: r.name,
+      yclientsId: r.yclientsId,
+      visits: r._count.appointments,
+      messages: r._count.conversations,
+      purchases: r._count.coursePurchases,
+      createdAt: r.createdAt,
+    }));
+    const keeper = keeperOf(cards);
+    for (const c of cards.filter((x) => x.id !== keeper.id)) {
+      await mergeInto(keeper.id, c.id);
+      console.log(`      склеено: YCLIENTS ${c.yclientsId ?? "—"} → ${keeper.yclientsId ?? "—"}`);
+    }
+  }
+}
+
+/** Перенести всё с одной карточки на другую и мягко удалить пустую. */
+async function mergeInto(keeperId: string, otherId: string): Promise<void> {
+  await prisma.$transaction([
+    prisma.appointment.updateMany({ where: { patientId: otherId }, data: { patientId: keeperId } }),
+    prisma.conversation.updateMany({ where: { patientId: otherId }, data: { patientId: keeperId } }),
+    prisma.coursePurchase.updateMany({ where: { patientId: otherId }, data: { patientId: keeperId } }),
+    prisma.course.updateMany({ where: { patientId: otherId }, data: { patientId: keeperId } }),
+    prisma.patientPhone.updateMany({ where: { patientId: otherId }, data: { patientId: keeperId } }),
+    prisma.patientNote.updateMany({ where: { patientId: otherId }, data: { patientId: keeperId } }),
+    // Мягко: карточка пациента исчезнуть насовсем не должна (§4).
+    prisma.patient.update({ where: { id: otherId }, data: { deletedAt: new Date() } }),
+  ]);
 }
 
 async function main() {
@@ -142,25 +235,14 @@ async function main() {
     if (!apply) continue;
 
     for (const c of others) {
-      /**
-       * Переносим всё, что держится за карточку, и только потом её убираем.
-       *
-       * Порядок важен: удалить сначала — значит оборвать связи и потерять
-       * визиты, за которыми человек и приходил.
-       */
-      await prisma.$transaction([
-        prisma.appointment.updateMany({ where: { patientId: c.id }, data: { patientId: keeper.id } }),
-        prisma.conversation.updateMany({ where: { patientId: c.id }, data: { patientId: keeper.id } }),
-        prisma.coursePurchase.updateMany({ where: { patientId: c.id }, data: { patientId: keeper.id } }),
-        prisma.course.updateMany({ where: { patientId: c.id }, data: { patientId: keeper.id } }),
-        prisma.patientPhone.updateMany({ where: { patientId: c.id }, data: { patientId: keeper.id } }),
-        prisma.patientNote.updateMany({ where: { patientId: c.id }, data: { patientId: keeper.id } }),
-        // Мягко: карточка пациента исчезнуть насовсем не должна (§4).
-        prisma.patient.update({ where: { id: c.id }, data: { deletedAt: new Date() } }),
-      ]);
+      // Переносим всё, что держится за карточку, и только потом её убираем:
+      // удалить сначала — значит оборвать связи и потерять визиты.
+      await mergeInto(keeper.id, c.id);
       merged += 1;
     }
   }
+
+  await byNameSuspects(company.id, apply);
 
   if (!apply) {
     console.log("\nэто предпросмотр. Чтобы склеить: npx tsx scripts/patients-merge.ts --apply");

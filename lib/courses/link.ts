@@ -227,7 +227,19 @@ export async function linkCourses(
        * Кроме случая, когда цену курса клиника объявила отдельной карточкой:
        * тогда оценка по цене сеанса не нужна вовсе.
        */
-      if (observed <= 0 && Number(sv.price) > 0 && !declared.has(sv.id)) {
+      /**
+       * И только о тех услугах, по которым вообще ходят.
+       *
+       * «БОС-терапия, курс» — карточка цены, приёмов у неё не бывает; курсов
+       * по ней не соберётся никогда, и предупреждать не о чем. Список из таких
+       * строк перестают читать, а вместе с ним перестают читать и настоящие.
+       */
+      if (
+        observed <= 0 &&
+        Number(sv.price) > 0 &&
+        !declared.has(sv.id) &&
+        (visitsOf.get(sv.id) ?? 0) > 0
+      ) {
         guessedPrice.push(sv.title);
       }
       sessionPrices.set(sv.id, observed > 0 ? observed : Number(sv.price));
