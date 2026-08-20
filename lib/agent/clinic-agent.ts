@@ -46,6 +46,7 @@ import { alreadyGreeted, alreadySaid } from "./repetition";
 import { greetingText, withoutOffer } from "./greeting";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
+import { focusedAnswer } from "./focused-answer";
 import { matchServices, whomFor } from "./service-match";
 import { hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
 import { smallTalkReply } from "./smalltalk";
@@ -351,6 +352,15 @@ const KNOWLEDGE_CHARS_BUDGET = 14000;
  * токенов ровно там, где иначе не ответим вовсе.
  */
 const KNOWLEDGE_CHARS_FALLBACK = 20000;
+
+/** Кто принимает — по именам режется справка под названного врача. */
+async function staffNamesOf(companyId: string): Promise<string[]> {
+  const rows = await prisma.staff.findMany({
+    where: { companyId, isActive: true, deletedAt: null },
+    select: { name: true },
+  });
+  return rows.map((r) => r.name);
+}
 
 async function clinicContext(
   companyId: string,
@@ -1265,9 +1275,21 @@ async function replyToQuestion(
     });
   }
 
-  // Дальше — запасные пути: сказать словами клиники лучше, чем не сказать.
-  if (confidentMatch(exact) && !alreadySaid(said, exact!.row.answer)) {
-    return respond(ctx, conversation.id, { text: exact!.row.answer, buttons: mainMenu() });
+  /**
+   * Дальше — запасные пути: сказать словами клиники лучше, чем не сказать.
+   *
+   * Но не всей записью подряд. Запись покрывает несколько случаев сразу:
+   * «остеопатия» — это оба врача и четыре цены. На вопрос «сколько стоит у
+   * Ирины Алункачевой» пациент получал блок про двоих. Оставляем часть про
+   * того, о ком спросили; ничего не дописываем, только убираем чужие абзацы.
+   */
+  const asked = whomFor(query);
+  const staffNames = await staffNamesOf(ctx.companyId);
+  if (confidentMatch(exact)) {
+    const trimmed = focusedAnswer(exact!.row.answer, asked, staffNames);
+    if (!alreadySaid(said, trimmed)) {
+      return respond(ctx, conversation.id, { text: trimmed, buttons: mainMenu() });
+    }
   }
 
   /**
@@ -1277,8 +1299,11 @@ async function replyToQuestion(
    * взять с собой» — в справочнике есть «Подготовка к приёму».
    */
   const best = matchKnowledge(text, knowledgeRows);
-  if (best && best.hits >= 1 && !alreadySaid(said, best.row.answer)) {
-    return respond(ctx, conversation.id, { text: best.row.answer, buttons: mainMenu() });
+  if (best && best.hits >= 1) {
+    const trimmed = focusedAnswer(best.row.answer, asked, staffNames);
+    if (!alreadySaid(said, trimmed)) {
+      return respond(ctx, conversation.id, { text: trimmed, buttons: mainMenu() });
+    }
   }
 
   // Модель недоступна и подходящей справки нет. Про запись отвечаем по делу,
