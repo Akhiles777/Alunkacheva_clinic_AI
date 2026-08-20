@@ -350,6 +350,19 @@ export async function getDashboardMetricsDb(
     .reduce((sum, a) => sum + Number(a.revenue), 0);
 
   /**
+   * Курсы, проданные в периоде: их деньги — выручка дней покупки (§8).
+   *
+   * Курс пробивают кассой, а не приёмом. Без этих сумм выручка занижена ровно
+   * на то, что клиника заработала на курсах, а специалист, который их ведёт,
+   * выглядит бесполезным.
+   */
+  const coursesSold = await prisma.course.findMany({
+    where: { companyId, purchasedAt: { gte: from, lt: to } },
+    select: { amount: true, appointments: { select: { staffId: true } } },
+  });
+  const coursesAmount = coursesSold.reduce((sum, c) => sum + Number(c.amount), 0);
+
+  /**
    * Воронка. Числа полные: обращения в переписке, все записи клиники и все
    * состоявшиеся визиты — владельцу нужна вся статистика, а не только та
    * часть, что пришла из мессенджеров.
@@ -375,15 +388,48 @@ export async function getDashboardMetricsDb(
   const first = arrived.filter((a) => a.isFirstVisit).length;
   const courseSession = arrived.filter((a) => !a.isFirstVisit && a.courseId).length;
 
+  /**
+   * Деньги за курсы — тому, кто их ведёт.
+   *
+   * Без этого БОС-терапевт выглядела так: пятьдесят девять приёмов и четыре
+   * тысячи выручки. Её приёмы — сеансы курсов, каждый по нулю, а деньги за
+   * курсы лежат в продажах, и продажа специалиста не знает: у кассовой
+   * операции есть клиент и сумма, но не врач.
+   *
+   * Специалиста берём у сеансов самого курса — их ведёт один человек. Курс,
+   * по которому сеансов ещё не было, остаётся без специалиста: в общей
+   * выручке он есть, в разрезе по людям — нет, и выдумывать тут нечего.
+   */
+  const courseByStaff = new Map<string, { amount: number; count: number }>();
+  for (const c of coursesSold) {
+    const staffIds = c.appointments.map((a) => a.staffId);
+    const top = staffIds.sort(
+      (a, b) =>
+        staffIds.filter((x) => x === b).length - staffIds.filter((x) => x === a).length,
+    )[0];
+    if (!top) continue;
+    const acc = courseByStaff.get(top) ?? { amount: 0, count: 0 };
+    acc.amount += Number(c.amount);
+    acc.count += 1;
+    courseByStaff.set(top, acc);
+  }
+
   const staffStats: StaffStat[] = [...groupBy(arrived, (a) => a.staffId)].map(([staffId, list]) => {
-    const rev = list.reduce((sum, a) => sum + Number(a.revenue), 0);
+    const rev =
+      list.reduce((sum, a) => sum + Number(a.revenue), 0) +
+      (courseByStaff.get(staffId)?.amount ?? 0);
     return {
       staffId,
       name: list[0].staff?.name ?? "—",
       specialty: list[0].staff?.specialty ?? "",
       appointments: list.length,
       revenue: rev,
-      avgCheck: averageCheck(rev, list.length),
+      /**
+       * Чек — по приёмам, без курсов: продажа курса не приём, и делить её на
+       * число пришедших нельзя. Иначе у БОС-терапевта вышел бы чек в разы
+       * выше, чем стоит один её сеанс.
+       */
+      avgCheck: averageCheck(list.reduce((sum, a) => sum + Number(a.revenue), 0), list.length),
       appointmentsShare: 0,
       revenueShare: 0,
     };
@@ -447,23 +493,28 @@ export async function getDashboardMetricsDb(
       arrived: fromDialog.filter((a) => a.status === "ARRIVED").length,
     },
     money: {
-      revenue,
+      // Выручка периода: приёмы плюс проданные курсы (§8).
+      revenue: revenue + coursesAmount,
       courseRevenue,
+      /**
+       * Средний чек — по приёмам, без курсов.
+       *
+       * Продажа курса не приём: делить её на число пришедших значит завысить
+       * чек тем сильнее, чем больше курсов продали.
+       */
       avgCheck: averageCheck(revenue, arrived.length),
       newPatients,
-      // Курсы считаются своей подсистемой; пока её нет, честнее показать ноль,
-      // чем выдуманное число.
-      coursesSold: 0,
-      coursesAmount: 0,
+      coursesSold: coursesSold.length,
+      coursesAmount,
     },
     /**
      * Ведутся ли курсы вообще.
      *
      * Разрез «повторные — курсовые и возвраты» имеет смысл, только если курсы
-     * в системе есть. Их пока не заводит ни выгрузка, ни интерфейс, поэтому
-     * «Курсовые 0» стоит всегда — и выглядит как данные, хотя это структурный
-     * ноль. Показывать число, которое не может стать другим, нельзя: по нему
-     * делают выводы.
+     * в системе есть. Раньше их не заводил никто, и «Курсовые 0» стояло
+     * всегда — структурный ноль, неотличимый от данных. Теперь курсы
+     * собираются из кассовых продаж, и ноль здесь снова что-то значит: у
+     * клиники не отмечено ни одной курсовой услуги.
      */
     coursesTracked: courses > 0,
     visitMix: {

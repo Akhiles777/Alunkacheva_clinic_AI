@@ -151,6 +151,26 @@ export async function revenueByDay(
     acc.coursesSold += 1;
     acc.coursesRevenue += p.amount;
     acc.revenue += p.amount;
+    /**
+     * Продажа курса попадает и в разрезы дня.
+     *
+     * Иначе сумма по услугам и по специалистам не сходится с итогом дня:
+     * владелец видит 71 480 ₽ сверху и 43 480 ₽ в разбивке под ним. Услугу
+     * знаем — она у курса записана; специалиста берём у сеансов курса, их
+     * ведёт один человек.
+     */
+    const svc = acc.service.get(p.serviceTitle) ?? {
+      name: p.serviceTitle,
+      arrived: 0,
+      revenue: 0,
+    };
+    svc.revenue += p.amount;
+    acc.service.set(p.serviceTitle, svc);
+    if (p.staffName) {
+      const st = acc.staff.get(p.staffName) ?? { name: p.staffName, arrived: 0, revenue: 0 };
+      st.revenue += p.amount;
+      acc.staff.set(p.staffName, st);
+    }
     byDay.set(key, acc);
   }
 

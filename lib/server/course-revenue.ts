@@ -26,6 +26,14 @@ export interface CoursePurchaseRow {
   serviceTitle: string;
   sessionsTotal: number;
   patientName: string | null;
+  /**
+   * Кто ведёт сеансы этого курса.
+   *
+   * У кассовой операции специалиста нет — есть клиент и сумма. Но сеансы курса
+   * ведёт один человек, и деньги за курс принадлежат ему: без этого
+   * БОС-терапевт с полусотней сеансов выглядела бы бесполезной.
+   */
+  staffName: string | null;
 }
 
 export async function coursePurchasesBetween(
@@ -43,16 +51,25 @@ export async function coursePurchasesBetween(
       sessionsTotal: true,
       service: { select: { title: true } },
       patient: { select: { name: true } },
+      appointments: { select: { staff: { select: { name: true } } } },
     },
   });
-  return rows.map((r) => ({
-    id: r.id,
-    at: r.purchasedAt,
-    amount: Number(r.amount),
-    serviceTitle: r.service.title,
-    sessionsTotal: r.sessionsTotal,
-    patientName: r.patient.name,
-  }));
+  return rows.map((r) => {
+    // Специалист курса — тот, кто провёл больше всего его сеансов.
+    const names = r.appointments.map((a) => a.staff?.name).filter((n): n is string => Boolean(n));
+    const staffName =
+      names.sort((a, b) => names.filter((x) => x === b).length - names.filter((x) => x === a).length)[0] ??
+      null;
+    return {
+      id: r.id,
+      at: r.purchasedAt,
+      amount: Number(r.amount),
+      serviceTitle: r.service.title,
+      sessionsTotal: r.sessionsTotal,
+      patientName: r.patient.name,
+      staffName,
+    };
+  });
 }
 
 /** Сумма проданных курсов за период. */
