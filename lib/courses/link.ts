@@ -232,8 +232,13 @@ export async function linkCourses(
         where: {
           companyId,
           deletedAt: null,
-          // Отменённый визит курса не расходует: сеанс просто не состоялся.
-          status: { not: "CANCELLED" },
+          /**
+           * Сеанс считается израсходованным, только если он состоялся или ещё
+           * предстоит. Отменённый и неявка курса не расходуют: услуга не
+           * оказана. Иначе курс из десяти сеансов заканчивался бы на восьмом,
+           * а последние настоящие сеансы оставались без номера.
+           */
+          status: { in: ["CREATED", "CONFIRMED", "ARRIVED"] },
           /**
            * Подарок по стопроцентной скидке место в курсе не занимает: за него
            * не платили ни сегодня, ни при продаже. Иначе курс из десяти
@@ -333,6 +338,31 @@ export async function linkCourses(
         // Номер сеанса — то, что администратор называет пациенту вслух.
         c.visitIds.forEach((id, i) => wanted.set(id, { courseId, index: i + 1 }));
       }
+    }
+
+    /**
+     * Снимаем привязку с того, что выпало из курса.
+     *
+     * Визит могли отменить или отметить неявкой уже после того, как он попал в
+     * курс. В разбор он больше не входит, а `courseId` у него остаётся — и в
+     * карточке отменённый приём показывался как «курс 3 из 10». Чистим отдельно:
+     * в общий проход такие визиты не попадают по определению.
+     */
+    const strayLinks = await prisma.appointment.findMany({
+      where: {
+        companyId,
+        courseId: { not: null },
+        OR: [{ primaryServiceId: service.id }, { services: { some: { serviceId: service.id } } }],
+        NOT: { id: { in: [...wanted.keys()] } },
+      },
+      select: { id: true },
+    });
+    if (strayLinks.length > 0) {
+      await prisma.appointment.updateMany({
+        where: { id: { in: strayLinks.map((x) => x.id) } },
+        data: { courseId: null, courseSessionIndex: null },
+      });
+      sessions += strayLinks.length;
     }
 
     for (const [apptId, want] of wanted) {

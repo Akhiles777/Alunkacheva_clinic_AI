@@ -121,3 +121,52 @@ describe("продажа курса из кассовых операций", () 
     expect(coursePurchases([])).toEqual([]);
   });
 });
+
+describe("возврат за курс", () => {
+  it("вернули всю сумму — покупки нет", () => {
+    const out = coursePurchases([
+      ...SALE,
+      {
+        id: 90,
+        date: "2026-08-20T10:00:00+0400",
+        amount: -28000,
+        client: { id: 363033680 },
+        sold_item_id: 1815455376,
+        sold_item_type: "goods_transaction",
+      },
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it("вернули часть — остаётся остаток", () => {
+    const out = coursePurchases([
+      ...SALE,
+      {
+        id: 91,
+        date: "2026-08-20T10:00:00+0400",
+        amount: -8000,
+        client: { id: 363033680 },
+        sold_item_id: 1815455376,
+        sold_item_type: "goods_transaction",
+      },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].amount).toBe(20000);
+  });
+
+  it("возврат по чужой продаже покупку не трогает", () => {
+    const out = coursePurchases([
+      ...SALE,
+      {
+        id: 92,
+        date: "2026-08-20T10:00:00+0400",
+        amount: -28000,
+        client: { id: 363033680 },
+        sold_item_id: 777,
+        sold_item_type: "goods_transaction",
+      },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].amount).toBe(28000);
+  });
+});

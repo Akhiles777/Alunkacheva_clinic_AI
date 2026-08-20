@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CabinetCard } from "./cabinet-card";
 import { DayPicker } from "./day-picker";
+import { RevenueBreakdown } from "./revenue-breakdown";
 import { FreeWindows } from "./free-windows";
 import { AttentionList, InquiryList } from "./today-lists";
 import { TodayAlerts } from "./today-alerts";
@@ -83,6 +84,8 @@ export function TodayClient() {
    * минуту. Прошедшие читаем с сервера по требованию — держать их в сторе
    * незачем, они не меняются.
    */
+  /** Открыт ли разбор выручки: «из чего сложилось» по нажатию на сумму. */
+  const [showOperations, setShowOperations] = useState(false);
   const [dayBack, setDayBack] = useState(0);
   const [dir, setDir] = useState<"back" | "fwd">("back");
   /**
@@ -367,7 +370,19 @@ export function TodayClient() {
           <span className="text-text-subtle">{isToday ? "за сегодня:" : `за ${dayLabelShort(shownAt)}:`}</span>
           <span>
             выручка{" "}
-            <b className="num text-text font-medium whitespace-nowrap">{formatMoney(revenue)}</b>
+            {/*
+              Число отвечало «сколько», но не «откуда». Первый вопрос после
+              «сегодня 43 480 ₽» — «из чего это», и ответ приходилось искать
+              другим экраном.
+            */}
+            <button
+              type="button"
+              onClick={() => setShowOperations(true)}
+              title="Показать операции дня"
+              className="num text-text hover:text-accent-text font-medium whitespace-nowrap underline decoration-dotted underline-offset-2 transition-colors"
+            >
+              {formatMoney(revenue)}
+            </button>
           </span>
           <span aria-hidden className="sep-dot" />
           <span>
@@ -424,6 +439,14 @@ export function TodayClient() {
           )}
         </div>
       </header>
+
+      {showOperations ? (
+        <RevenueBreakdown
+          appts={appts}
+          dateLabel={isToday ? "сегодня" : dayLabelShort(shownAt)}
+          onClose={() => setShowOperations(false)}
+        />
+      ) : null}
 
       <div className="flex-1 overflow-auto px-7 pt-6 pb-11 max-md:px-5">
         {/*

@@ -45,8 +45,10 @@ function clientIdOf(t: RawTransaction): number | null {
  *
  * Что отбрасываем и почему:
  *
- *   - Отрицательные суммы — это расходы: зарплата, закупка. В кассе они лежат
- *     вперемешку с выручкой, и складывать их с продажами нельзя.
+ *   - Отрицательные суммы без клиента — расходы: зарплата, закупка. В кассе
+ *     они лежат вперемешку с выручкой, и складывать их с продажами нельзя.
+ *     А вот отрицательная сумма ПО ТОЙ ЖЕ продаже — это возврат: клиника
+ *     вернула деньги за курс, и курса больше нет. Такие вычитаем.
  *   - Операции без клиента — общая касса клиники, к курсу отношения не имеют.
  *   - Операции, привязанные к записи или визиту, — оплата конкретного приёма.
  *     Её стоимость уже стоит в самой записи, и считать её продажей курса
@@ -74,7 +76,7 @@ export function coursePurchases(rows: RawTransaction[]): Purchase[] {
       seen.add(t.id);
     }
     const amount = t.amount ?? 0;
-    if (amount <= 0) continue;
+    if (amount === 0) continue;
     const clientId = clientIdOf(t);
     if (clientId === null) continue;
     if ((t.record_id ?? 0) > 0 || (t.visit_id ?? 0) > 0) continue;
@@ -93,10 +95,20 @@ export function coursePurchases(rows: RawTransaction[]): Purchase[] {
       found.amount += amount;
       // Днём продажи считаем самую раннюю строку покупки.
       if (at < found.at) found.at = at;
-    } else {
+    } else if (amount > 0) {
       byKey.set(key, { clientId, at, amount, saleId });
     }
+    // Отрицательная строка, к которой продажи не нашлось, — не наше дело.
   }
 
-  return [...byKey.values()].sort((a, b) => a.at.getTime() - b.at.getTime());
+  /**
+   * Возврат съел покупку — курса нет.
+   *
+   * Клиника вернула деньги за курс: строки той же продажи в сумме дают ноль
+   * или минус. Оставить такой курс значило бы показывать владельцу проданным
+   * то, за что деньги отданы обратно.
+   */
+  return [...byKey.values()]
+    .filter((p) => p.amount > 0)
+    .sort((a, b) => a.at.getTime() - b.at.getTime());
 }
