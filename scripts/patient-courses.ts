@@ -132,16 +132,37 @@ async function main() {
     return;
   }
 
+  /**
+   * Кассу читаем страницами.
+   *
+   * Одной тысячей операций два года не покрываются: мартовская покупка в
+   * вывод не попадала, и разведка молча говорила «в кассе её нет». Диагностика,
+   * которая не видит половину данных, хуже её отсутствия.
+   */
   const from = new Date(Date.now() - 2 * 365 * 24 * 3600 * 1000);
-  const all = await client
-    .get<Transaction[]>(client.endpoints.transactions(client.creds.companyId), {
-      start_date: day(from),
-      end_date: day(new Date()),
-      count: 1000,
-    })
-    .catch(() => [] as Transaction[]);
+  const all: Transaction[] = [];
+  for (let page = 1; page <= 40; page += 1) {
+    const chunk = await client
+      .get<Transaction[]>(client.endpoints.transactions(client.creds.companyId), {
+        start_date: day(from),
+        end_date: day(new Date()),
+        page,
+        count: 200,
+      })
+      .catch(() => [] as Transaction[]);
+    if (!chunk || chunk.length === 0) break;
+    all.push(...chunk);
+    if (chunk.length < 200) break;
+  }
+  console.log(`\n(прочитано операций кассы за два года: ${all.length})`);
 
-  const mine = (all ?? []).filter((t) => {
+  const seen = new Set<number>();
+  const mine = all.filter((t) => {
+    // Страницы могут прийти внахлёст: одна операция — одна строка.
+    if (typeof t.id === "number") {
+      if (seen.has(t.id)) return false;
+      seen.add(t.id);
+    }
     const c = t.client;
     if (!c || Array.isArray(c)) return false;
     const id = (c as { id?: number }).id;
