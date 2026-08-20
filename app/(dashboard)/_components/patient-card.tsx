@@ -373,6 +373,8 @@ export function PatientCardBody({
             {patient.courses.map((course) => {
               const pct = Math.round((course.used / course.total) * 100);
               const stalled = course.status === "stalled";
+              // Курс, где все сеансы пройдены, «идёт» только на бумаге.
+              const done = course.status === "done" || course.used >= course.total;
               return (
                 <div key={course.id}>
                   <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
@@ -385,8 +387,10 @@ export function PatientCardBody({
                     <div className="bg-accent h-full rounded-pill" style={{ width: `${pct}%` }} />
                   </div>
                   <div className="mt-1.5 flex items-baseline justify-between gap-3">
-                    <span className={`text-2xs ${stalled ? "text-accent-text font-medium" : "text-text-subtle"}`}>
-                      {stalled ? "выпал из графика" : "идёт по курсу"}
+                    <span
+                      className={`text-2xs ${stalled ? "text-accent-text font-medium" : "text-text-subtle"}`}
+                    >
+                      {done ? "курс пройден" : stalled ? "выпал из графика" : "идёт по курсу"}
                     </span>
                     <span className="text-text-subtle text-2xs">последний визит {course.lastVisit}</span>
                   </div>
@@ -414,44 +418,39 @@ export function PatientCardBody({
                       а на курсе это обычное дело — выглядят одинаковыми
                       строками, и карточка читается как задвоенная.
                     */}
-                    {visit.at ? (
+                    {visit.at && visit.kind !== "purchase" ? (
                       <span className="num text-text-subtle mr-1.5">{visitTime(visit.at)}</span>
                     ) : null}
                     {visit.service}
                   </span>
-                  <span className={`text-2xs ${VISIT_STATUS[visit.status].cls}`}>
-                    {visit.doctor} · {VISIT_STATUS[visit.status].label}
+                  <span
+                    className={`text-2xs ${
+                      visit.kind === "purchase"
+                        ? "text-accent-text font-medium"
+                        : VISIT_STATUS[visit.status].cls
+                    }`}
+                  >
+                    {visit.kind === "purchase"
+                      ? "покупка курса"
+                      : `${visit.doctor} · ${VISIT_STATUS[visit.status].label}`}
                   </span>
                 </span>
                 {/*
-                  Деньги показываем только у состоявшегося приёма.
-                  У запланированного стоит цена из записи, но денег ещё не
-                  было, а у пациента на курсе она к тому же обнулится при
-                  закрытии сеанса — «2 800 ₽ ожидается» напротив сеанса, за
-                  который заплачено месяц назад, вводит в заблуждение.
+                  Деньги показываем у состоявшегося приёма и у покупки курса.
+                  У запланированного визита стоит цена из записи, но денег ещё
+                  не было, а у пациента на курсе она к тому же обнулится при
+                  закрытии сеанса.
 
                   Нулей три, и они разные: подарок по скидке, сеанс
                   оплаченного курса и приём, за который клиника денег не брала.
                 */}
                 {visit.status !== "arrived" ? null : visit.amount > 0 ? (
-                  /*
-                    День продажи курса — это тоже приём, и его сумма и есть
-                    цена всего курса. Без пометки в истории видно только
-                    «25 000 ₽» рядом с сеансами по 0 ₽, и понять, откуда взялась
-                    сумма и что она закрывает, нельзя.
-                  */
-                  <span className="flex-none text-right">
-                    <span className="num text-text-muted block text-xs">
-                      {formatMoney(visit.amount)}
-                    </span>
-                    {visit.courseSession?.index === 1 ? (
-                      <span
-                        className="text-accent-text block text-2xs"
-                        title={`оплата курса из ${visit.courseSession.total} сеансов`}
-                      >
-                        оплата курса
-                      </span>
-                    ) : null}
+                  <span
+                    className={`num flex-none text-xs ${
+                      visit.kind === "purchase" ? "text-accent-text font-medium" : "text-text-muted"
+                    }`}
+                  >
+                    {formatMoney(visit.amount)}
                   </span>
                 ) : visit.courseSession ? (
                   <span className="text-text-muted flex-none text-xs">

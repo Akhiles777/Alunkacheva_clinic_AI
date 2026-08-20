@@ -43,7 +43,8 @@ const DAY = 24 * 60 * 60 * 1000;
 /** Отсортированные по возрастанию даты состоявшихся визитов. */
 export function visitDates(patient: Patient, now = new Date()): Date[] {
   return patient.visits
-    .filter((v) => v.status === "arrived")
+    // Покупка курса — не приём: в интервалах между визитами ей не место.
+    .filter((v) => v.status === "arrived" && v.kind !== "purchase")
     /**
      * Машинная дата, если она есть, и только иначе — разбор подписи.
      *
@@ -70,14 +71,23 @@ export interface PatientVisitStats {
   arrivedCount: number;
   avgIntervalDays: number | null;
   lastVisitDaysAgo: number | null;
+  /**
+   * Всего оплачено: приёмы плюс купленные курсы.
+   *
+   * Курс оплачивается в кассе, а не приёмом, и без него карточка показывала
+   * «оплачено 1 000 ₽» человеку, заплатившему двадцать восемь тысяч: сеансы
+   * курса стоят нулём, а самой покупки в истории визитов не было вовсе.
+   */
   totalSpent: number;
+  /** Из них — покупки курсов. */
+  coursesPaid: number;
 }
 
 export function patientVisitStats(patient: Patient, now = new Date()): PatientVisitStats {
   const dates = visitDates(patient, now);
   const last = dates[dates.length - 1];
   return {
-    visitCount: patient.visits.length,
+    visitCount: patient.visits.filter((v) => v.kind !== "purchase").length,
     arrivedCount: dates.length,
     avgIntervalDays: avgIntervalDays(dates),
     /**
@@ -95,6 +105,10 @@ export function patientVisitStats(patient: Patient, now = new Date()): PatientVi
       ? Math.max(0, Math.round((startOfDay(now).getTime() - startOfDay(last).getTime()) / DAY))
       : null,
     totalSpent: patient.visits.reduce((sum, v) => sum + (v.status === "arrived" ? v.amount : 0), 0),
+    coursesPaid: patient.visits.reduce(
+      (sum, v) => sum + (v.kind === "purchase" ? v.amount : 0),
+      0,
+    ),
   };
 }
 

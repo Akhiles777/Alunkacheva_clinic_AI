@@ -44,6 +44,14 @@ export interface PatientVisitRecord {
    * скидке или акции. Разные вещи должны выглядеть по-разному.
    */
   amountSource: "RECORD" | "PRICE_LIST" | "PREPAID" | "FREE" | "UNKNOWN";
+  /**
+   * Визит или покупка курса.
+   *
+   * Курс оплачивается в кассе, а не приёмом. В истории он нужен наравне с
+   * визитами — иначе деньги пациента видно наполовину, — но приёмом не
+   * является: в «пришёл 3 из 12» и в среднем интервале ему не место.
+   */
+  kind?: "visit" | "purchase";
 }
 
 export interface PatientRecord {
@@ -196,6 +204,25 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       phones: { orderBy: { createdAt: "asc" } },
       notes: { orderBy: { createdAt: "asc" } },
       relationsOut: true,
+      /**
+       * Покупки курсов — такое же событие пациента, как визит.
+       *
+       * Курс оплачивается в кассе, а не приёмом, поэтому в истории визитов его
+       * не было вовсе: человек заплатил 28 000 ₽, а в карточке стояло «всего
+       * оплачено 1 000 ₽». Деньги, которых не видно, — худшее, что может
+       * показать карточка.
+       */
+      courses: {
+        orderBy: { purchasedAt: "desc" },
+        take: 50,
+        select: {
+          id: true,
+          purchasedAt: true,
+          amount: true,
+          sessionsTotal: true,
+          service: { select: { title: true } },
+        },
+      },
       _count: { select: { appointments: { where: { status: "ARRIVED", deletedAt: null } } } },
       appointments: {
         where: { deletedAt: null },
@@ -241,7 +268,22 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       relatedPatientId: r.relatedPatientId,
       kind: r.kind,
     })),
-    visits: p.appointments.map((a) => ({
+    visits: [
+      ...p.courses.map((c) => ({
+        id: `course-${c.id}`,
+        kind: "purchase" as const,
+        date: visitDate.format(c.purchasedAt),
+        at: c.purchasedAt.toISOString(),
+        service: `${c.service.title} — курс ${c.sessionsTotal} сеансов`,
+        doctor: "",
+        status: "arrived" as const,
+        amount: Number(c.amount),
+        amountSource: "RECORD" as const,
+        courseSession: null,
+        paidEarlier: false,
+      })),
+      ...p.appointments.map((a) => ({
+      kind: "visit" as const,
       id: a.id,
       date: visitDate.format(a.startAt),
       at: a.startAt.toISOString(),
@@ -266,7 +308,8 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
         a.courseSessionIndex && a.course
           ? { index: a.courseSessionIndex, total: a.course.sessionsTotal }
           : null,
-    })),
+      })),
+    ].sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0)),
   };
 }
 

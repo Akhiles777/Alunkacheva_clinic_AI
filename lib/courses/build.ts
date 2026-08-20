@@ -276,3 +276,23 @@ export function assignSales(
 
   return { byService, ambiguous };
 }
+
+/**
+ * Цена одного сеанса по недавним оплатам.
+ *
+ * Берём медиану последних платежей, а не всей истории: клиника поднимает цены,
+ * и БОС-терапия за два года стоила 2 300, 2 500 и 2 800 ₽. Медиана по всей
+ * истории застряла бы на позапрошлогодней цене, и плановая цена курса — а по
+ * ней мы узнаём, какой курс купили, — считалась бы от неверной величины.
+ *
+ * Медиана, а не среднее: среди оплат попадаются продажи курса записью
+ * (25 000 ₽), среднее они утащили бы в потолок.
+ *
+ * Суммы должны прийти от новых к старым — так их отдаёт база.
+ */
+export function recentSessionPrice(amountsNewestFirst: number[], take = 20): number {
+  const recent = amountsNewestFirst.filter((a) => a > 0).slice(0, take);
+  if (recent.length === 0) return 0;
+  const sorted = [...recent].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}

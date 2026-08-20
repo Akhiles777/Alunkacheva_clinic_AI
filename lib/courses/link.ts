@@ -1,8 +1,10 @@
 import { prisma } from "@/lib/db";
+import { startOfClinicDay } from "@/lib/clinic-time";
 import {
   assignSales,
   buildCourses,
   pricePerSession,
+  recentSessionPrice,
   type CourseSale,
   type CourseVisit,
   type ServiceCandidate,
@@ -88,7 +90,20 @@ export async function linkCourses(
       const patientId = byYclients.get(p.clientId);
       if (!patientId) continue;
       const list = salesByPatient.get(patientId) ?? [];
-      list.push({ id: `${p.saleId ?? p.at.getTime()}`, at: p.at, amount: p.amount });
+      /**
+       * День покупки, а не её минута.
+       *
+       * Клиника берёт деньги, когда человек уже в кабинете: пациент прошёл
+       * сеанс в 10:40, а курс оплатил в 12:51 того же дня. При сравнении по
+       * минуте этот сеанс оказывался раньше покупки и оставался без курса —
+       * в истории он выглядел как «по курсу» без номера между двумя
+       * пронумерованными. Покупка забирает свой день целиком.
+       */
+      list.push({
+        id: `${p.saleId ?? p.at.getTime()}`,
+        at: startOfClinicDay(p.at),
+        amount: p.amount,
+      });
       salesByPatient.set(patientId, list);
     }
   }
@@ -119,6 +134,8 @@ export async function linkCourses(
         primaryServiceId: { in: services.map((sv) => sv.id) },
       },
       select: { primaryServiceId: true, revenue: true },
+      // От новых к старым: цена сеанса берётся по недавним оплатам.
+      orderBy: { startAt: "desc" },
     });
     const amounts = new Map<string, number[]>();
     for (const a of paid) {
@@ -127,9 +144,8 @@ export async function linkCourses(
       amounts.set(id, [...(amounts.get(id) ?? []), Number(a.revenue)]);
     }
     for (const sv of services) {
-      const list = (amounts.get(sv.id) ?? []).sort((x, y) => x - y);
-      const observed = list.length > 0 ? list[Math.floor(list.length / 2)] : 0;
-      // Приёмов ещё не было — остаётся справочник, other источника нет.
+      const observed = recentSessionPrice(amounts.get(sv.id) ?? []);
+      // Приёмов ещё не было — остаётся справочник, другого источника нет.
       sessionPrices.set(sv.id, observed > 0 ? observed : Number(sv.price));
     }
   }

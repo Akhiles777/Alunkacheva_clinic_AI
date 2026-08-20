@@ -5,6 +5,7 @@ import {
   looksLikeCourseSale,
   priceMatches,
   pricePerSession,
+  recentSessionPrice,
   type CourseVisit,
 } from "./build";
 
@@ -286,5 +287,25 @@ describe("сумма против плановой цены курса", () => {
 
   it("плановая цена неизвестна — сравнивать не с чем", () => {
     expect(priceMatches(28000, 0)).toBe(false);
+  });
+});
+
+describe("цена сеанса по недавним оплатам", () => {
+  it("берёт нынешнюю цену, а не позапрошлогоднюю", () => {
+    // Свежие оплаты идут первыми: клиника подняла цену с 2 500 до 2 800.
+    const amounts = [2800, 2800, 2800, 2800, 2500, 2500, 2500, 2500, 2300, 2300];
+    expect(recentSessionPrice(amounts, 4)).toBe(2800);
+  });
+
+  it("продажа курса записью медиану не сдвигает", () => {
+    expect(recentSessionPrice([25000, 2800, 2800, 2800, 2800])).toBe(2800);
+  });
+
+  it("оплат не было — цены нет", () => {
+    expect(recentSessionPrice([])).toBe(0);
+  });
+
+  it("нули и возвраты в расчёт не идут", () => {
+    expect(recentSessionPrice([0, -500, 2800, 2800])).toBe(2800);
   });
 });

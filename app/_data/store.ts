@@ -131,6 +131,8 @@ export interface Visit {
   courseSession?: { index: number; total: number } | null;
   /** Оплачен раньше (курс, абонемент) — в записи дня ноль, но деньги были. */
   paidEarlier?: boolean;
+  /** Покупка курса — событие пациента, но не приём. */
+  kind?: "visit" | "purchase";
 }
 /** Вложение сообщения: голосовое, фотография, документ. */
 export interface MessageAttachment {

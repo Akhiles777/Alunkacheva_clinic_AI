@@ -8,11 +8,12 @@ import { patientVisitStats, pluralDays } from "@/lib/assistant/analytics";
  * Правая колонка личной страницы пациента: аналитика и инсайты, посчитанные
  * локально из стора. Заполняет пространство, которое раньше пустовало.
  */
-function Tile({ label, value }: { label: string; value: string }) {
+function Tile({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="border-border bg-surface rounded-xl border px-4 py-3">
       <div className="text-text-subtle text-2xs">{label}</div>
       <div className="readout mt-1 text-lg">{value}</div>
+      {hint ? <div className="text-text-subtle mt-0.5 text-2xs">{hint}</div> : null}
     </div>
   );
 }
@@ -88,7 +89,15 @@ export function PatientAnalyticsPanel({ patientId }: { patientId: string }) {
                   : `${s.lastVisitDaysAgo} ${pluralDays(s.lastVisitDaysAgo)} назад`
             }
           />
-          <Tile label="Всего оплачено" value={formatMoney(s.totalSpent)} />
+          {/*
+            Курсы называем отдельно: без них человек, заплативший 28 000 ₽ за
+            курс, выглядел как заплативший тысячу — сеансы курса стоят нулём.
+          */}
+          <Tile
+            label="Всего оплачено"
+            value={formatMoney(s.totalSpent)}
+            hint={s.coursesPaid > 0 ? `из них курсы ${formatMoney(s.coursesPaid)}` : undefined}
+          />
         </div>
         {tags.length > 0 ? (
           <div className="mt-4 flex flex-wrap gap-1.5">
