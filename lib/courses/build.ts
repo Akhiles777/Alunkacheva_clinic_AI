@@ -28,6 +28,16 @@ export interface PlannedCourse {
   sessionsTotal: number;
   /** Визиты курса по порядку; первый — день продажи. */
   visitIds: string[];
+  /**
+   * Курс открыт покупкой в кассе, а не оплатой в записи приёма.
+   *
+   * Различие денежное. Продажа в кассе — деньги, которых в выручке визитов
+   * нет: их надо добавить к выручке дня покупки. Оплата в записи там уже
+   * есть, и добавлять её второй раз значит удвоить те же рубли.
+   */
+  fromSale: boolean;
+  /** Номер продажи в кассе — им же различаются две покупки одного дня. */
+  saleId: string | null;
 }
 
 export interface CoursePlan {
@@ -180,6 +190,9 @@ export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): 
         amount: v.revenue,
         sessionsTotal: plan.sessions,
         visitIds: [v.id],
+        // Деньги уже посчитаны выручкой этого визита.
+        fromSale: false,
+        saleId: null,
       };
       courses.push(open);
       continue;
@@ -197,6 +210,8 @@ export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): 
           // Размер курса — из того варианта, к чьей цене ближе покупка.
           sessionsTotal: plan.sessions,
           visitIds: [],
+          fromSale: true,
+          saleId: sale.id,
         };
         courses.push(open);
       }

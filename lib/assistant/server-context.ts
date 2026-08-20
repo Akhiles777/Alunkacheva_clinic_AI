@@ -117,12 +117,13 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
       _count: { _all: true },
       _sum: { revenue: true },
     }),
+    // Только купленные в кассе: оплата курса записью уже в выручке визита.
     prisma.course.aggregate({
-      where: { companyId, purchasedAt: { gte: yearAgo } },
+      where: { companyId, origin: "YCLIENTS", purchasedAt: { gte: yearAgo } },
       _sum: { amount: true },
     }),
     prisma.course.aggregate({
-      where: { companyId, purchasedAt: { gte: startOfMonth } },
+      where: { companyId, origin: "YCLIENTS", purchasedAt: { gte: startOfMonth } },
       _sum: { amount: true },
     }),
     prisma.patient.groupBy({

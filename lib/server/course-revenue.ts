@@ -17,7 +17,14 @@ import { prisma } from "@/lib/db";
  * одной услуге, курса не образует и в выручку не идёт. Таких единицы, и их
  * число выгрузка называет отдельно — лучше недосчитать, чем приписать клинике
  * деньги, про которые мы не поняли, за что они.
+ *
+ * И только те курсы, что открыты покупкой в кассе (origin YCLIENTS). Курс
+ * иногда проводят оплатой в самой записи приёма — такие деньги уже посчитаны
+ * выручкой того визита, и добавить их сюда значит удвоить одни и те же рубли.
  */
+
+/** Курсы, чьи деньги в выручке визитов НЕ лежат: куплены в кассе. */
+const PAID_IN_CASH = { origin: "YCLIENTS" } as const;
 export interface CoursePurchaseRow {
   id: string;
   /** Момент покупки. */
@@ -44,7 +51,7 @@ export async function coursePurchasesBetween(
   to: Date,
 ): Promise<CoursePurchaseRow[]> {
   const rows = await prisma.course.findMany({
-    where: { companyId, purchasedAt: { gte: from, lt: to } },
+    where: { companyId, ...PAID_IN_CASH, purchasedAt: { gte: from, lt: to } },
     orderBy: { purchasedAt: "asc" },
     select: {
       id: true,
@@ -82,7 +89,7 @@ export async function coursesSoldBetween(
   to: Date,
 ): Promise<number> {
   const agg = await prisma.course.aggregate({
-    where: { companyId, purchasedAt: { gte: from, lt: to } },
+    where: { companyId, ...PAID_IN_CASH, purchasedAt: { gte: from, lt: to } },
     _sum: { amount: true },
   });
   return Number(agg._sum.amount ?? 0);

@@ -466,11 +466,28 @@ async function main() {
    */
   const courseRows = await prisma.course.findMany({
     where: { companyId: company.id },
-    select: { amount: true, sessionsTotal: true, sessionsUsed: true, purchasedAt: true },
+    select: {
+      amount: true,
+      sessionsTotal: true,
+      sessionsUsed: true,
+      purchasedAt: true,
+      origin: true,
+    },
   });
   if (courseRows.length > 0) {
-    const inPeriod = courseRows.filter((c) => c.purchasedAt >= from && c.purchasedAt < now);
+    const inPeriod = courseRows.filter(
+      // Оплаченные записью в выручку не добавляются: они уже в стоимости визита.
+      (c) => c.origin === "YCLIENTS" && c.purchasedAt >= from && c.purchasedAt < now,
+    );
     const sum = inPeriod.reduce((s2, c) => s2 + Number(c.amount), 0);
+    const byRecord = courseRows.filter(
+      (c) => c.origin !== "YCLIENTS" && c.purchasedAt >= from && c.purchasedAt < now,
+    ).length;
+    if (byRecord > 0) {
+      console.log(
+        `  курсов, проведённых оплатой в записи: ${byRecord} — их деньги уже в выручке визитов`,
+      );
+    }
     console.log(
       `  курсов всего ${courseRows.length}, продано за период ${inPeriod.length} на ${money(sum)}` +
         "\n      это деньги дней покупки: курс пробивают кассой, и его сумма входит" +

@@ -72,9 +72,20 @@ export interface LinkCoursesResult {
 /** Размер курса, если клиника его не указала. */
 const DEFAULT_SESSIONS = 10;
 
-/** Один ключ курса: пациент и день, когда приняли деньги. */
-const courseKey = (patientId: string, purchasedAt: Date): string =>
-  `${patientId}|${purchasedAt.getTime()}`;
+/**
+ * Ключ курса: пациент, день покупки и сумма.
+ *
+ * Без суммы две покупки одного дня давали один ключ: второй курс не находил
+ * себя в базе, создавался заново, а следующий круг считал лишним и удалял —
+ * и так по кругу.
+ *
+ * Сумма, а не номер продажи: номер пришлось бы хранить в поле с уникальным
+ * индексом, и переназначение продажи на другую услугу падало бы на нём. Две
+ * покупки одного дня на одну и ту же сумму по одной услуге неразличимы и
+ * так — ни по каким данным.
+ */
+const courseKey = (patientId: string, purchasedAt: Date, amount: number): string =>
+  `${patientId}|${purchasedAt.getTime()}|${Math.round(amount)}`;
 
 export async function linkCourses(
   companyId: string,
@@ -364,6 +375,7 @@ export async function linkCourses(
           id: true,
           patientId: true,
           purchasedAt: true,
+          origin: true,
           sessionsTotal: true,
           sessionsUsed: true,
           amount: true,
@@ -382,7 +394,9 @@ export async function linkCourses(
         })
       ).map((c) => c.id),
     );
-    const courseByKey = new Map(existingCourses.map((c) => [courseKey(c.patientId, c.purchasedAt), c]));
+    const courseByKey = new Map(
+      existingCourses.map((c) => [courseKey(c.patientId, c.purchasedAt, Number(c.amount)), c]),
+    );
     const keep = new Set<string>();
 
     const byPatient = new Map<string, CourseVisit[]>();
@@ -409,7 +423,7 @@ export async function linkCourses(
       orphans += plan.orphans.length;
 
       for (const c of plan.courses) {
-        const key = courseKey(patientId, c.purchasedAt);
+        const key = courseKey(patientId, c.purchasedAt, c.amount);
         const done = c.visitIds.length >= c.sessionsTotal;
         const data = {
           sessionsTotal: c.sessionsTotal,
@@ -418,6 +432,14 @@ export async function linkCourses(
           pricePerSession: pricePerSession(c.amount, c.sessionsTotal),
           status: done ? ("COMPLETED" as const) : ("ACTIVE" as const),
           completedAt: done ? c.purchasedAt : null,
+          /**
+           * Откуда деньги: касса или запись приёма.
+           *
+           * От этого зависит, добавлять ли сумму курса к выручке дня. Продажа
+           * в кассе в выручке визитов не лежит — её добавляют. Оплата в записи
+           * там уже есть, и добавить её второй раз значит удвоить те же рубли.
+           */
+          origin: c.fromSale ? ("YCLIENTS" as const) : ("MANUAL" as const),
         };
 
         const existing = courseByKey.get(key);
@@ -428,6 +450,7 @@ export async function linkCourses(
             existing.sessionsTotal === data.sessionsTotal &&
             existing.sessionsUsed === data.sessionsUsed &&
             Number(existing.amount) === data.amount &&
+            existing.origin === data.origin &&
             existing.status === data.status;
           if (!same) await prisma.course.update({ where: { id: courseId }, data });
         } else {
@@ -436,7 +459,6 @@ export async function linkCourses(
               companyId,
               patientId,
               serviceId: service.id,
-              origin: "MANUAL",
               purchasedAt: c.purchasedAt,
               ...data,
             },

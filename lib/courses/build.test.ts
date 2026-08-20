@@ -406,3 +406,31 @@ describe("несколько вариантов курса у одной усл�
     expect(planForAmount(28000, [])).toBeNull();
   });
 });
+
+describe("откуда пришли деньги курса", () => {
+  const sale = (id: string, d: number, amount = 28000) => ({ id, at: day(d), amount });
+
+  it("покупка в кассе помечена как продажа", () => {
+    // Её деньги в выручке визитов не лежат — их добавляют к дню покупки.
+    const plan = buildCourses([visit("v1", 18)], { ...BOS, sales: [sale("s1", 17)] });
+    expect(plan.courses[0].fromSale).toBe(true);
+    expect(plan.courses[0].saleId).toBe("s1");
+  });
+
+  it("оплата в записи продажей не помечается", () => {
+    // Эти деньги уже посчитаны выручкой самого визита: добавить их к дню
+    // покупки значит удвоить одни и те же рубли.
+    const plan = buildCourses([visit("v1", 1, 25000), visit("v2", 3)], BOS);
+    expect(plan.courses[0].fromSale).toBe(false);
+    expect(plan.courses[0].saleId).toBeNull();
+  });
+
+  it("две покупки в один день остаются двумя курсами", () => {
+    const plan = buildCourses([visit("v1", 18), visit("v2", 19)], {
+      plans: [{ price: 28000, sessions: 1 }],
+      sales: [sale("s1", 17, 28000), sale("s2", 17, 25000)],
+    });
+    expect(plan.courses).toHaveLength(2);
+    expect(plan.courses.map((c) => c.amount)).toEqual([28000, 25000]);
+  });
+});

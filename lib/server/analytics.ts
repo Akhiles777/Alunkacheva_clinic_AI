@@ -364,7 +364,16 @@ export async function getDashboardMetricsDb(
    * выглядит бесполезным.
    */
   const coursesSold = await prisma.course.findMany({
-    where: { companyId, purchasedAt: { gte: from, lt: to } },
+    where: {
+      companyId,
+      /**
+       * Только купленные в кассе. Курс иногда проводят оплатой в самой записи
+       * приёма — эти деньги уже посчитаны выручкой визита, и добавить их сюда
+       * значит удвоить одни и те же рубли.
+       */
+      origin: "YCLIENTS",
+      purchasedAt: { gte: from, lt: to },
+    },
     select: { amount: true, appointments: { select: { staffId: true } } },
   });
   const coursesAmount = coursesSold.reduce((sum, c) => sum + Number(c.amount), 0);
