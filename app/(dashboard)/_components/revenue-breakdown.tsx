@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { formatMoney } from "@/lib/format";
 import type { Appt } from "@/app/_data/store";
+import type { CourseSaleRow } from "../courses/actions";
 
 /**
  * Из чего сложилась выручка дня.
@@ -24,10 +25,13 @@ import type { Appt } from "@/app/_data/store";
  */
 export function RevenueBreakdown({
   appts,
+  sales,
   dateLabel,
   onClose,
 }: {
   appts: Appt[];
+  /** Курсы, проданные в этот день: их деньги — выручка того же дня. */
+  sales: CourseSaleRow[];
   dateLabel: string;
   onClose: () => void;
 }) {
@@ -39,12 +43,32 @@ export function RevenueBreakdown({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const rows = [...appts]
-    .filter((a) => a.status === "arrived")
-    .sort((a, b) => a.startMinute - b.startMinute);
-  const total = rows.reduce((sum, a) => sum + (a.price ?? 0), 0);
-  const byCourse = rows.filter((a) => (a.price ?? 0) === 0 && a.amountSource === "PREPAID").length;
-  const free = rows.filter((a) => (a.price ?? 0) === 0 && a.amountSource !== "PREPAID").length;
+  /**
+   * Приёмы и продажи курсов в одном списке, по времени.
+   *
+   * Продажа курса — операция дня наравне с приёмом: деньги пришли тогда же.
+   * Держать её отдельно значило бы заставить складывать два списка глазами.
+   */
+  type Row =
+    | { kind: "visit"; at: number; appt: Appt }
+    | { kind: "sale"; at: number; sale: CourseSaleRow };
+  const rows: Row[] = [
+    ...appts
+      .filter((a) => a.status === "arrived")
+      .map((a) => ({ kind: "visit" as const, at: a.startMinute, appt: a })),
+    ...sales.map((s) => ({ kind: "sale" as const, at: s.startMinute, sale: s })),
+  ].sort((a, b) => a.at - b.at);
+
+  const visits = rows.filter((r): r is Extract<Row, { kind: "visit" }> => r.kind === "visit");
+  const total =
+    visits.reduce((sum, r) => sum + (r.appt.price ?? 0), 0) +
+    sales.reduce((sum, s) => sum + s.amount, 0);
+  const byCourse = visits.filter(
+    (r) => (r.appt.price ?? 0) === 0 && r.appt.amountSource === "PREPAID",
+  ).length;
+  const free = visits.filter(
+    (r) => (r.appt.price ?? 0) === 0 && r.appt.amountSource !== "PREPAID",
+  ).length;
   const notes = [
     byCourse > 0 ? `по курсу ${byCourse}` : null,
     free > 0 ? `бесплатно ${free}` : null,
@@ -67,8 +91,9 @@ export function RevenueBreakdown({
           <div>
             <h2 className="text-sm font-medium">Операции за {dateLabel}</h2>
             <p className="text-text-subtle mt-0.5 text-2xs">
-              состоявшихся приёмов {rows.length}
+              состоявшихся приёмов {visits.length}
               {notes.length > 0 ? `, из них ${notes.join(", ")}` : ""}
+              {sales.length > 0 ? ` · продано курсов ${sales.length}` : ""}
             </p>
           </div>
           <button
@@ -82,52 +107,78 @@ export function RevenueBreakdown({
 
         <ul className="flex-1 overflow-auto">
           {rows.length === 0 ? (
-            <li className="text-text-subtle px-5 py-6 text-sm">Состоявшихся приёмов не было.</li>
+            <li className="text-text-subtle px-5 py-6 text-sm">Операций за этот день не было.</li>
           ) : (
-            rows.map((a) => (
-              <li
-                key={a.id}
-                className="border-border-soft flex items-baseline gap-3 border-b px-5 py-2.5 last:border-0"
-              >
-                <span className="num text-text-subtle w-11 flex-none text-xs">
-                  {String(Math.floor(a.startMinute / 60)).padStart(2, "0")}:
-                  {String(a.startMinute % 60).padStart(2, "0")}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm">{a.service || "услуга не указана"}</span>
-                  <span className="text-text-subtle text-2xs">
-                    {a.doctor}
-                    {a.patientName ? ` · ${a.patientName}` : ""}
+            rows.map((row) =>
+              row.kind === "sale" ? (
+                <li
+                  key={`sale-${row.sale.id}`}
+                  className="border-border-soft bg-accent-tint/40 flex items-baseline gap-3 border-b px-5 py-2.5 last:border-0"
+                >
+                  <span className="num text-text-subtle w-11 flex-none text-xs">
+                    {String(Math.floor(row.at / 60)).padStart(2, "0")}:
+                    {String(row.at % 60).padStart(2, "0")}
                   </span>
-                </span>
-                {(a.price ?? 0) > 0 ? (
-                  <span className="num text-text-muted flex-none text-xs">
-                    {formatMoney(a.price ?? 0)}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm">
+                      {row.sale.serviceTitle} — курс {row.sale.sessionsTotal} сеансов
+                    </span>
+                    <span className="text-accent-text text-2xs font-medium">
+                      покупка курса
+                      {row.sale.patientName ? ` · ${row.sale.patientName}` : ""}
+                    </span>
                   </span>
-                ) : a.courseSession ? (
-                  <span
-                    className="text-text-subtle flex-none text-2xs"
-                    title="оплачен при продаже курса — деньги дал день покупки"
-                  >
-                    курс {a.courseSession.index}/{a.courseSession.total}
+                  <span className="num text-accent-text flex-none text-xs font-medium">
+                    {formatMoney(row.sale.amount)}
                   </span>
-                ) : a.amountSource === "PREPAID" ? (
-                  <span
-                    className="text-text-subtle flex-none text-2xs"
-                    title="оплачен при продаже курса — деньги дал день покупки"
-                  >
-                    по курсу
+                </li>
+              ) : (
+                <li
+                  key={row.appt.id}
+                  className="border-border-soft flex items-baseline gap-3 border-b px-5 py-2.5 last:border-0"
+                >
+                  <span className="num text-text-subtle w-11 flex-none text-xs">
+                    {String(Math.floor(row.at / 60)).padStart(2, "0")}:
+                    {String(row.at % 60).padStart(2, "0")}
                   </span>
-                ) : (
-                  <span
-                    className="text-text-subtle flex-none text-2xs"
-                    title="подарок по скидке или приём, за который клиника денег не брала"
-                  >
-                    бесплатно
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm">
+                      {row.appt.service || "услуга не указана"}
+                    </span>
+                    <span className="text-text-subtle text-2xs">
+                      {row.appt.doctor}
+                      {row.appt.patientName ? ` · ${row.appt.patientName}` : ""}
+                    </span>
                   </span>
-                )}
-              </li>
-            ))
+                  {(row.appt.price ?? 0) > 0 ? (
+                    <span className="num text-text-muted flex-none text-xs">
+                      {formatMoney(row.appt.price ?? 0)}
+                    </span>
+                  ) : row.appt.courseSession ? (
+                    <span
+                      className="text-text-subtle flex-none text-2xs"
+                      title="оплачен при продаже курса — деньги дал день покупки"
+                    >
+                      курс {row.appt.courseSession.index}/{row.appt.courseSession.total}
+                    </span>
+                  ) : row.appt.amountSource === "PREPAID" ? (
+                    <span
+                      className="text-text-subtle flex-none text-2xs"
+                      title="оплачен при продаже курса — деньги дал день покупки"
+                    >
+                      по курсу
+                    </span>
+                  ) : (
+                    <span
+                      className="text-text-subtle flex-none text-2xs"
+                      title="подарок по скидке или приём, за который клиника денег не брала"
+                    >
+                      бесплатно
+                    </span>
+                  )}
+                </li>
+              ),
+            )
           )}
         </ul>
 

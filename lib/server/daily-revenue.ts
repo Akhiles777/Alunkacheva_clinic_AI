@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { startOfClinicDay } from "@/lib/clinic-time";
+import { coursePurchasesBetween } from "./course-revenue";
 import { averageCheck } from "@/lib/metrics/summary";
 
 /**
@@ -31,6 +32,15 @@ export interface RevenueDay {
   noShow: number;
   revenue: number;
   avgCheck: number;
+  /**
+   * Продано курсов в этот день — и на какую сумму.
+   *
+   * Курс пробивают кассой, а не приёмом, и его деньги приходят в день продажи.
+   * Без этой строки день, когда клиника продала курс за 28 000 ₽, выглядел
+   * беднее, чем был.
+   */
+  coursesSold: number;
+  coursesRevenue: number;
   /**
    * Приёмы, денег в этот день не принёсшие: сеансы оплаченного курса.
    *
@@ -109,6 +119,8 @@ export async function revenueByDay(
     arrived: number;
     noShow: number;
     revenue: number;
+    coursesSold: number;
+    coursesRevenue: number;
     courseSessions: number;
     staff: Map<string, RevenueSlice>;
     service: Map<string, RevenueSlice>;
@@ -117,12 +129,31 @@ export async function revenueByDay(
     arrived: 0,
     noShow: 0,
     revenue: 0,
+    coursesSold: 0,
+    coursesRevenue: 0,
     courseSessions: 0,
     staff: new Map(),
     service: new Map(),
   });
 
+  /**
+   * Продажи курсов раскладываем по тем же дням.
+   *
+   * Деньги за курс приходят в день покупки — это и есть выручка того дня,
+   * наравне со стоимостью приёмов.
+   */
+  const purchases = await coursePurchasesBetween(companyId, from, to);
+
   const byDay = new Map<string, DayAcc>();
+  for (const p of purchases) {
+    const key = dayKey.format(p.at);
+    const acc = byDay.get(key) ?? empty();
+    acc.coursesSold += 1;
+    acc.coursesRevenue += p.amount;
+    acc.revenue += p.amount;
+    byDay.set(key, acc);
+  }
+
   for (const r of rows) {
     const key = dayKey.format(r.startAt);
     const acc = byDay.get(key) ?? empty();
@@ -183,6 +214,8 @@ export async function revenueByDay(
       noShow: v.noShow,
       revenue: v.revenue,
       avgCheck: averageCheck(v.revenue, v.arrived),
+      coursesSold: v.coursesSold,
+      coursesRevenue: v.coursesRevenue,
       courseSessions: v.courseSessions,
       byStaff: detailed ? [...v.staff.values()].sort(bySize) : [],
       byService: detailed ? [...v.service.values()].sort(bySize) : [],

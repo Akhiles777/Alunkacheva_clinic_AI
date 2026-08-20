@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
+import { coursePurchasesBetween } from "@/lib/server/course-revenue";
 
 /**
  * Курсы пациентов для экранов.
@@ -15,6 +16,49 @@ import { clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
  * Теперь курс собирается из записей YCLIENTS (см. lib/courses/link.ts), и
  * читать его можно по-настоящему.
  */
+/**
+ * Курсы, проданные в этот день.
+ *
+ * Деньги за курс приходят в день покупки — это выручка того дня наравне со
+ * стоимостью приёмов. Экран «Сегодня» без них показывал день беднее, чем он
+ * был: продажа курса за 28 000 ₽ не появлялась нигде.
+ */
+export interface CourseSaleRow {
+  id: string;
+  amount: number;
+  serviceTitle: string;
+  sessionsTotal: number;
+  patientName: string | null;
+  /** Время покупки в поясе клиники, минуты от полуночи. */
+  startMinute: number;
+}
+
+export async function getCourseSalesForDay(dateIso: string): Promise<CourseSaleRow[]> {
+  const session = await getSession();
+  const start = new Date(`${dateIso}T00:00:00+03:00`);
+  if (Number.isNaN(start.getTime())) return [];
+  const end = new Date(start.getTime() + 24 * 3600 * 1000);
+
+  const rows = await coursePurchasesBetween(session.companyId, start, end);
+  const minute = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Moscow",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return rows.map((r) => {
+    const [h, m] = minute.format(r.at).split(":");
+    return {
+      id: r.id,
+      amount: r.amount,
+      serviceTitle: r.serviceTitle,
+      sessionsTotal: r.sessionsTotal,
+      patientName: r.patientName,
+      startMinute: Number(h) * 60 + Number(m),
+    };
+  });
+}
+
 export interface CourseRecord {
   patientId: string;
   id: string;

@@ -473,8 +473,9 @@ async function main() {
     const sum = inPeriod.reduce((s2, c) => s2 + Number(c.amount), 0);
     console.log(
       `  курсов всего ${courseRows.length}, продано за период ${inPeriod.length} на ${money(sum)}` +
-        "\n      это НЕ выручка периода: деньги за курс приходят кассой, а выручка" +
-        "\n      считается по записям YCLIENTS — складывать их нельзя",
+        "\n      это деньги дней покупки: курс пробивают кассой, и его сумма входит" +
+        "\n      в выручку того дня наравне со стоимостью приёмов" +
+        `\n      выручка периода целиком: ${money(revTotal + sum)}`,
     );
     const oversold = courseRows.filter((c) => Number(c.amount) <= 0);
     if (oversold.length > 0) {

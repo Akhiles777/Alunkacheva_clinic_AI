@@ -167,14 +167,18 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
    * приходится вручную.
    */
   lines.push(
-    "Выручка дня — деньги, принятые в этот день. Курс оплачивается целиком при " +
-      "продаже, поэтому его сеансы в другие дни выручки не дают: они помечены " +
-      "отдельно и в средний чек не входят.",
+    "Выручка дня — деньги, принятые в этот день: стоимость приёмов плюс проданные " +
+      "в этот день курсы. Курс оплачивается целиком при продаже, поэтому его сеансы " +
+      "в другие дни выручки не дают: они помечены отдельно и в средний чек не входят.",
   );
   for (const d of daily) {
     const mark = d.date === todayKey ? " — СЕГОДНЯ" : d.date === yesterdayKey ? " — ВЧЕРА" : "";
     const course = d.courseSessions > 0 ? `, из них по курсу ${d.courseSessions}` : "";
-    lines.push(`- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}${course}`);
+    const sold =
+      d.coursesSold > 0 ? `, продано курсов ${d.coursesSold} на ${d.coursesRevenue} ₽` : "";
+    lines.push(
+      `- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}${course}${sold}`,
+    );
   }
 
   lines.push("");

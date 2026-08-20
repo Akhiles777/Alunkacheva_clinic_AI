@@ -17,6 +17,7 @@ import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { buildCabinets, buildFreeWindows, dateLabelInTz, nowMinuteInTz } from "@/lib/schedule";
 import { getClinicDay, getAppointmentsForDay, type ClinicDayView } from "../schedule/actions";
+import { getCourseSalesForDay, type CourseSaleRow } from "../courses/actions";
 import { clinicDateKey } from "@/lib/clinic-time";
 
 /**
@@ -96,6 +97,29 @@ export function TodayClient() {
    * вопрос «эти данные точно про тот день, который показан».
    */
   const [loaded, setLoaded] = useState<{ key: string; rows: typeof db.appointments } | null>(null);
+  /**
+   * Курсы, проданные в показанный день.
+   *
+   * Деньги за курс приходят в день покупки — это выручка того дня наравне со
+   * стоимостью приёмов. Без них экран показывал день беднее, чем он был.
+   */
+  const [sales, setSales] = useState<{ key: string; rows: CourseSaleRow[] } | null>(null);
+
+  useEffect(() => {
+    if (todayMs === null) return;
+    const key = dayKeyBack(todayMs, dayBack);
+    let alive = true;
+    getCourseSalesForDay(key)
+      .then((rows) => {
+        if (alive) setSales({ key, rows });
+      })
+      .catch(() => {
+        if (alive) setSales({ key, rows: [] });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [dayBack, todayMs]);
 
   useEffect(() => {
     if (dayBack === 0 || todayMs === null) return;
@@ -205,8 +229,19 @@ export function TodayClient() {
     ? appts.filter((a) => a.status === "planned" || a.status === "confirmed")
     : [];
 
-  const revenue = arrived.reduce((sum, a) => sum + (a.price ?? 0), 0);
-  const avgCheck = averageCheck(revenue, arrived.length);
+  /**
+   * Выручка дня: стоимость состоявшихся приёмов плюс проданные курсы.
+   *
+   * Курс пробивают кассой, а не приёмом, и его деньги приходят в день продажи.
+   * Средний чек считаем только по приёмам: продажа курса — не приём, и делить
+   * её на число пришедших нельзя.
+   */
+  const shownKey = todayMs === null ? null : dayKeyBack(todayMs, dayBack);
+  const daySales = sales !== null && sales.key === shownKey ? sales.rows : [];
+  const visitsRevenue = arrived.reduce((sum, a) => sum + (a.price ?? 0), 0);
+  const coursesRevenue = daySales.reduce((sum, s) => sum + s.amount, 0);
+  const revenue = visitsRevenue + coursesRevenue;
+  const avgCheck = averageCheck(visitsRevenue, arrived.length);
 
   // Первичные и повторные — среди ПРИШЕДШИХ, как в отчётах.
   const firstVisits = arrived.filter((a) => a.isFirstVisit).length;
@@ -443,6 +478,7 @@ export function TodayClient() {
       {showOperations ? (
         <RevenueBreakdown
           appts={appts}
+          sales={daySales}
           dateLabel={isToday ? "сегодня" : dayLabelShort(shownAt)}
           onClose={() => setShowOperations(false)}
         />
