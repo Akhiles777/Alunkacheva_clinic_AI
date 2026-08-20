@@ -14,8 +14,8 @@
  *   3. Сырые операции кассы по каждому клиенту YCLIENTS: та же сумма и тот же
  *      номер продажи, как их отдаёт провайдер.
  *
- * Ничего не меняет. Имя пациента печатает — его же и ищем; телефон и тела
- * сообщений не трогает (§7).
+ * Ничего не меняет. Имя пациента печатает — его же и ищем; телефон только
+ * последними четырьмя цифрами, тел сообщений не трогает (§7).
  *
  *   npx tsx scripts/patient-courses.ts --name="Багаутдинова"
  *   npx tsx scripts/patient-courses.ts --phone=79280000000
@@ -30,6 +30,8 @@ const arg = (name: string): string | null => {
 };
 const money = (n: number) => `${Math.round(n).toLocaleString("ru-RU")} ₽`;
 const day = (d: Date) => d.toISOString().slice(0, 10);
+/** Телефон печатаем последними четырьмя цифрами (§7). */
+const tail = (phone: string) => (phone ? `…${phone.slice(-4)}` : "без телефона");
 
 interface Transaction {
   id?: number;
@@ -63,30 +65,51 @@ async function main() {
       yclientsId: true,
       deletedAt: true,
       _count: { select: { appointments: true } },
+      phones: { select: { phone: true }, orderBy: { isPrimary: "desc" } },
     },
   });
+  const nameOf = new Map<string, string>();
 
   console.log(`клиника: ${company.name}`);
-  console.log(`── карточек пациента найдено: ${patients.length} ──`);
+  console.log(`── карточек по этому запросу: ${patients.length} ──`);
   for (const p of patients) {
     console.log(
-      `  ${p.name ?? "без имени"} · YCLIENTS ${p.yclientsId ?? "—"} · визитов ${p._count.appointments}` +
+      `  ${p.name ?? "без имени"} · ${tail(p.phones[0]?.phone ?? "")}` +
+        ` · YCLIENTS ${p.yclientsId ?? "—"} · визитов ${p._count.appointments}` +
         `${p.deletedAt ? " · удалена" : ""}`,
     );
   }
-  if (patients.length > 1) {
-    console.log(
-      "  ! карточек больше одной: покупки одного человека приходят с разных\n" +
-        "    клиентов YCLIENTS, и в одной карточке их видно вдвое больше",
-    );
-  }
   if (patients.length === 0) return;
+
+  /**
+   * Дубль — это общий телефон, а не общее имя.
+   *
+   * Поиск по имени находит однофамильцев и тёзок: на «Самира» пришло пять
+   * карточек пяти разных людей, а скрипт объявил их задвоением одного. Ключ
+   * пациента — телефон в E.164 (§4), по нему и судим.
+   */
+  const byPhone = new Map<string, string[]>();
+  for (const p of patients) {
+    for (const ph of p.phones) {
+      byPhone.set(ph.phone, [...(byPhone.get(ph.phone) ?? []), p.id]);
+    }
+  }
+  const shared = [...byPhone.entries()].filter(([, ids]) => new Set(ids).size > 1);
+  if (shared.length > 0) {
+    console.log(
+      `  ! карточки с общим телефоном: ${shared.map(([ph]) => tail(ph)).join(", ")} —\n` +
+        "    это один человек, склеить: npx tsx scripts/patients-merge.ts",
+    );
+  } else if (patients.length > 1) {
+    console.log("  (телефоны разные — это разные люди, просто с похожими именами)");
+  }
 
   const ids = patients.map((p) => p.id);
   const purchases = await prisma.coursePurchase.findMany({
     where: { companyId: company.id, patientId: { in: ids } },
     orderBy: { purchasedAt: "asc" },
     select: {
+      patientId: true,
       yclientsSaleId: true,
       amount: true,
       purchasedAt: true,
@@ -95,12 +118,15 @@ async function main() {
       service: { select: { title: true } },
     },
   });
+  for (const p of patients) nameOf.set(p.id, `${p.name ?? "без имени"} ${tail(p.phones[0]?.phone ?? "")}`);
   console.log(`\n── наши покупки: ${purchases.length} ──`);
   for (const p of purchases) {
     console.log(
       `  ${day(p.purchasedAt)} · ${money(Number(p.amount))} · продажа #${p.yclientsSaleId}` +
         ` · ${p.service?.title ?? "услуга не определена"}` +
-        ` · ${p.courseId ? "курс собран" : "курса ещё нет"}${p.isCourse ? "" : " · не курс"}`,
+        ` · ${p.courseId ? "курс собран" : "курса ещё нет"}${p.isCourse ? "" : " · не курс"}` +
+        // Чья именно покупка: карточек по запросу может быть несколько.
+        (patients.length > 1 ? ` · ${nameOf.get(p.patientId) ?? ""}` : ""),
     );
   }
 
@@ -108,6 +134,7 @@ async function main() {
     where: { companyId: company.id, patientId: { in: ids } },
     orderBy: { purchasedAt: "asc" },
     select: {
+      patientId: true,
       purchasedAt: true,
       amount: true,
       sessionsTotal: true,
@@ -120,7 +147,8 @@ async function main() {
   for (const c of courses) {
     console.log(
       `  ${day(c.purchasedAt)} · ${c.service.title} · ${c.sessionsUsed}/${c.sessionsTotal}` +
-        ` · ${money(Number(c.amount))} · ${c.origin === "YCLIENTS" ? "куплен в кассе" : "оплачен записью"}`,
+        ` · ${money(Number(c.amount))} · ${c.origin === "YCLIENTS" ? "куплен в кассе" : "оплачен записью"}` +
+        (patients.length > 1 ? ` · ${nameOf.get(c.patientId) ?? ""}` : ""),
     );
   }
 
