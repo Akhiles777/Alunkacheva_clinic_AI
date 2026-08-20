@@ -43,6 +43,10 @@ export interface CoursePlan {
   orphans: string[];
 }
 
+import type { CoursePlanOption } from "./product";
+
+export type { CoursePlanOption };
+
 /** Продажа курса, найденная в кассе: день и сумма. */
 export interface CourseSale {
   id: string;
@@ -78,15 +82,36 @@ export function looksLikeCourseSale(amount: number, planPrice: number): boolean 
   return amount >= planPrice * MIN_COURSE_SHARE;
 }
 
+/**
+ * Какой из объявленных курсов купили.
+ *
+ * Клиника может продавать курс из четырёх сеансов и курс из десяти. Сумма
+ * покупки и говорит, какой именно: берём тот вариант, к чьей цене она ближе,
+ * из тех, что она вообще покрывает. Если не покрывает ни одного — это не
+ * покупка курса.
+ */
+export function planForAmount(
+  amount: number,
+  plans: CoursePlanOption[],
+): CoursePlanOption | null {
+  const fits = plans.filter((p) => looksLikeCourseSale(amount, p.price));
+  if (fits.length === 0) return null;
+  return fits.reduce((best, p) =>
+    Math.abs(amount - p.price) < Math.abs(amount - best.price) ? p : best,
+  );
+}
+
 export interface BuildCoursesOptions {
   /**
-   * Плановая цена курса: цена одного сеанса × число сеансов из карточки
-   * услуги. Ноль означает «неизвестна» — тогда курсы не собираются вовсе:
-   * отличить продажу курса от оплаты приёма нечем, а гадать нельзя.
+   * Варианты курса: цена и число сеансов в каждом.
+   *
+   * Берутся из справочника клиники — карточка «БОС-терапия, курс» с ценой
+   * 28 000 ₽ и пометкой «сеансов 10». Если такой карточки нет, вариант один и
+   * его цена оценена как цена сеанса × размер курса. Пустой список означает
+   * «неизвестно»: курсы не собираются вовсе, потому что отличить продажу
+   * курса от оплаты приёма нечем.
    */
-  planPrice: number;
-  /** Размер курса из справочника клиники: сколько сеансов в нём продаётся. */
-  sessionsTotal: number;
+  plans: CoursePlanOption[];
   /**
    * Продажи курсов этого пациента из кассы.
    *
@@ -116,15 +141,14 @@ const SALE_WINDOW_DAYS = 180;
  * внутри той же услуги, и к курсу он отношения не имеет.
  */
 export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): CoursePlan {
-  const { planPrice } = opts;
-  const total = Math.max(1, opts.sessionsTotal);
+  const plans = opts.plans.filter((p) => p.price > 0 && p.sessions > 0);
   const courses: PlannedCourse[] = [];
   const orphans: string[] = [];
   let open: PlannedCourse | null = null;
 
   /** Продажи по возрастанию времени; каждая открывает курс не больше раза. */
   const sales = [...(opts.sales ?? [])]
-    .filter((s) => looksLikeCourseSale(s.amount, planPrice))
+    .filter((s) => planForAmount(s.amount, plans) !== null)
     .sort((a, b) => a.at.getTime() - b.at.getTime());
   const usedSale = new Set<string>();
   const windowMs = SALE_WINDOW_DAYS * 24 * 3600 * 1000;
@@ -149,8 +173,14 @@ export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): 
   for (const v of [...visits].sort((a, b) => a.startAt.getTime() - b.startAt.getTime())) {
     if (v.revenue > 0) {
       // Оплата в записи — запасной путь: так курс тоже иногда проводят.
-      if (!looksLikeCourseSale(v.revenue, planPrice)) continue;
-      open = { purchasedAt: v.startAt, amount: v.revenue, sessionsTotal: total, visitIds: [v.id] };
+      const plan = planForAmount(v.revenue, plans);
+      if (!plan) continue;
+      open = {
+        purchasedAt: v.startAt,
+        amount: v.revenue,
+        sessionsTotal: plan.sessions,
+        visitIds: [v.id],
+      };
       courses.push(open);
       continue;
     }
@@ -158,9 +188,16 @@ export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): 
     // Открытый курс кончился либо его не было — ищем продажу в кассе.
     if (!open || open.visitIds.length >= open.sessionsTotal) {
       const sale = saleFor(v.startAt);
-      if (sale) {
+      const plan = sale ? planForAmount(sale.amount, plans) : null;
+      if (sale && plan) {
         usedSale.add(sale.id);
-        open = { purchasedAt: sale.at, amount: sale.amount, sessionsTotal: total, visitIds: [] };
+        open = {
+          purchasedAt: sale.at,
+          amount: sale.amount,
+          // Размер курса — из того варианта, к чьей цене ближе покупка.
+          sessionsTotal: plan.sessions,
+          visitIds: [],
+        };
         courses.push(open);
       }
     }
@@ -221,13 +258,8 @@ const PRICE_TOLERANCE = 0.35;
 export interface ServiceCandidate {
   /** Даты бесплатных сеансов пациента по этой услуге. */
   dates: Date[];
-  /**
-   * Плановая цена курса: цена одного сеанса × число сеансов в курсе.
-   *
-   * Ноль означает «неизвестна» — тогда услуга участвует только как кандидат
-   * по сеансам, но сумму подтвердить нечем.
-   */
-  planPrice: number;
+  /** Варианты курса этой услуги: цена и число сеансов. */
+  plans: CoursePlanOption[];
 }
 
 export interface SaleAssignment {
@@ -277,14 +309,14 @@ export function assignSales(
      * сеансы только одной курсовой услуги: кандидат один — значит он. Так
      * тысяча рублей за сеанс НАК превращалась в «курс 1/10».
      */
-    const plausible = reachable.filter((id) =>
-      looksLikeCourseSale(sale.amount, candidates.get(id)?.planPrice ?? 0),
+    const plausible = reachable.filter(
+      (id) => planForAmount(sale.amount, candidates.get(id)?.plans ?? []) !== null,
     );
     if (plausible.length === 0) continue; // оплата приёма, а не курса
 
     // Сумма покупки — самый сильный довод: спрашиваем сначала её.
     const byPrice = plausible.filter((id) =>
-      priceMatches(sale.amount, candidates.get(id)?.planPrice ?? 0),
+      (candidates.get(id)?.plans ?? []).some((p) => priceMatches(sale.amount, p.price)),
     );
     const winner =
       byPrice.length === 1 ? byPrice[0] : plausible.length === 1 ? plausible[0] : null;

@@ -26,8 +26,24 @@ export interface ServiceRow {
   id: string;
   title: string;
   price: number;
+  /** Размер курса из карточки: «сеансов 10». */
+  sessions: number | null;
   /** Сколько приёмов было по этой услуге: у карточки-товара их не бывает. */
   visits: number;
+}
+
+/**
+ * Вариант курса, объявленный клиникой: цена и число сеансов.
+ *
+ * Вариантов может быть несколько. Клиника вправе продавать и курс из четырёх
+ * сеансов за 11 000 ₽, и курс из десяти за 28 000 ₽ — обе карточки лежат в
+ * справочнике рядом. Одна плановая цена на услугу выкинула бы меньший курс:
+ * 11 000 ₽ не дотягивают до половины двадцати восьми тысяч, и такая покупка
+ * не считалась бы покупкой вовсе.
+ */
+export interface CoursePlanOption {
+  price: number;
+  sessions: number;
 }
 
 /**
@@ -37,8 +53,12 @@ export interface ServiceRow {
  * ровно одна услуга-основа. Два кандидата — выбирать нельзя: свяжем не ту, и
  * платформа станет считать покупкой курса не ту сумму.
  */
-export function coursePriceByService(services: ServiceRow[]): Map<string, number> {
-  const out = new Map<string, number>();
+export function coursePriceByService(
+  services: ServiceRow[],
+  /** Размер курса по умолчанию, если в карточке он не указан. */
+  defaultSessions = 10,
+): Map<string, CoursePlanOption[]> {
+  const out = new Map<string, CoursePlanOption[]>();
   const bases = services.filter((s) => s.visits > 0 && normalizeTitle(s.title).length > 0);
 
   for (const product of services) {
@@ -64,10 +84,20 @@ export function coursePriceByService(services: ServiceRow[]): Map<string, number
     );
     if (ties.length !== 1) continue; // два одинаковых кандидата — не гадаем
 
-    // Одна услуга могла обзавестись двумя курсовыми карточками: берём дороже
-    // — курс из десяти сеансов дороже курса из четырёх, и он же полный.
-    const known = out.get(longest.id) ?? 0;
-    if (product.price > known) out.set(longest.id, product.price);
+    /**
+     * Все варианты, а не самый дорогой.
+     *
+     * Клиника вправе продавать курс из четырёх сеансов и курс из десяти — обе
+     * карточки лежат рядом. Оставить одну значило бы не узнавать покупку
+     * второго курса: 11 000 ₽ не дотягивают до половины двадцати восьми тысяч.
+     */
+    const list = out.get(longest.id) ?? [];
+    list.push({ price: product.price, sessions: product.sessions ?? defaultSessions });
+    out.set(
+      longest.id,
+      // От дорогого к дешёвому: так их удобнее читать и в выводе, и в отладке.
+      list.sort((a, b) => b.price - a.price),
+    );
   }
 
   return out;

@@ -5,6 +5,7 @@ import {
   buildCourses,
   pricePerSession,
   recentSessionPrice,
+  type CoursePlanOption,
   type CourseSale,
   type CourseVisit,
   type ServiceCandidate,
@@ -139,6 +140,7 @@ export async function linkCourses(
         id: true,
         title: true,
         price: true,
+        defaultSessions: true,
         _count: { select: { primaryForAppointments: true, appointmentServices: true } },
       },
     })
@@ -146,9 +148,10 @@ export async function linkCourses(
     id: sv.id,
     title: sv.title,
     price: Number(sv.price),
+    sessions: sv.defaultSessions,
     visits: sv._count.primaryForAppointments + sv._count.appointmentServices,
   }));
-  const declared = coursePriceByService(catalogue);
+  const declared = coursePriceByService(catalogue, DEFAULT_SESSIONS);
   const visitsOf = new Map(catalogue.map((sv) => [sv.id, sv.visits]));
 
   /**
@@ -163,23 +166,32 @@ export async function linkCourses(
    */
   const sessionPrices = new Map<string, number>();
   if (services.length > 0) {
-    const paid = await prisma.appointment.findMany({
+    /**
+     * Оплаты берём из состава визита, а не из основной услуги.
+     *
+     * У записи одна основная услуга, а услуг в ней бывает несколько. Услуга,
+     * которая всегда идёт второй, по основной не находится вовсе — платформа
+     * решала, что платных приёмов по ней не было, и цену сеанса брала из
+     * справочника. Ровно это и случилось с «Нейромедитацией»: двадцать один
+     * платный приём, а в предупреждении «платных приёмов не было».
+     *
+     * В составе визита у каждой услуги своя стоимость — это и есть цена
+     * сеанса, причём точнее суммы всего визита.
+     */
+    const paid = await prisma.appointmentService.findMany({
       where: {
         companyId,
-        deletedAt: null,
-        status: { not: "CANCELLED" },
-        revenue: { gt: 0 },
-        primaryServiceId: { in: services.map((sv) => sv.id) },
+        serviceId: { in: services.map((sv) => sv.id) },
+        priceCharged: { gt: 0 },
+        appointment: { deletedAt: null, status: { not: "CANCELLED" } },
       },
-      select: { primaryServiceId: true, revenue: true },
+      select: { serviceId: true, priceCharged: true },
       // От новых к старым: цена сеанса берётся по недавним оплатам.
-      orderBy: { startAt: "desc" },
+      orderBy: { appointment: { startAt: "desc" } },
     });
     const amounts = new Map<string, number[]>();
     for (const a of paid) {
-      const id = a.primaryServiceId;
-      if (!id) continue;
-      amounts.set(id, [...(amounts.get(id) ?? []), Number(a.revenue)]);
+      amounts.set(a.serviceId, [...(amounts.get(a.serviceId) ?? []), Number(a.priceCharged)]);
     }
     for (const sv of services) {
       const observed = recentSessionPrice(amounts.get(sv.id) ?? []);
@@ -235,9 +247,18 @@ export async function linkCourses(
     });
     const courseIds = new Set(services.map((sv) => sv.id));
     const sizeOf = new Map(services.map((sv) => [sv.id, sv.defaultSessions ?? DEFAULT_SESSIONS]));
-    const planPriceOf = (id: string): number =>
-      // Объявленная клиникой цена курса важнее нашей оценки по цене сеанса.
-      declared.get(id) ?? (sessionPrices.get(id) ?? 0) * (sizeOf.get(id) ?? DEFAULT_SESSIONS);
+    /**
+     * Варианты курса услуги: объявленные клиникой важнее нашей оценки.
+     *
+     * Если карточки курса в справочнике нет, вариант один — цена сеанса,
+     * умноженная на размер курса из карточки услуги.
+     */
+    const plansOf = (id: string): CoursePlanOption[] => {
+      const fromDirectory = declared.get(id);
+      if (fromDirectory && fromDirectory.length > 0) return fromDirectory;
+      const price = (sessionPrices.get(id) ?? 0) * (sizeOf.get(id) ?? DEFAULT_SESSIONS);
+      return price > 0 ? [{ price, sessions: sizeOf.get(id) ?? DEFAULT_SESSIONS }] : [];
+    };
     for (const a of zero) {
       const ids = new Set(a.services.map((x) => x.serviceId));
       if (a.primaryServiceId) ids.add(a.primaryServiceId);
@@ -247,8 +268,8 @@ export async function linkCourses(
         const found = perPatient.get(id);
         perPatient.set(id, {
           dates: [...(found?.dates ?? []), a.startAt],
-          // Плановая цена курса: цена сеанса × число сеансов из карточки услуги.
-          planPrice: found?.planPrice ?? planPriceOf(id),
+          // Варианты курса: из справочника, иначе оценка по цене сеанса.
+          plans: found?.plans ?? plansOf(id),
         });
         zeroVisits.set(a.patientId, perPatient);
       }
@@ -269,6 +290,15 @@ export async function linkCourses(
     salesFor.set(patientId, assigned.byService);
     ambiguous += assigned.ambiguous.length;
   }
+
+  /** Варианты курса услуги — те же, что видит раздача продаж. */
+  const declaredPlans = (id: string): CoursePlanOption[] => {
+    const fromDirectory = declared.get(id);
+    if (fromDirectory && fromDirectory.length > 0) return fromDirectory;
+    const size = services.find((sv) => sv.id === id)?.defaultSessions ?? DEFAULT_SESSIONS;
+    const price = (sessionPrices.get(id) ?? 0) * size;
+    return price > 0 ? [{ price, sessions: size }] : [];
+  };
 
   for (const service of services) {
     /**
@@ -349,10 +379,7 @@ export async function linkCourses(
          * Цена сеанса — из записей клиники, а не из справочника: там у одной
          * услуги цена стоит за сеанс, у другой за весь курс.
          */
-        planPrice:
-          declared.get(service.id) ??
-          sessionPrice * (service.defaultSessions ?? DEFAULT_SESSIONS),
-        sessionsTotal: service.defaultSessions ?? DEFAULT_SESSIONS,
+        plans: declaredPlans(service.id),
         sales: salesFor.get(patientId)?.get(service.id) ?? [],
       });
       orphans += plan.orphans.length;

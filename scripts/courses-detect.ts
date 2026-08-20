@@ -42,6 +42,7 @@
  */
 import "dotenv/config";
 import { prisma } from "../lib/db";
+import { coursePriceByService } from "../lib/courses/product";
 
 /** Ниже этого числа приёмов говорить о повадках услуги не о чем. */
 const MIN_VISITS = 10;
@@ -177,6 +178,23 @@ async function main() {
     for (const run of s.open.values()) if (run > 0) s.runs.push(run);
   }
 
+  /**
+   * Курсы, объявленные клиникой отдельной карточкой.
+   *
+   * «БОС-терапия, курс» за 28 000 ₽ с пометкой «сеансов 10» — это ответ самой
+   * клиники на вопрос, сколько стоит её курс. Показываем его рядом с услугой,
+   * чтобы было видно, откуда платформа берёт плановую цену.
+   */
+  const declaredPlans = coursePriceByService(
+    services.map((sv) => ({
+      id: sv.id,
+      title: sv.title,
+      price: Number(sv.price),
+      sessions: sv.defaultSessions,
+      visits: stats.get(sv.id)?.total ?? 0,
+    })),
+  );
+
   const rows = services
     .map((sv) => {
       const s = stats.get(sv.id) ?? { total: 0, zero: 0, gifted: 0, paidAmounts: [], runs: [], open: new Map() };
@@ -199,6 +217,7 @@ async function main() {
         zero: s.zero,
         gifted: s.gifted,
         price,
+        declared: declaredPlans.get(sv.id) ?? [],
         share,
         paid: s.paidAmounts,
         sessions,
@@ -260,6 +279,9 @@ async function main() {
       `  ОТМЕТИТЬ курсовой: ${r.title}\n` +
         `    приёмов ${r.total}, из них без стоимости ${r.zero} (${Math.round(r.share * 100)}%)\n` +
         `    цена сеанса по справочнику: ${r.price > 0 ? money(r.price) : "НЕ ЗАДАНА — курсы не соберутся"}\n` +
+        (r.declared.length > 0
+          ? `    курс объявлен в справочнике: ${r.declared.map((d) => `${money(d.price)} за ${d.sessions} сеансов`).join("; ")}\n`
+          : "") +
         `    размер курса: ${r.sessions}${sessionsArg.has(r.title) ? " (задан вами)" : " — оценка, уточните в «Настройки → Услуги»"}\n` +
         (r.gifted > 0 ? `    отдано даром по скидке 100%: ${r.gifted}\n` : "") +
         (typical > 0

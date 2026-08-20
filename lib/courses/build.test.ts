@@ -3,6 +3,7 @@ import {
   assignSales,
   buildCourses,
   looksLikeCourseSale,
+  planForAmount,
   priceMatches,
   pricePerSession,
   recentSessionPrice,
@@ -12,7 +13,7 @@ import {
 const day = (d: number): Date => new Date(`2026-08-${String(d).padStart(2, "0")}T09:00:00+03:00`);
 const visit = (id: string, d: number, revenue = 0): CourseVisit => ({ id, startAt: day(d), revenue });
 /** Живые числа клиники: сеанс БОС 2 800 ₽, курс из десяти — 28 000 ₽ по плану. */
-const BOS = { planPrice: 28000, sessionsTotal: 10 };
+const BOS = { plans: [{ price: 28000, sessions: 10 }] };
 /** «18 августа» в тестах — тот же день, что и в живых данных клиники. */
 
 describe("похожа ли оплата на продажу курса", () => {
@@ -95,7 +96,7 @@ describe("сборка курса из записей", () => {
   it("сеансов больше проданного — лишние не приписываем", () => {
     const plan = buildCourses(
       [visit("v1", 1, 25000), visit("v2", 2), visit("v3", 3)],
-      { planPrice: 5600, sessionsTotal: 2 },
+      { plans: [{ price: 5600, sessions: 2 }] },
     );
     expect(plan.courses[0].visitIds).toEqual(["v1", "v2"]);
     expect(plan.orphans).toEqual(["v3"]);
@@ -110,10 +111,7 @@ describe("сборка курса из записей", () => {
   });
 
   it("цена сеанса неизвестна — курсов не собираем вовсе", () => {
-    const plan = buildCourses([visit("v1", 1, 25000), visit("v2", 3)], {
-      planPrice: 0,
-      sessionsTotal: 10,
-    });
+    const plan = buildCourses([visit("v1", 1, 25000), visit("v2", 3)], { plans: [] });
     expect(plan.courses).toEqual([]);
   });
 
@@ -167,7 +165,7 @@ describe("курс открывает продажа из кассы", () => {
   it("одна продажа открывает один курс, а не каждый сеанс", () => {
     const plan = buildCourses(
       [visit("v1", 18), visit("v2", 19)],
-      { ...BOS, sessionsTotal: 1, sales: [sale("s1", 17)] },
+      { plans: [{ price: 28000, sessions: 1 }], sales: [sale("s1", 17)] },
     );
     expect(plan.courses).toHaveLength(1);
     expect(plan.orphans).toEqual(["v2"]);
@@ -176,7 +174,7 @@ describe("курс открывает продажа из кассы", () => {
   it("вторая продажа открывает второй курс, когда первый израсходован", () => {
     const plan = buildCourses(
       [visit("v1", 18), visit("v2", 19), visit("v3", 25)],
-      { ...BOS, sessionsTotal: 2, sales: [sale("s1", 17), sale("s2", 24)] },
+      { plans: [{ price: 28000, sessions: 2 }], sales: [sale("s1", 17), sale("s2", 24)] },
     );
     expect(plan.courses).toHaveLength(2);
     expect(plan.courses[1].purchasedAt).toEqual(day(24));
@@ -194,9 +192,9 @@ describe("курс открывает продажа из кассы", () => {
 describe("кому принадлежит продажа", () => {
   const sale = (id: string, d: number, amount = 28000) => ({ id, at: day(d), amount });
   /** Курс БОС: сеанс 2 800 ₽, десять сеансов — плановая цена 28 000 ₽. */
-  const bos = (dates: number[]) => ({ dates: dates.map(day), planPrice: 28000 });
+  const bos = (dates: number[]) => ({ dates: dates.map(day), plans: [{ price: 28000, sessions: 10 }] });
   /** Курс НАК: сеанс 1 000 ₽, десять сеансов — 10 000 ₽. */
-  const nak = (dates: number[]) => ({ dates: dates.map(day), planPrice: 10000 });
+  const nak = (dates: number[]) => ({ dates: dates.map(day), plans: [{ price: 10000, sessions: 10 }] });
 
   it("кандидат один — привязываем", () => {
     const out = assignSales([sale("s1", 17)], new Map([["bos", bos([18, 19])]]));
@@ -237,7 +235,7 @@ describe("кому принадлежит продажа", () => {
       [sale("s1", 17, 28000)],
       new Map([
         ["bos", bos([18])],
-        ["двойник", { dates: [day(18)], planPrice: 27000 }],
+        ["двойник", { dates: [day(18)], plans: [{ price: 27000, sessions: 10 }] }],
       ]),
     );
     expect(out.byService.size).toBe(0);
@@ -261,7 +259,7 @@ describe("кому принадлежит продажа", () => {
     // взять неоткуда. Назвать покупку курсом значило бы решить за клинику.
     const out = assignSales(
       [sale("s1", 17)],
-      new Map([["bos", { dates: [day(18)], planPrice: 0 }]]),
+      new Map([["bos", { dates: [day(18)], plans: [] }]]),
     );
     expect(out.byService.size).toBe(0);
     expect(out.ambiguous).toEqual([]);
@@ -272,7 +270,7 @@ describe("кому принадлежит продажа", () => {
     // единственный, и прошлое правило отдавало ему платёж не глядя на сумму.
     const out = assignSales(
       [sale("s1", 17, 1000)],
-      new Map([["nak", { dates: [day(18), day(19)], planPrice: 10000 }]]),
+      new Map([["nak", { dates: [day(18), day(19)], plans: [{ price: 10000, sessions: 10 }] }]]),
     );
     expect(out.byService.size).toBe(0);
     expect(out.ambiguous).toEqual([]);
@@ -349,7 +347,7 @@ describe("порядок расходования курсов", () => {
     // первый курс висел неиспользованным до конца.
     const plan = buildCourses(
       [visit("v1", 12), visit("v2", 13), visit("v3", 14)],
-      { planPrice: 28000, sessionsTotal: 2, sales: [sale("ранний", 10), sale("поздний", 11)] },
+      { plans: [{ price: 28000, sessions: 2 }], sales: [sale("ранний", 10), sale("поздний", 11)] },
     );
     expect(plan.courses).toHaveLength(2);
     expect(plan.courses[0].purchasedAt).toEqual(day(10));
@@ -360,11 +358,51 @@ describe("порядок расходования курсов", () => {
 
   it("вторая покупка ждёт, пока первый курс не израсходован", () => {
     const plan = buildCourses([visit("v1", 12)], {
-      planPrice: 28000,
-      sessionsTotal: 10,
+      plans: [{ price: 28000, sessions: 10 }],
       sales: [sale("s1", 10), sale("s2", 11)],
     });
     expect(plan.courses).toHaveLength(1);
     expect(plan.courses[0].purchasedAt).toEqual(day(10));
+  });
+});
+
+describe("несколько вариантов курса у одной услуги", () => {
+  const PLANS = [
+    { price: 28000, sessions: 10 },
+    { price: 11000, sessions: 4 },
+  ];
+  const sale = (id: string, d: number, amount: number) => ({ id, at: day(d), amount });
+
+  it("покупка малого курса узнаётся и даёт четыре сеанса", () => {
+    // С одной плановой ценой 11 000 ₽ не дотягивали до половины двадцати
+    // восьми тысяч — и покупка малого курса не считалась покупкой вовсе.
+    const plan = buildCourses([visit("v1", 12), visit("v2", 13)], {
+      plans: PLANS,
+      sales: [sale("s1", 11, 11000)],
+    });
+    expect(plan.courses).toHaveLength(1);
+    expect(plan.courses[0].sessionsTotal).toBe(4);
+  });
+
+  it("покупка полного курса даёт десять сеансов", () => {
+    const plan = buildCourses([visit("v1", 12)], {
+      plans: PLANS,
+      sales: [sale("s1", 11, 28000)],
+    });
+    expect(plan.courses[0].sessionsTotal).toBe(10);
+  });
+
+  it("размер берётся у того варианта, к чьей цене покупка ближе", () => {
+    // 13 000 ₽ покрывают половину обоих, но это явно малый курс со скидкой.
+    expect(planForAmount(13000, PLANS)).toEqual({ price: 11000, sessions: 4 });
+    expect(planForAmount(26000, PLANS)).toEqual({ price: 28000, sessions: 10 });
+  });
+
+  it("сумма не тянет ни на один вариант — не покупка курса", () => {
+    expect(planForAmount(2800, PLANS)).toBeNull();
+  });
+
+  it("вариантов нет — курсов не будет", () => {
+    expect(planForAmount(28000, [])).toBeNull();
   });
 });
