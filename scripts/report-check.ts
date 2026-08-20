@@ -481,6 +481,21 @@ async function main() {
     if (oversold.length > 0) {
       console.log(`  ✗ ${oversold.length} курсов с нулевой суммой — покупка потерялась`);
     }
+    /**
+     * Курсы старше окна кассы.
+     *
+     * Обычный круг выгрузки читает кассу за двести дней и пересобирает курсы
+     * только там. Всё, что куплено раньше, живёт с последнего полного перечёта
+     * — если таких курсов много, а перечёт был давно, стоит его повторить.
+     */
+    const windowStart = new Date(now.getTime() - 200 * 24 * 3600 * 1000);
+    const older = courseRows.filter((c) => c.purchasedAt < windowStart).length;
+    if (older > 0) {
+      console.log(
+        `  из них ${older} куплены раньше окна кассы (200 дней) — они не пересобираются\n` +
+          "      обычной выгрузкой и держатся с последнего полного перечёта",
+      );
+    }
     const broken = courseRows.filter((c) => c.sessionsUsed > c.sessionsTotal);
     console.log(
       broken.length === 0

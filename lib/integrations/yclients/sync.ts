@@ -122,7 +122,8 @@ export async function syncAll(companyId: string, options: SyncOptions = {}): Pro
     if (transactions === null) {
       counts.courseSessions = 0;
     } else {
-      const linked = await linkCourses(companyId, transactions);
+      // Пересобираем курсы только в том окне, по которому прочитана касса.
+      const linked = await linkCourses(companyId, transactions, since);
       counts.courseSessions = linked.sessions;
       if (linked.priceless.length > 0) {
         // Молчать нельзя: раздел «Курсы» был бы пуст без объяснимой причины.

@@ -84,6 +84,18 @@ export async function linkCourses(
    * записью, а таких меньшинство.
    */
   transactions: RawTransaction[] = [],
+  /**
+   * С какой даты прочитана касса.
+   *
+   * Пересобирать курсы можно только там, куда мы смотрели. Обычный круг берёт
+   * последние двести дней, а разбор шёл по всей истории — у курсов постарше
+   * покупки в этом прогоне не было, и они удалялись как лишние. Полный перечёт
+   * их создавал, ближайший крон убивал: за полчаса из восьмидесяти трёх курсов
+   * оставалось сорок шесть.
+   *
+   * Всё, что куплено раньше этой даты, не трогаем вовсе: там нечего сверять.
+   */
+  since: Date = new Date(0),
 ): Promise<LinkCoursesResult> {
   /**
    * Продажи по пациентам. Клиента находим по идентификатору YCLIENTS: он есть
@@ -231,6 +243,7 @@ export async function linkCourses(
         status: { not: "CANCELLED" },
         // Только сеансы, оплаченные не сегодня: подарки к курсу не относятся.
         revenueSource: "PREPAID",
+        startAt: { gte: since },
         patientId: { in: [...salesByPatient.keys()] },
         OR: [
           { primaryServiceId: { in: services.map((sv) => sv.id) } },
@@ -331,6 +344,8 @@ export async function linkCourses(
            * сеансов заканчивался бы на восьмом.
            */
           revenueSource: { not: "FREE" },
+          // Только окно, по которому прочитана касса: см. параметр since.
+          startAt: { gte: since },
           OR: [{ primaryServiceId: service.id }, { services: { some: { serviceId: service.id } } }],
         },
         select: {
@@ -344,7 +359,7 @@ export async function linkCourses(
         orderBy: { startAt: "asc" },
       }),
       prisma.course.findMany({
-        where: { companyId, serviceId: service.id },
+        where: { companyId, serviceId: service.id, purchasedAt: { gte: since } },
         select: {
           id: true,
           patientId: true,
@@ -358,6 +373,15 @@ export async function linkCourses(
     ]);
 
     const apptById = new Map(appts.map((a) => [a.id, a]));
+    /** Курсы вне окна: их связи трогать нельзя. */
+    const outOfScope = new Set(
+      (
+        await prisma.course.findMany({
+          where: { companyId, serviceId: service.id, purchasedAt: { lt: since } },
+          select: { id: true },
+        })
+      ).map((c) => c.id),
+    );
     const courseByKey = new Map(existingCourses.map((c) => [courseKey(c.patientId, c.purchasedAt), c]));
     const keep = new Set<string>();
 
@@ -440,6 +464,10 @@ export async function linkCourses(
       where: {
         companyId,
         courseId: { not: null },
+        startAt: { gte: since },
+        // Курс куплен раньше окна — он вне пересборки, и связь его сеансов не
+        // наша забота: удалять её значило бы стирать то, чего мы не проверяли.
+        course: { purchasedAt: { gte: since } },
         OR: [{ primaryServiceId: service.id }, { services: { some: { serviceId: service.id } } }],
         NOT: { id: { in: [...wanted.keys()] } },
       },
@@ -457,6 +485,16 @@ export async function linkCourses(
       const cur = apptById.get(apptId);
       if (!cur) continue;
       if (cur.courseId === want.courseId && cur.courseSessionIndex === want.index) continue;
+      /**
+       * Сеанс уже привязан к курсу, купленному раньше окна.
+       *
+       * Такой курс мы в этом прогоне не пересобирали — покупки за той датой не
+       * читали. Снять связь значило бы стереть работу полного перечёта, а
+       * поставить свою — приписать сеанс не тому курсу.
+       */
+      if (want.courseId === null && cur.courseId !== null && outOfScope.has(cur.courseId)) {
+        continue;
+      }
       await prisma.appointment.update({
         where: { id: apptId },
         data: { courseId: want.courseId, courseSessionIndex: want.index },
