@@ -5,6 +5,8 @@ import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import type { Appt } from "@/app/_data/store";
 import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
+import { coursePurchasesBetween } from "@/lib/server/course-revenue";
+import { revenueByService, type CourseSaleForRevenue } from "@/lib/metrics/service-revenue";
 import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
 import { weekKeyOf } from "@/lib/metrics/types";
@@ -108,6 +110,8 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
       room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true } },
       patient: { select: { name: true } },
+      // Состав визита: разрез по услугам считается по нему (§8).
+      services: { select: { priceCharged: true, service: { select: { title: true } } } },
     },
   });
   return rows.map((r) => ({
@@ -122,6 +126,10 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
     roomName: r.room?.name ?? "",
     doctor: r.staff.name,
     service: r.primaryService?.title ?? "",
+    parts: r.services.map((sv) => ({
+      title: sv.service.title,
+      amount: Number(sv.priceCharged),
+    })),
     patientId: r.patientId,
     patientName: r.patient?.name ?? "",
     startMinute: minuteOfDay(r.startAt),
@@ -163,24 +171,24 @@ async function patientCounts(companyId: string) {
 }
 
 /**
- * Разрез по услугам. Считаем СОСТОЯВШИЕСЯ приёмы — так же, как везде: приём
- * это приём, который прошёл (§8). Здесь считались все записи подряд, включая
- * будущие и неявки, а выручка — только по пришедшим: в одной строке стояли
- * приёмы по одному определению и деньги по другому.
+ * Разрез по услугам — общей функцией отчётов, а не своей.
+ *
+ * Здесь была третья реализация: по основной услуге визита и без продаж курсов.
+ * «БОС-терапия, 41 приём, 0 ₽» — сеансы курса стоят нулём, а деньги за курсы
+ * этот экран не видел вовсе. Своя арифметика на экране — источник двух правд,
+ * и владелец поверит удобной (§8).
  */
-function serviceBreakdown(appts: Appt[]): OwnerServiceRow[] {
-  const map = new Map<string, OwnerServiceRow>();
-  for (const a of appts) {
-    if (a.status !== "arrived") continue;
-    const key = a.service || "—";
-    const cur = map.get(key) ?? { service: key, count: 0, revenue: 0 };
-    cur.count += 1;
-    // Цена визита — из данных, а не из зашитого прайса по ключевым словам:
-    // тот показывал остеопатию по 6500 при настоящих 8000.
-    cur.revenue += a.price ?? 0;
-    map.set(key, cur);
-  }
-  return [...map.values()].sort((x, y) => y.revenue - x.revenue);
+function serviceBreakdown(appts: Appt[], sales: CourseSaleForRevenue[]): OwnerServiceRow[] {
+  return revenueByService(
+    appts.map((a) => ({
+      status: a.status,
+      doctor: a.doctor,
+      price: a.price ?? 0,
+      service: a.service,
+      parts: a.parts ?? [],
+    })),
+    sales,
+  ).map((r) => ({ service: r.name, count: r.count, revenue: r.revenue }));
 }
 
 export async function getOwnerReport(): Promise<OwnerReport> {
@@ -194,7 +202,21 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     prisma.callLog.count({ where: { companyId: session.companyId } }),
   ]);
 
-  const perf = staffPerformance(appts);
+  /**
+   * Проданные курсы за тот же период.
+   *
+   * Их деньги — выручка дней покупки, и в разрезах они обязаны быть: иначе
+   * специалист, ведущий курсы, выглядит бесполезным, а услуга — бесплатной.
+   */
+  const period = ownerPeriod();
+  const purchases = await coursePurchasesBetween(session.companyId, period.start, period.end);
+  const sales: CourseSaleForRevenue[] = purchases.map((p) => ({
+    serviceTitle: p.serviceTitle,
+    staffName: p.staffName,
+    amount: p.amount,
+  }));
+
+  const perf = staffPerformance(appts, sales);
   /**
    * Загрузка кабинетов — той же функцией, что и в отчётах.
    *
@@ -205,7 +227,17 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    */
   const { start, end } = ownerPeriod();
   const loads = await roomOccupancyBetween(session.companyId, start, end);
-  const revenueSum = perf.reduce((s, p) => s + p.revenue, 0);
+  /**
+   * Итог — сумма по специалистам плюс курсы, которым специалиста не нашлось.
+   *
+   * Курс без сеансов в разрез по людям не идёт (приписывать некому), но деньги
+   * клиника получила: без этой добавки итог был бы меньше суммы своих же
+   * строк на экране ниже.
+   */
+  const orphanCourses = sales
+    .filter((x) => !x.staffName)
+    .reduce((sum, x) => sum + x.amount, 0);
+  const revenueSum = perf.reduce((s, p) => s + p.revenue, 0) + orphanCourses;
   const arrived = appts.filter((a) => a.status === "arrived").length;
   const noShow = appts.filter((a) => a.status === "no_show").length;
   const avgLoadPct = loads.length
@@ -247,7 +279,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
       revenue: p.revenue,
     })),
     rooms: loads.map((l) => ({ name: l.name, ratePct: Math.round(l.rate * 100) })),
-    services: serviceBreakdown(appts),
+    services: serviceBreakdown(appts, sales),
     funnel: { dialogs, calls },
     hypotheses: hypotheses(appts, loads),
   };

@@ -425,11 +425,11 @@ export async function getDashboardMetricsDb(
       appointments: list.length,
       revenue: rev,
       /**
-       * Чек — по приёмам, без курсов: продажа курса не приём, и делить её на
-       * число пришедших нельзя. Иначе у БОС-терапевта вышел бы чек в разы
-       * выше, чем стоит один её сеанс.
+       * Чек здесь считать незачем: `withStaffShares` пересчитывает его сам —
+       * выручка ÷ приёмы. Своё значение отсюда всё равно затиралось, и в коде
+       * стояли два определения одного числа. Ноль — не данные, а заглушка.
        */
-      avgCheck: averageCheck(list.reduce((sum, a) => sum + Number(a.revenue), 0), list.length),
+      avgCheck: 0,
       appointmentsShare: 0,
       revenueShare: 0,
     };
@@ -497,12 +497,14 @@ export async function getDashboardMetricsDb(
       revenue: revenue + coursesAmount,
       courseRevenue,
       /**
-       * Средний чек — по приёмам, без курсов.
+       * Средний чек — выручка ÷ приёмы, одним правилом везде.
        *
-       * Продажа курса не приём: делить её на число пришедших значит завысить
-       * чек тем сильнее, чем больше курсов продали.
+       * Выручка включает проданные курсы, значит и чек включает: деньги за
+       * курс заработаны его сеансами, а сеансы — это приёмы. Считать чек по
+       * одному определению в итогах и по другому у специалистов значит завести
+       * две правды об одном числе (§8).
        */
-      avgCheck: averageCheck(revenue, arrived.length),
+      avgCheck: averageCheck(revenue + coursesAmount, arrived.length),
       newPatients,
       coursesSold: coursesSold.length,
       coursesAmount,

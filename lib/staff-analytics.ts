@@ -42,7 +42,16 @@ export interface DoctorStats {
  * запланированное показываются отдельными числами: они отвечают на другие
  * вопросы и в одно слово не сворачиваются.
  */
-export function staffPerformance(appts: Appt[]): DoctorStats[] {
+export function staffPerformance(
+  appts: Appt[],
+  /**
+   * Проданные курсы: их деньги принадлежат тому, кто курс ведёт.
+   *
+   * У кассовой операции специалиста нет, а сеансы курса стоят нулём — без
+   * этого БОС-терапевт с полусотней сеансов показывала четыре тысячи выручки.
+   */
+  sales: { staffName: string | null; amount: number }[] = [],
+): DoctorStats[] {
   const map = new Map<string, DoctorStats>();
   for (const a of appts) {
     const cur =
@@ -60,6 +69,17 @@ export function staffPerformance(appts: Appt[]): DoctorStats[] {
     if (occupies(a)) cur.bookedMinutes += a.durationMin;
     map.set(a.doctor, cur);
   }
+  for (const s of sales) {
+    // Курс без сеансов специалиста не знает — приписывать некому.
+    if (!s.staffName) continue;
+    const cur =
+      map.get(s.staffName) ??
+      { name: s.staffName, appts: 0, arrived: 0, noShow: 0, bookedMinutes: 0, revenue: 0, planned: 0 };
+    // Деньги без приёма: приёмом были сеансы курса, они уже посчитаны.
+    cur.revenue += s.amount;
+    map.set(s.staffName, cur);
+  }
+
   return [...map.values()].sort((x, y) => y.revenue - x.revenue);
 }
 

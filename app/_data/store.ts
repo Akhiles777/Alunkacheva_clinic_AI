@@ -110,6 +110,13 @@ export interface Appt {
   amountSource?: "RECORD" | "PRICE_LIST" | "PREPAID" | "FREE" | "UNKNOWN";
   /** Сеанс курса: какой по счёту и сколько всего оплачено. */
   courseSession?: { index: number; total: number } | null;
+  /**
+   * Состав визита: у каждой услуги своя стоимость.
+   *
+   * Разрез по услугам считается по нему, а не по основной услуге: у записи
+   * основная одна, а услуг в ней бывает несколько.
+   */
+  parts?: { title: string; amount: number }[];
   /** «Дополнительно»: отзыв клиента, проблема, примечание. Анализируется ИИ. */
   note?: string | null;
   /**
