@@ -96,7 +96,7 @@ export interface DialogMessageRecord {
 }
 
 /** Вложения из JSON-поля сообщения в вид, пригодный для показа. */
-function attachmentsOf(raw: unknown): DialogAttachmentRecord[] {
+function attachmentsOf(raw: unknown, messageId: string): DialogAttachmentRecord[] {
   if (!Array.isArray(raw)) return [];
   const out: DialogAttachmentRecord[] = [];
   for (const item of raw) {
@@ -116,7 +116,16 @@ function attachmentsOf(raw: unknown): DialogAttachmentRecord[] {
     if (p === "TELEGRAM" && typeof a.source?.fileId === "string") {
       href = `/api/media?provider=TELEGRAM&ref=${encodeURIComponent(a.source.fileId)}`;
     } else if (p === "WHATSAPP" && typeof a.source?.url === "string") {
-      href = `/api/media?provider=WHATSAPP&ref=${encodeURIComponent(a.source.url)}`;
+      /**
+       * Ссылаемся на своё сообщение, а не на адрес провайдера.
+       *
+       * Адрес отдавался браузеру и возвращался обратно, а обработчик пускал
+       * его по списку хостов. Файлы Green API лежат в другом хранилище, список
+       * их резал, и голосовое молча не проигрывалось. Теперь адрес берётся из
+       * базы по номеру сообщения — работает с любым хранилищем и не даёт
+       * подставить чужой адрес.
+       */
+      href = `/api/media?provider=WHATSAPP&ref=${encodeURIComponent(messageId)}&i=${out.length}`;
     }
 
     out.push({
@@ -330,7 +339,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
     // Из базы пришли в обратном порядке (последние сверху) — разворачиваем.
     const ordered = [...c.messages].reverse();
     const messages: DialogMessageRecord[] = ordered.map((m) => {
-      const files = attachmentsOf(m.attachments);
+      const files = attachmentsOf(m.attachments, m.id);
       return {
       id: m.id,
       from: m.authorType === "PATIENT" ? "patient" : m.authorType === "BOT" ? "bot" : "staff",

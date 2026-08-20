@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionOrNull } from "@/lib/server/session";
 import { fileLink } from "@/lib/integrations/telegram/client";
+import { prisma } from "@/lib/db";
 
 /**
  * Отдача вложений пациента сотруднику.
@@ -41,14 +42,24 @@ export async function GET(req: Request) {
     if (!source) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
   } else if (provider === "WHATSAPP") {
     /**
-     * Адрес приходит из вебхука провайдера, но доверять ему на слово нельзя:
-     * подставив сюда чужой адрес, можно заставить наш сервер сходить во
-     * внутреннюю сеть и вернуть ответ наружу. Пускаем только к провайдеру.
+     * Адрес берём из своей базы по номеру сообщения, а не из запроса.
+     *
+     * Раньше сюда приходил сам адрес, и пускали его по списку хостов —
+     * `green-api.com`. Провайдер отдаёт файлы со своего хранилища, домен там
+     * другой, и наша же проверка резала ссылку: администратор видел
+     * проигрыватель, который молча не играл. Голосовые пациентов не
+     * прослушивались вовсе.
+     *
+     * Список хостов был обходным путём вокруг настоящей опасности: подставив
+     * чужой адрес, можно заставить сервер сходить во внутреннюю сеть. Теперь
+     * подставлять нечего — адрес приходит из вложения, которое мы сами
+     * записали, а сообщение обязано принадлежать той же клинике, что и
+     * сотрудник. Это и безопаснее списка, и работает с любым хранилищем.
      */
-    if (!isGreenApiUrl(ref)) {
-      return NextResponse.json({ error: "недопустимый адрес файла" }, { status: 400 });
+    source = await whatsappFileUrl(ref, session.companyId, Number(url.searchParams.get("i") ?? 0));
+    if (!source) {
+      return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
     }
-    source = ref;
   } else {
     return NextResponse.json({ error: "неизвестный источник" }, { status: 400 });
   }
@@ -79,11 +90,33 @@ export async function GET(req: Request) {
   });
 }
 
-function isGreenApiUrl(raw: string): boolean {
+/**
+ * Адрес файла из сохранённого вложения.
+ *
+ * Сообщение должно принадлежать клинике сотрудника — иначе по чужому номеру
+ * можно было бы вытянуть переписку соседней клиники. Возвращаем только
+ * `https`: подставить туда внутренний адрес неоткуда, но и полагаться на это
+ * не будем.
+ */
+async function whatsappFileUrl(
+  messageId: string,
+  companyId: string,
+  index: number,
+): Promise<string | null> {
+  const message = await prisma.message.findFirst({
+    where: { id: messageId, conversation: { companyId } },
+    select: { attachments: true },
+  });
+  if (!message) return null;
+  const list = Array.isArray(message.attachments) ? message.attachments : [];
+  const item = list[Number.isFinite(index) && index >= 0 ? index : 0];
+  if (!item || typeof item !== "object") return null;
+  const source = (item as { source?: { url?: unknown } }).source;
+  const raw = source?.url;
+  if (typeof raw !== "string") return null;
   try {
-    const u = new URL(raw);
-    return u.protocol === "https:" && /(^|\.)green-api\.com$/.test(u.hostname);
+    return new URL(raw).protocol === "https:" ? raw : null;
   } catch {
-    return false;
+    return null;
   }
 }
