@@ -42,6 +42,15 @@ export interface LinkCoursesResult {
    * причины.
    */
   priceless: string[];
+  /**
+   * Курсовые услуги, у которых не было ни одного платного приёма.
+   *
+   * Цену сеанса пришлось взять из справочника, а там у одной услуги она стоит
+   * за сеанс, у другой за весь курс. Плановая цена курса выходит наугад, и по
+   * ней мы решаем, покупка это курса или оплата приёма. Молчать нельзя: курсы
+   * по такой услуге либо не соберутся, либо соберутся не те.
+   */
+  guessedPrice: string[];
   /** Курсов в базе после пересборки. */
   courses: number;
   /** Визитов, у которых привязка к курсу изменилась. */
@@ -112,6 +121,8 @@ export async function linkCourses(
     where: { companyId, isCourse: true },
     select: { id: true, title: true, price: true, defaultSessions: true },
   });
+  const priceless: string[] = [];
+  const guessedPrice: string[] = [];
 
   /**
    * Цена одного сеанса — из того, что клиника реально брала за одиночный приём.
@@ -145,18 +156,18 @@ export async function linkCourses(
     }
     for (const sv of services) {
       const observed = recentSessionPrice(amounts.get(sv.id) ?? []);
-      // Приёмов ещё не было — остаётся справочник, другого источника нет.
+      // Платных приёмов не было — остаётся справочник, другого источника нет.
+      if (observed <= 0 && Number(sv.price) > 0) guessedPrice.push(sv.title);
       sessionPrices.set(sv.id, observed > 0 ? observed : Number(sv.price));
     }
   }
   if (services.length === 0) {
-    return { courses: 0, sessions: 0, orphans: 0, priceless: [], ambiguous: 0 };
+    return { courses: 0, sessions: 0, orphans: 0, priceless: [], guessedPrice: [], ambiguous: 0 };
   }
 
   let courses = 0;
   let sessions = 0;
   let orphans = 0;
-  const priceless: string[] = [];
 
   /**
    * Бесплатные сеансы пациента по каждой курсовой услуге — чтобы решить, какой
@@ -288,9 +299,12 @@ export async function linkCourses(
 
     for (const [patientId, visits] of byPatient) {
       const plan = buildCourses(visits, {
-        // Цена сеанса — из записей клиники, а не из справочника: там у одной
-        // услуги цена за сеанс, у другой за весь курс.
-        sessionPrice,
+        /**
+         * Плановая цена курса: цена сеанса × число сеансов из карточки услуги.
+         * Цена сеанса — из записей клиники, а не из справочника: там у одной
+         * услуги цена стоит за сеанс, у другой за весь курс.
+         */
+        planPrice: sessionPrice * (service.defaultSessions ?? DEFAULT_SESSIONS),
         sessionsTotal: service.defaultSessions ?? DEFAULT_SESSIONS,
         sales: salesFor.get(patientId)?.get(service.id) ?? [],
       });
@@ -388,5 +402,5 @@ export async function linkCourses(
     }
   }
 
-  return { courses, sessions, orphans, priceless, ambiguous };
+  return { courses, sessions, orphans, priceless, guessedPrice, ambiguous };
 }

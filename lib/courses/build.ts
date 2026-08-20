@@ -43,28 +43,6 @@ export interface CoursePlan {
   orphans: string[];
 }
 
-/**
- * Похожа ли оплата на продажу курса.
- *
- * Здесь и была ошибка, из-за которой на экране появились «БОС-терапия 1/2».
- * Курс открывала ЛЮБАЯ оплата, и десятки платежей по цене одного сеанса
- * превращались в десятки крошечных «курсов».
- *
- * Отличаем по деньгам: заплатили за один сеанс — это платный приём; заплатили
- * заметно больше — это курс. Порог в полторы цены сеанса, а не в две: курс
- * почти всегда идёт со скидкой, и требовать ровно двух цен значит пропустить
- * настоящие продажи.
- *
- * А вот СКОЛЬКО в курсе сеансов, из суммы не выводится. У клиники курс БОС —
- * десять сеансов, сеанс стоит 2 800 ₽, а платят за курс 25 000 ₽ со скидкой:
- * деление дало бы девять. Размер курса называет клиника в «Настройки →
- * Услуги», это факт, а не результат округления.
- */
-export function looksLikeCourseSale(amount: number, sessionPrice: number): boolean {
-  if (sessionPrice <= 0 || amount <= 0) return false;
-  return amount >= sessionPrice * 1.5;
-}
-
 /** Продажа курса, найденная в кассе: день и сумма. */
 export interface CourseSale {
   id: string;
@@ -72,21 +50,48 @@ export interface CourseSale {
   amount: number;
 }
 
+/**
+ * Похожа ли оплата на продажу курса.
+ *
+ * Правило переписывалось трижды, и каждый раз его ломала одна и та же вещь —
+ * цена одного сеанса, принятая за курс.
+ *
+ * Сначала курс открывала ЛЮБАЯ оплата: десятки платежей по цене сеанса
+ * превращались в десятки «курсов 1/2». Потом — оплата от полутора цен сеанса.
+ * И это сломалось на НАК-методе: сеанс там стоит то 500, то 1 000 ₽, оценка
+ * цены сеанса упала до пятисот, порог стал 750 — и платёж за один сеанс снова
+ * открывал курс. В карточке пациента появились три «НАК 1/10» вразброс и
+ * «покупка курса — 1 000 ₽».
+ *
+ * Поэтому сравниваем не с сеансом, а с курсом целиком. Курс из десяти сеансов
+ * по 2 800 ₽ стоит около 28 000 ₽; покупкой курса считаем то, что покрывает
+ * хотя бы его половину. Половина, а не вся сумма: курс продают со скидкой и
+ * иногда доплачивают частями. Но 1 000 ₽ при курсе в 10 000 ₽ — это один
+ * сеанс, и никакая скидка этого не изменит.
+ */
+
+/** Какую часть курса должна покрыть оплата, чтобы считаться его покупкой. */
+const MIN_COURSE_SHARE = 0.5;
+
+export function looksLikeCourseSale(amount: number, planPrice: number): boolean {
+  if (planPrice <= 0 || amount <= 0) return false;
+  return amount >= planPrice * MIN_COURSE_SHARE;
+}
+
 export interface BuildCoursesOptions {
   /**
-   * Цена одного сеанса по прайсу клиники. Без неё отличить продажу курса от
-   * оплаты приёма нечем, и курсы не собираются вовсе — это честнее, чем
-   * собрать их неправильно.
+   * Плановая цена курса: цена одного сеанса × число сеансов из карточки
+   * услуги. Ноль означает «неизвестна» — тогда курсы не собираются вовсе:
+   * отличить продажу курса от оплаты приёма нечем, а гадать нельзя.
    */
-  sessionPrice: number;
+  planPrice: number;
   /** Размер курса из справочника клиники: сколько сеансов в нём продаётся. */
   sessionsTotal: number;
   /**
    * Продажи курсов этого пациента из кассы.
    *
-   * Главный источник: курс не продаётся записью приёма, он пробивается
-   * кассовой операцией. Оплата в записи остаётся запасным вариантом — она
-   * встречается, но реже.
+   * Главный источник: курс продаётся не записью приёма, а покупкой в кассе.
+   * Оплата в записи остаётся запасным вариантом — она встречается, но реже.
    */
   sales?: CourseSale[];
 }
@@ -111,7 +116,7 @@ const SALE_WINDOW_DAYS = 180;
  * внутри той же услуги, и к курсу он отношения не имеет.
  */
 export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): CoursePlan {
-  const { sessionPrice } = opts;
+  const { planPrice } = opts;
   const total = Math.max(1, opts.sessionsTotal);
   const courses: PlannedCourse[] = [];
   const orphans: string[] = [];
@@ -119,27 +124,32 @@ export function buildCourses(visits: CourseVisit[], opts: BuildCoursesOptions): 
 
   /** Продажи по возрастанию времени; каждая открывает курс не больше раза. */
   const sales = [...(opts.sales ?? [])]
-    .filter((s) => looksLikeCourseSale(s.amount, sessionPrice))
+    .filter((s) => looksLikeCourseSale(s.amount, planPrice))
     .sort((a, b) => a.at.getTime() - b.at.getTime());
   const usedSale = new Set<string>();
   const windowMs = SALE_WINDOW_DAYS * 24 * 3600 * 1000;
 
-  /** Последняя продажа, случившаяся не позже сеанса и ещё не открытая. */
+  /**
+   * Самая ранняя неиспользованная продажа, случившаяся не позже сеанса.
+   *
+   * Именно ранняя: курсы расходуются в том порядке, в каком куплены. Раньше
+   * бралась последняя, и пациент, купивший два курса подряд, начинал ходить по
+   * второму — а первый висел неиспользованным до конца.
+   */
   const saleFor = (at: Date): CourseSale | null => {
-    let best: CourseSale | null = null;
     for (const s of sales) {
       if (usedSale.has(s.id)) continue;
       if (s.at.getTime() > at.getTime()) break;
       if (at.getTime() - s.at.getTime() > windowMs) continue;
-      best = s;
+      return s;
     }
-    return best;
+    return null;
   };
 
   for (const v of [...visits].sort((a, b) => a.startAt.getTime() - b.startAt.getTime())) {
     if (v.revenue > 0) {
       // Оплата в записи — запасной путь: так курс тоже иногда проводят.
-      if (!looksLikeCourseSale(v.revenue, sessionPrice)) continue;
+      if (!looksLikeCourseSale(v.revenue, planPrice)) continue;
       open = { purchasedAt: v.startAt, amount: v.revenue, sessionsTotal: total, visitIds: [v.id] };
       courses.push(open);
       continue;
@@ -260,12 +270,24 @@ export function assignSales(
     }
     if (reachable.length === 0) continue; // продажа не про курс — это молчание
 
+    /**
+     * Покупка должна тянуть на курс.
+     *
+     * Без этой проверки одиночный платёж уходил в курс, стоило пациенту иметь
+     * сеансы только одной курсовой услуги: кандидат один — значит он. Так
+     * тысяча рублей за сеанс НАК превращалась в «курс 1/10».
+     */
+    const plausible = reachable.filter((id) =>
+      looksLikeCourseSale(sale.amount, candidates.get(id)?.planPrice ?? 0),
+    );
+    if (plausible.length === 0) continue; // оплата приёма, а не курса
+
     // Сумма покупки — самый сильный довод: спрашиваем сначала её.
-    const byPrice = reachable.filter((id) =>
+    const byPrice = plausible.filter((id) =>
       priceMatches(sale.amount, candidates.get(id)?.planPrice ?? 0),
     );
     const winner =
-      byPrice.length === 1 ? byPrice[0] : reachable.length === 1 ? reachable[0] : null;
+      byPrice.length === 1 ? byPrice[0] : plausible.length === 1 ? plausible[0] : null;
 
     if (winner === null) {
       ambiguous.push(sale);
@@ -293,6 +315,28 @@ export function assignSales(
 export function recentSessionPrice(amountsNewestFirst: number[], take = 20): number {
   const recent = amountsNewestFirst.filter((a) => a > 0).slice(0, take);
   if (recent.length === 0) return 0;
-  const sorted = [...recent].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
+
+  /**
+   * Самая частая сумма, а при равенстве — большая.
+   *
+   * Медиана здесь подводит: у НАК-метода сеанс стоит то 500, то 1 000 ₽
+   * поровну, и медиана падала на пятьсот — вдвое ниже настоящей цены. От неё
+   * считается плановая цена курса, по которой мы отличаем покупку курса от
+   * оплаты приёма, и занижение открывало курсы там, где их не покупали.
+   *
+   * Частая сумма устойчивее: разовая продажа курса записью (25 000 ₽) её не
+   * сдвигает, а новая цена становится частой сама, как только по ней начинают
+   * платить.
+   */
+  const counts = new Map<number, number>();
+  for (const a of recent) counts.set(a, (counts.get(a) ?? 0) + 1);
+  let best = 0;
+  let bestCount = 0;
+  for (const [amount, n] of counts) {
+    if (n > bestCount || (n === bestCount && amount > best)) {
+      best = amount;
+      bestCount = n;
+    }
+  }
+  return best;
 }

@@ -451,6 +451,52 @@ async function main() {
     );
   }
 
+  /**
+   * Свежие сеансы курса ещё со стоимостью.
+   *
+   * В карточке пациента рядом с «курс 5/10» оказались два сеанса той же услуги
+   * по 2 800 ₽ — самые последние. Похоже, YCLIENTS обнуляет стоимость сеанса не
+   * в момент визита, а при закрытии, и день-другой он выглядит платным.
+   *
+   * Если так, выручка сегодняшнего дня завышена и выправляется сама через
+   * сутки. Это надо не предполагать, а видеть: сравниваем долю нулевых сеансов
+   * у свежих визитов и у тех, что старше трёх дней.
+   */
+  const courseServices = await prisma.service.findMany({
+    where: { companyId: company.id, isCourse: true },
+    select: { id: true, title: true },
+  });
+  if (courseServices.length > 0) {
+    const ids = courseServices.map((s2) => s2.id);
+    const three = new Date(now.getTime() - 3 * 24 * 3600 * 1000);
+    const rows = await prisma.appointment.findMany({
+      where: {
+        companyId: company.id,
+        deletedAt: null,
+        status: "ARRIVED",
+        startAt: { gte: from, lt: now },
+        primaryServiceId: { in: ids },
+      },
+      select: { startAt: true, revenue: true },
+    });
+    const share = (list: typeof rows) =>
+      list.length === 0 ? null : Math.round((list.filter((r) => Number(r.revenue) === 0).length / list.length) * 100);
+    const fresh = rows.filter((r) => r.startAt >= three);
+    const old = rows.filter((r) => r.startAt < three);
+    console.log("\n── сеансы курсовых услуг: доля без стоимости ──");
+    console.log(`  свежие (до 3 дней): ${share(fresh) ?? "—"}% из ${fresh.length}`);
+    console.log(`  старше трёх дней:   ${share(old) ?? "—"}% из ${old.length}`);
+    const f = share(fresh);
+    const o = share(old);
+    if (f !== null && o !== null && o - f >= 20) {
+      console.log(
+        "  ! У свежих сеансов стоимость обнуляется позже: YCLIENTS списывает их\n" +
+          "    с курса при закрытии, а не в день визита. Выручка последних дней\n" +
+          "    завышена и выправится сама — это не ошибка расчёта.",
+      );
+    }
+  }
+
   console.log(
     `  статусы: ` +
       [...new Map(full.map((a) => [a.status, full.filter((x) => x.status === a.status).length])).entries()]
