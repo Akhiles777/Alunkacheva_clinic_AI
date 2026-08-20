@@ -92,7 +92,16 @@ export async function revenueByDay(
       revenue: true,
       revenueSource: true,
       staff: { select: { name: true } },
+      /**
+       * Состав визита, а не только основная услуга.
+       *
+       * У записи основная услуга одна, а услуг в ней бывает несколько. Разрез
+       * по основной терял вторую целиком: услуга, которая всегда идёт второй,
+       * показывала ноль навсегда. Отчёт по услугам считает по составу — и
+       * дневной разрез обязан считать так же, иначе у клиники две правды (§8).
+       */
       primaryService: { select: { title: true } },
+      services: { select: { priceCharged: true, service: { select: { title: true } } } },
     },
   });
 
@@ -129,7 +138,27 @@ export async function revenueByDay(
         map.set(name, cur);
       };
       add(acc.staff, r.staff?.name ?? "специалист не указан");
-      add(acc.service, r.primaryService?.title ?? "услуга не указана");
+
+      /**
+       * Деньги услуги — её собственная стоимость из состава визита.
+       *
+       * Складывать всю сумму визита каждой его услуге нельзя: приём из двух
+       * позиций удвоил бы деньги дня в разрезе. Состав знает, сколько стоила
+       * каждая.
+       */
+      if (r.services.length > 0) {
+        for (const sv of r.services) {
+          const name = sv.service.title;
+          const cur = acc.service.get(name) ?? { name, arrived: 0, revenue: 0 };
+          cur.arrived += 1;
+          cur.revenue += Number(sv.priceCharged);
+          acc.service.set(name, cur);
+        }
+      } else {
+        // Состав ещё не записан (визит не менялся с тех пор, как его начали
+        // писать) — тогда остаётся основная услуга.
+        add(acc.service, r.primaryService?.title ?? "услуга не указана");
+      }
     } else {
       acc.noShow += 1;
     }

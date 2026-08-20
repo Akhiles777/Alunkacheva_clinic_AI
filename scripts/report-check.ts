@@ -341,6 +341,43 @@ async function main() {
   console.log(`  пришедшие: ${arrived.length} = первичные ${first} + повторные ${repeat}` +
     `${first + repeat === arrived.length ? "  ✓" : "  ✗"}`);
 
+  /**
+   * Состав визита обязан сходиться с его суммой.
+   *
+   * Разрез по услугам — и в отчётах, и у ИИ-аналитика — считается по составу:
+   * у каждой услуги там своя стоимость. Если сумма состава расходится с
+   * выручкой визита, разрез по услугам и общий итог покажут разное, и доверия
+   * не будет ни одному.
+   *
+   * Расхождение возможно законно: услуга записи не нашлась в справочнике,
+   * тогда её деньги есть в визите и нет в составе. Это надо видеть числом.
+   */
+  const composed = await prisma.appointment.findMany({
+    where: {
+      companyId: company.id,
+      deletedAt: null,
+      status: "ARRIVED",
+      startAt: { gte: from, lt: now },
+      services: { some: {} },
+    },
+    select: { revenue: true, services: { select: { priceCharged: true } } },
+  });
+  let visitMoney = 0;
+  let partMoney = 0;
+  let mismatched = 0;
+  for (const a of composed) {
+    const parts = a.services.reduce((s2, x) => s2 + Number(x.priceCharged), 0);
+    visitMoney += Number(a.revenue);
+    partMoney += parts;
+    if (Math.abs(parts - Number(a.revenue)) > 0.005) mismatched += 1;
+  }
+  console.log(
+    `  состав против визита: ${money(partMoney)} против ${money(visitMoney)}` +
+      (mismatched === 0
+        ? "  ✓"
+        : `\n      ✗ у ${mismatched} визитов состав не сходится с суммой — разрез по услугам соврёт`),
+  );
+
   // Выручка по визитам должна совпадать с суммой по специалистам и по услугам.
   const revTotal = arrived.reduce((s2, a) => s2 + Number(a.revenue), 0);
   const byStaff = new Map<string, number>();

@@ -85,11 +85,29 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     prisma.appointment.count({ where: { companyId, deletedAt: null, isFirstVisit: true } }),
     prisma.conversation.count({ where: { companyId } }),
     prisma.escalation.count({ where: { companyId, status: { not: "RESOLVED" } } }),
-    prisma.appointment.groupBy({
-      by: ["primaryServiceId"],
-      where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: quarterAgo } },
+    /**
+     * Услуги — по составу визита, а не по основной услуге.
+     *
+     * У записи основная услуга одна, а услуг в ней бывает несколько. Услуга,
+     * которая всегда идёт второй, по основной не находится вовсе: «Инфузия
+     * Ферро-Баланс» — четыре визита в отчёте по услугам и ноль у аналитика.
+     * Две правды об одном — ровно то, чем этот проект уже обжигался (§8).
+     *
+     * В составе визита у каждой услуги своя стоимость, и сумма по составу
+     * сходится с выручкой визита.
+     */
+    prisma.appointmentService.groupBy({
+      by: ["serviceId"],
+      where: {
+        companyId,
+        appointment: {
+          deletedAt: null,
+          status: "ARRIVED",
+          startAt: { gte: quarterAgo },
+        },
+      },
       _count: { _all: true },
-      _sum: { revenue: true },
+      _sum: { priceCharged: true },
     }),
     prisma.appointment.groupBy({
       by: ["staffId"],
@@ -174,11 +192,12 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   lines.push("");
   lines.push("# Услуги за 90 дней (по числу состоявшихся визитов)");
   for (const row of topServices
-    .filter((r) => r.primaryServiceId)
     .sort((a, b) => b._count._all - a._count._all)
     .slice(0, 15)) {
-    const title = serviceById.get(row.primaryServiceId!) ?? "без услуги";
-    lines.push(`- ${title}: ${row._count._all} визитов, ${money(Number(row._sum.revenue ?? 0))}`);
+    const title = serviceById.get(row.serviceId) ?? "без услуги";
+    lines.push(
+      `- ${title}: ${row._count._all} визитов, ${money(Number(row._sum.priceCharged ?? 0))}`,
+    );
   }
 
   lines.push("");
