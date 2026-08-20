@@ -29,6 +29,9 @@ export interface CourseSaleRow {
   serviceTitle: string;
   sessionsTotal: number;
   patientName: string | null;
+  /** Кто ведёт сеансы курса: по нему врач видит свою выручку. */
+  staffId: string | null;
+  staffName: string | null;
   /** Время покупки в поясе клиники, минуты от полуночи. */
   startMinute: number;
 }
@@ -54,6 +57,8 @@ export async function getCourseSalesForDay(dateIso: string): Promise<CourseSaleR
       serviceTitle: r.serviceTitle,
       sessionsTotal: r.sessionsTotal,
       patientName: r.patientName,
+      staffId: r.staffId,
+      staffName: r.staffName,
       startMinute: Number(h) * 60 + Number(m),
     };
   });

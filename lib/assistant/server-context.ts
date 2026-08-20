@@ -51,6 +51,8 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     openEscalations,
     topServices,
     topStaff,
+    coursesYearAgg,
+    coursesMonthAgg,
     sources,
     gaps,
   ] = await Promise.all([
@@ -114,6 +116,14 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
       where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: quarterAgo } },
       _count: { _all: true },
       _sum: { revenue: true },
+    }),
+    prisma.course.aggregate({
+      where: { companyId, purchasedAt: { gte: yearAgo } },
+      _sum: { amount: true },
+    }),
+    prisma.course.aggregate({
+      where: { companyId, purchasedAt: { gte: startOfMonth } },
+      _sum: { amount: true },
     }),
     prisma.patient.groupBy({
       by: ["sourceId"],
@@ -181,6 +191,9 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     );
   }
 
+  const coursesYear = Number(coursesYearAgg._sum.amount ?? 0);
+  const coursesMonth = Number(coursesMonthAgg._sum.amount ?? 0);
+
   lines.push("");
   lines.push("# Визиты");
   lines.push(
@@ -188,9 +201,16 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
       `За 30 дней состоялось: ${arrivedMonth}; за 90 дней: ${arrivedQuarter}. ` +
       `Запланировано вперёд: ${plannedAhead}.`,
   );
+  /**
+   * Выручка = приёмы плюс проданные курсы (§8).
+   *
+   * Здесь считались только приёмы, и аналитик называл владельцу число меньше
+   * того, что стоит в отчётах: деньги за курсы приходят кассой, а не приёмом.
+   */
   lines.push(
-    `Выручка за 12 месяцев: ${money(Number(revenueYear._sum.revenue ?? 0))}; ` +
-      `с начала текущего месяца: ${money(Number(revenueMonth._sum.revenue ?? 0))}.`,
+    `Выручка за 12 месяцев: ${money(Number(revenueYear._sum.revenue ?? 0) + coursesYear)}; ` +
+      `с начала текущего месяца: ${money(Number(revenueMonth._sum.revenue ?? 0) + coursesMonth)}. ` +
+      `Из них курсами: за год ${money(coursesYear)}, за месяц ${money(coursesMonth)}.`,
   );
 
   lines.push("");

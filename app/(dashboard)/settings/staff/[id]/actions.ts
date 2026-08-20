@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/db";
+import { coursePurchasesBetween, coursesSoldBetween } from "@/lib/server/course-revenue";
 import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { weekKeyOf, weekLabel as sharedWeekLabel } from "@/lib/metrics/types";
 import { getSession } from "@/lib/server/session";
@@ -236,7 +237,23 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
   });
 
   const arrivedRows = rows.filter((r) => r.status === "ARRIVED");
-  const revenue = arrivedRows.reduce((sum, r) => sum + Number(r.revenue), 0);
+
+  /**
+   * Курсы, которые ведёт этот специалист, — его выручка (§8).
+   *
+   * Сеанс курса стоит нулём: деньги пришли при продаже. Без них БОС-терапевт с
+   * полусотней сеансов показывала в карточке почти пустую выручку, а в отчёте
+   * по специалистам — настоящую: два экрана про одного человека расходились.
+   *
+   * Специалиста у продажи нет — берём его у сеансов курса, как и везде.
+   */
+  const courseSales = (await coursePurchasesBetween(companyId, since, now)).filter(
+    (p) => p.staffId === staffId,
+  );
+  const coursesRevenue = courseSales.reduce((sum, p) => sum + p.amount, 0);
+
+  const visitsRevenue = arrivedRows.reduce((sum, r) => sum + Number(r.revenue), 0);
+  const revenue = visitsRevenue + coursesRevenue;
   const noShow = rows.filter((r) => r.status === "NO_SHOW").length;
   const cancelled = rows.filter((r) => r.status === "CANCELLED").length;
   // Знаменатель для явки — только состоявшиеся исходы: отменённые визиты не
@@ -245,7 +262,9 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
   const firstVisits = arrivedRows.filter((r) => r.isFirstVisit).length;
   const hours = arrivedRows.reduce((sum, r) => sum + r.durationMin, 0) / 60;
   const patients = new Set(arrivedRows.map((r) => r.patientId).filter(Boolean));
-  const totalClinic = Number(clinicRevenue._sum.revenue ?? 0);
+  const totalClinic =
+    Number(clinicRevenue._sum.revenue ?? 0) +
+    (await coursesSoldBetween(companyId, since, now));
 
   const byService = new Map<string, { count: number; revenue: number }>();
   for (const r of arrivedRows) {
@@ -254,6 +273,12 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
     acc.count += 1;
     acc.revenue += Number(r.revenue);
     byService.set(key, acc);
+  }
+  // Продажа курса — деньги услуги, но не приём: приёмом были её сеансы.
+  for (const p of courseSales) {
+    const acc = byService.get(p.serviceTitle) ?? { count: 0, revenue: 0 };
+    acc.revenue += p.amount;
+    byService.set(p.serviceTitle, acc);
   }
 
   const byWeek = new Map<number, { appts: number; arrived: number; revenue: number }>();
@@ -265,6 +290,12 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
       acc.arrived += 1;
       acc.revenue += Number(r.revenue);
     }
+    byWeek.set(key, acc);
+  }
+  for (const p of courseSales) {
+    const key = weekKey(p.at);
+    const acc = byWeek.get(key) ?? { appts: 0, arrived: 0, revenue: 0 };
+    acc.revenue += p.amount;
     byWeek.set(key, acc);
   }
 

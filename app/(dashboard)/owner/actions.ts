@@ -350,6 +350,24 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
     buckets.set(key, b);
   }
 
+  /**
+   * Проданные курсы — в ту же неделю, в которую куплены.
+   *
+   * Это была четвёртая по счёту реализация выручки в проекте, и единственная,
+   * куда курсы не попали: график читал визиты напрямую и складывал их
+   * стоимость. За неделю 10–16 августа он показывал 174 000 ₽, а отчёты за ту
+   * же неделю — 240 455 ₽. Разница — деньги за курсы, проданные кассой.
+   *
+   * Приёмом продажа не считается и в число клиентов недели не идёт: приёмом
+   * были её сеансы, они уже посчитаны выше.
+   */
+  for (const p of await coursePurchasesBetween(session.companyId, since, new Date())) {
+    const key = weekStart(p.at);
+    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0 };
+    b.revenue += p.amount;
+    buckets.set(key, b);
+  }
+
   // Текущая неделя ещё не завершена — в динамику берём только полные недели.
   const currentWeek = weekStart(new Date());
   const keys = [...buckets.keys()].filter((k) => k < currentWeek).sort((a, b) => a - b).slice(-6);

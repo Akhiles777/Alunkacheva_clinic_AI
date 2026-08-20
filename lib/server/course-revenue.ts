@@ -34,6 +34,8 @@ export interface CoursePurchaseRow {
    * БОС-терапевт с полусотней сеансов выглядела бы бесполезной.
    */
   staffName: string | null;
+  /** Он же идентификатором: по имени не различить тёзок. */
+  staffId: string | null;
 }
 
 export async function coursePurchasesBetween(
@@ -51,15 +53,15 @@ export async function coursePurchasesBetween(
       sessionsTotal: true,
       service: { select: { title: true } },
       patient: { select: { name: true } },
-      appointments: { select: { staff: { select: { name: true } } } },
+      appointments: { select: { staffId: true, staff: { select: { name: true } } } },
     },
   });
   return rows.map((r) => {
     // Специалист курса — тот, кто провёл больше всего его сеансов.
-    const names = r.appointments.map((a) => a.staff?.name).filter((n): n is string => Boolean(n));
-    const staffName =
-      names.sort((a, b) => names.filter((x) => x === b).length - names.filter((x) => x === a).length)[0] ??
-      null;
+    const ids = r.appointments.map((a) => a.staffId).filter((x): x is string => Boolean(x));
+    const staffId =
+      ids.sort((a, b) => ids.filter((x) => x === b).length - ids.filter((x) => x === a).length)[0] ?? null;
+    const staffName = r.appointments.find((a) => a.staffId === staffId)?.staff?.name ?? null;
     return {
       id: r.id,
       at: r.purchasedAt,
@@ -68,6 +70,7 @@ export async function coursePurchasesBetween(
       sessionsTotal: r.sessionsTotal,
       patientName: r.patient.name,
       staffName,
+      staffId,
     };
   });
 }

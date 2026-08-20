@@ -8,6 +8,8 @@ import { useDb } from "@/app/_data/store";
 import { getCurrentUser, type CurrentUser } from "../_components/user-actions";
 import { InternalStaffChat } from "../chat/internal-staff-chat";
 import { VisitNote } from "../_components/visit-note";
+import { getCourseSalesForDay, type CourseSaleRow } from "../courses/actions";
+import { clinicDateKey } from "@/lib/clinic-time";
 
 const APPT_STATUS: Record<string, string> = {
   planned: "запланирован",
@@ -53,9 +55,33 @@ export default function DoctorPage() {
    * 8000), и врач видел выдуманные суммы, не совпадающие ни с отчётами, ни с
    * кассой. Цена визита приходит из YCLIENTS вместе с записью.
    */
-  const revenue = myAppts
-    .filter((a) => a.status === "arrived")
-    .reduce((s, a) => s + (a.price ?? 0), 0);
+  /**
+   * Проданные сегодня курсы — тоже выручка врача, который их ведёт.
+   *
+   * Сеанс курса стоит нулём: деньги пришли при продаже. Без них у
+   * БОС-терапевта на своём экране почти всегда ноль, а в отчёте по
+   * специалистам — настоящая сумма. Два экрана про один день расходились (§8).
+   */
+  const [courseSales, setCourseSales] = useState<CourseSaleRow[]>([]);
+  useEffect(() => {
+    let alive = true;
+    getCourseSalesForDay(clinicDateKey())
+      .then((rows) => {
+        if (alive) setCourseSales(rows);
+      })
+      .catch(() => {
+        if (alive) setCourseSales([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const revenue =
+    myAppts.filter((a) => a.status === "arrived").reduce((s, a) => s + (a.price ?? 0), 0) +
+    courseSales
+      .filter((s) => (myStaffId ? s.staffId === myStaffId : s.staffName === myName))
+      .reduce((s, x) => s + x.amount, 0);
 
   // Уведомления — из данных: ближайшие приёмы, первичные, неявки.
   const notifications = useMemo(() => {
