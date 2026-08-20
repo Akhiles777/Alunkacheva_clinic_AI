@@ -699,6 +699,7 @@ model Service {
   company                Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
   appointmentServices    AppointmentService[]
   courses                Course[]
+  coursePurchases        CoursePurchase[]
   // Кабинеты, где услуга может проводиться — знаменатель загрузки по услугам.
   rooms                  ServiceRoom[]
   primaryForAppointments Appointment[]        @relation("AppointmentPrimaryService")
@@ -881,15 +882,23 @@ model CoursePurchase {
   /// Похожа ли сумма на покупку курса хоть одной курсовой услуги клиники.
   /// Товар и разовая оплата в выручку курсов не идут.
   isCourse    Boolean  @default(true)
+  /// Услуга, которую опознали по сумме покупки.
+  ///
+  /// Курс собирается, только когда пациент начал ходить, а услуга известна
+  /// раньше: 26 000 ₽ — это курс БОС, а не курс НАК по 1 000 ₽ за сеанс. Без
+  /// неё покупка стояла в операциях дня как «услуга не определена», хотя
+  /// определить её было чем. Пусто — если по сумме подходят двое или никто.
+  serviceId   String?
   /// Курс, который из неё собрался. Пока сеансов нет — пусто.
   courseId    String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  course  Course? @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  course  Course?  @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, yclientsSaleId])
   @@index([companyId, purchasedAt])

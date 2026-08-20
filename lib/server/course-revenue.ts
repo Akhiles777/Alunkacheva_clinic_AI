@@ -64,6 +64,8 @@ export async function coursePurchasesBetween(
       purchasedAt: true,
       amount: true,
       patient: { select: { name: true } },
+      // Услуга, опознанная по сумме, — на случай, когда курс ещё не собрался.
+      service: { select: { title: true, defaultSessions: true } },
       course: {
         select: {
           sessionsTotal: true,
@@ -75,9 +77,9 @@ export async function coursePurchasesBetween(
   });
   return rows.map((r) => {
     /**
-     * Услуга и специалист известны, только когда покупка собралась в курс —
-     * то есть когда пациент начал ходить. До этого деньги есть, а чьи они —
-     * ещё неизвестно, и выдумывать нечего.
+     * Услугу знаем и до того, как соберётся курс: её опознали по сумме при
+     * сохранении покупки. Специалиста — нет: его называют сеансы, а их пока
+     * не было, и выдумывать тут нечего.
      */
     const visits = r.course?.appointments ?? [];
     const ids = visits.map((a) => a.staffId).filter((x): x is string => Boolean(x));
@@ -87,8 +89,9 @@ export async function coursePurchasesBetween(
       id: r.id,
       at: r.purchasedAt,
       amount: Number(r.amount),
-      serviceTitle: r.course?.service.title ?? "Курс (услуга не определена)",
-      sessionsTotal: r.course?.sessionsTotal ?? 0,
+      serviceTitle:
+        r.course?.service.title ?? r.service?.title ?? "Курс (услуга не определена)",
+      sessionsTotal: r.course?.sessionsTotal ?? r.service?.defaultSessions ?? 0,
       patientName: r.patient.name,
       staffName: visits.find((a) => a.staffId === staffId)?.staff?.name ?? null,
       staffId,

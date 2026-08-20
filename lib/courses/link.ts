@@ -322,7 +322,20 @@ export async function linkCourses(
     return price > 0 ? [{ price, sessions: size }] : [];
   };
 
-  const everyPlan = services.flatMap((sv) => declaredPlans(sv.id));
+  /**
+   * Услугу покупки узнаём по сумме — тем же правилом, что и везде.
+   *
+   * 26 000 ₽ — это курс БОС, а не курс НАК по 1 000 ₽ за сеанс. Подходят двое
+   * или никто — услуга остаётся неизвестной, и покупка честно стоит общей
+   * строкой. Гадать нельзя: это деньги клиента.
+   */
+  const plansByService = services.map((sv) => ({ id: sv.id, plans: declaredPlans(sv.id) }));
+  const everyPlan = plansByService.flatMap((x) => x.plans);
+  const serviceForAmount = (amount: number): string | null => {
+    const fits = plansByService.filter((x) => planForAmount(amount, x.plans) !== null);
+    return fits.length === 1 ? fits[0].id : null;
+  };
+
   for (const p of purchases) {
     const patientId = patientByYclients.get(p.clientId);
     if (!patientId || p.saleId === null) continue;
@@ -330,6 +343,7 @@ export async function linkCourses(
       amount: p.amount,
       purchasedAt: p.at,
       isCourse: planForAmount(p.amount, everyPlan) !== null,
+      serviceId: serviceForAmount(p.amount),
     };
     await prisma.coursePurchase
       .upsert({

@@ -212,15 +212,16 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
        * оплачено 1 000 ₽». Деньги, которых не видно, — худшее, что может
        * показать карточка.
        */
-      courses: {
+      coursePurchases: {
+        where: { isCourse: true },
         orderBy: { purchasedAt: "desc" },
         take: 50,
         select: {
           id: true,
           purchasedAt: true,
           amount: true,
-          sessionsTotal: true,
-          service: { select: { title: true } },
+          service: { select: { title: true, defaultSessions: true } },
+          course: { select: { sessionsTotal: true, service: { select: { title: true } } } },
         },
       },
       _count: { select: { appointments: { where: { status: "ARRIVED", deletedAt: null } } } },
@@ -269,12 +270,20 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       kind: r.kind,
     })),
     visits: [
-      ...p.courses.map((c) => ({
+      ...p.coursePurchases.map((c) => ({
         id: `course-${c.id}`,
         kind: "purchase" as const,
         date: visitDate.format(c.purchasedAt),
         at: c.purchasedAt.toISOString(),
-        service: `${c.service.title} — курс ${c.sessionsTotal} сеансов`,
+        /**
+         * Число сеансов пишем, только если знаем его. Курс собирается, когда
+         * пациент начал ходить, а покупка есть уже сейчас: «курс 0 сеансов»
+         * читалось бы как ошибка.
+         */
+        service: courseLabel(
+          c.course?.service.title ?? c.service?.title ?? null,
+          c.course?.sessionsTotal ?? c.service?.defaultSessions ?? null,
+        ),
         doctor: "",
         status: "arrived" as const,
         amount: Number(c.amount),
@@ -311,6 +320,12 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       })),
     ].sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0)),
   };
+}
+
+/** «БОС-терапия — курс 10 сеансов»; без числа — просто «покупка курса». */
+function courseLabel(title: string | null, sessions: number | null): string {
+  if (!title) return "Покупка курса";
+  return sessions && sessions > 0 ? `${title} — курс ${sessions} сеансов` : `${title} — курс`;
 }
 
 async function sourceIdByTitle(companyId: string, title: string | null | undefined) {

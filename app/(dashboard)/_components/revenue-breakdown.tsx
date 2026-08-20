@@ -121,7 +121,10 @@ export function RevenueBreakdown({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm">
-                      {row.sale.serviceTitle} — курс {row.sale.sessionsTotal} сеансов
+                      {row.sale.serviceTitle}
+                      {/* Число сеансов известно не всегда: курс собирается,
+                          когда пациент начал ходить. «0 сеансов» — не данные. */}
+                      {row.sale.sessionsTotal > 0 ? ` — курс ${row.sale.sessionsTotal} сеансов` : ""}
                     </span>
                     <span className="text-accent-text text-2xs font-medium">
                       покупка курса
