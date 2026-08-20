@@ -93,6 +93,15 @@ export function humanTakeoverUntil(from: Date = new Date()): Date {
 
 export interface AgentReply {
   text: string;
+  /**
+   * Диалог, которому принадлежит ответ.
+   *
+   * Нужен каналу, чтобы отметить исход отправки на самом сообщении. Без него
+   * телеграм-вебхук выбрасывал результат, и все ответы навсегда оставались «в
+   * очереди» — даже доставленные. Добор недоставленных для канала не работал
+   * вовсе: он ищет пометку «не доставлено», а ставить её было некому.
+   */
+  conversationId?: string;
   buttons?: { text: string; data: string }[];
   /** Запросить номер телефона кнопкой Telegram. */
   askPhone?: boolean;
@@ -579,7 +588,7 @@ async function respond(
     body: text,
     status: "QUEUED",
   });
-  return { ...reply, text };
+  return { ...reply, text, conversationId };
 }
 
 // ─────────────────────────────────────────────── обработка

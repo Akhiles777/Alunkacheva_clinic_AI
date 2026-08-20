@@ -48,7 +48,7 @@ export interface SweepResult {
  * выглядела успешной: в инбоксе ответ есть, у пациента его нет. Теперь видно
  * оба состояния, и следующий круг может добрать именно доставку.
  */
-async function markDelivery(
+export async function markDelivery(
   companyId: string,
   conversationId: string,
   body: string,

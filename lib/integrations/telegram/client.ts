@@ -83,8 +83,8 @@ export async function sendText(
 }
 
 /** Запросить номер телефона кнопкой: надёжнее, чем разбирать текст. */
-export async function requestPhone(chatId: string | number, text: string): Promise<void> {
-  await call("sendMessage", {
+export async function requestPhone(chatId: string | number, text: string): Promise<boolean> {
+  const res = await call("sendMessage", {
     chat_id: chatId,
     text,
     reply_markup: {
@@ -93,10 +93,13 @@ export async function requestPhone(chatId: string | number, text: string): Promi
       one_time_keyboard: true,
     },
   });
+  // Исход отправки возвращаем: по нему ставится отметка доставки на сообщении.
+  return Boolean(res);
 }
 
-export async function removeKeyboard(chatId: string | number, text: string): Promise<void> {
-  await call("sendMessage", { chat_id: chatId, text, reply_markup: { remove_keyboard: true } });
+export async function removeKeyboard(chatId: string | number, text: string): Promise<boolean> {
+  // Исход отправки возвращаем: по нему ставится отметка доставки на сообщении.
+  return Boolean(await call("sendMessage", { chat_id: chatId, text, reply_markup: { remove_keyboard: true } }));
 }
 
 /** Убрать «часики» на нажатой кнопке. */

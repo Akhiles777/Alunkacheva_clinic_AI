@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { runSerial } from "@/lib/server/background";
+import { markDelivery } from "@/lib/agent/unanswered";
 import { answerCallback, isTelegramConfigured, removeKeyboard, requestPhone, sendText } from "@/lib/integrations/telegram/client";
 import { attachmentsFrom, TelegramAttachmentFields } from "@/lib/integrations/telegram/attachments";
 
@@ -141,9 +142,26 @@ export async function POST(req: Request) {
       );
       if (!reply) return;
 
-      if (reply.askPhone) await requestPhone(chatId, reply.text);
-      else if (msg?.contact) await removeKeyboard(chatId, reply.text);
-      else await sendText(chatId, reply.text, reply.buttons);
+      /**
+       * Отмечаем исход отправки.
+       *
+       * Раньше результат выбрасывался, и все ответы в Telegram навсегда
+       * оставались «в очереди» — даже те, что пациент получил и на которые
+       * ответил. Из-за этого добор недоставленных не работал для канала вовсе:
+       * он ищет пометку «не доставлено», а её никто не ставил. Ответ, который
+       * не ушёл, не повторялся никогда, и пациент ждал в тишине.
+       */
+      const sent = reply.askPhone
+        ? await requestPhone(chatId, reply.text)
+        : msg?.contact
+          ? await removeKeyboard(chatId, reply.text)
+          : await sendText(chatId, reply.text, reply.buttons);
+
+      if (reply.conversationId) {
+        await markDelivery(company.id, reply.conversationId, reply.text, Boolean(sent)).catch(
+          () => {},
+        );
+      }
     });
   } catch (e) {
     // Telegram отвечаем 200, иначе он шлёт update по кругу. Но в лог пишем:
