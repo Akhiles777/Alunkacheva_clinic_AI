@@ -331,9 +331,75 @@ export async function linkCourses(
    */
   const plansByService = services.map((sv) => ({ id: sv.id, plans: declaredPlans(sv.id) }));
   const everyPlan = plansByService.flatMap((x) => x.plans);
-  const serviceForAmount = (amount: number): string | null => {
+
+  /**
+   * На какие курсовые услуги ходит сам пациент.
+   *
+   * Признак сильнее цены и не ломается ни от подорожания, ни от скидки: если
+   * человек ходит только на БОС, его покупка курса — курс БОС, сколько бы за
+   * него ни заплатили. Цена остаётся запасным доводом для тех, кто ещё не
+   * начал ходить.
+   */
+  const patientIds = [...new Set([...purchases].map((p) => patientByYclients.get(p.clientId)))]
+    .filter((x): x is string => Boolean(x));
+  const attends = new Map<string, Set<string>>();
+  if (patientIds.length > 0) {
+    const sessions = await prisma.appointment.findMany({
+      where: {
+        companyId,
+        deletedAt: null,
+        status: { in: ["CREATED", "CONFIRMED", "ARRIVED"] },
+        patientId: { in: patientIds },
+        OR: [
+          { primaryServiceId: { in: services.map((sv) => sv.id) } },
+          { services: { some: { serviceId: { in: services.map((sv) => sv.id) } } } },
+        ],
+      },
+      select: {
+        patientId: true,
+        primaryServiceId: true,
+        services: { select: { serviceId: true } },
+      },
+    });
+    const courseIds = new Set(services.map((sv) => sv.id));
+    for (const a of sessions) {
+      const ids = new Set(a.services.map((x) => x.serviceId));
+      if (a.primaryServiceId) ids.add(a.primaryServiceId);
+      for (const id of ids) {
+        if (!courseIds.has(id)) continue;
+        const set = attends.get(a.patientId) ?? new Set<string>();
+        set.add(id);
+        attends.set(a.patientId, set);
+      }
+    }
+  }
+
+  /**
+   * Какой услуге принадлежит покупка. Порядок доводов важен.
+   *
+   * Сначала цена: она говорит о самой покупке. Пациент вправе сменить услугу —
+   * ходила на БОС, купила курс НАК, — и тогда история отвечает неверно, а цена
+   * верно: 10 000 ₽ это НАК, сколько бы БОС он ни посещал раньше.
+   *
+   * История — довод второй, для случаев, когда цена молчит. Курсы двух услуг
+   * могут стоить похоже, а подорожание и скидка сдвигают сумму: тогда решает
+   * то, на что человек ходит. Если и это не различает — услуга остаётся
+   * неизвестной, и покупка честно стоит общей строкой.
+   */
+  const serviceForPurchase = (patientId: string, amount: number): string | null => {
     const fits = plansByService.filter((x) => planForAmount(amount, x.plans) !== null);
-    return fits.length === 1 ? fits[0].id : null;
+    if (fits.length === 1) return fits[0].id;
+
+    const visited = attends.get(patientId);
+    if (!visited || visited.size === 0) return null;
+
+    // Цена подошла нескольким — берём ту, на которую человек ходит.
+    if (fits.length > 1) {
+      const among = fits.filter((x) => visited.has(x.id));
+      return among.length === 1 ? among[0].id : null;
+    }
+    // Цена не подошла никому: подорожание, скидка, доплата частями.
+    return visited.size === 1 ? [...visited][0] : null;
   };
 
   for (const p of purchases) {
@@ -343,7 +409,7 @@ export async function linkCourses(
       amount: p.amount,
       purchasedAt: p.at,
       isCourse: planForAmount(p.amount, everyPlan) !== null,
-      serviceId: serviceForAmount(p.amount),
+      serviceId: serviceForPurchase(patientId, p.amount),
     };
     await prisma.coursePurchase
       .upsert({

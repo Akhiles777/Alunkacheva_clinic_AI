@@ -359,9 +359,19 @@ export function assignSales(
  *
  * Суммы должны прийти от новых к старым — так их отдаёт база.
  */
+/**
+ * Сколько оплат нужно, чтобы верить оценке цены сеанса.
+ *
+ * Из одной оплаты цена курса выходит наугад. У услуги «НАК + БОС» такая оплата
+ * ровно одна — 2 500 ₽, — и оценка курса дала 25 000: покупка курса БОС за
+ * 26 000 ₽ подошла сразу к двум услугам и осталась неопознанной. Одна случайная
+ * строка не должна мешать узнавать настоящие продажи.
+ */
+const MIN_PAYMENTS_FOR_ESTIMATE = 3;
+
 export function recentSessionPrice(amountsNewestFirst: number[], take = 20): number {
   const recent = amountsNewestFirst.filter((a) => a > 0).slice(0, take);
-  if (recent.length === 0) return 0;
+  if (recent.length < MIN_PAYMENTS_FOR_ESTIMATE) return 0;
 
   /**
    * Самая частая сумма, а при равенстве — большая.

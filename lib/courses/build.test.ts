@@ -334,8 +334,16 @@ describe("цена сеанса по недавним оплатам", () => {
     expect(recentSessionPrice([])).toBe(0);
   });
 
+  it("одной оплаты мало: из неё цена курса выходит наугад", () => {
+    // «НАК + БОС» с единственной оплатой 2 500 ₽ давал оценку курса 25 000, и
+    // покупка курса БОС за 26 000 подходила сразу к двум услугам.
+    expect(recentSessionPrice([2500])).toBe(0);
+    expect(recentSessionPrice([2500, 2500])).toBe(0);
+    expect(recentSessionPrice([2500, 2500, 2500])).toBe(2500);
+  });
+
   it("нули и возвраты в расчёт не идут", () => {
-    expect(recentSessionPrice([0, -500, 2800, 2800])).toBe(2800);
+    expect(recentSessionPrice([0, -500, 2800, 2800, 2800])).toBe(2800);
   });
 });
 
