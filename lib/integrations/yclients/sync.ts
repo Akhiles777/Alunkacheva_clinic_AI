@@ -665,6 +665,64 @@ export async function syncRecords(companyId: string, client: YclientsClientHandl
   return written;
 }
 
+/** Сколько дней назад и вперёд перечитывает короткий круг. */
+export const RECENT_BACK_DAYS = 2;
+export const RECENT_FORWARD_DAYS = 30;
+
+/**
+ * Короткий круг: только свежие записи.
+ *
+ * Вебхуков от YCLIENTS у клиники нет — в её тарифе для нашего адреса просто
+ * нет места, — поэтому единственный способ узнать про новую запись или про
+ * отметку «пришёл» это спросить. Полный круг спрашивать часто нельзя: он
+ * перечитывает весь справочник клиентов, кассу за двести дней и месяц истории
+ * по кругу — около сотни запросов и с полминуты работы.
+ *
+ * Здесь спрашиваем только то, что меняется прямо сейчас: пару дней назад
+ * (администратор отмечает посещение задним числом, но в пределах смены) и
+ * месяц вперёд (новые записи). Это два-три обращения к YCLIENTS, их не жалко
+ * повторять каждые несколько минут.
+ *
+ * Курсы, клиентов и справочники короткий круг не трогает: продажа курса
+ * подождёт полного круга, а пересборка курсов по узкому окну — это лишний
+ * риск снести привязку сеансов ради минут.
+ *
+ * Курсор не двигаем: его двигает полный круг. Иначе короткий круг убедил бы
+ * полный, что история уже прочитана.
+ */
+export async function syncRecentRecords(
+  companyId: string,
+  backDays = RECENT_BACK_DAYS,
+  forwardDays = RECENT_FORWARD_DAYS,
+): Promise<{ records: number; cancelled: number; skipped?: true }> {
+  const client = await getYclientsClient(companyId);
+  if (!client) return { records: 0, cancelled: 0, skipped: true };
+
+  const now = new Date();
+  const from = new Date(now.getTime() - backDays * 24 * 3600 * 1000);
+  const to = new Date(now.getTime() + forwardDays * 24 * 3600 * 1000);
+  const lookups = await loadLookups(companyId);
+
+  let written = 0;
+  const seen = new Set<number>();
+  let trusted = true;
+  for (const window of monthWindows(from, to)) {
+    const res = await syncRecordsWindow(companyId, client, window.from, window.to, lookups);
+    written += res.written;
+    for (const id of res.seenIds) seen.add(id);
+    if (!res.trusted) trusted = false;
+  }
+
+  /**
+   * Отмены ловим по тому же окну, что прочитали.
+   *
+   * Перенос записи за пределы окна выглядит как удаление, поэтому окно берём
+   * с запасом вперёд: внутри дня переносят на другой час, а не на осень.
+   */
+  const { cancelled } = await cancelVanished(companyId, { from, to }, [...seen], trusted);
+  return { records: written, cancelled };
+}
+
 /**
  * Какой месяц истории проверяем в этот раз.
  *

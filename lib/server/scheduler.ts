@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/db";
-import { syncAll } from "@/lib/integrations/yclients/sync";
+import {
+  syncAll,
+  syncRecentRecords,
+  RECENT_BACK_DAYS,
+  RECENT_FORWARD_DAYS,
+} from "@/lib/integrations/yclients/sync";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { answerUnanswered } from "@/lib/agent/unanswered";
 import { handBackAndRemind } from "@/lib/agent/handback";
@@ -24,6 +29,20 @@ import { handBackAndRemind } from "@/lib/agent/handback";
  * отметок «пришёл» и лимитом запросов YCLIENTS: один круг это около сорока
  * секунд и порядка сотни запросов. */
 const INTERVAL_MIN = Number(process.env.SYNC_INTERVAL_MIN ?? 15);
+
+/**
+ * Короткий круг — только свежие записи, каждые три минуты.
+ *
+ * Вебхуков от YCLIENTS нет: в настройках клиники места для нашего адреса не
+ * нашлось. Значит про новую запись и про отметку «пришёл» мы узнаём только
+ * тогда, когда спросим. Полный круг чаще чем раз в четверть часа гонять
+ * нельзя — он перечитывает справочник клиентов, кассу за двести дней и месяц
+ * истории по кругу. Короткий спрашивает два-три раза и стоит секунды.
+ *
+ * Тем же кругом идут возврат диалогов агенту и добор неотвеченных: пациент,
+ * чьё сообщение потерялось, ждал ответа до четверти часа, теперь — минуты.
+ */
+const FAST_INTERVAL_MIN = Number(process.env.SYNC_FAST_INTERVAL_MIN ?? 3);
 
 /** Первый прогон — не в момент старта: дадим приложению подняться. */
 const FIRST_RUN_DELAY_MS = 60_000;
@@ -53,6 +72,10 @@ interface SchedulerShared {
   running: boolean;
   timer: NodeJS.Timeout | null;
   startedAt: Date | null;
+  /** Короткий круг: свой таймер и свой замок, но общий с полным кругом флаг. */
+  fastTimer: NodeJS.Timeout | null;
+  fastRunning: boolean;
+  fastHistory: SyncRunInfo[];
 }
 
 const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clinicScheduler ??= {
@@ -60,6 +83,9 @@ const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clini
   running: false,
   timer: null,
   startedAt: null,
+  fastTimer: null,
+  fastRunning: false,
+  fastHistory: [],
 }) as SchedulerShared;
 
 export function schedulerState() {
@@ -69,6 +95,13 @@ export function schedulerState() {
     // подпись читалась как «расписание не работает» при работающем расписании.
     первыйКругИдёт: shared.running && shared.history.length === 0,
     интервалМинут: INTERVAL_MIN,
+    короткийКруг: {
+      интервалМинут: FAST_INTERVAL_MIN,
+      включён: shared.fastTimer !== null,
+      окноДней: { назад: RECENT_BACK_DAYS, вперёд: RECENT_FORWARD_DAYS },
+      идётСейчас: shared.fastRunning,
+      последниеПрогоны: shared.fastHistory.slice(-5),
+    },
     работаетСо: shared.startedAt?.toISOString() ?? null,
     идётСейчас: shared.running,
     последниеПрогоны: shared.history.slice(-5),
@@ -164,6 +197,95 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
 }
 
 /**
+ * Короткий круг: свежие записи, возврат диалогов и добор неотвеченных.
+ *
+ * Пропускается, пока идёт полный круг: спрашивать YCLIENTS про те же дни
+ * дважды одновременно незачем, а два пересчёта разом только мешают друг другу.
+ */
+export async function runFastCycle(): Promise<SyncRunInfo> {
+  const started = Date.now();
+  const info: SyncRunInfo = {
+    startedAt: new Date(started).toISOString(),
+    finishedAt: null,
+    ok: false,
+    ms: null,
+  };
+  if (shared.running || shared.fastRunning) {
+    info.error = shared.running ? "идёт полный круг" : "уже идёт";
+    info.finishedAt = new Date().toISOString();
+    info.ms = 0;
+    return info;
+  }
+  shared.fastRunning = true;
+
+  try {
+    const companies = await prisma.company.findMany({
+      where: { yclientsId: { gte: 100 } },
+      select: { id: true, name: true },
+    });
+
+    const results: unknown[] = [];
+    for (const company of companies) {
+      const sync = await syncRecentRecords(company.id);
+
+      /**
+       * Пересчёт — только по пациентам этого окна.
+       *
+       * Первичность визита зависит от всей истории пациента, поэтому история
+       * читается целиком, но перебирать ради двух дней всю базу незачем: это
+       * и есть та цена, из-за которой полный круг нельзя гонять часто.
+       */
+      const touched = await prisma.appointment.findMany({
+        where: {
+          companyId: company.id,
+          deletedAt: null,
+          startAt: {
+            gte: new Date(Date.now() - RECENT_BACK_DAYS * 24 * 3600 * 1000),
+            lte: new Date(Date.now() + RECENT_FORWARD_DAYS * 24 * 3600 * 1000),
+          },
+        },
+        select: { patientId: true },
+        distinct: ["patientId"],
+      });
+      const kinds = await recomputeVisitKinds(
+        company.id,
+        touched.map((t) => t.patientId).filter((id): id is string => Boolean(id)),
+      );
+
+      const handback = await handBackAndRemind(company.id).catch((e) => {
+        console.error("[scheduler] возврат диалогов не удался:", (e as Error)?.message ?? e);
+        return null;
+      });
+      const sweep = await answerUnanswered(company.id).catch((e) => {
+        console.error("[scheduler] добор не удался:", (e as Error)?.message ?? e);
+        return null;
+      });
+
+      results.push({
+        клиника: company.name,
+        записей: sync.records,
+        отменено: sync.cancelled,
+        пересчитано: kinds.updated,
+        возвратДиалогов: handback,
+        доборНеотвеченных: sweep,
+      });
+    }
+    info.ok = true;
+    info.counts = results;
+  } catch (e) {
+    info.error = String((e as Error)?.message ?? e).slice(0, 300);
+    console.error("[scheduler] короткий круг не удался:", info.error);
+  } finally {
+    shared.fastRunning = false;
+    info.finishedAt = new Date().toISOString();
+    info.ms = Date.now() - started;
+    shared.fastHistory.push(info);
+    if (shared.fastHistory.length > 20) shared.fastHistory.shift();
+  }
+  return info;
+}
+
+/**
  * Запустить расписание. Вызывается один раз при старте процесса из
  * instrumentation.ts; повторный вызов ничего не делает.
  */
@@ -181,4 +303,10 @@ export function startScheduler(): void {
 
   setTimeout(() => void runSyncCycle(), FIRST_RUN_DELAY_MS).unref?.();
   console.log(`[scheduler] синхронизация с YCLIENTS каждые ${INTERVAL_MIN} мин`);
+
+  if (FAST_INTERVAL_MIN > 0 && FAST_INTERVAL_MIN < INTERVAL_MIN) {
+    shared.fastTimer = setInterval(() => void runFastCycle(), FAST_INTERVAL_MIN * 60_000);
+    shared.fastTimer.unref?.();
+    console.log(`[scheduler] короткий круг каждые ${FAST_INTERVAL_MIN} мин`);
+  }
 }

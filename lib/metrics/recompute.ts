@@ -86,9 +86,24 @@ export async function backfillFirstSeen(companyId: string): Promise<number> {
   `;
 }
 
-export async function recomputeVisitKinds(companyId: string): Promise<RecomputeResult> {
+/**
+ * Пересчитать первичность визитов.
+ *
+ * `patientIds` сужает пересчёт до названных пациентов. Это для короткого круга
+ * выгрузки: он читает пару дней, и гонять ради них всю базу — впустую. Полный
+ * круг по-прежнему идёт по всем: пациента могли слить, визит — перенести на
+ * год назад, и такие изменения видны только на всей истории.
+ *
+ * История каждого названного пациента читается целиком: первичность зависит от
+ * всех его визитов, а не от тех, что попали в окно.
+ */
+export async function recomputeVisitKinds(
+  companyId: string,
+  patientIds?: string[],
+): Promise<RecomputeResult> {
+  if (patientIds && patientIds.length === 0) return { patients: 0, updated: 0 };
   const patients = await prisma.patient.findMany({
-    where: { companyId, deletedAt: null },
+    where: { companyId, deletedAt: null, ...(patientIds ? { id: { in: patientIds } } : {}) },
     select: { id: true },
   });
 

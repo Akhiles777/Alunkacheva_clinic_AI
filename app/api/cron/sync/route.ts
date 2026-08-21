@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { syncAll } from "@/lib/integrations/yclients/sync";
 import { recomputeVisitKinds, backfillRooms, backfillFirstSeen } from "@/lib/metrics/recompute";
-import { schedulerState } from "@/lib/server/scheduler";
+import { runFastCycle, schedulerState } from "@/lib/server/scheduler";
 
 /**
  * Синхронизация с YCLIENTS по расписанию.
@@ -236,11 +236,26 @@ async function run(): Promise<Response> {
   return NextResponse.json({ ok: true, at: new Date().toISOString(), results });
 }
 
+/**
+ * Что делать по этому обращению.
+ *
+ * `?check=1` — только состояние. `?fast=1` — короткий круг: свежие записи за
+ * пару дней и месяц вперёд, без справочников и кассы. Полное расписание живёт
+ * внутри приложения, но короткий круг доступен и снаружи: когда нужно увидеть
+ * запись сейчас, а не через три минуты.
+ */
+async function dispatch(req: Request): Promise<Response> {
+  const q = new URL(req.url).searchParams;
+  if (q.get("check")) return state();
+  if (q.get("fast")) return NextResponse.json({ ok: true, короткийКруг: await runFastCycle() });
+  return run();
+}
+
 export async function POST(req: Request) {
   if (!authorized(req)) {
     return NextResponse.json({ error: "нужен CRON_SECRET" }, { status: 401 });
   }
-  return new URL(req.url).searchParams.get("check") ? state() : run();
+  return dispatch(req);
 }
 
 /** GET — чтобы запускать той же строкой curl из crontab. */
@@ -248,5 +263,5 @@ export async function GET(req: Request) {
   if (!authorized(req)) {
     return NextResponse.json({ error: "нужен CRON_SECRET" }, { status: 401 });
   }
-  return new URL(req.url).searchParams.get("check") ? state() : run();
+  return dispatch(req);
 }
