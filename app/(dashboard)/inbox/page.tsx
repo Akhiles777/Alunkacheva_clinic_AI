@@ -19,6 +19,7 @@ import {
   type Dialog,
 } from "@/app/_data/store";
 import {
+  callAdminsDb,
   getConversations,
   getInboxTemplates,
   type ApprovedTemplate,
@@ -191,6 +192,12 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
 function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => void; refresh: () => void }) {
   const [text, setText] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  /**
+   * Результат вызова администраторов. Показываем словами: push уходит на
+   * чужие телефоны, и нажавший иначе не узнает, ушёл он или нет.
+   */
+  const [ping, setPing] = useState<{ dialogId: string; text: string } | null>(null);
+  const [pinging, setPinging] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<string[]>([]);
@@ -257,6 +264,37 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           </div>
         </div>
         <div className="ml-auto flex flex-none items-center gap-2.5">
+          {/*
+            Позвать администратора к диалогу.
+
+            Автоматическое напоминание уходит через полчаса ожидания и один
+            раз. Пока полчаса не прошли, растолкать было нечем — звонили
+            голосом. Кнопка шлёт тот же push, что и эскалация, и только
+            администраторам: отвечает пациенту администратор.
+          */}
+          <button
+            type="button"
+            disabled={pinging}
+            onClick={() => {
+              setPinging(true);
+              setPing(null);
+              void callAdminsDb(dialog.id)
+                .then((res) =>
+                  setPing({
+                    dialogId: dialog.id,
+                    text: res.ok ? `Позвали администраторов (${res.sent})` : res.error,
+                  }),
+                )
+                .catch(() =>
+                  setPing({ dialogId: dialog.id, text: "Не удалось связаться с сервером" }),
+                )
+                .finally(() => setPinging(false));
+            }}
+            title="Отправить администраторам push: пациент ждёт ответа"
+            className="border-border text-text-muted hover:bg-hover flex-none rounded-md border px-2.5 py-1 text-2xs disabled:opacity-50"
+          >
+            {pinging ? "Зовём…" : "Позвать админа"}
+          </button>
           {dialog.status !== "bot" ? (
             <button
               type="button"
@@ -349,6 +387,20 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
       {sendError ? (
         <div className="border-border-soft bg-hover text-accent-text flex-none border-t px-5 py-2 text-xs">
           {sendError}
+        </div>
+      ) : null}
+
+      {/*
+        Ушёл ли вызов администраторов — тем же местом и по той же причине.
+
+        Ответ помнит, к какому диалогу он относится: гасить его эффектом при
+        смене диалога значило бы дописывать состояние в отрисовку, а перенести
+        сообщение на чужую переписку нельзя — «позвали» под другим пациентом
+        читается как отправленный туда push.
+      */}
+      {ping && ping.dialogId === dialog.id ? (
+        <div className="border-border-soft bg-hover text-text-muted flex-none border-t px-5 py-2 text-xs">
+          {ping.text}
         </div>
       ) : null}
 

@@ -5,7 +5,7 @@ import { startOfClinicDay } from "@/lib/clinic-time";
 import { isNewInquiryWaiting } from "@/lib/inbox/needs-reply";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
-import { inboxRecipients, notifyStaff } from "@/lib/server/notify";
+import { escalationRecipients, inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { phoneFromChatId } from "@/lib/integrations/whatsapp/chat-id";
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
@@ -504,6 +504,101 @@ export async function sendMessageDb(
   });
 
   return failure ? { ok: false, error: failure } : { ok: true };
+}
+
+/** Как часто из одного диалога можно звать администраторов вручную. */
+const PING_COOLDOWN_MIN = 10;
+
+/**
+ * Позвать администраторов к диалогу — push прямо из переписки.
+ *
+ * Автоматическое напоминание уходит через полчаса ожидания и ровно один раз
+ * (§6.4). Этого хватает не всегда: диалог видит владелец или коллега, пациент
+ * ждёт, а полчаса ещё не прошли — и единственным способом растолкать было
+ * позвонить. Кнопка делает это тем же путём, что и эскалация: push
+ * администраторам, потому что отвечает пациенту администратор (§9).
+ *
+ * Отметка ожидания ставится та же, что у автоматического напоминания:
+ * администраторам только что сказали, второй раз о том же говорить нельзя —
+ * повторы перестают читать вместе со всем остальным.
+ *
+ * Повтор руками — не чаще чем раз в десять минут: кнопка, нажатая пять раз
+ * подряд, превращается в тот же поток.
+ */
+export async function callAdminsDb(
+  conversationId: string,
+): Promise<{ ok: true; sent: number } | { ok: false; error: string }> {
+  const session = await getSession();
+  const now = new Date();
+
+  const conv = await prisma.conversation.findFirst({
+    where: { id: conversationId, companyId: session.companyId },
+    select: {
+      id: true,
+      contactName: true,
+      remindedAt: true,
+      patient: { select: { name: true } },
+      messages: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { direction: true, createdAt: true },
+      },
+    },
+  });
+  if (!conv) return { ok: false, error: "Диалог не найден" };
+
+  if (conv.remindedAt && now.getTime() - conv.remindedAt.getTime() < PING_COOLDOWN_MIN * 60_000) {
+    const ago = Math.round((now.getTime() - conv.remindedAt.getTime()) / 60_000);
+    return {
+      ok: false,
+      error: `Администраторов уже позвали ${ago === 0 ? "только что" : `${ago} мин назад`}. Повторить можно через ${PING_COOLDOWN_MIN} мин.`,
+    };
+  }
+
+  /**
+   * Кто зовёт, тот push не получает: звать самого себя незачем. Если, кроме
+   * него, администраторов нет, говорим это прямо, а не молча делаем вид, что
+   * уведомление ушло.
+   */
+  const recipients = (await escalationRecipients(session.companyId)).filter(
+    (id) => id !== session.userId,
+  );
+  if (recipients.length === 0) {
+    return { ok: false, error: "Некого звать: других администраторов в клинике не заведено" };
+  }
+
+  const last = conv.messages[0];
+  const who = conv.patient?.name?.trim() || conv.contactName?.trim() || "Пациент";
+  const waitedMin =
+    last && last.direction === "IN"
+      ? Math.round((now.getTime() - last.createdAt.getTime()) / 60_000)
+      : null;
+
+  /** Имя зовущего: «просит ответить» без подписи выглядит как ещё один робот. */
+  const caller = session.userId
+    ? await prisma.staffUser.findUnique({
+        where: { id: session.userId },
+        select: { name: true },
+      })
+    : null;
+
+  const { created } = await notifyStaff({
+    companyId: session.companyId,
+    recipientIds: recipients,
+    kind: "ESCALATION",
+    // Тело сообщения не пересказываем: в уведомления переписка не попадает (§7).
+    title: waitedMin === null ? `${who} ждёт внимания` : `${who} ждёт ответа ${waitedMin} мин`,
+    body: `${caller?.name?.trim() || "Коллега"} просит ответить пациенту`,
+    url: "/inbox",
+    entityId: conv.id,
+  });
+
+  await prisma.conversation.update({
+    where: { id: conv.id },
+    data: { remindedAt: now, reminderCount: { increment: 1 } },
+  });
+
+  return { ok: true, sent: created };
 }
 
 /**
