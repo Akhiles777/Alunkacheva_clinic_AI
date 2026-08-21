@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { syncAll } from "@/lib/integrations/yclients/sync";
-import { recomputeVisitKinds, backfillRooms, backfillFirstSeen } from "@/lib/metrics/recompute";
-import { runFastCycle, schedulerState } from "@/lib/server/scheduler";
+import { runFastCycle, runSyncCycle, schedulerState } from "@/lib/server/scheduler";
 
 /**
  * Синхронизация с YCLIENTS по расписанию.
@@ -190,50 +188,19 @@ async function state(): Promise<Response> {
   });
 }
 
+/**
+ * Полный круг снаружи — тем же путём, что и по расписанию.
+ *
+ * Раньше этот адрес вёл свою копию цикла: свой обход клиник, свой пересчёт, но
+ * без возврата диалогов и добора неотвеченных. Пока расписания в приложении не
+ * было, разницы не было тоже; теперь она есть — системный cron мог войти в
+ * выгрузку ровно тогда, когда её уже вела внутренняя, и обе спрашивали
+ * YCLIENTS про одни и те же дни. Замок один на процесс, поэтому идём через
+ * него, а «уже идёт» — честный ответ, а не ошибка.
+ */
 async function run(): Promise<Response> {
-  const companies = await prisma.company.findMany({
-    // Клиники, привязанные к филиалу YCLIENTS. Временные номера из начальных
-    // данных лежат ниже ста — их синхронизировать не с чем.
-    where: { yclientsId: { gte: 100 } },
-    select: { id: true, name: true },
-  });
-  if (companies.length === 0) {
-    return NextResponse.json({ ok: true, skipped: "нет клиник, привязанных к YCLIENTS" });
-  }
-
-  const results: Record<string, unknown>[] = [];
-  for (const company of companies) {
-    const started = Date.now();
-    try {
-      const counts = await syncAll(company.id);
-
-      /**
-       * После выгрузки — пересчёт производных полей. Первичность визита
-       * зависит от всей истории пациента, и без пересчёта отчёты показывают
-       * прежние значения при новых данных.
-       */
-      const [kinds, rooms, firstSeen] = await Promise.all([
-        recomputeVisitKinds(company.id),
-        backfillRooms(company.id),
-        backfillFirstSeen(company.id),
-      ]);
-
-      results.push({
-        company: company.name,
-        counts,
-        recomputed: kinds.updated,
-        roomsFilled: rooms,
-        firstSeenFixed: firstSeen,
-        ms: Date.now() - started,
-      });
-    } catch (e) {
-      // Одна клиника не должна ронять выгрузку остальных.
-      console.error(`[cron] выгрузка ${company.name} не удалась:`, e);
-      results.push({ company: company.name, error: String((e as Error)?.message ?? e) });
-    }
-  }
-
-  return NextResponse.json({ ok: true, at: new Date().toISOString(), results });
+  const info = await runSyncCycle();
+  return NextResponse.json({ ok: info.ok, at: new Date().toISOString(), круг: info });
 }
 
 /**
