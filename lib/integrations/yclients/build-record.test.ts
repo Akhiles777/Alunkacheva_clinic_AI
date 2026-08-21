@@ -222,3 +222,22 @@ describe("выручка визита", () => {
     expect(Number(row.data.revenue)).toBe(3000);
   });
 });
+
+describe("происхождение суммы у одиночной записи вебхука", () => {
+  it("курсовая услуга — «по курсу», обычная — «бесплатно»", () => {
+    // Поле пишется тем же правилом, что и в окне выгрузки: пока вебхуки
+    // молчали, разницы не было видно, а с ними сеанс курса стал бы
+    // «бесплатно» — и сборка курсов его бы не нашла.
+    const course = buildRecordRow(
+      "c1",
+      { ...base, services: [{ id: 55, cost: 0 }] },
+      lookups({ courseYclientsServiceIds: new Set([55]) }),
+    );
+    if (course?.kind !== "row") throw new Error("ожидалась строка");
+    expect(course.data.revenueSource).toBe("PREPAID");
+
+    const plain = buildRecordRow("c1", { ...base, services: [{ id: 55, cost: 0 }] }, lookups());
+    if (plain?.kind !== "row") throw new Error("ожидалась строка");
+    expect(plain.data.revenueSource).toBe("UNKNOWN");
+  });
+});

@@ -15,6 +15,28 @@ import { handleWebhookEvent, type ProcessOutcome } from "@/lib/integrations/ycli
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Проверка настройки вебхука.
+ *
+ * Настраивает его человек в кабинете YCLIENTS, и ошибиться там легко: не тот
+ * адрес, забытый секрет, выключенная интеграция. Без ответа на «а правильно ли
+ * я ввёл» остаётся ждать событий и гадать, почему их нет.
+ *
+ * Секрет не печатаем — говорим только, задан ли он и совпал ли присланный.
+ */
+export async function GET(req: Request) {
+  const provided = req.headers.get("x-yclients-secret") ?? new URL(req.url).searchParams.get("secret");
+  return NextResponse.json({
+    ok: true,
+    интеграцияВключена: isYclientsEnabled(),
+    секретЗадан: Boolean(process.env.YCLIENTS_WEBHOOK_SECRET),
+    секретСовпал: verifyWebhookSecret(provided),
+    подсказка:
+      "Откройте этот же адрес с ?secret=… — «секретСовпал: true» означает, что " +
+      "YCLIENTS примут так же. Дальше проверяйте события в «Настройки → Интеграции».",
+  });
+}
+
 export async function POST(req: Request) {
   if (!isYclientsEnabled()) {
     return NextResponse.json({ error: "YCLIENTS integration disabled" }, { status: 503 });

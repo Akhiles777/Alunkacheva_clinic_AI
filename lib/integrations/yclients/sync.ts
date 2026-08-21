@@ -1364,6 +1364,30 @@ export async function upsertRecord(
           )?.id ?? null))
     : null;
 
+  /**
+   * Откуда сумма — пишем вместе с ней.
+   *
+   * Здесь этого поля не было вовсе: новая запись получала значение по
+   * умолчанию, а у существующей оставалось прежнее. Пока вебхуки молчали, беды
+   * не было — все записи приезжали окном выгрузки. С включёнными вебхуками
+   * сеанс курса с нулевой стоимостью стал бы «бесплатно» вместо «по курсу», а
+   * сборка курсов не увидела бы его совсем: она отбирает по этому полю.
+   *
+   * Курсовые услуги берём из справочников, если они переданы; на одиночном
+   * событии спрашиваем базу — это один короткий запрос.
+   */
+  let revenueSource = r.revenueSource;
+  if (revenueSource === "PREPAID") {
+    const isCourse = lookups
+      ? r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id))
+      : r.yclientsServiceIds.length > 0 &&
+        (await prisma.service.count({
+          where: { companyId, isCourse: true, yclientsServiceId: { in: r.yclientsServiceIds } },
+        })) > 0;
+    // Ноль у обычной услуги — это «бесплатно», а не «оплачено курсом».
+    revenueSource = isCourse ? "PREPAID" : "UNKNOWN";
+  }
+
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
   await prisma.appointment.upsert({
     where: { companyId_yclientsRecordId: { companyId, yclientsRecordId: r.yclientsRecordId } },
@@ -1378,6 +1402,7 @@ export async function upsertRecord(
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
       revenue: r.revenue,
+      revenueSource,
       // Оплату обновляем тоже: визит оплачивают после приёма, и без этого
       // отметка об оплате никогда бы не доехала до уже созданной записи.
       isPaid: r.isPaid,
@@ -1399,6 +1424,7 @@ export async function upsertRecord(
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
       revenue: r.revenue,
+      revenueSource,
       isPaid: r.isPaid,
       createdAtYclients: r.createdAtYclients ?? r.startAt,
       updatedAtYclients: r.startAt,
