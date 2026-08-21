@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { prisma } from "@/lib/db";
 import { vapidPublicKey, vapidStatus, vapidSubject } from "@/lib/server/notify";
 import { checkVapidKeys } from "@/lib/server/vapid-keys";
@@ -13,6 +15,75 @@ import { checkVapidKeys } from "@/lib/server/vapid-keys";
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+
+/**
+ * Какая сборка сейчас работает.
+ *
+ * Вопрос «ничего же не изменилось» невозможно решить без этого ответа: код
+ * может быть в репозитории, лежать на сервере — и всё равно не работать,
+ * потому что процесс поднят со старой сборкой. Различить это по экрану нельзя,
+ * а ssh есть не всегда и не у всех.
+ *
+ * Поэтому показываем коммит рабочего каталога и время сборки. Если код
+ * подтянули, но не пересобрали, время сборки окажется старше — и это видно
+ * сразу, без гадания.
+ *
+ * Читаем файлы, а не запускаем git: лишний процесс на каждую проверку
+ * состояния не нужен, а формат этих файлов не меняется.
+ */
+function buildInfo(): {
+  коммит: string;
+  ветка: string;
+  собрано: string | null;
+  кодОбновлёнПослеСборки: boolean;
+} {
+  const root = process.cwd();
+  let commit = "неизвестен";
+  let branch = "неизвестна";
+  let refMtime: number | null = null;
+
+  try {
+    const head = readFileSync(join(root, ".git", "HEAD"), "utf8").trim();
+    if (head.startsWith("ref: ")) {
+      const ref = head.slice(5).trim();
+      branch = ref.replace("refs/heads/", "");
+      try {
+        const file = join(root, ".git", ref);
+        commit = readFileSync(file, "utf8").trim();
+        refMtime = statSync(file).mtimeMs;
+      } catch {
+        // Ссылка упакована: после `git gc` отдельного файла нет.
+        const packed = readFileSync(join(root, ".git", "packed-refs"), "utf8");
+        const line = packed.split("\n").find((l) => l.endsWith(` ${ref}`));
+        if (line) commit = line.split(" ")[0];
+        refMtime = statSync(join(root, ".git", "packed-refs")).mtimeMs;
+      }
+    } else {
+      // Отсоединённая голова — коммит записан прямо в HEAD.
+      commit = head;
+      refMtime = statSync(join(root, ".git", "HEAD")).mtimeMs;
+    }
+  } catch {
+    // Каталога .git нет — приложение выложено не из репозитория.
+  }
+
+  let builtAt: number | null = null;
+  try {
+    // Каталог сборки подменяется выкладкой; имя может быть переопределено.
+    const dist = process.env.NEXT_DIST_DIR || ".next";
+    builtAt = statSync(join(root, dist, "BUILD_ID")).mtimeMs;
+  } catch {
+    // В режиме разработки BUILD_ID нет — это не ошибка.
+  }
+
+  return {
+    коммит: commit.slice(0, 7),
+    ветка: branch,
+    собрано: builtAt === null ? null : new Date(builtAt).toISOString(),
+    кодОбновлёнПослеСборки: refMtime !== null && builtAt !== null && refMtime > builtAt,
+  };
+}
 
 export async function GET() {
   const env = {
@@ -171,6 +242,15 @@ export async function GET() {
     );
   }
 
+  const версия = buildInfo();
+  if (версия.кодОбновлёнПослеСборки) {
+    warnings.push(
+      `Код на сервере новее рабочей сборки (коммит ${версия.коммит}, сборка от ` +
+        `${версия.собрано}). Изменений не будет видно, пока не пройдёт ` +
+        "bash deploy/pm2-deploy.sh.",
+    );
+  }
+
   if (process.env.ROUTER_AI_MODEL?.includes("opus")) {
     warnings.push(
       "ROUTER_AI_MODEL на хостинге указывает на Opus — он дороже Sonnet примерно втрое. " +
@@ -178,5 +258,5 @@ export async function GET() {
     );
   }
 
-  return NextResponse.json({ ok: warnings.length === 0, env, push, models, db, warnings });
+  return NextResponse.json({ ok: warnings.length === 0, версия, env, push, models, db, warnings });
 }
