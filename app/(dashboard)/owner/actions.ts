@@ -238,7 +238,10 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     .filter((x) => !x.staffName)
     .reduce((sum, x) => sum + x.amount, 0);
   const revenueSum = perf.reduce((s, p) => s + p.revenue, 0) + orphanCourses;
-  const arrived = appts.filter((a) => a.status === "arrived").length;
+  const arrivedRows = appts.filter((a) => a.status === "arrived");
+  const arrived = arrivedRows.length;
+  /** Приёмы, принёсшие деньги, — знаменатель чека вместе с продажами курсов. */
+  const paidVisits = arrivedRows.filter((a) => (a.price ?? 0) > 0).length;
   const noShow = appts.filter((a) => a.status === "no_show").length;
   const avgLoadPct = loads.length
     ? Math.round((loads.reduce((s, l) => s + l.rate, 0) / loads.length) * 100)
@@ -249,8 +252,15 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     appts: appts.length,
     arrived,
     avgLoadPct,
-    // Средний чек — общей функцией: округление тоже часть определения.
-    avgCheck: averageCheck(revenueSum, arrived),
+    /**
+     * Средний чек — общей функцией: округление тоже часть определения.
+     *
+     * Знаменатель — оплаченные чеки: приёмы с суммой плюс проданные курсы.
+     * Сеанс оплаченного курса денег в этот день не приносит, бесплатный приём
+     * не приносит вовсе, и делить на них выручку значит занижать чек ровно за
+     * то, что клиника продаёт курсы.
+     */
+    avgCheck: averageCheck(revenueSum, paidVisits + sales.length),
     /**
      * Неявки — той же функцией, что и в карточке специалиста.
      *
@@ -298,6 +308,11 @@ export interface WeekPoint {
   revenue: number;
   clients: number;
   appts: number;
+  /**
+   * Оплаченные чеки недели — знаменатель среднего чека: приёмы с суммой плюс
+   * проданные курсы. Сеансы курса и бесплатные приёмы не в счёт.
+   */
+  paying: number;
 }
 export interface WeeklyDynamics {
   weeks: WeekPoint[];
@@ -340,13 +355,17 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
     select: { startAt: true, revenue: true, patientId: true },
   });
 
-  const buckets = new Map<number, { revenue: number; clients: Set<string>; appts: number }>();
+  const buckets = new Map<
+    number,
+    { revenue: number; clients: Set<string>; appts: number; paying: number }
+  >();
   for (const r of rows) {
     const key = weekStart(r.startAt);
-    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0 };
+    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0, paying: 0 };
     b.revenue += Number(r.revenue);
     if (r.patientId) b.clients.add(r.patientId);
     b.appts += 1;
+    if (Number(r.revenue) > 0) b.paying += 1;
     buckets.set(key, b);
   }
 
@@ -363,8 +382,10 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
    */
   for (const p of await coursePurchasesBetween(session.companyId, since, new Date())) {
     const key = weekStart(p.at);
-    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0 };
+    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0, paying: 0 };
     b.revenue += p.amount;
+    // Приёмом продажа не считается, а чеком — да: у неё есть клиент и сумма.
+    b.paying += 1;
     buckets.set(key, b);
   }
 
@@ -379,6 +400,7 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
       revenue: b.revenue,
       clients: b.clients.size,
       appts: b.appts,
+      paying: b.paying,
     };
   });
 
@@ -466,7 +488,7 @@ export async function getOwnerAiContext(): Promise<string> {
     lines.push(
       `- ${d.date} (${d.label})${mark}: выручка ${d.revenue} ₽, пришли ${d.arrived}` +
         `${d.noShow > 0 ? `, неявок ${d.noShow}` : ""}` +
-        `${d.arrived > 0 ? `, средний чек ${d.avgCheck} ₽` : ""}`,
+        `${d.avgCheck > 0 ? `, средний чек ${d.avgCheck} ₽` : ""}`,
     );
     /**
      * Из чего сложился день. Без этого на «а почему столько» аналитик снова

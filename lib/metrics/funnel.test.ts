@@ -55,9 +55,9 @@ describe("averageCheck", () => {
 
 describe("withStaffShares", () => {
   const rows = [
-    { staffId: "1", name: "Остеопат", specialty: "Остеопатия", appointments: 68, revenue: 476000 },
-    { staffId: "2", name: "Врач IV-терапии", specialty: "IV-терапия", appointments: 94, revenue: 611000 },
-    { staffId: "3", name: "Процедурная сестра", specialty: "Анализы", appointments: 112, revenue: 168400 },
+    { staffId: "1", name: "Остеопат", specialty: "Остеопатия", appointments: 68, paying: 68, revenue: 476000 },
+    { staffId: "2", name: "Врач IV-терапии", specialty: "IV-терапия", appointments: 94, paying: 94, revenue: 611000 },
+    { staffId: "3", name: "Процедурная сестра", specialty: "Анализы", appointments: 112, paying: 112, revenue: 168400 },
   ];
 
   it("нормирует приёмы и выручку независимо друг от друга", () => {
@@ -76,6 +76,19 @@ describe("withStaffShares", () => {
   it("считает средний чек по строке", () => {
     const [osteopath] = withStaffShares(rows);
     expect(osteopath.avgCheck).toBe(7000);
+  });
+
+  /**
+   * У БОС-терапевта пятьдесят приёмов, из них сорок восемь — сеансы курсов по
+   * нулю, и два платных по 3 000. Деньги за курсы (28 000) приходят продажей.
+   * Деля на все приёмы, получаем 680 ₽ — число, которое падает ровно от того,
+   * что курсы покупают. Правильный чек — 34 000 / (2 + 1).
+   */
+  it("сеансы курса и бесплатные приёмы в знаменатель не идут", () => {
+    const [row] = withStaffShares([
+      { staffId: "4", name: "БОС-терапевт", specialty: "БОС", appointments: 50, paying: 3, revenue: 34000 },
+    ]);
+    expect(row.avgCheck).toBeCloseTo(11333.33);
   });
 
   it("пустая таблица не ломается", () => {

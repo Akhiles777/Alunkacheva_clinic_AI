@@ -1,9 +1,23 @@
 import type { SourceStat, StaffStat } from "./types";
 
-/** Средний чек = признанная выручка / пришедшие. Записавшиеся не в счёт. */
-export function averageCheck(revenue: number, arrived: number): number {
-  if (arrived <= 0) return 0;
-  return Math.round((revenue / arrived) * 100) / 100;
+/**
+ * Средний чек = деньги / те, кто эти деньги принёс.
+ *
+ * Знаменатель — оплаченные чеки, а не все пришедшие. День клиники выглядит
+ * так: десять приёмов, из них восемь — сеансы курсов по нулю (деньги за них
+ * получены в день продажи) и один бесплатный приём сотруднику. Деля выручку
+ * на всех пришедших, экран показывал средний чек 300 ₽ там, где реально
+ * заплативший пациент оставил три тысячи. Такое число ничего не измеряет:
+ * оно падает ровно тогда, когда клиника ведёт больше курсовых сеансов.
+ *
+ * Поэтому в знаменатель идут только приёмы с суммой плюс проданные в этот
+ * период курсы: у продажи есть клиент и сумма, это полноценный чек. Сеанс
+ * курса и бесплатный приём не считаются ни в числителе, ни в знаменателе
+ * (решение заказчика, август 2026).
+ */
+export function averageCheck(revenue: number, paying: number): number {
+  if (paying <= 0) return 0;
+  return Math.round((revenue / paying) * 100) / 100;
 }
 
 /**
@@ -38,7 +52,7 @@ export function withStaffShares(
 
   return rows.map((row) => ({
     ...row,
-    avgCheck: averageCheck(row.revenue, row.appointments),
+    avgCheck: averageCheck(row.revenue, row.paying),
     appointmentsShare: maxAppointments === 0 ? 0 : row.appointments / maxAppointments,
     revenueShare: maxRevenue === 0 ? 0 : row.revenue / maxRevenue,
   }));

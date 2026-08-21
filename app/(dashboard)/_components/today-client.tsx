@@ -233,15 +233,19 @@ export function TodayClient() {
    * Выручка дня: стоимость состоявшихся приёмов плюс проданные курсы.
    *
    * Курс пробивают кассой, а не приёмом, и его деньги приходят в день продажи.
-   * Средний чек считаем только по приёмам: продажа курса — не приём, и делить
-   * её на число пришедших нельзя.
+   *
+   * Средний чек делим на оплаченные чеки — приёмы с суммой плюс продажи
+   * курсов. Сеанс курса и бесплатный приём не считаются: в день из десяти
+   * приёмов, где восемь — курсовые сеансы по нулю и один бесплатный,
+   * «выручка ÷ пришедшие» давала 300 ₽ вместо трёх тысяч заплатившего.
    */
   const shownKey = todayMs === null ? null : dayKeyBack(todayMs, dayBack);
   const daySales = sales !== null && sales.key === shownKey ? sales.rows : [];
   const visitsRevenue = arrived.reduce((sum, a) => sum + (a.price ?? 0), 0);
   const coursesRevenue = daySales.reduce((sum, s) => sum + s.amount, 0);
   const revenue = visitsRevenue + coursesRevenue;
-  const avgCheck = averageCheck(visitsRevenue, arrived.length);
+  const paidVisits = arrived.filter((a) => (a.price ?? 0) > 0).length;
+  const avgCheck = averageCheck(revenue, paidVisits + daySales.length);
 
   // Первичные и повторные — среди ПРИШЕДШИХ, как в отчётах.
   const firstVisits = arrived.filter((a) => a.isFirstVisit).length;
@@ -420,7 +424,7 @@ export function TodayClient() {
             </button>
           </span>
           <span aria-hidden className="sep-dot" />
-          <span>
+          <span title="Деньги дня ÷ оплаченные чеки: приёмы с суммой и проданные курсы. Сеансы курса и бесплатные приёмы не в счёт.">
             средний чек{" "}
             <b className="num text-text font-medium whitespace-nowrap">
               {formatMoneyPrecise(avgCheck)}

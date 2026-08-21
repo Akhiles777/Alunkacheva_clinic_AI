@@ -337,6 +337,12 @@ export async function getDashboardMetricsDb(
   const arrived = appts.filter((a) => a.status === "ARRIVED");
   const revenue = arrived.reduce((sum, a) => sum + Number(a.revenue), 0);
   /**
+   * Приёмы, которые действительно принесли деньги, — знаменатель чека.
+   * Ноль в визите означает сеанс оплаченного курса или бесплатный приём: и то
+   * и другое в средний чек не идёт.
+   */
+  const paidVisits = arrived.filter((a) => Number(a.revenue) > 0).length;
+  /**
    * Отдельной «оплаченной выручки» больше нет — решение заказчика.
    *
    * Выручка визита — стоимость оказанной услуги: пришёл на приём за 8000 ₽,
@@ -436,6 +442,15 @@ export async function getDashboardMetricsDb(
       name: list[0].staff?.name ?? "—",
       specialty: list[0].staff?.specialty ?? "",
       appointments: list.length,
+      /**
+       * Знаменатель чека: приёмы с суммой плюс проданные курсы этого
+       * специалиста. Сеансы курса и бесплатные приёмы не в счёт — иначе у
+       * БОС-терапевта, ведущей полсотни сеансов, средний чек стремится к нулю
+       * ровно из-за того, что курсы у неё покупают.
+       */
+      paying:
+        list.filter((a) => Number(a.revenue) > 0).length +
+        (courseByStaff.get(staffId)?.count ?? 0),
       revenue: rev,
       /**
        * Чек здесь считать незачем: `withStaffShares` пересчитывает его сам —
@@ -510,14 +525,14 @@ export async function getDashboardMetricsDb(
       revenue: revenue + coursesAmount,
       courseRevenue,
       /**
-       * Средний чек — выручка ÷ приёмы, одним правилом везде.
+       * Средний чек — деньги ÷ оплаченные чеки, одним правилом везде.
        *
-       * Выручка включает проданные курсы, значит и чек включает: деньги за
-       * курс заработаны его сеансами, а сеансы — это приёмы. Считать чек по
-       * одному определению в итогах и по другому у специалистов значит завести
-       * две правды об одном числе (§8).
+       * В знаменателе приёмы с суммой и проданные курсы: сеанс курса денег в
+       * этот день не приносит (их получили при продаже), бесплатный приём не
+       * приносит вовсе. Считать чек по одному определению в итогах и по
+       * другому у специалистов значит завести две правды об одном числе (§8).
        */
-      avgCheck: averageCheck(revenue + coursesAmount, arrived.length),
+      avgCheck: averageCheck(revenue + coursesAmount, paidVisits + coursesSold.length),
       newPatients,
       coursesSold: coursesSold.length,
       coursesAmount,

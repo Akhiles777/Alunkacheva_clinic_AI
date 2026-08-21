@@ -259,6 +259,13 @@ export interface StaffStat {
   name: string;
   specialty: string;
   appointments: number;
+  /**
+   * Оплаченные чеки — знаменатель среднего чека.
+   *
+   * Это не `appointments`: сеанс курса и бесплатный приём в чек не идут, а
+   * проданный курс идёт, хотя приёмом не является.
+   */
+  paying: number;
   revenue: number;
   avgCheck: number;
   /** Доли от максимума в колонке — два независимых бара. */

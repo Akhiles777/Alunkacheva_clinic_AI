@@ -254,6 +254,13 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
 
   const visitsRevenue = arrivedRows.reduce((sum, r) => sum + Number(r.revenue), 0);
   const revenue = visitsRevenue + coursesRevenue;
+  /**
+   * Оплаченные чеки — знаменатель среднего чека: приёмы с суммой плюс
+   * проданные курсы. Сеанс оплаченного курса и бесплатный приём в чек не идут,
+   * иначе у специалиста, ведущего курсы, чек падает тем ниже, чем больше
+   * курсов у него купили.
+   */
+  const paying = arrivedRows.filter((r) => Number(r.revenue) > 0).length + courseSales.length;
   const noShow = rows.filter((r) => r.status === "NO_SHOW").length;
   const cancelled = rows.filter((r) => r.status === "CANCELLED").length;
   // Знаменатель для явки — только состоявшиеся исходы: отменённые визиты не
@@ -322,7 +329,7 @@ async function buildMetrics(companyId: string, staffId: string | null): Promise<
     uniquePatients: patients.size,
     hours: Math.round(hours * 10) / 10,
     revenue,
-    avgCheck: averageCheck(revenue, arrivedRows.length),
+    avgCheck: averageCheck(revenue, paying),
     noShowRatePct: noShowRate(arrivedRows.length, noShow),
     arrivalRatePct: settled ? Math.round((arrivedRows.length / settled) * 100) : 0,
     revenueSharePct: totalClinic > 0 ? Math.round((revenue / totalClinic) * 100) : 0,

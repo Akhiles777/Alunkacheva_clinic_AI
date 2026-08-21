@@ -118,6 +118,11 @@ export async function revenueByDay(
   interface DayAcc {
     arrived: number;
     noShow: number;
+    /**
+     * Оплаченные чеки дня — знаменатель среднего чека: приёмы с суммой плюс
+     * продажи курсов. Сеанс курса и бесплатный приём в чек не идут.
+     */
+    paying: number;
     revenue: number;
     coursesSold: number;
     coursesRevenue: number;
@@ -128,6 +133,7 @@ export async function revenueByDay(
   const empty = (): DayAcc => ({
     arrived: 0,
     noShow: 0,
+    paying: 0,
     revenue: 0,
     coursesSold: 0,
     coursesRevenue: 0,
@@ -151,6 +157,8 @@ export async function revenueByDay(
     acc.coursesSold += 1;
     acc.coursesRevenue += p.amount;
     acc.revenue += p.amount;
+    // Продажа курса — полноценный чек: у неё есть клиент и сумма.
+    acc.paying += 1;
     /**
      * Продажа курса попадает и в разрезы дня.
      *
@@ -180,6 +188,7 @@ export async function revenueByDay(
     if (r.status === "ARRIVED") {
       acc.arrived += 1;
       acc.revenue += Number(r.revenue);
+      if (Number(r.revenue) > 0) acc.paying += 1;
       if (r.revenueSource === "PREPAID") acc.courseSessions += 1;
 
       const add = (map: Map<string, RevenueSlice>, name: string) => {
@@ -233,7 +242,7 @@ export async function revenueByDay(
       arrived: v.arrived,
       noShow: v.noShow,
       revenue: v.revenue,
-      avgCheck: averageCheck(v.revenue, v.arrived),
+      avgCheck: averageCheck(v.revenue, v.paying),
       coursesSold: v.coursesSold,
       coursesRevenue: v.coursesRevenue,
       courseSessions: v.courseSessions,
