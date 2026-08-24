@@ -96,6 +96,20 @@ export default async function OwnerPage() {
                 </tbody>
               </table>
             </div>
+            {/*
+              Курсы без специалиста. Они есть в итоге сверху и в разрезе по
+              услугам ниже, но приписать их человеку не из чего: сеансов по
+              курсу ещё не было, а услугу ведёт не один человек. Без этой
+              строки сумма таблицы меньше итога, и разница читается как
+              пропавшие деньги.
+            */}
+            {report.coursesWithoutStaff > 0 ? (
+              <p className="text-text-subtle mt-3 text-2xs">
+                Ещё {formatMoney(report.coursesWithoutStaff)} — курсы, у которых специалист не
+                определился: сеансов по ним пока не было. В выручке и в разрезе по услугам эти
+                деньги есть.
+              </p>
+            ) : null}
           </section>
 
           <section className="border-border bg-surface rounded-xl border p-5">

@@ -253,7 +253,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                 {dialog.name}
               </Link>
             ) : (
-              dialog.name
+            dialog.name
             )}
           </div>
           <div className="text-text-subtle text-2xs">

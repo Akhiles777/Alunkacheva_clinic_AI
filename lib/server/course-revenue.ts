@@ -51,6 +51,14 @@ export interface CoursePurchaseRow {
   staffId: string | null;
 }
 
+/** Кто чаще других встречается в списке. Пусто — если список пуст. */
+function dominant(ids: string[]): string | null {
+  if (ids.length === 0) return null;
+  const count = new Map<string, number>();
+  for (const id of ids) count.set(id, (count.get(id) ?? 0) + 1);
+  return [...count.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
 export async function coursePurchasesBetween(
   companyId: string,
   from: Date,
@@ -61,13 +69,16 @@ export async function coursePurchasesBetween(
     orderBy: { purchasedAt: "asc" },
     select: {
       id: true,
+      patientId: true,
       purchasedAt: true,
       amount: true,
+      serviceId: true,
       patient: { select: { name: true } },
       // Услуга, опознанная по сумме, — на случай, когда курс ещё не собрался.
       service: { select: { title: true, defaultSessions: true } },
       course: {
         select: {
+          serviceId: true,
           sessionsTotal: true,
           service: { select: { title: true } },
           appointments: { select: { staffId: true, staff: { select: { name: true } } } },
@@ -75,17 +86,19 @@ export async function coursePurchasesBetween(
       },
     },
   });
-  return rows.map((r) => {
+
+  const out: CoursePurchaseRow[] = [];
+  /** Покупки без специалиста — им ответим отдельным проходом, все разом. */
+  const orphans: { row: CoursePurchaseRow; serviceId: string; patientId: string }[] = [];
+
+  for (const r of rows) {
     /**
      * Услугу знаем и до того, как соберётся курс: её опознали по сумме при
-     * сохранении покупки. Специалиста — нет: его называют сеансы, а их пока
-     * не было, и выдумывать тут нечего.
+     * сохранении покупки. Специалиста называют сеансы курса.
      */
     const visits = r.course?.appointments ?? [];
-    const ids = visits.map((a) => a.staffId).filter((x): x is string => Boolean(x));
-    const staffId =
-      ids.sort((a, b) => ids.filter((x) => x === b).length - ids.filter((x) => x === a).length)[0] ?? null;
-    return {
+    const staffId = dominant(visits.map((a) => a.staffId).filter((x): x is string => Boolean(x)));
+    const row: CoursePurchaseRow = {
       id: r.id,
       at: r.purchasedAt,
       amount: Number(r.amount),
@@ -96,7 +109,104 @@ export async function coursePurchasesBetween(
       staffName: visits.find((a) => a.staffId === staffId)?.staff?.name ?? null,
       staffId,
     };
+    out.push(row);
+
+    const serviceId = r.course?.serviceId ?? r.serviceId;
+    if (!staffId && serviceId) orphans.push({ row, serviceId, patientId: r.patientId });
+  }
+
+  await attachStaffToOrphans(companyId, orphans);
+  return out;
+}
+
+/**
+ * Курс куплен, а сеансов ещё нет — кому эти деньги?
+ *
+ * Пока ответа не было, деньги не доставались никому: в разрезе по услугам
+ * БОС-терапия показывала 218 000 ₽, а у специалиста, которая её и ведёт,
+ * стояло 180 000 ₽. Сумма строк не сходилась с итогом, и объяснить это на
+ * экране было нечем.
+ *
+ * Отвечаем по порядку, ничего не выдумывая:
+ *
+ *  1. Сеансы самого курса — если они есть (это сделано выше).
+ *  2. Визиты ЭТОГО пациента по ЭТОЙ услуге: курс продлевают, и водит пациента
+ *     тот же человек. То же правило, только шире одного курса.
+ *  3. Единственный специалист услуги в клинике: если БОС-терапию ведёт один
+ *     человек, вопроса «кто из них» не существует.
+ *
+ * Услугу ведут двое, курса нет и истории у пациента нет — оставляем пусто.
+ * Такие деньги показываются на экране отдельной строкой: приписать их наугад
+ * значит соврать про конкретного человека, а промолчать — про итог.
+ */
+async function attachStaffToOrphans(
+  companyId: string,
+  orphans: { row: CoursePurchaseRow; serviceId: string; patientId: string }[],
+): Promise<void> {
+  if (orphans.length === 0) return;
+
+  const serviceIds = [...new Set(orphans.map((o) => o.serviceId))];
+  const patientIds = new Set(orphans.map((o) => o.patientId));
+
+  /**
+   * Визиты по этим услугам. Отменённые не в счёт: отменённый приём никого
+   * специалистом курса не делает. Услугу визита ищем и в составе, и в основной
+   * услуге: у части старых записей состав так и не был записан.
+   */
+  const visits = await prisma.appointment.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      OR: [
+        { services: { some: { serviceId: { in: serviceIds } } } },
+        { primaryServiceId: { in: serviceIds } },
+      ],
+    },
+    select: {
+      patientId: true,
+      staffId: true,
+      primaryServiceId: true,
+      staff: { select: { name: true } },
+      services: { select: { serviceId: true } },
+    },
   });
+
+  /** Кто водит этого пациента по этой услуге и кто вообще её ведёт. */
+  const byPatient = new Map<string, string[]>();
+  const byService = new Map<string, string[]>();
+  const nameOf = new Map<string, string>();
+  const wanted = new Set(serviceIds);
+
+  for (const v of visits) {
+    if (!v.staffId) continue;
+    if (v.staff?.name) nameOf.set(v.staffId, v.staff.name);
+    const ids = new Set(v.services.map((s) => s.serviceId));
+    if (v.primaryServiceId) ids.add(v.primaryServiceId);
+    for (const serviceId of ids) {
+      if (!wanted.has(serviceId)) continue;
+      byService.set(serviceId, [...(byService.get(serviceId) ?? []), v.staffId]);
+      if (v.patientId && patientIds.has(v.patientId)) {
+        const key = `${v.patientId}:${serviceId}`;
+        byPatient.set(key, [...(byPatient.get(key) ?? []), v.staffId]);
+      }
+    }
+  }
+
+  for (const { row, serviceId, patientId } of orphans) {
+    const own = dominant(byPatient.get(`${patientId}:${serviceId}`) ?? []);
+    if (own) {
+      row.staffId = own;
+      row.staffName = nameOf.get(own) ?? null;
+      continue;
+    }
+    // Единственный специалист услуги — не догадка, а единственный ответ.
+    const all = [...new Set(byService.get(serviceId) ?? [])];
+    if (all.length === 1) {
+      row.staffId = all[0];
+      row.staffName = nameOf.get(all[0]) ?? null;
+    }
+  }
 }
 
 /** Сумма проданных курсов за период. */

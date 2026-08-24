@@ -42,6 +42,11 @@ export interface OwnerReport {
   arrived: number;
   avgLoadPct: number;
   avgCheck: number;
+  /**
+   * Курсы, которым специалиста не нашлось: они есть в итоге и в разрезе по
+   * услугам, но не в таблице людей. Без этого числа сумма строк меньше итога.
+   */
+  coursesWithoutStaff: number;
   noShowRatePct: number;
   firstVisits: number;
   patients: { total: number; primary: number; noConsent: number };
@@ -237,6 +242,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
   const orphanCourses = sales
     .filter((x) => !x.staffName)
     .reduce((sum, x) => sum + x.amount, 0);
+
   const revenueSum = perf.reduce((s, p) => s + p.revenue, 0) + orphanCourses;
   const arrivedRows = appts.filter((a) => a.status === "arrived");
   const arrived = arrivedRows.length;
@@ -288,6 +294,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
       hours: p.bookedMinutes / 60,
       revenue: p.revenue,
     })),
+    coursesWithoutStaff: orphanCourses,
     rooms: loads.map((l) => ({ name: l.name, ratePct: Math.round(l.rate * 100) })),
     services: serviceBreakdown(appts, sales),
     funnel: { dialogs, calls },

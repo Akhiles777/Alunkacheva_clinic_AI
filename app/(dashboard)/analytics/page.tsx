@@ -311,6 +311,21 @@ export default async function AnalyticsPage({
               title="Пришли и выручка по специалистам"
               hint="считаются состоявшиеся приёмы (§8)"
             >
+              {/*
+                Деньги за курсы, которым специалиста не нашлось.
+
+                Они есть в итоге и в разрезе по услугам, но не в этой таблице:
+                услугу ведут двое, а сеансов у курса ещё не было. Молчать о них
+                нельзя — сумма строк оказывается меньше итога, и разница
+                выглядит как пропавшие деньги.
+              */}
+              {m.money.coursesWithoutStaff > 0 ? (
+                <p className="text-text-subtle mb-3 text-2xs">
+                  Ещё {formatMoney(m.money.coursesWithoutStaff)} — курсы, у которых специалист не
+                  определился: сеансов по ним пока не было, а услугу ведёт не один человек. В
+                  выручке и в разрезе по услугам эти деньги есть.
+                </p>
+              ) : null}
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[560px] border-collapse text-sm">
                   <thead>

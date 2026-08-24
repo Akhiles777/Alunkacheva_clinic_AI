@@ -4,6 +4,7 @@ import { busyMinutes, freeGaps, occupancyRate, type Interval } from "@/lib/metri
 import { countInquiriesFromDb } from "@/lib/metrics/inquiries";
 import { averageCheck, withSourceShares, withStaffShares } from "@/lib/metrics/summary";
 import { closedDatesBetween } from "@/lib/server/clinic-day";
+import { coursePurchasesBetween } from "@/lib/server/course-revenue";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import {
   isMonthKey,
@@ -374,11 +375,16 @@ export async function getDashboardMetricsDb(
    * первого сеанса. Оплата курса записью приёма сюда не попадает вовсе — её
    * деньги уже посчитаны выручкой того визита.
    */
-  const coursesSold = await prisma.coursePurchase.findMany({
-    where: { companyId, isCourse: true, purchasedAt: { gte: from, lt: to } },
-    select: { amount: true, course: { select: { appointments: { select: { staffId: true } } } } },
-  });
-  const coursesAmount = coursesSold.reduce((sum, c) => sum + Number(c.amount), 0);
+  /**
+   * Той же функцией, что и экран владельца, и дневной разрез.
+   *
+   * Здесь был свой запрос: он брал специалиста только у сеансов курса, а
+   * экран владельца — по общему правилу с запасными путями. Один и тот же
+   * курс попадал к специалисту на одном экране и никуда на другом, и разрез
+   * по людям расходился с разрезом по услугам.
+   */
+  const coursesSold = await coursePurchasesBetween(companyId, from, to);
+  const coursesAmount = coursesSold.reduce((sum, c) => sum + c.amount, 0);
   const courseRevenue = coursesAmount;
 
   /**
@@ -420,17 +426,24 @@ export async function getDashboardMetricsDb(
    * выручке он есть, в разрезе по людям — нет, и выдумывать тут нечего.
    */
   const courseByStaff = new Map<string, { amount: number; count: number }>();
+  /**
+   * Деньги за курсы, которым специалиста не нашлось.
+   *
+   * Ноль здесь — нормальное состояние, но не всегда: услугу могут вести двое,
+   * а сеансов у курса ещё не было. Такие деньги есть в итоге и в разрезе по
+   * услугам, поэтому в разрезе по людям о них надо сказать вслух — иначе
+   * сумма строк меньше итога, и объяснить это на экране нечем.
+   */
+  let coursesWithoutStaff = 0;
   for (const c of coursesSold) {
-    const staffIds = (c.course?.appointments ?? []).map((a) => a.staffId);
-    const top = staffIds.sort(
-      (a, b) =>
-        staffIds.filter((x) => x === b).length - staffIds.filter((x) => x === a).length,
-    )[0];
-    if (!top) continue;
-    const acc = courseByStaff.get(top) ?? { amount: 0, count: 0 };
-    acc.amount += Number(c.amount);
+    if (!c.staffId) {
+      coursesWithoutStaff += c.amount;
+      continue;
+    }
+    const acc = courseByStaff.get(c.staffId) ?? { amount: 0, count: 0 };
+    acc.amount += c.amount;
     acc.count += 1;
-    courseByStaff.set(top, acc);
+    courseByStaff.set(c.staffId, acc);
   }
 
   const staffStats: StaffStat[] = [...groupBy(arrived, (a) => a.staffId)].map(([staffId, list]) => {
@@ -536,6 +549,7 @@ export async function getDashboardMetricsDb(
       newPatients,
       coursesSold: coursesSold.length,
       coursesAmount,
+      coursesWithoutStaff,
     },
     /**
      * Ведутся ли курсы вообще.

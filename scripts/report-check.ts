@@ -19,6 +19,8 @@ import { prisma } from "../lib/db";
 import { getYclientsClient } from "../lib/integrations/yclients/client";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "../lib/integrations/yclients/paging";
 import type { YclientsRecord } from "../lib/integrations/yclients/types";
+import { coursePurchasesBetween } from "../lib/server/course-revenue";
+import { revenueByService, revenueByStaff } from "../lib/metrics/service-revenue";
 
 const daysArg = process.argv.find((a) => a.startsWith("--days="));
 const DAYS = Number(daysArg?.slice(7) ?? 30);
@@ -392,6 +394,68 @@ async function main() {
     `  выручка: визиты ${money(revTotal)} · по специалистам ${money(revStaff)} · по услугам ${money(revSvc)}` +
       `${revTotal === revStaff && revTotal === revSvc ? "  ✓" : "  ✗ РАСХОЖДЕНИЕ"}`,
   );
+
+  /**
+   * Разрезы выручки обязаны сходиться между собой И с итогом.
+   *
+   * Проверка выше сравнивала три числа из одного источника — она не могла
+   * поймать настоящее расхождение. А оно было: деньги за курс, у которого ещё
+   * нет сеансов, попадали в разрез по услугам и в итог, но ни к какому
+   * специалисту. В разрезе по услугам БОС-терапия показывала 218 000 ₽, а у
+   * специалиста, которая её ведёт, стояло 180 000 ₽, и объяснить это было
+   * нечем.
+   *
+   * Считаем теми же функциями, что и экраны (§8), и сверяем итоги.
+   */
+  console.log("\n── разрезы выручки: сходятся ли между собой ──");
+  const purchases = await coursePurchasesBetween(company.id, from, now);
+  const coursesMoney = purchases.reduce((s2, p) => s2 + p.amount, 0);
+  const noStaffMoney = purchases.filter((p) => !p.staffId).reduce((s2, p) => s2 + p.amount, 0);
+
+  const visitsForRevenue = await prisma.appointment.findMany({
+    where: { companyId: company.id, deletedAt: null, status: "ARRIVED", startAt: { gte: from, lt: now } },
+    select: {
+      revenue: true,
+      staff: { select: { name: true } },
+      primaryService: { select: { title: true } },
+      services: { select: { priceCharged: true, service: { select: { title: true } } } },
+    },
+  });
+  const visitRows = visitsForRevenue.map((v) => ({
+    status: "arrived",
+    doctor: v.staff?.name ?? "специалист не указан",
+    price: Number(v.revenue),
+    service: v.primaryService?.title ?? "услуга не указана",
+    parts: v.services.map((sv) => ({ title: sv.service.title, amount: Number(sv.priceCharged) })),
+  }));
+  const sales = purchases.map((p) => ({
+    serviceTitle: p.serviceTitle,
+    staffName: p.staffName,
+    amount: p.amount,
+  }));
+
+  const total = visitRows.reduce((s2, v) => s2 + v.price, 0) + coursesMoney;
+  const svcTotal = revenueByService(visitRows, sales).reduce((s2, r) => s2 + r.revenue, 0);
+  const staffTotal = revenueByStaff(visitRows, sales).reduce((s2, r) => s2 + r.revenue, 0);
+
+  console.log(`  итог периода: ${money(total)} (визиты ${money(total - coursesMoney)} + курсы ${money(coursesMoney)})`);
+  console.log(
+    `  по услугам: ${money(svcTotal)}` +
+      (Math.abs(svcTotal - total) < 1 ? "  ✓" : `  ✗ РАСХОЖДЕНИЕ ${money(svcTotal - total)}`),
+  );
+  console.log(
+    `  по специалистам: ${money(staffTotal)} + без специалиста ${money(noStaffMoney)} = ${money(staffTotal + noStaffMoney)}` +
+      (Math.abs(staffTotal + noStaffMoney - total) < 1
+        ? "  ✓"
+        : `  ✗ РАСХОЖДЕНИЕ ${money(staffTotal + noStaffMoney - total)}`),
+  );
+  if (noStaffMoney > 0) {
+    const n = purchases.filter((p) => !p.staffId).length;
+    console.log(
+      `  ${n} курсов на ${money(noStaffMoney)} без специалиста: сеансов ещё не было, ` +
+        "а услугу ведёт не один человек. Экран показывает это отдельной строкой.",
+    );
+  }
 
   // Кабинеты: визит либо в кабинете, либо без него — третьего нет.
   const withRoom = full.filter((a) => a.roomId !== null).length;
