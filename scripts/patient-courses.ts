@@ -275,7 +275,22 @@ async function main() {
           "услуга не указана") === title,
     );
     if (all.length > bought) continue;
-    const paid = all.filter((a) => a.status === "ARRIVED" && Number(a.revenue) > 0);
+    /**
+     * Приём до первой покупки курсом покрыт быть не мог.
+     *
+     * Пробный сеанс, после которого и покупают курс, — настоящие деньги дня.
+     * Без этой границы он попадал бы в список подозрительных и разбавлял его.
+     */
+    const firstBuy = purchases
+      .filter((p) => p.isCourse && p.service?.title === title)
+      .map((p) => p.purchasedAt.getTime())
+      .sort((x, y) => x - y)[0];
+    const paid = all.filter(
+      (a) =>
+        a.status === "ARRIVED" &&
+        Number(a.revenue) > 0 &&
+        (firstBuy === undefined || a.startAt.getTime() >= firstBuy),
+    );
     if (paid.length === 0) continue;
     const sum = paid.reduce((acc, a) => acc + Number(a.revenue), 0);
     console.log(
