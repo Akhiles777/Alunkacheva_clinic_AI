@@ -687,6 +687,13 @@ export const RECENT_FORWARD_DAYS = 30;
  * подождёт полного круга, а пересборка курсов по узкому окну — это лишний
  * риск снести привязку сеансов ради минут.
  *
+ * И он ничего НЕ ОТМЕНЯЕТ. Сверка «наше, чего YCLIENTS не показал, отменено»
+ * верна только для широкого окна: запись, перенесённую с завтра на октябрь,
+ * узкое окно не увидит и объявит удалённой. Живой визит пропал бы из
+ * расписания до следующего полного круга — цена ошибки здесь несравнима с
+ * пятнадцатью минутами задержки. Отмены остаются работой полного круга, он
+ * читает месяц назад, три вперёд и месяц истории по кругу.
+ *
  * Курсор не двигаем: его двигает полный круг. Иначе короткий круг убедил бы
  * полный, что история уже прочитана.
  */
@@ -694,9 +701,9 @@ export async function syncRecentRecords(
   companyId: string,
   backDays = RECENT_BACK_DAYS,
   forwardDays = RECENT_FORWARD_DAYS,
-): Promise<{ records: number; cancelled: number; skipped?: true }> {
+): Promise<{ records: number; skipped?: true }> {
   const client = await getYclientsClient(companyId);
-  if (!client) return { records: 0, cancelled: 0, skipped: true };
+  if (!client) return { records: 0, skipped: true };
 
   const now = new Date();
   const from = new Date(now.getTime() - backDays * 24 * 3600 * 1000);
@@ -704,23 +711,12 @@ export async function syncRecentRecords(
   const lookups = await loadLookups(companyId);
 
   let written = 0;
-  const seen = new Set<number>();
-  let trusted = true;
   for (const window of monthWindows(from, to)) {
     const res = await syncRecordsWindow(companyId, client, window.from, window.to, lookups);
     written += res.written;
-    for (const id of res.seenIds) seen.add(id);
-    if (!res.trusted) trusted = false;
   }
 
-  /**
-   * Отмены ловим по тому же окну, что прочитали.
-   *
-   * Перенос записи за пределы окна выглядит как удаление, поэтому окно берём
-   * с запасом вперёд: внутри дня переносят на другой час, а не на осень.
-   */
-  const { cancelled } = await cancelVanished(companyId, { from, to }, [...seen], trusted);
-  return { records: written, cancelled };
+  return { records: written };
 }
 
 /**

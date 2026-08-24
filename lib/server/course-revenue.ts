@@ -146,22 +146,31 @@ async function attachStaffToOrphans(
   if (orphans.length === 0) return;
 
   const serviceIds = [...new Set(orphans.map((o) => o.serviceId))];
-  const patientIds = new Set(orphans.map((o) => o.patientId));
+  const patientIds = [...new Set(orphans.map((o) => o.patientId))];
+  const ofService = (ids: string[]) => [
+    { services: { some: { serviceId: { in: ids } } } },
+    { primaryServiceId: { in: ids } },
+  ];
 
   /**
-   * Визиты по этим услугам. Отменённые не в счёт: отменённый приём никого
-   * специалистом курса не делает. Услугу визита ищем и в составе, и в основной
-   * услуге: у части старых записей состав так и не был записан.
+   * Два запроса вместо одного, и оба узкие.
+   *
+   * Сначала здесь читались все визиты этих услуг за всю историю — сотни строк
+   * на каждую загрузку экрана владельца ради одной-двух покупок. Правило 2
+   * спрашивает только про самих покупателей, правило 3 — только про список
+   * специалистов, и его считает база, а не мы.
+   *
+   * Отменённые визиты не в счёт: отменённый приём никого специалистом курса не
+   * делает. Услугу визита ищем и в составе, и в основной — у части старых
+   * записей состав так и не был записан.
    */
-  const visits = await prisma.appointment.findMany({
+  const own = await prisma.appointment.findMany({
     where: {
       companyId,
       deletedAt: null,
       status: { not: "CANCELLED" },
-      OR: [
-        { services: { some: { serviceId: { in: serviceIds } } } },
-        { primaryServiceId: { in: serviceIds } },
-      ],
+      patientId: { in: patientIds },
+      OR: ofService(serviceIds),
     },
     select: {
       patientId: true,
@@ -172,40 +181,68 @@ async function attachStaffToOrphans(
     },
   });
 
-  /** Кто водит этого пациента по этой услуге и кто вообще её ведёт. */
   const byPatient = new Map<string, string[]>();
-  const byService = new Map<string, string[]>();
   const nameOf = new Map<string, string>();
   const wanted = new Set(serviceIds);
-
-  for (const v of visits) {
-    if (!v.staffId) continue;
+  for (const v of own) {
+    if (!v.staffId || !v.patientId) continue;
     if (v.staff?.name) nameOf.set(v.staffId, v.staff.name);
-    const ids = new Set(v.services.map((s) => s.serviceId));
+    const ids = new Set(v.services.map((x) => x.serviceId));
     if (v.primaryServiceId) ids.add(v.primaryServiceId);
     for (const serviceId of ids) {
       if (!wanted.has(serviceId)) continue;
-      byService.set(serviceId, [...(byService.get(serviceId) ?? []), v.staffId]);
-      if (v.patientId && patientIds.has(v.patientId)) {
-        const key = `${v.patientId}:${serviceId}`;
-        byPatient.set(key, [...(byPatient.get(key) ?? []), v.staffId]);
-      }
+      const key = `${v.patientId}:${serviceId}`;
+      byPatient.set(key, [...(byPatient.get(key) ?? []), v.staffId]);
+    }
+  }
+
+  /**
+   * Кто вообще ведёт услугу — по одной услуге за раз, группировкой в базе.
+   *
+   * Спрашиваем только про те услуги, на которые правило 2 не ответило: обычно
+   * таких нет вовсе, и второй запрос не выполняется ни разу.
+   */
+  const unresolved = [
+    ...new Set(
+      orphans
+        .filter((o) => !dominant(byPatient.get(`${o.patientId}:${o.serviceId}`) ?? []))
+        .map((o) => o.serviceId),
+    ),
+  ];
+  const soleStaff = new Map<string, string | null>();
+  for (const serviceId of unresolved) {
+    const groups = await prisma.appointment.groupBy({
+      by: ["staffId"],
+      where: {
+        companyId,
+        deletedAt: null,
+        status: { not: "CANCELLED" },
+        OR: ofService([serviceId]),
+      },
+    });
+    const ids = groups.map((g) => g.staffId).filter((x): x is string => Boolean(x));
+    // Единственный специалист услуги — не догадка, а единственный ответ.
+    soleStaff.set(serviceId, ids.length === 1 ? ids[0] : null);
+  }
+
+  const missingNames = [...soleStaff.values()].filter(
+    (id): id is string => Boolean(id) && !nameOf.has(id!),
+  );
+  if (missingNames.length > 0) {
+    for (const st of await prisma.staff.findMany({
+      where: { id: { in: missingNames } },
+      select: { id: true, name: true },
+    })) {
+      nameOf.set(st.id, st.name);
     }
   }
 
   for (const { row, serviceId, patientId } of orphans) {
-    const own = dominant(byPatient.get(`${patientId}:${serviceId}`) ?? []);
-    if (own) {
-      row.staffId = own;
-      row.staffName = nameOf.get(own) ?? null;
-      continue;
-    }
-    // Единственный специалист услуги — не догадка, а единственный ответ.
-    const all = [...new Set(byService.get(serviceId) ?? [])];
-    if (all.length === 1) {
-      row.staffId = all[0];
-      row.staffName = nameOf.get(all[0]) ?? null;
-    }
+    const mine = dominant(byPatient.get(`${patientId}:${serviceId}`) ?? []);
+    const staffId = mine ?? soleStaff.get(serviceId) ?? null;
+    if (!staffId) continue;
+    row.staffId = staffId;
+    row.staffName = nameOf.get(staffId) ?? null;
   }
 }
 

@@ -527,7 +527,7 @@ const PING_COOLDOWN_MIN = 10;
  */
 export async function callAdminsDb(
   conversationId: string,
-): Promise<{ ok: true; sent: number } | { ok: false; error: string }> {
+): Promise<{ ok: true; sent: number; pushed: number } | { ok: false; error: string }> {
   const session = await getSession();
   const now = new Date();
 
@@ -582,7 +582,7 @@ export async function callAdminsDb(
       })
     : null;
 
-  const { created } = await notifyStaff({
+  const { created, pushed } = await notifyStaff({
     companyId: session.companyId,
     recipientIds: recipients,
     kind: "ESCALATION",
@@ -593,12 +593,28 @@ export async function callAdminsDb(
     entityId: conv.id,
   });
 
+  /**
+   * Ничего не создалось — значит и звать было некому.
+   *
+   * Уведомления об эскалации выключаются в «Настройки → Уведомления», и тогда
+   * `notifyStaff` молча возвращает ноль. Отметить ожидание в этом случае
+   * нельзя: она заблокирует и кнопку на десять минут, и автоматическое
+   * напоминание — притом что администраторы ничего не получили.
+   */
+  if (created === 0) {
+    return {
+      ok: false,
+      error:
+        "Уведомление не ушло: в «Настройки → Уведомления» выключены оповещения об эскалации.",
+    };
+  }
+
   await prisma.conversation.update({
     where: { id: conv.id },
     data: { remindedAt: now, reminderCount: { increment: 1 } },
   });
 
-  return { ok: true, sent: created };
+  return { ok: true, sent: created, pushed };
 }
 
 /**

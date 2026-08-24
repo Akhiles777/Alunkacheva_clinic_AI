@@ -118,6 +118,22 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
   if (shared.running) {
     return { startedAt: new Date().toISOString(), finishedAt: null, ok: false, ms: null, error: "уже идёт" };
   }
+
+  /**
+   * Дожидаемся короткого круга, а не отменяем свой.
+   *
+   * Полный круг проверял только собственный замок: короткий мог идти в это же
+   * время, и оба писали бы одни и те же записи и пересчитывали одно и то же.
+   * Пропускать полный круг из-за трёхсекундного короткого нельзя — он ходит
+   * раз в четверть часа, и пропуск стоит дороже ожидания. Поэтому ждём, но не
+   * бесконечно: если короткий завис, полный всё равно пойдёт, а параллельная
+   * запись здесь идемпотентна (всё по уникальным номерам YCLIENTS).
+   */
+  const waitUntil = Date.now() + 60_000;
+  while (shared.fastRunning && Date.now() < waitUntil) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
   shared.running = true;
   const started = Date.now();
   const info: SyncRunInfo = {
@@ -264,7 +280,6 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
       results.push({
         клиника: company.name,
         записей: sync.records,
-        отменено: sync.cancelled,
         пересчитано: kinds.updated,
         возвратДиалогов: handback,
         доборНеотвеченных: sweep,
@@ -308,5 +323,15 @@ export function startScheduler(): void {
     shared.fastTimer = setInterval(() => void runFastCycle(), FAST_INTERVAL_MIN * 60_000);
     shared.fastTimer.unref?.();
     console.log(`[scheduler] короткий круг каждые ${FAST_INTERVAL_MIN} мин`);
+  } else {
+    /**
+     * Молчать нельзя: выключенный короткий круг выглядит точно так же, как
+     * работающий, — данные всё равно идут, просто медленнее. Причину называем
+     * сразу, иначе её будут искать в коде.
+     */
+    console.warn(
+      `[scheduler] короткий круг выключен: SYNC_FAST_INTERVAL_MIN=${FAST_INTERVAL_MIN} ` +
+        `при SYNC_INTERVAL_MIN=${INTERVAL_MIN} (нужно значение больше нуля и меньше полного круга)`,
+    );
   }
 }
