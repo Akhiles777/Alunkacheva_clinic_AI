@@ -61,3 +61,35 @@ describe("hypotheses", () => {
     expect(hypotheses(appts, []).some((h) => h.includes("Мороз Д.") && h.includes("неяв"))).toBe(true);
   });
 });
+
+/**
+ * Тёзки — не один человек.
+ *
+ * В клинике две Ирины: Ирина Алилгаджиевна и Ирина Омарова. Пока полные имена
+ * различаются, беды нет; но строка собиралась по имени, и любое совпадение
+ * склеило бы двух специалистов в одну строку с общей выручкой и общими часами.
+ * Ключ — идентификатор, как и везде в остальном коде.
+ */
+describe("staffPerformance: тёзки", () => {
+  it("одинаковые имена не складываются в одну строку", () => {
+    const perf = staffPerformance([
+      appt({ id: "1", staffId: "s1", doctor: "Ирина", status: "arrived", durationMin: 60, price: 3000 }),
+      appt({ id: "2", staffId: "s2", doctor: "Ирина", status: "arrived", durationMin: 60, price: 7000 }),
+    ]);
+    expect(perf).toHaveLength(2);
+    expect(perf.map((p) => p.revenue).sort((a, b) => a - b)).toEqual([3000, 7000]);
+  });
+
+  it("деньги за курс идут тому специалисту, чей это идентификатор", () => {
+    const perf = staffPerformance(
+      [appt({ id: "1", staffId: "s1", doctor: "Ирина", status: "arrived", durationMin: 60, price: 0 })],
+      [
+        { staffId: "s1", staffName: "Ирина", amount: 28000 },
+        // Курс без специалиста в разрез по людям не идёт — он виден отдельно.
+        { staffId: null, staffName: null, amount: 26000 },
+      ],
+    );
+    expect(perf).toHaveLength(1);
+    expect(perf[0].revenue).toBe(28000);
+  });
+});

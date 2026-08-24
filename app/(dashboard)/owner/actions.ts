@@ -20,6 +20,8 @@ import { revenueByDay } from "@/lib/server/daily-revenue";
 export interface OwnerStaffRow {
   /** Записи, время которых ещё не прошло. */
   planned?: number;
+  /** Ключ строки: по имени не различить тёзок. */
+  staffId: string | null;
   name: string;
   appts: number;
   arrived: number;
@@ -239,8 +241,10 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    * специалист, ведущий курсы, выглядит бесполезным, а услуга — бесплатной.
    */
   const purchases = await coursePurchasesBetween(session.companyId, period.start, period.end);
-  const sales: CourseSaleForRevenue[] = purchases.map((p) => ({
+  const sales: (CourseSaleForRevenue & { staffId: string | null })[] = purchases.map((p) => ({
     serviceTitle: p.serviceTitle,
+    // Идентификатор — чтобы не склеивать тёзок; имя — чтобы показать строку.
+    staffId: p.staffId,
     staffName: p.staffName,
     amount: p.amount,
   }));
@@ -322,6 +326,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     firstVisits: appts.filter((a) => a.isFirstVisit && a.status === "arrived").length,
     patients,
     staff: perf.map((p) => ({
+      staffId: p.staffId,
       name: p.name,
       appts: p.appts,
       planned: p.planned,

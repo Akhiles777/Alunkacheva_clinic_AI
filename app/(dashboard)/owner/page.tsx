@@ -94,7 +94,7 @@ export default async function OwnerPage() {
                 </thead>
                 <tbody>
                   {report.staff.map((p) => (
-                    <tr key={p.name} className="border-border-soft border-t">
+                    <tr key={p.staffId ?? p.name} className="border-border-soft border-t">
                       <td className="py-2.5 pr-3">
                         <div className="font-medium">{p.name}</div>
                         <div className="text-text-subtle text-2xs">

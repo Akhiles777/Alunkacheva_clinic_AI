@@ -19,6 +19,15 @@ import { occupies } from "./schedule";
  */
 
 export interface DoctorStats {
+  /**
+   * Ключ строки — идентификатор специалиста, а не имя.
+   *
+   * По имени не различить тёзок: две «Ирины» складывались в одну строку с
+   * общей выручкой и общими часами. В остальном коде это правило уже
+   * действует, здесь оно было пропущено. Пусто — только если у визита нет
+   * идентификатора вовсе.
+   */
+  staffId: string | null;
   name: string;
   /** Состоявшиеся приёмы: ARRIVED. Одно значение на все экраны. */
   appts: number;
@@ -50,13 +59,14 @@ export function staffPerformance(
    * У кассовой операции специалиста нет, а сеансы курса стоят нулём — без
    * этого БОС-терапевт с полусотней сеансов показывала четыре тысячи выручки.
    */
-  sales: { staffName: string | null; amount: number }[] = [],
+  sales: { staffId?: string | null; staffName: string | null; amount: number }[] = [],
 ): DoctorStats[] {
   const map = new Map<string, DoctorStats>();
   for (const a of appts) {
+    const key = a.staffId ?? a.doctor;
     const cur =
-      map.get(a.doctor) ??
-      { name: a.doctor, appts: 0, arrived: 0, noShow: 0, bookedMinutes: 0, revenue: 0, planned: 0 };
+      map.get(key) ??
+      { staffId: a.staffId ?? null, name: a.doctor, appts: 0, arrived: 0, noShow: 0, bookedMinutes: 0, revenue: 0, planned: 0 };
     if (a.status === "arrived") cur.appts += 1;
     if (a.status === "planned" || a.status === "confirmed") cur.planned += 1;
     if (a.status === "arrived") {
@@ -67,17 +77,27 @@ export function staffPerformance(
     }
     if (a.status === "no_show") cur.noShow += 1;
     if (occupies(a)) cur.bookedMinutes += a.durationMin;
-    map.set(a.doctor, cur);
+    map.set(key, cur);
   }
   for (const s of sales) {
-    // Курс без сеансов специалиста не знает — приписывать некому.
-    if (!s.staffName) continue;
+    // Курс без специалиста приписывать некому: его деньги показываются отдельно.
+    if (!s.staffId && !s.staffName) continue;
+    const key = s.staffId ?? s.staffName!;
     const cur =
-      map.get(s.staffName) ??
-      { name: s.staffName, appts: 0, arrived: 0, noShow: 0, bookedMinutes: 0, revenue: 0, planned: 0 };
+      map.get(key) ??
+      {
+        staffId: s.staffId ?? null,
+        name: s.staffName ?? "специалист не указан",
+        appts: 0,
+        arrived: 0,
+        noShow: 0,
+        bookedMinutes: 0,
+        revenue: 0,
+        planned: 0,
+      };
     // Деньги без приёма: приёмом были сеансы курса, они уже посчитаны.
     cur.revenue += s.amount;
-    map.set(s.staffName, cur);
+    map.set(key, cur);
   }
 
   return [...map.values()].sort((x, y) => y.revenue - x.revenue);
