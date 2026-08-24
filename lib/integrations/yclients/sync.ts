@@ -7,7 +7,7 @@ import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
-import { serviceRevenue } from "./mappers";
+import { revenueAfterCourse, serviceRevenue } from "./mappers";
 import { splitVisitMinutes } from "./split-visit";
 import { cancelVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
@@ -1214,13 +1214,51 @@ function revenueOf(
    * курса, и без этой проверки те же рубли считались дважды.
    */
   coveredByCourse = false,
+  /**
+   * Сколько в этом визите стоят именно курсовые услуги.
+   *
+   * Вычитаем только их: приём бывает из двух позиций, и обнулять весь визит
+   * из-за одного курсового сеанса значит терять деньги соседней услуги. На
+   * живых данных это и вышло — состав визитов разошёлся с их суммой на
+   * 3 000 ₽, а разрез по услугам с итогом на те же 3 000 ₽.
+   */
+  courseMoney = 0,
 ): RevenueDecision {
-  if (coveredByCourse) return { amount: 0, source: "PREPAID" };
+  // Осталась платная услуга — визит по-прежнему приносит деньги, просто
+  // меньше. Ноль означает, что весь приём был сеансом курса.
+  if (coveredByCourse) return revenueAfterCourse(r.revenue, courseMoney);
   if (r.revenueSource !== "PREPAID") {
     return { amount: r.revenue, source: r.revenueSource };
   }
   const course = r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id));
   return { amount: 0, source: course ? "PREPAID" : "UNKNOWN" };
+}
+
+/** Сколько в записи стоят курсовые услуги — их деньги уже получены при продаже. */
+function courseServicesMoney(dto: YclientsRecord, lookups: SyncLookups): number {
+  return (dto.services ?? [])
+    .filter((sv) => lookups.courseYclientsServiceIds.has(sv.id))
+    .reduce((sum, sv) => sum + serviceRevenue(sv).amount, 0);
+}
+
+/**
+ * То же, что `courseServicesMoney`, но без справочников: на одиночном событии
+ * вебхука их нет, и какие услуги курсовые, спрашиваем у базы одним запросом.
+ */
+async function courseServicesMoneyDb(companyId: string, dto: YclientsRecord): Promise<number> {
+  const ids = (dto.services ?? []).map((sv) => sv.id);
+  if (ids.length === 0) return 0;
+  const courseIds = new Set(
+    (
+      await prisma.service.findMany({
+        where: { companyId, isCourse: true, yclientsServiceId: { in: ids } },
+        select: { yclientsServiceId: true },
+      })
+    ).map((x) => x.yclientsServiceId),
+  );
+  return (dto.services ?? [])
+    .filter((sv) => courseIds.has(sv.id))
+    .reduce((sum, sv) => sum + serviceRevenue(sv).amount, 0);
 }
 
 /** Покрыт ли визит курсом, купленным в кассе (деньги получены при продаже). */
@@ -1316,7 +1354,9 @@ export function buildRecordRow(
   if (!patientId) return null;
 
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
-  const revenue = revenueOf(r, lookups, coveredByCourse(lookups.existingRecords.get(r.yclientsRecordId)));
+  const covered = coveredByCourse(lookups.existingRecords.get(r.yclientsRecordId));
+  const courseMoney = covered ? courseServicesMoney(dto, lookups) : 0;
+  const revenue = revenueOf(r, lookups, covered, courseMoney);
   return {
     kind: "row",
     createdAtKnown: r.createdAtYclients !== null,
@@ -1483,10 +1523,17 @@ export async function upsertRecord(
     select: { courseId: true, course: { select: { origin: true } } },
   });
   const covered = coveredByCourse(linked ?? undefined);
+  /**
+   * Из суммы визита вычитаем только курсовые услуги: приём бывает из двух
+   * позиций, и деньги соседней услуги терять нельзя.
+   */
+  const restMoney = covered
+    ? Math.max(0, r.revenue - (await courseServicesMoneyDb(companyId, dto)))
+    : r.revenue;
 
   let revenueSource = r.revenueSource;
   if (covered) {
-    revenueSource = "PREPAID";
+    revenueSource = restMoney > 0 ? "RECORD" : "PREPAID";
   } else if (revenueSource === "PREPAID") {
     const isCourse = lookups
       ? r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id))
@@ -1511,7 +1558,7 @@ export async function upsertRecord(
       durationMin: r.durationMin,
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
-      revenue: covered ? 0 : r.revenue,
+      revenue: restMoney,
       revenueSource,
       // Оплату обновляем тоже: визит оплачивают после приёма, и без этого
       // отметка об оплате никогда бы не доехала до уже созданной записи.
@@ -1533,7 +1580,7 @@ export async function upsertRecord(
       durationMin: r.durationMin,
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
-      revenue: covered ? 0 : r.revenue,
+      revenue: restMoney,
       revenueSource,
       isPaid: r.isPaid,
       createdAtYclients: r.createdAtYclients ?? r.startAt,

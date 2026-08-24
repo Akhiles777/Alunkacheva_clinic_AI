@@ -4,6 +4,7 @@ import {
   mapClient,
   mapRecord,
   mapRecordStatus,
+  revenueAfterCourse,
   mapResource,
   mapService,
   mapStaff,
@@ -165,5 +166,31 @@ describe("«пришёл» на визит, который ещё не нача�
 
   it("без даты визита работает как раньше", () => {
     expect(mapRecordStatus(1)).toBe("ARRIVED");
+  });
+});
+
+/**
+ * Сеанс, оплаченный курсом, забирает у визита только свою часть.
+ *
+ * Приём бывает из двух позиций. Первая версия правила обнуляла визит целиком,
+ * и «сеанс БОС + капельница» терял стоимость капельницы: на живых данных
+ * состав визитов разошёлся с их суммой на 3 000 ₽, а разрез по услугам с
+ * итогом — на те же 3 000 ₽.
+ */
+describe("выручка визита, покрытого курсом", () => {
+  it("весь приём был сеансом курса — денег нет", () => {
+    expect(revenueAfterCourse(2800, 2800)).toEqual({ amount: 0, source: "PREPAID" });
+  });
+
+  it("рядом стояла платная услуга — её деньги остаются", () => {
+    expect(revenueAfterCourse(5800, 2800)).toEqual({ amount: 3000, source: "RECORD" });
+  });
+
+  it("курсовая часть больше суммы визита — уходим в ноль, а не в минус", () => {
+    expect(revenueAfterCourse(2800, 5000)).toEqual({ amount: 0, source: "PREPAID" });
+  });
+
+  it("нулевой сеанс так и остаётся нулевым", () => {
+    expect(revenueAfterCourse(0, 0)).toEqual({ amount: 0, source: "PREPAID" });
   });
 });

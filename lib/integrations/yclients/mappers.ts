@@ -276,6 +276,25 @@ export function recordRevenue(dto: YclientsRecord): RecordRevenue {
   return { amount: 0, source: "UNKNOWN", prepaid };
 }
 
+/**
+ * Сколько визит приносит денег, если его курсовые услуги уже оплачены курсом.
+ *
+ * Отдельной функцией, потому что это правило о деньгах и его легко испортить.
+ * Первая же попытка обнуляла визит целиком — и приём «сеанс БОС + капельница»
+ * терял стоимость капельницы: состав визитов разошёлся с их суммой на 3 000 ₽,
+ * а разрез по услугам с итогом на те же 3 000 ₽.
+ *
+ * Вычитаем ровно курсовую часть. Ноль означает, что весь приём был сеансом
+ * курса; остаток означает, что рядом стояла платная услуга.
+ */
+export function revenueAfterCourse(
+  total: number,
+  courseMoney: number,
+): { amount: number; source: ServiceRevenueSource } {
+  const rest = Math.max(0, total - courseMoney);
+  return { amount: rest, source: rest > 0 ? "RECORD" : "PREPAID" };
+}
+
 export function mapRecord(dto: YclientsRecord): AppointmentUpsert {
   const services = dto.services ?? [];
   const money = recordRevenue(dto);

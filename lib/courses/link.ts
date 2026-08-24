@@ -719,19 +719,51 @@ export async function linkCourses(
     }
 
     if (zeroMoney.length > 0) {
-      await prisma.appointment.updateMany({
-        where: { id: { in: zeroMoney } },
-        data: { revenue: 0, revenueSource: "PREPAID" },
-      });
       /**
-       * И в составе визита тоже: разрез по услугам считается по нему, и
-       * несходящийся состав — это две правды об одних деньгах.
+       * Снимаем цену ТОЛЬКО с курсовой услуги, а не со всего визита.
+       *
+       * Приём бывает из двух позиций: сеанс курса и, скажем, капельница.
+       * Обнулять весь визит значит терять деньги соседней услуги — на живых
+       * данных состав визитов разошёлся с их суммой на 3 000 ₽, и разрез по
+       * услугам с итогом на те же 3 000 ₽.
+       *
+       * Состав правим первым: сумма визита считается по нему.
        */
+      const lines = await prisma.appointmentService.findMany({
+        where: { companyId, appointmentId: { in: zeroMoney } },
+        select: { appointmentId: true, serviceId: true, priceCharged: true },
+      });
+      const courseShare = new Map<string, number>();
+      const hasLines = new Set<string>();
+      for (const l of lines) {
+        hasLines.add(l.appointmentId);
+        if (l.serviceId !== service.id) continue;
+        courseShare.set(l.appointmentId, (courseShare.get(l.appointmentId) ?? 0) + Number(l.priceCharged));
+      }
+
       await prisma.appointmentService.updateMany({
         where: { companyId, appointmentId: { in: zeroMoney }, serviceId: service.id },
         data: { priceCharged: 0 },
       });
-      money += zeroMoney.length;
+
+      for (const id of zeroMoney) {
+        const cur = apptById.get(id);
+        if (!cur) continue;
+        /**
+         * Состава нет вовсе (старая запись) — тогда весь визит и был сеансом
+         * курса: вычитать нечего, снимаем сумму целиком.
+         */
+        const share = hasLines.has(id) ? (courseShare.get(id) ?? 0) : Number(cur.revenue);
+        const rest = Math.max(0, Number(cur.revenue) - share);
+        // Ничего не изменилось — значит цену уже снимали раньше: не трогаем
+        // строку и не считаем её второй раз в отчёте выгрузки.
+        if (rest === Number(cur.revenue)) continue;
+        await prisma.appointment.update({
+          where: { id },
+          data: { revenue: rest, revenueSource: rest > 0 ? "RECORD" : "PREPAID" },
+        });
+        money += 1;
+      }
     }
 
     /**
