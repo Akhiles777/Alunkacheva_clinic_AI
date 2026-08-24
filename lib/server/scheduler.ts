@@ -152,13 +152,29 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
     });
 
     const results: unknown[] = [];
+    /** Клиники, у которых выгрузка не прошла: по ним круг не считается удачным. */
+    const failed: string[] = [];
     for (const company of companies) {
-      const counts = await syncAll(company.id);
-      const [kinds, rooms, firstSeen] = await Promise.all([
-        recomputeVisitKinds(company.id),
-        backfillRooms(company.id),
-        backfillFirstSeen(company.id),
-      ]);
+      /**
+       * Выгрузка и переписка падают порознь.
+       *
+       * Общий try обрывал круг до возврата диалогов и до добора неотвеченных:
+       * стоило YCLIENTS не ответить, и пациент переставал получать ответы —
+       * при том что к переписке эта поломка отношения не имеет.
+       */
+      const full = await (async () => {
+        const counts = await syncAll(company.id);
+        const [kinds, rooms, firstSeen] = await Promise.all([
+          recomputeVisitKinds(company.id),
+          backfillRooms(company.id),
+          backfillFirstSeen(company.id),
+        ]);
+        return { counts, kinds, rooms, firstSeen };
+      })().catch((e) => {
+        console.error("[scheduler] выгрузка не удалась:", (e as Error)?.message ?? e);
+        failed.push(company.name);
+        return null;
+      });
       /**
        * Добор неотвеченных — здесь же, каждым кругом.
        *
@@ -185,16 +201,24 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
 
       results.push({
         клиника: company.name,
-        counts,
-        пересчитано: kinds.updated,
-        кабинетовПроставлено: rooms,
-        датПервогоОбращения: firstSeen,
+        counts: full?.counts ?? "выгрузка не удалась",
+        пересчитано: full?.kinds.updated ?? 0,
+        кабинетовПроставлено: full?.rooms ?? 0,
+        датПервогоОбращения: full?.firstSeen ?? 0,
         возвратДиалогов: handback,
         доборНеотвеченных: sweep,
       });
     }
 
-    info.ok = true;
+    /**
+     * Круг «удался» только если удалась выгрузка.
+     *
+     * Иначе экран состояния показывал бы зелёный ok при молчащем YCLIENTS:
+     * переписка-то отработала. Ровно это и приводит к «данные не обновляются, а
+     * система говорит, что всё хорошо».
+     */
+    info.ok = failed.length === 0;
+    if (failed.length > 0) info.error = `выгрузка не удалась: ${failed.join(", ")}`;
     info.counts = results;
   } catch (e) {
     // Одна неудача не должна останавливать расписание: следующий круг пойдёт
@@ -210,6 +234,40 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
   }
 
   return info;
+}
+
+/**
+ * Свежие записи и пересчёт по затронутым пациентам — выгрузочная часть
+ * короткого круга. Отдельной функцией, чтобы её падение не уносило с собой
+ * переписку.
+ */
+async function syncRecent(companyId: string): Promise<{ records: number; recomputed: number }> {
+  const sync = await syncRecentRecords(companyId);
+
+  /**
+   * Пересчёт — только по пациентам этого окна.
+   *
+   * Первичность визита зависит от всей истории пациента, поэтому история
+   * читается целиком, но перебирать ради двух дней всю базу незачем: это и
+   * есть та цена, из-за которой полный круг нельзя гонять часто.
+   */
+  const touched = await prisma.appointment.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      startAt: {
+        gte: new Date(Date.now() - RECENT_BACK_DAYS * 24 * 3600 * 1000),
+        lte: new Date(Date.now() + RECENT_FORWARD_DAYS * 24 * 3600 * 1000),
+      },
+    },
+    select: { patientId: true },
+    distinct: ["patientId"],
+  });
+  const kinds = await recomputeVisitKinds(
+    companyId,
+    touched.map((t) => t.patientId).filter((id): id is string => Boolean(id)),
+  );
+  return { records: sync.records, recomputed: kinds.updated };
 }
 
 /**
@@ -241,32 +299,22 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
     });
 
     const results: unknown[] = [];
+    /** Клиники, у которых короткая выгрузка не прошла. */
+    const fastFailed: string[] = [];
     for (const company of companies) {
-      const sync = await syncRecentRecords(company.id);
-
       /**
-       * Пересчёт — только по пациентам этого окна.
+       * Выгрузка и переписка не должны ронять друг друга.
        *
-       * Первичность визита зависит от всей истории пациента, поэтому история
-       * читается целиком, но перебирать ради двух дней всю базу незачем: это
-       * и есть та цена, из-за которой полный круг нельзя гонять часто.
+       * Раньше здесь был один общий try: YCLIENTS не ответил — и круг
+       * обрывался до добора неотвеченных. То есть ровно в тот момент, когда у
+       * клиники что-то сломалось, пациент переставал получать ответы. Причины
+       * у этих двух дел разные, и падать они обязаны порознь.
        */
-      const touched = await prisma.appointment.findMany({
-        where: {
-          companyId: company.id,
-          deletedAt: null,
-          startAt: {
-            gte: new Date(Date.now() - RECENT_BACK_DAYS * 24 * 3600 * 1000),
-            lte: new Date(Date.now() + RECENT_FORWARD_DAYS * 24 * 3600 * 1000),
-          },
-        },
-        select: { patientId: true },
-        distinct: ["patientId"],
+      const sync = await syncRecent(company.id).catch((e) => {
+        console.error("[scheduler] короткая выгрузка не удалась:", (e as Error)?.message ?? e);
+        fastFailed.push(company.name);
+        return null;
       });
-      const kinds = await recomputeVisitKinds(
-        company.id,
-        touched.map((t) => t.patientId).filter((id): id is string => Boolean(id)),
-      );
 
       const handback = await handBackAndRemind(company.id).catch((e) => {
         console.error("[scheduler] возврат диалогов не удался:", (e as Error)?.message ?? e);
@@ -279,13 +327,18 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
 
       results.push({
         клиника: company.name,
-        записей: sync.records,
-        пересчитано: kinds.updated,
+        записей: sync?.records ?? "выгрузка не удалась",
+        пересчитано: sync?.recomputed ?? 0,
         возвратДиалогов: handback,
         доборНеотвеченных: sweep,
       });
     }
-    info.ok = true;
+    /**
+     * Короткий круг «удался», только если выгрузка прошла. Переписка при этом
+     * могла отработать — она в результатах видна отдельно.
+     */
+    info.ok = fastFailed.length === 0;
+    if (fastFailed.length > 0) info.error = `выгрузка не удалась: ${fastFailed.join(", ")}`;
     info.counts = results;
   } catch (e) {
     info.error = String((e as Error)?.message ?? e).slice(0, 300);

@@ -175,7 +175,7 @@ export default async function OwnerPage() {
             {/* Воронка — за тот же период. Прежде здесь стояли диалоги и звонки
                 за всю историю клиники рядом с выручкой за месяц. */}
             <span className="text-text-subtle text-xs">
-              за период: диалогов {report.funnel.dialogs} · звонков {report.funnel.calls}
+              за период: переписок {report.funnel.dialogs} · звонков {report.funnel.calls}
             </span>
           </div>
           <div className="-mx-1 overflow-x-auto px-1">

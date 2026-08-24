@@ -222,12 +222,20 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    * они рядом с выручкой за тридцать дней. Число выглядело измеренным, росло
    * всегда и ни с чем на экране не сходилось: сравнить «диалогов 812» с
    * «первичных 14» нельзя, это разные отрезки времени.
+   *
+   * Диалоги считаем по последнему сообщению, а не по дате начала переписки:
+   * постоянный пациент пишет в тот же чат месяцами (§8), и «новых диалогов»
+   * тут было бы почти ноль при живой переписке каждый день.
    */
   const [appts, patients, dialogs, calls] = await Promise.all([
     loadAppts(session.companyId),
     patientCounts(session.companyId),
     prisma.conversation.count({
-      where: { companyId: session.companyId, startedAt: { gte: period.start, lt: period.end } },
+      where: {
+        companyId: session.companyId,
+        deletedAt: null,
+        lastMessageAt: { gte: period.start, lt: period.end },
+      },
     }),
     prisma.callLog.count({
       where: { companyId: session.companyId, createdAt: { gte: period.start, lt: period.end } },
