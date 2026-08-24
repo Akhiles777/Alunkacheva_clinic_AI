@@ -254,6 +254,39 @@ async function main() {
         ` · ${a.status} · ${a.staff?.name ?? "без специалиста"} — ${why}`,
     );
   }
+  /**
+   * Двойной счёт: приём закрыт ценой, хотя сеанс был оплачен курсом.
+   *
+   * Живой случай: пациентка купила три курса БОС — 30 сеансов, — и ровно 30
+   * сеансов у неё и есть. Но два приёма администратор закрыл не на курс, а
+   * ценой из прайса, и YCLIENTS показывает по ним 2 800 ₽. Деньги за эти
+   * сеансы клиника получила при покупке курса, и выручка дня оказывается
+   * больше настоящей.
+   *
+   * Сами суммы не трогаем: YCLIENTS — источник истины по деньгам (§2), и наше
+   * дело показать расхождение, а не переписать его. Чинится это в YCLIENTS
+   * одним действием — переоформить приём на курс.
+   */
+  for (const [title, bought] of boughtByService) {
+    const all = sessions.filter(
+      (a) =>
+        (a.services.find((x) => x.service.isCourse)?.service.title ??
+          a.primaryService?.title ??
+          "услуга не указана") === title,
+    );
+    if (all.length > bought) continue;
+    const paid = all.filter((a) => a.status === "ARRIVED" && Number(a.revenue) > 0);
+    if (paid.length === 0) continue;
+    const sum = paid.reduce((acc, a) => acc + Number(a.revenue), 0);
+    console.log(
+      `\n  ! ${title}: оплачено ${bought} сеансов, всего сеансов ${all.length},\n` +
+        `    но ${paid.length} приёмов закрыты ценой из прайса на ${money(sum)}.\n` +
+        "    Похоже на двойной счёт: деньги за эти сеансы уже получены при покупке курса.\n" +
+        `    Дни: ${paid.map((a) => day(a.startAt)).join(", ")}.\n` +
+        "    Проверьте в YCLIENTS: приём должен быть закрыт на курс, а не по прайсу.",
+    );
+  }
+
   for (const [title, bought] of boughtByService) {
     // Считаем только состоявшиеся: предстоящие сеансы курс ещё не потратили.
     const seen = sessions.filter(

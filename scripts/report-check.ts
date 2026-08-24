@@ -457,6 +457,70 @@ async function main() {
     );
   }
 
+  /**
+   * Сеансы, закрытые ценой при неизрасходованном курсе.
+   *
+   * Приём курсовой услуги с суммой — обычно правда: сеанс сверх курса или
+   * разовый визит. Но если у пациента на эту же услугу есть курс, в котором
+   * сеансы ещё не кончились, деньги за визит уже получены при покупке, и
+   * сумма в записи считает их второй раз. Так выручка дня и оказывается
+   * больше настоящей.
+   *
+   * Сами суммы не трогаем: YCLIENTS — источник истины по деньгам (§2).
+   * Печатаем список, чтобы это чинили там, где оно возникло.
+   */
+  console.log("\n── сеансы, закрытые ценой при неизрасходованном курсе ──");
+  const openCourses = await prisma.course.findMany({
+    where: { companyId: company.id, status: "ACTIVE" },
+    select: { patientId: true, serviceId: true, sessionsUsed: true, sessionsTotal: true },
+  });
+  const hasFreeSlot = new Set(
+    openCourses
+      .filter((c) => c.sessionsUsed < c.sessionsTotal)
+      .map((c) => `${c.patientId}:${c.serviceId}`),
+  );
+  if (hasFreeSlot.size === 0) {
+    console.log("  незакрытых курсов нет — проверять нечего");
+  } else {
+    const paidSessions = await prisma.appointment.findMany({
+      where: {
+        companyId: company.id,
+        deletedAt: null,
+        status: "ARRIVED",
+        startAt: { gte: from, lt: now },
+        revenue: { gt: 0 },
+        courseId: null,
+        OR: [
+          { primaryService: { isCourse: true } },
+          { services: { some: { service: { isCourse: true } } } },
+        ],
+      },
+      select: {
+        startAt: true,
+        revenue: true,
+        patientId: true,
+        primaryServiceId: true,
+        services: { select: { serviceId: true, service: { select: { isCourse: true } } } },
+      },
+      orderBy: { startAt: "asc" },
+    });
+    const suspicious = paidSessions.filter((a) => {
+      const ids = new Set(a.services.filter((x) => x.service.isCourse).map((x) => x.serviceId));
+      if (a.primaryServiceId) ids.add(a.primaryServiceId);
+      return [...ids].some((sid) => hasFreeSlot.has(`${a.patientId}:${sid}`));
+    });
+    const sum = suspicious.reduce((acc, a) => acc + Number(a.revenue), 0);
+    console.log(
+      suspicious.length === 0
+        ? "  ✓ таких приёмов нет: у всех платных курсовых визитов курс израсходован"
+        : `  ! ${suspicious.length} приёмов на ${money(sum)} — у пациента остался неизрасходованный курс\n` +
+            "      той же услуги. Деньги за сеанс уже получены при покупке; в YCLIENTS приём\n" +
+            "      нужно закрыть на курс, а не по прайсу. Разобрать конкретного пациента:\n" +
+            "      npx tsx scripts/patient-courses.ts --phone=…\n" +
+            `      дни: ${[...new Set(suspicious.map((a) => a.startAt.toISOString().slice(0, 10)))].join(", ")}`,
+    );
+  }
+
   // Кабинеты: визит либо в кабинете, либо без него — третьего нет.
   const withRoom = full.filter((a) => a.roomId !== null).length;
   const noRoom = full.length - withRoom;
