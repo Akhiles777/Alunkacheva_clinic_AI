@@ -445,12 +445,27 @@ export function PatientCardBody({
                   оплаченного курса и приём, за который клиника денег не брала.
                 */}
                 {visit.status !== "arrived" ? null : visit.amount > 0 ? (
-                  <span
-                    className={`num flex-none text-xs ${
-                      visit.kind === "purchase" ? "text-accent-text font-medium" : "text-text-muted"
-                    }`}
-                  >
-                    {formatMoney(visit.amount)}
+                  /*
+                    Курсовая услуга с суммой — сеанс, оплаченный отдельно (сверх
+                    курса или разовый визит). Без подписи это читается как сбой
+                    привязки: рядом стоят такие же приёмы с «курс 3/10».
+                  */
+                  <span className="flex flex-none items-baseline gap-1.5">
+                    {visit.courseService && !visit.courseSession && visit.kind !== "purchase" ? (
+                      <span
+                        className="text-text-subtle text-2xs"
+                        title="Курсовая услуга, но за этот приём взяли деньги в самой записи YCLIENTS: с курса сеанс не списан. Обычно это сеанс сверх курса или разовый визит."
+                      >
+                        отдельно
+                      </span>
+                    ) : null}
+                    <span
+                      className={`num text-xs ${
+                        visit.kind === "purchase" ? "text-accent-text font-medium" : "text-text-muted"
+                      }`}
+                    >
+                      {formatMoney(visit.amount)}
+                    </span>
                   </span>
                 ) : visit.courseSession ? (
                   <span className="text-text-muted flex-none text-xs">

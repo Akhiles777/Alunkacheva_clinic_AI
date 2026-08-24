@@ -154,8 +154,25 @@ export function RevenueBreakdown({
                     </span>
                   </span>
                   {(row.appt.price ?? 0) > 0 ? (
-                    <span className="num text-text-muted flex-none text-xs">
-                      {formatMoney(row.appt.price ?? 0)}
+                    /*
+                      Курсовая услуга с суммой — не ошибка, но и не молчаливая
+                      строка: «БОС-терапия 2 800 ₽» рядом с «курс 3/10» читается
+                      как сбой привязки. Сумма в записи YCLIENTS означает, что
+                      этот приём оплатили отдельно — сеанс сверх курса или
+                      разовый визит. Так и подписываем.
+                    */
+                    <span className="flex flex-none items-baseline gap-1.5">
+                      {row.appt.courseService && !row.appt.courseSession ? (
+                        <span
+                          className="text-text-subtle text-2xs"
+                          title="Курсовая услуга, но за этот приём взяли деньги в самой записи YCLIENTS: с курса сеанс не списан. Обычно это сеанс сверх курса или разовый визит."
+                        >
+                          отдельно
+                        </span>
+                      ) : null}
+                      <span className="num text-text-muted text-xs">
+                        {formatMoney(row.appt.price ?? 0)}
+                      </span>
                     </span>
                   ) : row.appt.courseSession ? (
                     <span

@@ -240,7 +240,8 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
           courseSessionIndex: true,
           course: { select: { sessionsTotal: true } },
           staff: { select: { name: true } },
-          primaryService: { select: { title: true } },
+          primaryService: { select: { title: true, isCourse: true } },
+          services: { select: { service: { select: { isCourse: true } } } },
         },
       },
     },
@@ -317,6 +318,9 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
         a.courseSessionIndex && a.course
           ? { index: a.courseSessionIndex, total: a.course.sessionsTotal }
           : null,
+      // Курсовая ли услуга: по составу визита, а не только по основной.
+      courseService:
+        Boolean(a.primaryService?.isCourse) || a.services.some((sv) => sv.service.isCourse),
       })),
     ].sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0)),
   };

@@ -64,9 +64,10 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     include: {
       staff: { select: { id: true, name: true } },
       room: { select: { name: true, sortOrder: true } },
-      primaryService: { select: { title: true } },
+      primaryService: { select: { title: true, isCourse: true } },
       patient: { select: { name: true } },
       course: { select: { sessionsTotal: true } },
+      services: { select: { service: { select: { isCourse: true } } } },
     },
     orderBy: { startAt: "asc" },
   });
@@ -106,6 +107,9 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
       r.courseSessionIndex && r.course
         ? { index: r.courseSessionIndex, total: r.course.sessionsTotal }
         : null,
+    // Курсовая ли услуга: по составу визита, а не только по основной.
+    courseService:
+      Boolean(r.primaryService?.isCourse) || r.services.some((sv) => sv.service.isCourse),
     note: r.note,
     bookedByName: r.bookedByName,
   }));
@@ -134,9 +138,10 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
     include: {
       staff: { select: { id: true, name: true } },
       room: { select: { name: true, sortOrder: true } },
-      primaryService: { select: { title: true } },
+      primaryService: { select: { title: true, isCourse: true } },
       patient: { select: { name: true } },
       course: { select: { sessionsTotal: true } },
+      services: { select: { service: { select: { isCourse: true } } } },
     },
     orderBy: { startAt: "asc" },
   });
@@ -166,6 +171,9 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
       r.courseSessionIndex && r.course
         ? { index: r.courseSessionIndex, total: r.course.sessionsTotal }
         : null,
+    // Курсовая ли услуга: по составу визита, а не только по основной.
+    courseService:
+      Boolean(r.primaryService?.isCourse) || r.services.some((sv) => sv.service.isCourse),
     note: r.note,
     bookedByName: r.bookedByName,
   }));

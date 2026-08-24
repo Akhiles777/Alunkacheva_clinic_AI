@@ -152,6 +152,99 @@ async function main() {
     );
   }
 
+  /**
+   * Сеансы курсовых услуг — почему у одного из них стоит сумма.
+   *
+   * На экране дня сеанс курса подписан «курс 3/10», а рядом такой же приём той
+   * же услуги показывает 2 800 ₽. Разница всегда в записи YCLIENTS: у сеанса
+   * оплаченного курса стоимость нулевая, а если администратор пробил приём
+   * отдельно, сумма в записи есть — и это настоящие деньги дня, а не ошибка.
+   *
+   * Второй случай — сеансы сверх курса: курс на десять, а пришли одиннадцать
+   * раз. Одиннадцатый ни к какому курсу не относится и стоит своих денег.
+   *
+   * Печатаем всё подряд, чтобы различать это числами, а не догадками.
+   */
+  const courseServiceIds = new Set(
+    (
+      await prisma.service.findMany({
+        where: { companyId: company.id, isCourse: true },
+        select: { id: true },
+      })
+    ).map((x) => x.id),
+  );
+  const sessions = await prisma.appointment.findMany({
+    where: {
+      companyId: company.id,
+      patientId: { in: ids },
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      OR: [
+        { primaryServiceId: { in: [...courseServiceIds] } },
+        { services: { some: { serviceId: { in: [...courseServiceIds] } } } },
+      ],
+    },
+    orderBy: { startAt: "asc" },
+    select: {
+      startAt: true,
+      status: true,
+      revenue: true,
+      revenueSource: true,
+      courseId: true,
+      staff: { select: { name: true } },
+      primaryService: { select: { title: true } },
+      services: { select: { service: { select: { title: true, isCourse: true } } } },
+    },
+  });
+
+  console.log(`\n── сеансы курсовых услуг: ${sessions.length} ──`);
+  /** Сколько сеансов куплено по каждой услуге — чтобы видеть выход за курс. */
+  const boughtByService = new Map<string, number>();
+  for (const c of courses) {
+    boughtByService.set(c.service.title, (boughtByService.get(c.service.title) ?? 0) + c.sessionsTotal);
+  }
+  const seenByService = new Map<string, number>();
+  for (const a of sessions) {
+    const title =
+      a.services.find((x) => x.service.isCourse)?.service.title ??
+      a.primaryService?.title ??
+      "услуга не указана";
+    const n = (seenByService.get(title) ?? 0) + 1;
+    seenByService.set(title, n);
+    const bought = boughtByService.get(title) ?? 0;
+
+    /**
+     * Причину называем прямо. «Не привязан» без объяснения — это то же
+     * молчание, из-за которого приходится лезть в YCLIENTS руками.
+     */
+    let why: string;
+    if (a.courseId) why = "сеанс курса";
+    else if (Number(a.revenue) > 0)
+      why =
+        bought > 0 && n > bought
+          ? `ОПЛАЧЕН ОТДЕЛЬНО, сеанс ${n} при купленных ${bought} — курс кончился`
+          : "ОПЛАЧЕН ОТДЕЛЬНО: в записи YCLIENTS стоит сумма";
+    else
+      why =
+        bought === 0
+          ? "курса нет: покупка не найдена в кассе"
+          : `не привязан: сеанс ${n} при купленных ${bought}`;
+
+    console.log(
+      `  ${day(a.startAt)} · ${title} · ${money(Number(a.revenue))} · ${a.revenueSource}` +
+        ` · ${a.status} · ${a.staff?.name ?? "без специалиста"} — ${why}`,
+    );
+  }
+  for (const [title, bought] of boughtByService) {
+    const seen = seenByService.get(title) ?? 0;
+    if (seen > bought) {
+      console.log(
+        `  ! ${title}: сеансов ${seen}, куплено ${bought} — ${seen - bought} сверх курса.` +
+          " Каждый сверх курса стоит своих денег, это не ошибка привязки.",
+      );
+    }
+  }
+
   const client = await getYclientsClient(company.id);
   const yclientsIds = patients.map((p) => p.yclientsId).filter((x): x is number => Boolean(x));
   if (!client || yclientsIds.length === 0) {

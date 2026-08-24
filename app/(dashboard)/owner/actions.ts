@@ -37,6 +37,15 @@ export interface OwnerServiceRow {
   revenue: number;
 }
 export interface OwnerReport {
+  /**
+   * За какой отрезок посчитан весь экран.
+   *
+   * Подпись «за 30 дней» стояла только над загрузкой кабинетов: у таблицы
+   * сотрудников и у выручки по услугам периода не было видно вовсе, и
+   * владелец сравнивал их с отчётами за другой отрезок. Даты обязательны —
+   * окно скользящее, и «30 дней» без границ проверить нечем.
+   */
+  period: { days: number; from: string; to: string };
   revenue: number;
   appts: number;
   arrived: number;
@@ -96,6 +105,9 @@ function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
  *
  * Теперь период кабинета владельца — ровно тот же «Месяц», что и в отчётах.
  */
+/** Сколько дней показывает кабинет владельца. То же окно, что «Месяц» в отчётах. */
+const OWNER_PERIOD_DAYS = 30;
+
 function ownerPeriod(): { start: Date; end: Date } {
   const { from, to } = periodBounds("month");
   return { start: from, end: to };
@@ -200,11 +212,24 @@ export async function getOwnerReport(): Promise<OwnerReport> {
   const session = await getSession();
   // Отчёт по выручке — только тем, кому это право выдано (§9).
   await requirePermission(session, "VIEW_REVENUE");
+  const period = ownerPeriod();
+  /**
+   * Воронка — за тот же период, что и всё остальное на экране.
+   *
+   * Здесь считались все диалоги и все звонки за всю историю клиники, и стояли
+   * они рядом с выручкой за тридцать дней. Число выглядело измеренным, росло
+   * всегда и ни с чем на экране не сходилось: сравнить «диалогов 812» с
+   * «первичных 14» нельзя, это разные отрезки времени.
+   */
   const [appts, patients, dialogs, calls] = await Promise.all([
     loadAppts(session.companyId),
     patientCounts(session.companyId),
-    prisma.conversation.count({ where: { companyId: session.companyId } }),
-    prisma.callLog.count({ where: { companyId: session.companyId } }),
+    prisma.conversation.count({
+      where: { companyId: session.companyId, startedAt: { gte: period.start, lt: period.end } },
+    }),
+    prisma.callLog.count({
+      where: { companyId: session.companyId, createdAt: { gte: period.start, lt: period.end } },
+    }),
   ]);
 
   /**
@@ -213,7 +238,6 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    * Их деньги — выручка дней покупки, и в разрезах они обязаны быть: иначе
    * специалист, ведущий курсы, выглядит бесполезным, а услуга — бесплатной.
    */
-  const period = ownerPeriod();
   const purchases = await coursePurchasesBetween(session.companyId, period.start, period.end);
   const sales: CourseSaleForRevenue[] = purchases.map((p) => ({
     serviceTitle: p.serviceTitle,
@@ -230,8 +254,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    * выходило 8% там, где в отчётах 0%, — и понять, какому числу верить, было
    * невозможно. Правильный ответ: никакому, расхождение само по себе ошибка.
    */
-  const { start, end } = ownerPeriod();
-  const loads = await roomOccupancyBetween(session.companyId, start, end);
+  const loads = await roomOccupancyBetween(session.companyId, period.start, period.end);
   /**
    * Итог — сумма по специалистам плюс курсы, которым специалиста не нашлось.
    *
@@ -253,7 +276,20 @@ export async function getOwnerReport(): Promise<OwnerReport> {
     ? Math.round((loads.reduce((s, l) => s + l.rate, 0) / loads.length) * 100)
     : 0;
 
+  const dayLabel = new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "Europe/Moscow",
+  });
+
   return {
+    period: {
+      days: OWNER_PERIOD_DAYS,
+      from: dayLabel.format(period.start),
+      // Конец периода — исключающая граница (полночь следующего дня): в
+      // подписи показываем последний день периода, а не первый день после него.
+      to: dayLabel.format(new Date(period.end.getTime() - 1)),
+    },
     revenue: revenueSum,
     appts: appts.length,
     arrived,

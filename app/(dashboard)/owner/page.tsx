@@ -45,9 +45,12 @@ export default async function OwnerPage() {
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
         <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Кабинет владельца</h1>
         {/* Период обязателен в подписи: раздел считал один текущий день, и
-            «Неявки 0%» читались как «неявок нет вовсе», хотя в базе их сотня. */}
+            «Неявки 0%» читались как «неявок нет вовсе», хотя в базе их сотня.
+            Даты — тоже: окно скользящее, и «30 дней» без границ не проверить,
+            а с отчётами за «Месяц» его сравнивают постоянно. */}
         <p className="text-text-muted mt-1 text-xs">
-          За последние 30 дней · операционная картина дня — на экране «Сегодня»
+          За {report.period.days} дней · {report.period.from} — {report.period.to} · операционная
+          картина дня — на экране «Сегодня»
         </p>
       </header>
 
@@ -61,12 +64,23 @@ export default async function OwnerPage() {
           <Tile label="Первичных" value={report.firstVisits} />
           <Tile label="Неявки" value={`${report.noShowRatePct}%`} />
           <Tile label="Загрузка" value={`${report.avgLoadPct}%`} hint="3 кабинета" />
-          <Tile label="Пациентов" value={report.patients.total} hint={`без согласия ${report.patients.noConsent}`} />
+          {/* Единственная плитка не про период: это вся база клиники. Так и
+              подписана — иначе она читается как «пациентов за 30 дней». */}
+          <Tile
+            label="Пациентов в базе"
+            value={report.patients.total}
+            hint={`новых за ${report.period.days} дней ${report.patients.primary} · без согласия ${report.patients.noConsent}`}
+          />
         </div>
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
           <section className="border-border bg-surface rounded-xl border p-5">
-            <h2 className="mb-4 text-sm font-medium">Сотрудники: производительность и часы</h2>
+            <h2 className="text-sm font-medium">Сотрудники: производительность и часы</h2>
+            {/* Период у каждой таблицы свой подписью: без него владелец
+                сравнивал эти числа с отчётами за другой отрезок. */}
+            <p className="text-text-subtle mb-4 text-2xs">
+              за {report.period.days} дней · {report.period.from} — {report.period.to}
+            </p>
             <div className="-mx-1 overflow-x-auto px-1">
               <table className="w-full min-w-[440px] border-collapse text-sm">
                 <thead>
@@ -117,7 +131,9 @@ export default async function OwnerPage() {
                 «Отчётах», и без подписи одинаковые заголовки с разными числами
                 читаются как ошибка платформы. */}
             <h2 className="text-sm font-medium">Загрузка кабинетов</h2>
-            <p className="text-text-subtle mb-4 text-2xs">за 30 дней</p>
+            <p className="text-text-subtle mb-4 text-2xs">
+              за {report.period.days} дней · {report.period.from} — {report.period.to}
+            </p>
             <ul className="flex flex-col gap-3">
               {report.rooms.map((l) => (
                 <li key={l.name} className="flex items-center gap-3">
@@ -150,9 +166,16 @@ export default async function OwnerPage() {
 
         <section className="border-border bg-surface mt-4 rounded-xl border p-5">
           <div className="mb-4 flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
-            <h2 className="text-sm font-medium">Выручка по услугам</h2>
+            <div>
+              <h2 className="text-sm font-medium">Выручка по услугам</h2>
+              <p className="text-text-subtle mt-0.5 text-2xs">
+                за {report.period.days} дней · {report.period.from} — {report.period.to}
+              </p>
+            </div>
+            {/* Воронка — за тот же период. Прежде здесь стояли диалоги и звонки
+                за всю историю клиники рядом с выручкой за месяц. */}
             <span className="text-text-subtle text-xs">
-              воронка: диалогов {report.funnel.dialogs} · звонков {report.funnel.calls}
+              за период: диалогов {report.funnel.dialogs} · звонков {report.funnel.calls}
             </span>
           </div>
           <div className="-mx-1 overflow-x-auto px-1">
