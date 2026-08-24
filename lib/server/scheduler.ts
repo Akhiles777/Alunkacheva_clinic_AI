@@ -243,6 +243,9 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
  */
 async function syncRecent(companyId: string): Promise<{ records: number; recomputed: number }> {
   const sync = await syncRecentRecords(companyId);
+  // YCLIENTS выключен — пересчитывать нечего, и гонять базу каждые три минуты
+  // впустую тоже незачем.
+  if (sync.skipped) return { records: 0, recomputed: 0 };
 
   /**
    * Пересчёт — только по пациентам этого окна.
