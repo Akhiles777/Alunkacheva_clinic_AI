@@ -1263,21 +1263,25 @@ function courseServicesMoney(
 
 /**
  * То же, что `courseServicesMoney`, но без справочников: на одиночном событии
- * вебхука их нет, и какие услуги курсовые, спрашиваем у базы одним запросом.
+ * вебхука их нет, и какая услуга у курса, спрашиваем у базы одним запросом.
  */
-async function courseServicesMoneyDb(companyId: string, dto: YclientsRecord): Promise<number> {
+async function courseServiceMoneyDb(
+  companyId: string,
+  dto: YclientsRecord,
+  courseServiceId: string | null,
+): Promise<number> {
   const ids = (dto.services ?? []).map((sv) => sv.id);
-  if (ids.length === 0) return 0;
-  const courseIds = new Set(
+  if (ids.length === 0 || !courseServiceId) return 0;
+  const yclientsIds = new Set(
     (
       await prisma.service.findMany({
-        where: { companyId, isCourse: true, yclientsServiceId: { in: ids } },
+        where: { companyId, id: courseServiceId, yclientsServiceId: { in: ids } },
         select: { yclientsServiceId: true },
       })
     ).map((x) => x.yclientsServiceId),
   );
   return (dto.services ?? [])
-    .filter((sv) => courseIds.has(sv.id))
+    .filter((sv) => yclientsIds.has(sv.id))
     .reduce((sum, sv) => sum + serviceRevenue(sv).amount, 0);
 }
 
@@ -1541,15 +1545,15 @@ export async function upsertRecord(
    */
   const linked = await prisma.appointment.findFirst({
     where: { companyId, yclientsRecordId: r.yclientsRecordId },
-    select: { courseId: true, course: { select: { origin: true } } },
+    select: { courseId: true, course: { select: { origin: true, serviceId: true } } },
   });
   const covered = coveredByCourse(linked ?? undefined);
   /**
-   * Из суммы визита вычитаем только курсовые услуги: приём бывает из двух
-   * позиций, и деньги соседней услуги терять нельзя.
+   * Вычитаем только услугу ТОГО курса, к которому привязан визит: приём бывает
+   * из двух позиций, и деньги соседней услуги терять нельзя.
    */
   const restMoney = covered
-    ? Math.max(0, r.revenue - (await courseServicesMoneyDb(companyId, dto)))
+    ? Math.max(0, r.revenue - (await courseServiceMoneyDb(companyId, dto, linked?.course?.serviceId ?? null)))
     : r.revenue;
 
   let revenueSource = r.revenueSource;
