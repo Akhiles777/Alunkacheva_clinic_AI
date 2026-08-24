@@ -22,6 +22,8 @@ const existing: ExistingRecord = {
   createdAtYclients: new Date("2026-08-10T12:00:00Z"),
   syncState: "SYNCED",
   deletedAt: null,
+  courseId: null,
+  course: null,
 };
 
 const incoming = {

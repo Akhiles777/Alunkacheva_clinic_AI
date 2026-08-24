@@ -35,6 +35,16 @@ export const EXISTING_SELECT = {
   createdAtYclients: true,
   syncState: true,
   deletedAt: true,
+  /**
+   * Привязка к курсу — не для сравнения, а для решения о деньгах.
+   *
+   * Сеанс, покрытый курсом из кассы, выручки дня не даёт: за него заплатили в
+   * день покупки. Без этого поля выгрузка возвращала бы ему цену из записи
+   * каждые три минуты, а пересборка курсов снова обнуляла — и одни и те же
+   * рубли то появлялись, то исчезали.
+   */
+  courseId: true,
+  course: { select: { origin: true } },
 } as const;
 
 export interface ExistingRecord {
@@ -54,6 +64,8 @@ export interface ExistingRecord {
   createdAtYclients: Date | null;
   syncState: string;
   deletedAt: Date | null;
+  courseId: string | null;
+  course: { origin: string } | null;
 }
 
 export interface SyncLookups {

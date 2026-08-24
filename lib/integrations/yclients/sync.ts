@@ -44,7 +44,7 @@ import type {
  */
 export interface SyncResult {
   skipped: boolean;
-  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "courseSessions", number>>;
+  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "courseSessions" | "courseSessionsRepriced", number>>;
   errors: string[];
 }
 
@@ -125,6 +125,13 @@ export async function syncAll(companyId: string, options: SyncOptions = {}): Pro
       // Пересобираем курсы только в том окне, по которому прочитана касса.
       const linked = await linkCourses(companyId, transactions, since);
       counts.courseSessions = linked.sessions;
+      /**
+       * Сеансы, у которых снята цена: приём закрыли по прайсу вместо курса.
+       *
+       * Молчать нельзя — это подсказка администратору, что в YCLIENTS так
+       * закрывают приёмы, и деньги за них считались бы дважды.
+       */
+      if (linked.moneyZeroed > 0) counts.courseSessionsRepriced = linked.moneyZeroed;
       if (linked.priceless.length > 0) {
         // Молчать нельзя: раздел «Курсы» был бы пуст без объяснимой причины.
         errors.push(`Курсы не собраны — нет цены в справочнике: ${linked.priceless.join(", ")}`);
@@ -849,7 +856,15 @@ async function saveRecordServices(
 
   const appts = await prisma.appointment.findMany({
     where: { companyId, yclientsRecordId: { in: onPage } },
-    select: { id: true, yclientsRecordId: true, durationMin: true },
+    select: {
+      id: true,
+      yclientsRecordId: true,
+      durationMin: true,
+      // Покрыт ли визит курсом: тогда курсовая услуга в составе стоит ноль,
+      // иначе состав разойдётся с суммой визита и разрез по услугам соврёт.
+      courseId: true,
+      course: { select: { origin: true } },
+    },
   });
   const apptByRecord = new Map(appts.map((a) => [a.yclientsRecordId as number, a]));
 
@@ -888,10 +903,19 @@ async function saveRecordServices(
     const appt = apptByRecord.get(dto.id);
     if (!appt) continue;
 
+    const covered = coveredByCourse(appt);
     const parts = (dto.services ?? [])
       .map((sv) => ({
         serviceId: lookups.serviceByYclientsId.get(sv.id),
-        money: serviceRevenue(sv),
+        /**
+         * Курсовая услуга в покрытом визите денег не приносит: за неё
+         * заплатили при покупке курса. Остальные услуги того же визита
+         * считаются как обычно — приём бывает из двух позиций.
+         */
+        money:
+          covered && lookups.courseYclientsServiceIds.has(sv.id)
+            ? { amount: 0, source: "PREPAID" as const }
+            : serviceRevenue(sv),
         // Длительность услуги из справочника: у записи она одна на весь визит.
         minutes: lookups.durationByYclientsServiceId.get(sv.id) ?? 0,
       }))
@@ -1179,12 +1203,29 @@ async function syncRecordsWindow(
  * закрывался ценой из прайса, и платформа считала курсовые деньги заново на
  * каждом сеансе — за день выходило 61 280 ₽ вместо 43 480 ₽ (§8).
  */
-function revenueOf(r: AppointmentUpsert, lookups: SyncLookups): RevenueDecision {
+function revenueOf(
+  r: AppointmentUpsert,
+  lookups: SyncLookups,
+  /**
+   * Визит уже привязан к курсу, купленному в кассе.
+   *
+   * Тогда цена в записи — не деньги дня: их клиника получила при продаже
+   * курса. Администратор ставит её, когда закрывает приём по прайсу вместо
+   * курса, и без этой проверки те же рубли считались дважды.
+   */
+  coveredByCourse = false,
+): RevenueDecision {
+  if (coveredByCourse) return { amount: 0, source: "PREPAID" };
   if (r.revenueSource !== "PREPAID") {
     return { amount: r.revenue, source: r.revenueSource };
   }
   const course = r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id));
   return { amount: 0, source: course ? "PREPAID" : "UNKNOWN" };
+}
+
+/** Покрыт ли визит курсом, купленным в кассе (деньги получены при продаже). */
+export function coveredByCourse(existing?: { courseId: string | null; course: { origin: string } | null }): boolean {
+  return Boolean(existing?.courseId && existing.course?.origin === "YCLIENTS");
 }
 
 /**
@@ -1275,7 +1316,7 @@ export function buildRecordRow(
   if (!patientId) return null;
 
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
-  const revenue = revenueOf(r, lookups);
+  const revenue = revenueOf(r, lookups, coveredByCourse(lookups.existingRecords.get(r.yclientsRecordId)));
   return {
     kind: "row",
     createdAtKnown: r.createdAtYclients !== null,
@@ -1430,8 +1471,23 @@ export async function upsertRecord(
    * Курсовые услуги берём из справочников, если они переданы; на одиночном
    * событии спрашиваем базу — это один короткий запрос.
    */
+  /**
+   * Визит уже привязан к курсу из кассы — цена в записи не деньги дня.
+   *
+   * На вебхуке справочников нет, поэтому спрашиваем базу: один короткий
+   * запрос. Без него событие вернуло бы сеансу цену, которую пересборка курсов
+   * обнулила, и до следующего полного круга выручка была бы завышена.
+   */
+  const linked = await prisma.appointment.findFirst({
+    where: { companyId, yclientsRecordId: r.yclientsRecordId },
+    select: { courseId: true, course: { select: { origin: true } } },
+  });
+  const covered = coveredByCourse(linked ?? undefined);
+
   let revenueSource = r.revenueSource;
-  if (revenueSource === "PREPAID") {
+  if (covered) {
+    revenueSource = "PREPAID";
+  } else if (revenueSource === "PREPAID") {
     const isCourse = lookups
       ? r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id))
       : r.yclientsServiceIds.length > 0 &&
@@ -1455,7 +1511,7 @@ export async function upsertRecord(
       durationMin: r.durationMin,
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
-      revenue: r.revenue,
+      revenue: covered ? 0 : r.revenue,
       revenueSource,
       // Оплату обновляем тоже: визит оплачивают после приёма, и без этого
       // отметка об оплате никогда бы не доехала до уже созданной записи.
@@ -1477,7 +1533,7 @@ export async function upsertRecord(
       durationMin: r.durationMin,
       status: r.status,
       attendanceRaw: dto.visit_attendance ?? null,
-      revenue: r.revenue,
+      revenue: covered ? 0 : r.revenue,
       revenueSource,
       isPaid: r.isPaid,
       createdAtYclients: r.createdAtYclients ?? r.startAt,

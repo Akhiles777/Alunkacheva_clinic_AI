@@ -61,6 +61,14 @@ export interface LinkCoursesResult {
   /** Сеансов, продажу которых в данных найти не удалось. */
   orphans: number;
   /**
+   * Сеансов, у которых снята цена: они покрыты оплаченным курсом.
+   *
+   * Администратор закрыл приём по прайсу вместо курса, и в записи осталась
+   * цена сеанса — те же деньги, что клиника получила при продаже. Число
+   * называем вслух: это подсказка, что в YCLIENTS так закрывают приёмы.
+   */
+  moneyZeroed: number;
+  /**
    * Продажи, которые нельзя отнести к одной услуге.
    *
    * После покупки у пациента сеансы двух курсовых услуг сразу, и за какую из
@@ -246,12 +254,21 @@ export async function linkCourses(
     }
   }
   if (services.length === 0) {
-    return { courses: 0, sessions: 0, orphans: 0, priceless: [], guessedPrice: [], ambiguous: 0 };
+    return {
+      courses: 0,
+      sessions: 0,
+      orphans: 0,
+      moneyZeroed: 0,
+      priceless: [],
+      guessedPrice: [],
+      ambiguous: 0,
+    };
   }
 
   let courses = 0;
   let sessions = 0;
   let orphans = 0;
+  let money = 0;
 
   /**
    * Бесплатные сеансы пациента по каждой курсовой услуге — чтобы решить, какой
@@ -538,8 +555,16 @@ export async function linkCourses(
       byPatient.set(a.patientId, list);
     }
 
-    /** Привязка, к которой визит должен прийти: null — никакой. */
-    const wanted = new Map<string, { courseId: string | null; index: number | null }>();
+    /**
+     * Привязка, к которой визит должен прийти: null — никакой.
+     *
+     * `prepaid` — курс куплен в кассе, значит деньги за сеанс уже получены в
+     * день покупки, и цена в записи выручки дня не создаёт.
+     */
+    const wanted = new Map<
+      string,
+      { courseId: string | null; index: number | null; prepaid?: boolean }
+    >();
     for (const a of appts) wanted.set(a.id, { courseId: null, index: null });
 
     for (const [patientId, visits] of byPatient) {
@@ -621,7 +646,9 @@ export async function linkCourses(
         }
 
         // Номер сеанса — то, что администратор называет пациенту вслух.
-        c.visitIds.forEach((id, i) => wanted.set(id, { courseId, index: i + 1 }));
+        c.visitIds.forEach((id, i) =>
+          wanted.set(id, { courseId, index: i + 1, prepaid: c.fromSale }),
+        );
       }
     }
 
@@ -654,9 +681,25 @@ export async function linkCourses(
       sessions += strayLinks.length;
     }
 
+    /**
+     * Сеанс оплаченного курса денег дня не даёт.
+     *
+     * Обычно YCLIENTS сам ставит такому визиту нулевую стоимость при закрытии
+     * на курс. Но администратор иногда закрывает приём по прайсу — и тогда в
+     * записи стоит цена сеанса. Это те же рубли, что клиника получила при
+     * продаже курса: пациентка купила 30 сеансов, сходила ровно 30 раз, а два
+     * приёма стояли по 2 800 ₽ сверху.
+     *
+     * Правило распределения, а не спор с YCLIENTS (§2): сумма продажи остаётся
+     * в выручке дня покупки, а сеанс из неё второй раз денег не даёт. Курс,
+     * проведённый оплатой в самой записи (origin MANUAL), не трогаем — там
+     * деньги как раз в визите и лежат.
+     */
+    const zeroMoney: string[] = [];
     for (const [apptId, want] of wanted) {
       const cur = apptById.get(apptId);
       if (!cur) continue;
+      if (want.prepaid && Number(cur.revenue) > 0) zeroMoney.push(apptId);
       if (cur.courseId === want.courseId && cur.courseSessionIndex === want.index) continue;
       /**
        * Сеанс уже привязан к курсу, купленному раньше окна.
@@ -675,6 +718,22 @@ export async function linkCourses(
       sessions += 1;
     }
 
+    if (zeroMoney.length > 0) {
+      await prisma.appointment.updateMany({
+        where: { id: { in: zeroMoney } },
+        data: { revenue: 0, revenueSource: "PREPAID" },
+      });
+      /**
+       * И в составе визита тоже: разрез по услугам считается по нему, и
+       * несходящийся состав — это две правды об одних деньгах.
+       */
+      await prisma.appointmentService.updateMany({
+        where: { companyId, appointmentId: { in: zeroMoney }, serviceId: service.id },
+        data: { priceCharged: 0 },
+      });
+      money += zeroMoney.length;
+    }
+
     /**
      * Курсы, которых в новом разборе нет, убираем.
      *
@@ -687,5 +746,5 @@ export async function linkCourses(
     }
   }
 
-  return { courses, sessions, orphans, priceless, guessedPrice, ambiguous };
+  return { courses, sessions, orphans, moneyZeroed: money, priceless, guessedPrice, ambiguous };
 }
