@@ -9,7 +9,7 @@ import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
 import { revenueAfterCourse, serviceRevenue } from "./mappers";
 import { splitVisitMinutes } from "./split-visit";
-import { cancelVanished, windowIsTrustworthy } from "./vanished";
+import { removeVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
 import { linkCourses } from "@/lib/courses/link";
@@ -662,11 +662,11 @@ export async function syncRecords(companyId: string, client: YclientsClientHandl
    * своего окна выглядит точно так же, как удаление.
    */
   const ids = [...seenAll];
-  const cancelled =
-    (await cancelVanished(companyId, { from, to }, ids, mainTrusted)).cancelled +
-    (audit ? (await cancelVanished(companyId, audit, ids, auditTrusted)).cancelled : 0);
-  if (cancelled > 0) {
-    console.log(`[выгрузка] отменено ${cancelled} визитов — в YCLIENTS их больше нет`);
+  const removed =
+    (await removeVanished(companyId, { from, to }, ids, mainTrusted)).removed +
+    (audit ? (await removeVanished(companyId, audit, ids, auditTrusted)).removed : 0);
+  if (removed > 0) {
+    console.log(`[выгрузка] убрано ${removed} визитов — в YCLIENTS их больше нет`);
   }
 
   return written;

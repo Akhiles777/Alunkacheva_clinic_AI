@@ -47,22 +47,31 @@ export function windowIsTrustworthy(f: WindowFetch): boolean {
 }
 
 export interface VanishResult {
-  /** Сколько визитов отменено, потому что их больше нет в YCLIENTS. */
-  cancelled: number;
+  /** Сколько визитов помечено удалёнными: в YCLIENTS их больше нет. */
+  removed: number;
 }
 
 /**
- * Отменить наши визиты окна, которых YCLIENTS больше не показывает.
+ * Убрать наши визиты окна, которых YCLIENTS больше не показывает.
  *
  * Трогаем только те, что когда-то пришли ОТТУДА (есть yclientsRecordId).
  * Созданные у нас и ещё не отправленные визиты к этой сверке отношения не
- * имеют: их отсутствие в YCLIENTS — нормальное состояние, а не отмена.
+ * имеют: их отсутствие в YCLIENTS — нормальное состояние, а не удаление.
  *
- * Строку не удаляем: визит остаётся в истории со статусом «отменён», выручка
- * обнуляется. Отчёты считают выручку по пришедшим, записавшихся — по статусу
- * ≠ CANCELLED (§8), поэтому из всех сводок такой визит уходит сам.
+ * Помечаем удалёнными, а не отменёнными. Разница видна пациенту: отменённый
+ * визит — событие, о котором договорились, и он остаётся в карточке; удалённая
+ * запись — та, которой в YCLIENTS больше нет вовсе. Пока такие записи
+ * становились «отменёнными», перенос приёма плодил призраков: администратор
+ * пересоздал запись дважды, и в карточке на один слот стояло три строки —
+ * «отменён», «отменён» и «запланирован». Понять по ней, придёт человек или
+ * нет, стало нельзя.
+ *
+ * Строку из базы не убираем: восстановить связь дешевле, чем потерять
+ * историю, — если YCLIENTS покажет запись снова, выгрузка снимет отметку
+ * (`deletedAt: null`) и визит вернётся как был. А все экраны и отчёты
+ * отбирают по `deletedAt: null`, поэтому из них он уходит сразу.
  */
-export async function cancelVanished(
+export async function removeVanished(
   companyId: string,
   window: { from: Date; to: Date },
   /**
@@ -76,7 +85,7 @@ export async function cancelVanished(
   seenIds: number[],
   trusted: boolean,
 ): Promise<VanishResult> {
-  if (!trusted) return { cancelled: 0 };
+  if (!trusted) return { removed: 0 };
 
   const result = await prisma.appointment.updateMany({
     where: {
@@ -84,19 +93,9 @@ export async function cancelVanished(
       deletedAt: null,
       startAt: { gte: window.from, lt: window.to },
       yclientsRecordId: { not: null, notIn: seenIds },
-      // Уже отменённые второй раз не трогаем: иначе каждая выгрузка
-      // переписывала бы им дату отмены.
-      status: { not: "CANCELLED" },
     },
-    data: {
-      status: "CANCELLED",
-      cancelledAt: new Date(),
-      revenue: 0,
-      paidAmount: 0,
-      isPaid: false,
-      revenueSource: "UNKNOWN",
-    },
+    data: { deletedAt: new Date() },
   });
 
-  return { cancelled: result.count };
+  return { removed: result.count };
 }

@@ -24,7 +24,7 @@ import { prisma } from "../lib/db";
 import { getYclientsClient } from "../lib/integrations/yclients/client";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "../lib/integrations/yclients/paging";
 import { HISTORY_YEARS } from "../lib/integrations/yclients/config";
-import { cancelVanished, windowIsTrustworthy } from "../lib/integrations/yclients/vanished";
+import { removeVanished, windowIsTrustworthy } from "../lib/integrations/yclients/vanished";
 import type { YclientsRecord } from "../lib/integrations/yclients/types";
 
 const APPLY = process.argv.includes("--apply");
@@ -119,10 +119,10 @@ async function main() {
   console.log(`  всего: ${vanished.length}`);
 
   if (APPLY && vanished.length > 0 && !untrustedAny) {
-    const done = await cancelVanished(company.id, { from, to }, ids, true);
-    console.log(`  отменено: ${done.cancelled}`);
+    const done = await removeVanished(company.id, { from, to }, ids, true);
+    console.log(`  убрано: ${done.removed}`);
   } else if (APPLY && untrustedAny) {
-    console.log("  НЕ отменяем: выгрузка неполная. Повторите позже.");
+    console.log("  НЕ убираем: выгрузка неполная. Повторите позже.");
   }
   console.log("");
 

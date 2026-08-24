@@ -225,9 +225,23 @@ export function TodayClient() {
   const scheduled = appts.length;
   const arrived = appts.filter((a) => a.status === "arrived");
   const noShow = appts.filter((a) => a.status === "no_show");
-  const ahead = isToday
-    ? appts.filter((a) => a.status === "planned" || a.status === "confirmed")
-    : [];
+  const planned = appts.filter((a) => a.status === "planned" || a.status === "confirmed");
+  const ahead = isToday ? planned : [];
+
+  /**
+   * Приёмы, время которых прошло, а отметки нет.
+   *
+   * Их нельзя молча считать непришедшими. Заказчик смотрел на «пришли 8 из 10»
+   * и решал, что двое не явились, — а они пришли, просто администратор не
+   * нажал «пришёл»: отметку ставят задним числом, иногда к вечеру. Неявка
+   * означает «человек не пришёл», а здесь мы этого не знаем.
+   *
+   * Считаем по концу приёма, а не по началу: пока приём идёт, отметки и не
+   * должно быть. Для прошедшего дня — всё запланированное, что там осталось.
+   */
+  const unmarked = planned.filter(
+    (a) => !isToday || a.startMinute + a.durationMin <= stripMinute,
+  );
 
   /**
    * Выручка дня: стоимость состоявшихся приёмов плюс проданные курсы.
@@ -431,10 +445,30 @@ export function TodayClient() {
             </b>
           </span>
           <span aria-hidden className="sep-dot" />
-          <span>
+          <span
+            title={
+              unmarked.length > 0
+                ? "Приёмы без отметки о посещении в счёт неявок не идут: администратор ставит отметку в YCLIENTS, иногда задним числом."
+                : undefined
+            }
+          >
             пришли <b className="num text-text font-medium">{formatNumber(arrived.length)}</b>
             <span className="text-text-subtle"> из {formatNumber(scheduled)}</span>
           </span>
+          {/*
+            «Не отмечено» — отдельным числом, а не молча внутри «пришли N из M».
+            Иначе экран утверждает, что человек не явился, хотя мы этого не
+            знаем: отметку ставят руками и часто позже.
+          */}
+          {unmarked.length > 0 ? (
+            <>
+              <span aria-hidden className="sep-dot" />
+              <span title="Время приёма прошло, а отметка «пришёл» или «не пришёл» в YCLIENTS не проставлена">
+                не отмечено{" "}
+                <b className="num text-text font-medium">{formatNumber(unmarked.length)}</b>
+              </span>
+            </>
+          ) : null}
           <span aria-hidden className="sep-dot" />
           <span>
             первичных <b className="num text-text font-medium">{formatNumber(firstVisits)}</b>

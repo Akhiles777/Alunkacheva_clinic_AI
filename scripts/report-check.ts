@@ -308,7 +308,59 @@ async function main() {
         : `  ✗ РАСХОЖДЕНИЕ ${diff} мин — разрезы покажут разные итоги`,
     );
   }
-  if (withoutService > 0) console.log(`  визитов без услуги вовсе: ${withoutService}`);
+  if (withoutService > 0) {
+    /**
+     * Визит без услуги — это либо блокировка времени, либо запись, которую
+     * администратор завёл, не выбрав услугу. Первое нормально, второе нет: в
+     * карточке пациента такой приём стоит прочерком вместо названия, а в
+     * разрез по услугам не попадает вовсе. Печатаем номера — их правят в
+     * YCLIENTS за минуту.
+     */
+    const blank = await prisma.appointment.findMany({
+      where: {
+        companyId: company.id,
+        deletedAt: null,
+        startAt: { gte: from, lt: now },
+        primaryServiceId: null,
+        services: { none: {} },
+      },
+      select: { yclientsRecordId: true, startAt: true, status: true },
+      orderBy: { startAt: "asc" },
+      take: 20,
+    });
+    console.log(`  визитов без услуги вовсе: ${withoutService}`);
+    for (const b of blank) {
+      console.log(
+        `      запись ${b.yclientsRecordId ?? "—"} · ${b.startAt.toISOString().slice(0, 16)} · ${b.status}` +
+          " — в карточке пациента стоит прочерком, в разрез по услугам не идёт",
+      );
+    }
+  }
+
+  /**
+   * Задвоенные визиты: один пациент, один специалист, одно время.
+   *
+   * Так выглядит перенос, сделанный пересозданием записи: администратор удалил
+   * приём и завёл заново, у новой записи свой номер. Пока исчезнувшие записи
+   * помечались «отменён», в карточке на один слот стояло три строки — и понять
+   * по ней, придёт человек или нет, было нельзя.
+   */
+  const dups = await prisma.$queryRaw<{ n: bigint }[]>`
+    SELECT COUNT(*)::bigint AS n FROM (
+      SELECT 1 FROM appointments
+       WHERE "companyId" = ${company.id} AND "deletedAt" IS NULL
+         AND "startAt" >= ${from} AND "startAt" < ${now}
+       GROUP BY "patientId", "staffId", "startAt"
+      HAVING COUNT(*) > 1
+    ) d
+  `;
+  const dupCount = Number(dups[0]?.n ?? 0);
+  console.log(
+    dupCount === 0
+      ? "  ✓ задвоенных визитов нет: на слот у пациента одна запись"
+      : `  ! задвоенных слотов ${dupCount} — на один слот у пациента больше одной записи.\n` +
+          "      Разобрать: npx tsx scripts/appointments-cleanup.ts",
+  );
 
   /**
    * Остальные разрезы одного и того же периода.
