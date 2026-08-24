@@ -863,7 +863,7 @@ async function saveRecordServices(
       // Покрыт ли визит курсом: тогда курсовая услуга в составе стоит ноль,
       // иначе состав разойдётся с суммой визита и разрез по услугам соврёт.
       courseId: true,
-      course: { select: { origin: true } },
+      course: { select: { origin: true, serviceId: true } },
     },
   });
   const apptByRecord = new Map(appts.map((a) => [a.yclientsRecordId as number, a]));
@@ -903,22 +903,31 @@ async function saveRecordServices(
     const appt = apptByRecord.get(dto.id);
     if (!appt) continue;
 
-    const covered = coveredByCourse(appt);
+    /**
+     * Услуга того курса, к которому привязан визит, — и только она.
+     *
+     * Обнулять все курсовые услуги подряд нельзя: у визита их бывает две, а в
+     * курс попала одна. Тогда состав визита и его сумма считаются по разным
+     * правилам и расходятся — на живых данных вышло 2 000 ₽.
+     */
+    const coveredServiceId = coveredByCourse(appt) ? appt.course?.serviceId : null;
     const parts = (dto.services ?? [])
-      .map((sv) => ({
-        serviceId: lookups.serviceByYclientsId.get(sv.id),
-        /**
-         * Курсовая услуга в покрытом визите денег не приносит: за неё
-         * заплатили при покупке курса. Остальные услуги того же визита
-         * считаются как обычно — приём бывает из двух позиций.
-         */
-        money:
-          covered && lookups.courseYclientsServiceIds.has(sv.id)
-            ? { amount: 0, source: "PREPAID" as const }
-            : serviceRevenue(sv),
-        // Длительность услуги из справочника: у записи она одна на весь визит.
-        minutes: lookups.durationByYclientsServiceId.get(sv.id) ?? 0,
-      }))
+      .map((sv) => {
+        const serviceId = lookups.serviceByYclientsId.get(sv.id);
+        return {
+          serviceId,
+          /**
+           * Услуга курса в покрытом визите денег не приносит: за неё заплатили
+           * при покупке. Остальные услуги того же визита считаются как обычно.
+           */
+          money:
+            serviceId && serviceId === coveredServiceId
+              ? { amount: 0, source: "PREPAID" as const }
+              : serviceRevenue(sv),
+          // Длительность услуги из справочника: у записи она одна на весь визит.
+          minutes: lookups.durationByYclientsServiceId.get(sv.id) ?? 0,
+        };
+      })
       .filter((p): p is { serviceId: string; money: ReturnType<typeof serviceRevenue>; minutes: number } =>
         typeof p.serviceId === "string",
       );
@@ -1234,10 +1243,21 @@ function revenueOf(
   return { amount: 0, source: course ? "PREPAID" : "UNKNOWN" };
 }
 
-/** Сколько в записи стоят курсовые услуги — их деньги уже получены при продаже. */
-function courseServicesMoney(dto: YclientsRecord, lookups: SyncLookups): number {
+/**
+ * Сколько в записи стоит услуга того курса, к которому привязан визит.
+ *
+ * Именно того, а не всех курсовых подряд: у визита их бывает две, а в курс
+ * попала одна. Считать обе значит обнулить деньги услуги, за которую заплатили
+ * в этот день, — состав визита разойдётся с его суммой.
+ */
+function courseServicesMoney(
+  dto: YclientsRecord,
+  lookups: SyncLookups,
+  coveredServiceId: string | null,
+): number {
+  if (!coveredServiceId) return 0;
   return (dto.services ?? [])
-    .filter((sv) => lookups.courseYclientsServiceIds.has(sv.id))
+    .filter((sv) => lookups.serviceByYclientsId.get(sv.id) === coveredServiceId)
     .reduce((sum, sv) => sum + serviceRevenue(sv).amount, 0);
 }
 
@@ -1354,8 +1374,9 @@ export function buildRecordRow(
   if (!patientId) return null;
 
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
-  const covered = coveredByCourse(lookups.existingRecords.get(r.yclientsRecordId));
-  const courseMoney = covered ? courseServicesMoney(dto, lookups) : 0;
+  const existing = lookups.existingRecords.get(r.yclientsRecordId);
+  const covered = coveredByCourse(existing);
+  const courseMoney = courseServicesMoney(dto, lookups, covered ? (existing?.course?.serviceId ?? null) : null);
   const revenue = revenueOf(r, lookups, covered, courseMoney);
   return {
     kind: "row",

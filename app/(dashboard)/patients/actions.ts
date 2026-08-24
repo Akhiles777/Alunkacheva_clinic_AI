@@ -297,7 +297,15 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       id: a.id,
       date: visitDate.format(a.startAt),
       at: a.startAt.toISOString(),
-      service: a.primaryService?.title ?? "—",
+      /**
+       * У записи не выбрана услуга — говорим это словами, а не прочерком.
+       *
+       * Прочерк в карточке читается как потеря данных: владелец спросил «где
+       * название???». Название взять неоткуда — в YCLIENTS услугу к этой
+       * записи не привязали, и такой приём не попадает ни в разрез по услугам,
+       * ни в курс. Номера таких записей называет scripts/report-check.ts.
+       */
+      service: a.primaryService?.title ?? "услуга не выбрана в YCLIENTS",
       doctor: a.staff?.name ?? "—",
       status: VISIT_STATUS_MAP[a.status] ?? "planned",
       amount: Number(a.revenue),

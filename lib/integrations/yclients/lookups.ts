@@ -44,7 +44,7 @@ export const EXISTING_SELECT = {
    * рубли то появлялись, то исчезали.
    */
   courseId: true,
-  course: { select: { origin: true } },
+  course: { select: { origin: true, serviceId: true } },
 } as const;
 
 export interface ExistingRecord {
@@ -65,7 +65,7 @@ export interface ExistingRecord {
   syncState: string;
   deletedAt: Date | null;
   courseId: string | null;
-  course: { origin: string } | null;
+  course: { origin: string; serviceId: string } | null;
 }
 
 export interface SyncLookups {

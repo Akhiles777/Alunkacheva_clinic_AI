@@ -87,7 +87,9 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     doctor: r.staff.name,
     // Идентификатор специалиста: по имени отбирать нельзя, см. CurrentUser.staffId.
     staffId: r.staff.id,
-    service: r.primaryService?.title ?? "",
+    // Услуга не выбрана в YCLIENTS — говорим это словами: пустое место на
+    // экране дня читается как потеря данных, а данных там и не было.
+    service: r.primaryService?.title ?? "услуга не выбрана в YCLIENTS",
     patientId: r.patientId,
     patientName: r.patient?.name ?? "",
     startMinute: minuteOfDay(r.startAt),
@@ -151,7 +153,9 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
     roomName: r.room?.name ?? "",
     doctor: r.staff.name,
     staffId: r.staff.id,
-    service: r.primaryService?.title ?? "",
+    // Услуга не выбрана в YCLIENTS — говорим это словами: пустое место на
+    // экране дня читается как потеря данных, а данных там и не было.
+    service: r.primaryService?.title ?? "услуга не выбрана в YCLIENTS",
     patientId: r.patientId,
     patientName: r.patient?.name ?? "",
     startMinute: minuteOfDay(r.startAt),

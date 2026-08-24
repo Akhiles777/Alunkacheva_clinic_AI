@@ -75,6 +75,15 @@ export interface YclientsState {
      * пришедших мы такие не берём, но клинике стоит поправить их у себя.
      */
     arrivedInFuture: number;
+    /**
+     * Записи, у которых в YCLIENTS не выбрана услуга.
+     *
+     * В карточке пациента такой приём стоит без названия, в разрез по услугам
+     * не попадает и сеансом курса стать не может. Владелец увидел прочерк и
+     * спросил «где название?» — названия нет и не было, услугу к записи не
+     * привязали. Правится в YCLIENTS за минуту, но сперва это надо увидеть.
+     */
+    withoutService: number;
   };
   /**
    * Расписание выгрузки: включено ли, когда прошёл последний круг и чем
@@ -172,7 +181,7 @@ export async function getYclientsState(): Promise<YclientsState> {
     }),
   ]);
 
-  const [courseSessions, freeOfCharge, free, arrivedInFuture, duplicateRows] = await Promise.all([
+  const [courseSessions, freeOfCharge, free, arrivedInFuture, withoutService, duplicateRows] = await Promise.all([
     prisma.appointment.count({
       where: { companyId, deletedAt: null, status: "ARRIVED", revenueSource: "PREPAID" },
     }),
@@ -196,6 +205,16 @@ export async function getYclientsState(): Promise<YclientsState> {
     // Отметка «пришёл» из YCLIENTS на визите, время которого ещё не наступило.
     prisma.appointment.count({
       where: { companyId, deletedAt: null, attendanceRaw: 1, startAt: { gt: new Date() } },
+    }),
+    // Ни основной услуги, ни состава: в YCLIENTS услугу к записи не привязали.
+    prisma.appointment.count({
+      where: {
+        companyId,
+        deletedAt: null,
+        status: { not: "CANCELLED" },
+        primaryServiceId: null,
+        services: { none: {} },
+      },
     }),
     /**
      * Задвоенные приёмы. Совпадение пациента, специалиста и точного времени
@@ -238,6 +257,7 @@ export async function getYclientsState(): Promise<YclientsState> {
       free,
       duplicateGroups: Number(duplicateRows[0]?.groups ?? 0),
       arrivedInFuture,
+      withoutService,
     },
     schedule: {
       on: sched.включён,

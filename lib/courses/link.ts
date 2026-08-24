@@ -733,12 +733,24 @@ export async function linkCourses(
         where: { companyId, appointmentId: { in: zeroMoney } },
         select: { appointmentId: true, serviceId: true, priceCharged: true },
       });
-      const courseShare = new Map<string, number>();
+      /**
+       * Сумма визита после этого — это СУММА ЕГО СОСТАВА, а не вычитание.
+       *
+       * Вычитание казалось тем же самым, но расходилось: у визита бывает
+       * несколько курсовых услуг, и какая из них попала в курс, а какая нет,
+       * решается в разных местах по-разному. Итог — состав визитов на 2 000 ₽
+       * больше их суммы, и разрез по услугам на те же 2 000 ₽ больше итога.
+       *
+       * Складывая состав, мы делаем равенство «сумма визита = сумма его услуг»
+       * верным по построению, а не по совпадению.
+       */
+      const restByAppt = new Map<string, number>();
       const hasLines = new Set<string>();
       for (const l of lines) {
         hasLines.add(l.appointmentId);
-        if (l.serviceId !== service.id) continue;
-        courseShare.set(l.appointmentId, (courseShare.get(l.appointmentId) ?? 0) + Number(l.priceCharged));
+        // Курсовая услуга этого курса обнуляется — её деньги уже получены.
+        const amount = l.serviceId === service.id ? 0 : Number(l.priceCharged);
+        restByAppt.set(l.appointmentId, (restByAppt.get(l.appointmentId) ?? 0) + amount);
       }
 
       await prisma.appointmentService.updateMany({
@@ -751,10 +763,9 @@ export async function linkCourses(
         if (!cur) continue;
         /**
          * Состава нет вовсе (старая запись) — тогда весь визит и был сеансом
-         * курса: вычитать нечего, снимаем сумму целиком.
+         * курса: складывать нечего, сумма становится нулём.
          */
-        const share = hasLines.has(id) ? (courseShare.get(id) ?? 0) : Number(cur.revenue);
-        const rest = Math.max(0, Number(cur.revenue) - share);
+        const rest = hasLines.has(id) ? (restByAppt.get(id) ?? 0) : 0;
         // Ничего не изменилось — значит цену уже снимали раньше: не трогаем
         // строку и не считаем её второй раз в отчёте выгрузки.
         if (rest === Number(cur.revenue)) continue;

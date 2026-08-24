@@ -153,6 +153,16 @@ export function YclientsBlock() {
             </b>
           </span>
         </div>
+        {state.quality.withoutService > 0 ? (
+          <p className="text-text-muted mt-2 text-xs">
+            Записей без выбранной услуги:{" "}
+            <b className="num text-accent-text">{state.quality.withoutService}</b>. В карточке
+            пациента такой приём стоит без названия, в разрез по услугам не попадает и сеансом
+            курса стать не может — услугу к записи в YCLIENTS не привязали. Название взять неоткуда:
+            это не потеря данных у нас, а незаполненное поле там. Номера записей называет{" "}
+            <span className="num">scripts/report-check.ts</span>.
+          </p>
+        ) : null}
         {state.quality.arrivedInFuture > 0 ? (
           <p className="text-text-muted mt-2 text-xs">
             Визитов в будущем с отметкой «пришёл»:{" "}
