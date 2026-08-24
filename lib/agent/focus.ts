@@ -17,6 +17,9 @@
  *      назвал пациент.
  */
 
+import { isGreeting } from "./text-actions";
+import { isAcknowledgement, isFarewell, isThanks } from "./smalltalk";
+
 /** Слова, по которым видно, что реплика уточняет предыдущий вопрос. */
 const CORRECTION =
   /(?<!\p{L})(я же|же сказал|сказал[аи]? же|именно|только|лишь|нет,|не то|я про|речь о|спрашива)/iu;
@@ -35,7 +38,34 @@ export function searchText(current: string, previousPatientMessages: string[]): 
   const now = current.trim();
   if (now.length === 0) return now;
 
-  const looksLikeCorrection = CORRECTION.test(now) || now.length <= SHORT_ENOUGH;
+  /**
+   * Приветствие и вежливость к предыдущему вопросу не приклеиваются.
+   *
+   * Правило «короткая реплика — это уточнение» брало любое сообщение короче
+   * шестидесяти знаков, а короче шестидесяти знаков почти всё. «Доброго дня»
+   * склеивалось с прошлым вопросом собеседника, и поиск честно находил услугу
+   * из того разговора: человек здоровался, а получал карточку с ценой.
+   */
+  if (isGreeting(now) || isAcknowledgement(now) || isThanks(now) || isFarewell(now)) return now;
+
+  /**
+   * Сообщение со своим предметом — не уточнение.
+   *
+   * «На завтра все подтвердили?» короче шестидесяти знаков, но это законченный
+   * вопрос, и приклеивать к нему прошлую тему незачем: поиск отвечал про то, о
+   * чём спрашивали час назад. Уточнение — это обрывок («лишь Ирина», «второго
+   * числа»), и в нём нет ни глагола, ни вопросительного знака при нескольких
+   * значимых словах.
+   */
+  const significant = now
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+  const selfContained = /\?/.test(now) && significant.length >= 3;
+
+  const looksLikeCorrection =
+    CORRECTION.test(now) || (now.length <= SHORT_ENOUGH && !selfContained);
   if (!looksLikeCorrection) return now;
 
   // Последний содержательный вопрос пациента: по нему и был разговор.

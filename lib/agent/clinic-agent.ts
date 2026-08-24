@@ -1308,7 +1308,18 @@ async function replyToQuestion(
    * взять с собой» — в справочнике есть «Подготовка к приёму».
    */
   const best = matchKnowledge(text, knowledgeRows);
-  if (best && best.hits >= 1) {
+  /**
+   * Одного совпавшего слова мало.
+   *
+   * «Одно совпадение лучше молчания» верно для вопроса, но сюда попадает и то,
+   * что вопросом не является: приветствие, «на завтра все подтвердили?»,
+   * рабочая переписка. Любое общее слово вытаскивало запись справочника, и
+   * человек получал график работы в ответ на вопрос про подтверждение
+   * записей. Требуем либо два совпадения, либо совпадение по значимому слову —
+   * такому, которое само по себе задаёт тему.
+   */
+  const meaningful = best && (best.hits >= 2 || (best.specificCoverage ?? 0) >= 0.5);
+  if (best && meaningful) {
     const trimmed = focusedAnswer(best.row.answer, asked, staffNames);
     if (!alreadySaid(said, trimmed)) {
       return respond(ctx, conversation.id, { text: trimmed, buttons: mainMenu() });
@@ -1337,9 +1348,19 @@ async function replyToQuestion(
    * Услуги подбираем тем же кодом, что и для модели: цену выбирает не текст,
    * а справочник клиники.
    */
-  const priced = matchServices(query, await getServices(ctx.companyId), 3);
+  /**
+   * Карточку услуги отдаём, только если о ней и правда спросили.
+   *
+   * Порог здесь был «хоть одно слово из вопроса встретилось в названии» — и на
+   * «Доброго дня» приходил прайс случайной услуги. Половина значимых слов
+   * вопроса должна попасть в название: тогда это вопрос про услугу, а не
+   * случайное пересечение.
+   */
+  const priced = matchServices(query, await getServices(ctx.companyId), 3, 0.5);
   if (priced.length > 0) {
-    const list = priced.map((s) => `${s.title} — ${s.price} ₽, ${s.durationMin} мин`).join("\n");
+    const list = priced
+      .map((s) => `${s.title} — ${s.price} ₽${s.durationMin > 0 ? `, ${s.durationMin} мин` : ""}`)
+      .join("\n");
     return respond(ctx, conversation.id, {
       text: `${list}\n\nЗаписывает администратор — напишите, кого и на когда, и он подберёт время.`,
       buttons: mainMenu(),

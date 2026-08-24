@@ -96,12 +96,21 @@ export function matchServices<T extends ServiceLike>(
   question: string,
   services: T[],
   limit = 6,
+  /**
+   * Насколько уверенным должно быть совпадение.
+   *
+   * Ноль — «хоть что-то общее»: так и надо, когда список идёт модели, у неё
+   * есть контекст переписки. Но когда список уходит человеку карточкой с
+   * ценой, порог нужен: на «Доброго дня» приходил прайс случайной услуги,
+   * потому что одно слово из семи в названии нашлось.
+   */
+  minScore = 0,
 ): T[] {
   const whom = whomFor(question);
 
   const scored = services
     .map((s) => ({ s, score: relevance(s.title, question) }))
-    .filter((x) => x.score > 0);
+    .filter((x) => x.score > 0 && x.score >= minScore);
   if (scored.length === 0) return [];
 
   /**
