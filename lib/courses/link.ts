@@ -489,6 +489,8 @@ export async function linkCourses(
           patientId: true,
           startAt: true,
           revenue: true,
+          // Состоялся ли приём: у запланированного цена — план, а не деньги.
+          status: true,
           courseId: true,
           courseSessionIndex: true,
         },
@@ -527,7 +529,12 @@ export async function linkCourses(
     const byPatient = new Map<string, CourseVisit[]>();
     for (const a of appts) {
       const list = byPatient.get(a.patientId) ?? [];
-      list.push({ id: a.id, startAt: a.startAt, revenue: Number(a.revenue) });
+      list.push({
+        id: a.id,
+        startAt: a.startAt,
+        revenue: Number(a.revenue),
+        happened: a.status === "ARRIVED",
+      });
       byPatient.set(a.patientId, list);
     }
 

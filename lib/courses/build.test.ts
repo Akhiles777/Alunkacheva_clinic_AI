@@ -11,7 +11,16 @@ import {
 } from "./build";
 
 const day = (d: number): Date => new Date(`2026-08-${String(d).padStart(2, "0")}T09:00:00+03:00`);
-const visit = (id: string, d: number, revenue = 0): CourseVisit => ({ id, startAt: day(d), revenue });
+/** По умолчанию визит состоялся: так его видит выгрузка после приёма. */
+const visit = (id: string, d: number, revenue = 0, happened = true): CourseVisit => ({
+  id,
+  startAt: day(d),
+  revenue,
+  happened,
+});
+/** Ещё не состоявшийся приём: цена в записи — план из прайса, а не деньги. */
+const planned = (id: string, d: number, revenue: number): CourseVisit =>
+  visit(id, d, revenue, false);
 /** Живые числа клиники: сеанс БОС 2 800 ₽, курс из десяти — 28 000 ₽ по плану. */
 const BOS = { plans: [{ price: 28000, sessions: 10 }] };
 /** «18 августа» в тестах — тот же день, что и в живых данных клиники. */
@@ -440,5 +449,51 @@ describe("откуда пришли деньги курса", () => {
     });
     expect(plan.courses).toHaveLength(2);
     expect(plan.courses.map((c) => c.amount)).toEqual([28000, 25000]);
+  });
+});
+
+/**
+ * Будущие сеансы курса не выпадают из него из-за цены в записи.
+ *
+ * Живой случай: пациентка купила три курса БОС (28 000 + 28 000 + 26 000), и
+ * десять её предстоящих сеансов стояли в YCLIENTS по 2 800 ₽ — цена из прайса,
+ * которая обнулится при закрытии сеанса на курс. Пока эта цена считалась
+ * деньгами, сеансы не попадали ни в один курс, третья покупка не открывалась
+ * вовсе, а экран подписывал их «сеанс 21 при купленных 20 — курс кончился».
+ */
+describe("предстоящие сеансы и цена из прайса", () => {
+  it("запланированный сеанс с ценой расходует купленный курс", () => {
+    const plan = buildCourses(
+      [visit("1", 1), visit("2", 2), planned("3", 3, 2800), planned("4", 4, 2800)],
+      { ...BOS, sales: [{ id: "s1", at: day(1), amount: 28000 }] },
+    );
+    expect(plan.courses).toHaveLength(1);
+    expect(plan.courses[0].visitIds).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("состоявшийся приём с ценой курс не расходует — за него заплатили", () => {
+    const plan = buildCourses([visit("1", 1), visit("2", 2, 2800)], {
+      ...BOS,
+      sales: [{ id: "s1", at: day(1), amount: 28000 }],
+    });
+    expect(plan.courses).toHaveLength(1);
+    expect(plan.courses[0].visitIds).toEqual(["1"]);
+  });
+
+  it("вторая покупка открывается предстоящими сеансами", () => {
+    const visits = [
+      ...Array.from({ length: 10 }, (_, i) => visit(`a${i}`, i + 1)),
+      ...Array.from({ length: 3 }, (_, i) => planned(`b${i}`, i + 11, 2800)),
+    ];
+    const plan = buildCourses(visits, {
+      ...BOS,
+      sales: [
+        { id: "s1", at: day(1), amount: 28000 },
+        { id: "s2", at: day(1), amount: 26000 },
+      ],
+    });
+    expect(plan.courses).toHaveLength(2);
+    expect(plan.courses[1].amount).toBe(26000);
+    expect(plan.courses[1].visitIds).toHaveLength(3);
   });
 });

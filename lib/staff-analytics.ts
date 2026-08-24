@@ -79,10 +79,34 @@ export function staffPerformance(
     if (occupies(a)) cur.bookedMinutes += a.durationMin;
     map.set(key, cur);
   }
+  /**
+   * Деньги за курс — в ту же строку, где стоят приёмы этого специалиста.
+   *
+   * Ключом служит идентификатор, но у визита его может не быть: разные экраны
+   * собирают визиты разными запросами, и один из них идентификатор не отдавал.
+   * Тогда строка визитов заведена под именем, а продажа приходит с
+   * идентификатором — и один человек показывался двумя строками: «0 приёмов,
+   * 228 000 ₽» и «63 приёма, 5 800 ₽». Это и увидел заказчик.
+   *
+   * Поэтому ищем строку сначала по идентификатору, потом по имени — но по
+   * имени только тогда, когда такая строка ровно одна. Двое тёзок в разрезе
+   * остаются двумя строками: приписать деньги наугад одному из них хуже, чем
+   * завести им отдельную строку.
+   */
+  const rowsByName = new Map<string, string[]>();
+  for (const [key, row] of map) {
+    rowsByName.set(row.name, [...(rowsByName.get(row.name) ?? []), key]);
+  }
+
   for (const s of sales) {
     // Курс без специалиста приписывать некому: его деньги показываются отдельно.
     if (!s.staffId && !s.staffName) continue;
-    const key = s.staffId ?? s.staffName!;
+    const sameName = s.staffName ? (rowsByName.get(s.staffName) ?? []) : [];
+    const key =
+      (s.staffId && map.has(s.staffId) ? s.staffId : null) ??
+      (sameName.length === 1 ? sameName[0] : null) ??
+      s.staffId ??
+      s.staffName!;
     const cur =
       map.get(key) ??
       {
@@ -98,6 +122,9 @@ export function staffPerformance(
     // Деньги без приёма: приёмом были сеансы курса, они уже посчитаны.
     cur.revenue += s.amount;
     map.set(key, cur);
+    if (!rowsByName.get(cur.name)?.includes(key)) {
+      rowsByName.set(cur.name, [...(rowsByName.get(cur.name) ?? []), key]);
+    }
   }
 
   return [...map.values()].sort((x, y) => y.revenue - x.revenue);

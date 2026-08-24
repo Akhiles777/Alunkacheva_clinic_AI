@@ -125,7 +125,12 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
       startAt: { gte: start, lt: end },
     },
     include: {
-      staff: { select: { name: true } },
+      // Идентификатор обязателен: строки разреза собираются по нему, а не по
+      // имени. Без него визиты попадали в строку с ключом-именем, а деньги за
+      // курсы — в строку с ключом-идентификатором, и один специалист
+      // показывался двумя строками: «0 приёмов, 228 000 ₽» и «63 приёма,
+      // 5 800 ₽».
+      staff: { select: { id: true, name: true } },
       room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true } },
       patient: { select: { name: true } },
@@ -144,6 +149,7 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
     roomId: r.room ? `room-${r.room.sortOrder}` : null,
     roomName: r.room?.name ?? "",
     doctor: r.staff.name,
+    staffId: r.staff.id,
     service: r.primaryService?.title ?? "",
     parts: r.services.map((sv) => ({
       title: sv.service.title,

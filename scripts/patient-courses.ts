@@ -115,7 +115,7 @@ async function main() {
       purchasedAt: true,
       isCourse: true,
       courseId: true,
-      service: { select: { title: true } },
+      service: { select: { title: true, defaultSessions: true } },
     },
   });
   for (const p of patients) nameOf.set(p.id, `${p.name ?? "без имени"} ${tail(p.phones[0]?.phone ?? "")}`);
@@ -198,10 +198,23 @@ async function main() {
   });
 
   console.log(`\n── сеансы курсовых услуг: ${sessions.length} ──`);
-  /** Сколько сеансов куплено по каждой услуге — чтобы видеть выход за курс. */
+  /**
+   * Сколько сеансов куплено по каждой услуге.
+   *
+   * Считаем по ПОКУПКАМ, а не по собравшимся курсам. Курс собирается, только
+   * когда пациент начал ходить; покупка, которая курса ещё не образовала, —
+   * это тоже оплаченные сеансы. Пока их не считали, третья покупка выпадала
+   * из знаменателя, и десять законных сеансов подписывались как «сверх курса».
+   */
   const boughtByService = new Map<string, number>();
   for (const c of courses) {
     boughtByService.set(c.service.title, (boughtByService.get(c.service.title) ?? 0) + c.sessionsTotal);
+  }
+  for (const p of purchases) {
+    if (p.courseId || !p.isCourse || !p.service) continue;
+    const size = p.service.defaultSessions ?? 0;
+    if (size <= 0) continue;
+    boughtByService.set(p.service.title, (boughtByService.get(p.service.title) ?? 0) + size);
   }
   const seenByService = new Map<string, number>();
   for (const a of sessions) {
@@ -219,6 +232,12 @@ async function main() {
      */
     let why: string;
     if (a.courseId) why = "сеанс курса";
+    else if (a.status !== "ARRIVED")
+      /**
+       * Приём ещё не состоялся: цена в записи — план из прайса, деньги за него
+       * не приняты. При закрытии сеанса на курс она обнулится.
+       */
+      why = `предстоит (${a.status}): цена из прайса, деньги ещё не приняты`;
     else if (Number(a.revenue) > 0)
       why =
         bought > 0 && n > bought
@@ -236,7 +255,14 @@ async function main() {
     );
   }
   for (const [title, bought] of boughtByService) {
-    const seen = seenByService.get(title) ?? 0;
+    // Считаем только состоявшиеся: предстоящие сеансы курс ещё не потратили.
+    const seen = sessions.filter(
+      (a) =>
+        a.status === "ARRIVED" &&
+        (a.services.find((x) => x.service.isCourse)?.service.title ??
+          a.primaryService?.title ??
+          "услуга не указана") === title,
+    ).length;
     if (seen > bought) {
       console.log(
         `  ! ${title}: сеансов ${seen}, куплено ${bought} — ${seen - bought} сверх курса.` +
