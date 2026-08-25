@@ -528,6 +528,7 @@ export async function linkCourses(
           origin: true,
           sessionsTotal: true,
           sessionsUsed: true,
+          sessionsBooked: true,
           amount: true,
           status: true,
         },
@@ -587,10 +588,24 @@ export async function linkCourses(
 
       for (const c of plan.courses) {
         const key = courseKey(patientId, c.purchasedAt, c.amount);
-        const done = c.visitIds.length >= c.sessionsTotal;
+        /**
+         * Пройдено — это СОСТОЯВШИЕСЯ сеансы, а не занятые места.
+         *
+         * Место в курсе держит и запланированный сеанс: иначе следующая
+         * покупка открывала бы курс раньше времени. Но «10/10, курс пройден»
+         * при четырёх состоявшихся приёмах и шести записях впереди — неправда
+         * о пациенте: администратор видит закрытый курс и не позовёт человека
+         * дальше. Считаем отдельно: места заняты, пройдено меньше.
+         */
+        const attended = c.visitIds.filter(
+          (id) => apptById.get(id)?.status === "ARRIVED",
+        ).length;
+        const done = attended >= c.sessionsTotal;
         const data = {
           sessionsTotal: c.sessionsTotal,
-          sessionsUsed: c.visitIds.length,
+          sessionsUsed: attended,
+          /** Сеансы, место под которые занято, но приём ещё не состоялся. */
+          sessionsBooked: c.visitIds.length - attended,
           amount: c.amount,
           pricePerSession: pricePerSession(c.amount, c.sessionsTotal),
           status: done ? ("COMPLETED" as const) : ("ACTIVE" as const),
@@ -612,6 +627,7 @@ export async function linkCourses(
           const same =
             existing.sessionsTotal === data.sessionsTotal &&
             existing.sessionsUsed === data.sessionsUsed &&
+            existing.sessionsBooked === data.sessionsBooked &&
             Number(existing.amount) === data.amount &&
             existing.origin === data.origin &&
             existing.status === data.status;

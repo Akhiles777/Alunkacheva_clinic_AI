@@ -139,6 +139,7 @@ async function main() {
       amount: true,
       sessionsTotal: true,
       sessionsUsed: true,
+      sessionsBooked: true,
       origin: true,
       service: { select: { title: true } },
     },
@@ -147,6 +148,7 @@ async function main() {
   for (const c of courses) {
     console.log(
       `  ${day(c.purchasedAt)} · ${c.service.title} · ${c.sessionsUsed}/${c.sessionsTotal}` +
+        (c.sessionsBooked > 0 ? ` (записан ещё на ${c.sessionsBooked})` : "") +
         ` · ${money(Number(c.amount))} · ${c.origin === "YCLIENTS" ? "куплен в кассе" : "оплачен записью"}` +
         (patients.length > 1 ? ` · ${nameOf.get(c.patientId) ?? ""}` : ""),
     );

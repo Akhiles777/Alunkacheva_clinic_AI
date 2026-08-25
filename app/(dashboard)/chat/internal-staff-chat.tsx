@@ -386,9 +386,11 @@ export function InternalStaffChat({ compact = false }: { compact?: boolean }) {
                     {
                       kind: "course",
                       label: `${activeCourse.title} — ${sharePatient.name}`,
-                      detail: `${activeCourse.used}/${activeCourse.total}, ${
-                        activeCourse.status === "stalled" ? "выпал из графика" : "идёт по курсу"
-                      }`,
+                      // «4/10» — состоявшиеся сеансы; записанные впереди
+                      // называем отдельно, иначе курс выглядит брошенным.
+                      detail: `${activeCourse.used}/${activeCourse.total}${
+                        activeCourse.booked ? `, записан ещё на ${activeCourse.booked}` : ""
+                      }, ${activeCourse.status === "stalled" ? "выпал из графика" : "идёт по курсу"}`,
                       patientId: sharePatient.id,
                     },
                   ]);

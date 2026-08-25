@@ -68,8 +68,16 @@ export interface CourseRecord {
   patientId: string;
   id: string;
   title: string;
+  /** Сеансы, которые СОСТОЯЛИСЬ. */
   used: number;
   total: number;
+  /**
+   * Записан, но ещё не пришёл: место в курсе занято, сеанс не пройден.
+   *
+   * Без этого числа «4 из 10» читается как брошенный курс, хотя человек уже
+   * записан на оставшиеся шесть.
+   */
+  booked: number;
   status: "active" | "stalled" | "done";
   /** Подпись последнего сеанса: «сегодня», «3 дн.». */
   lastVisit: string;
@@ -95,6 +103,7 @@ export async function getCoursesForStore(): Promise<CourseRecord[]> {
       patientId: true,
       sessionsTotal: true,
       sessionsUsed: true,
+      sessionsBooked: true,
       pricePerSession: true,
       status: true,
       service: { select: { title: true, stalledAfterDays: true } },
@@ -153,6 +162,12 @@ export async function getCoursesForStore(): Promise<CourseRecord[]> {
       title: c.service.title,
       used: c.sessionsUsed,
       total: c.sessionsTotal,
+      /**
+       * Записан, но ещё не пришёл. Показываем отдельно: место в курсе занято,
+       * а сеанс не пройден. Без этого числа «4 из 10» выглядит как брошенный
+       * курс, хотя человек уже записан на оставшиеся шесть.
+       */
+      booked: c.sessionsBooked,
       status: done ? "done" : !hasFuture && daysAgo !== null && daysAgo > limit ? "stalled" : "active",
       lastVisit:
         last === null

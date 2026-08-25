@@ -524,11 +524,19 @@ async function main() {
   console.log("\n── сеансы, закрытые ценой при неизрасходованном курсе ──");
   const openCourses = await prisma.course.findMany({
     where: { companyId: company.id, status: "ACTIVE" },
-    select: { patientId: true, serviceId: true, sessionsUsed: true, sessionsTotal: true },
+    select: {
+      patientId: true,
+      serviceId: true,
+      sessionsUsed: true,
+      sessionsBooked: true,
+      sessionsTotal: true,
+    },
   });
   const hasFreeSlot = new Set(
     openCourses
-      .filter((c) => c.sessionsUsed < c.sessionsTotal)
+      // Свободное место — только то, что не занято ни приходом, ни записью:
+      // если оставшиеся сеансы уже расписаны, платный приём ими не покрыт.
+      .filter((c) => c.sessionsUsed + c.sessionsBooked < c.sessionsTotal)
       .map((c) => `${c.patientId}:${c.serviceId}`),
   );
   if (hasFreeSlot.size === 0) {

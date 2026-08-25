@@ -375,6 +375,14 @@ export function PatientCardBody({
               const stalled = course.status === "stalled";
               // Курс, где все сеансы пройдены, «идёт» только на бумаге.
               const done = course.status === "done" || course.used >= course.total;
+              /**
+               * Записан, но ещё не пришёл.
+               *
+               * Пока такие сеансы считались пройденными, курс из десяти
+               * показывал «10/10, курс пройден» у пациентки, сходившей четыре
+               * раза и записанной на оставшиеся шесть.
+               */
+              const booked = course.booked ?? 0;
               return (
                 <div key={course.id}>
                   <div className="flex items-baseline justify-between gap-3 max-md:flex-col max-md:items-start max-md:gap-1">
@@ -390,7 +398,13 @@ export function PatientCardBody({
                     <span
                       className={`text-2xs ${stalled ? "text-accent-text font-medium" : "text-text-subtle"}`}
                     >
-                      {done ? "курс пройден" : stalled ? "выпал из графика" : "идёт по курсу"}
+                      {done
+                        ? "курс пройден"
+                        : stalled
+                          ? "выпал из графика"
+                          : booked > 0
+                            ? `идёт по курсу · записан ещё на ${booked}`
+                            : "идёт по курсу"}
                     </span>
                     <span className="text-text-subtle text-2xs">последний визит {course.lastVisit}</span>
                   </div>
