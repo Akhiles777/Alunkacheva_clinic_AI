@@ -620,6 +620,49 @@ async function main() {
         "      Нужен полный перечёт: npx tsx scripts/yclients-resync.ts --apply",
     );
   }
+  /**
+   * У каких услуг цена не проставлена — поимённо.
+   *
+   * «UNKNOWN 32 визита · 0 ₽» на экране выглядит как «клиника провела их
+   * бесплатно», и владелец справедливо возражает: КОНТРОЛЬ в отчёте приносит
+   * 30 000 ₽, БОС-терапия — сотни тысяч. Ноль здесь означает не «даром», а
+   * «цену в записи не заполнили». Пока не видно, у каких услуг это случается,
+   * починить нечего.
+   */
+  const unpriced = await prisma.appointment.findMany({
+    where: {
+      companyId: company.id,
+      deletedAt: null,
+      status: "ARRIVED",
+      startAt: { gte: from, lt: now },
+      revenueSource: "UNKNOWN",
+    },
+    select: {
+      startAt: true,
+      yclientsRecordId: true,
+      primaryService: { select: { title: true } },
+    },
+    orderBy: { startAt: "asc" },
+  });
+  if (unpriced.length > 0) {
+    console.log("\n── приёмы без проставленной цены (это НЕ «бесплатно») ──");
+    const byService = new Map<string, { n: number; ids: number[] }>();
+    for (const a of unpriced) {
+      const title = a.primaryService?.title ?? "услуга не выбрана";
+      const acc = byService.get(title) ?? { n: 0, ids: [] };
+      acc.n += 1;
+      if (a.yclientsRecordId !== null && acc.ids.length < 5) acc.ids.push(a.yclientsRecordId);
+      byService.set(title, acc);
+    }
+    for (const [title, v] of [...byService.entries()].sort((a, b) => b[1].n - a[1].n)) {
+      console.log(`  ${title} — ${v.n}; записи: ${v.ids.join(", ")}${v.n > v.ids.length ? " …" : ""}`);
+    }
+    console.log(
+      "  Скидки 100% в этих записях нет и к курсу они не привязаны: в YCLIENTS у них\n" +
+        "  просто не заполнена стоимость. В выручке они считаются нулём — как есть.",
+    );
+  }
+
   const zeroSources = ["PREPAID", "FREE", "UNKNOWN"];
   const leaked = zeroSources.filter((k) => (srcAcc.get(k)?.sum ?? 0) !== 0);
   console.log(

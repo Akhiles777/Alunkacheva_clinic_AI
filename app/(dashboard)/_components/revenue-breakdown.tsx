@@ -66,12 +66,26 @@ export function RevenueBreakdown({
   const byCourse = visits.filter(
     (r) => (r.appt.price ?? 0) === 0 && r.appt.amountSource === "PREPAID",
   ).length;
+  /**
+   * Отданное бесплатно и незаполненная цена — разные нули.
+   *
+   * Первое решение клиники (скидка 100% в записи), второе — пробел: цену не
+   * проставили. Складывать их в одно слово «бесплатно» значит утверждать, что
+   * клиника отдала приём даром, когда мы этого не знаем.
+   */
   const free = visits.filter(
-    (r) => (r.appt.price ?? 0) === 0 && r.appt.amountSource !== "PREPAID",
+    (r) => (r.appt.price ?? 0) === 0 && r.appt.amountSource === "FREE",
+  ).length;
+  const noPrice = visits.filter(
+    (r) =>
+      (r.appt.price ?? 0) === 0 &&
+      r.appt.amountSource !== "PREPAID" &&
+      r.appt.amountSource !== "FREE",
   ).length;
   const notes = [
     byCourse > 0 ? `по курсу ${byCourse}` : null,
     free > 0 ? `бесплатно ${free}` : null,
+    noPrice > 0 ? `без суммы ${noPrice}` : null,
   ].filter(Boolean);
 
   return (
@@ -188,12 +202,24 @@ export function RevenueBreakdown({
                     >
                       по курсу
                     </span>
-                  ) : (
+                  ) : row.appt.amountSource === "FREE" ? (
                     <span
                       className="text-text-subtle flex-none text-2xs"
-                      title="подарок по скидке или приём, за который клиника денег не брала"
+                      title="скидка 100% в записи YCLIENTS: приём отдан бесплатно"
                     >
                       бесплатно
+                    </span>
+                  ) : (
+                    /*
+                      Ноль без скидки и без курса — не «бесплатно», а незаполненная
+                      цена. Утверждать, что клиника отдала приём даром, мы не можем:
+                      по отчёту та же услуга приносит деньги в другие дни.
+                    */
+                    <span
+                      className="text-text-subtle flex-none text-2xs"
+                      title="В записи YCLIENTS стоимость не проставлена. Это не бесплатный приём: цену мог не заполнить администратор."
+                    >
+                      сумма не указана
                     </span>
                   )}
                 </li>

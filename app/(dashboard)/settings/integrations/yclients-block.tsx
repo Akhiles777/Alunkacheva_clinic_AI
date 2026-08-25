@@ -140,10 +140,18 @@ export function YclientsBlock() {
           <span>
             сеансов по курсу <b className="num text-text">{state.quality.courseSessions}</b>
           </span>
-          <span>
-            бесплатных приёмов <b className="num text-text">{state.quality.freeOfCharge}</b>
+          {/*
+            Два разных нуля, и слово «бесплатно» подходит только одному.
+            «Без суммы» — цену в записи не заполнили; «отдано бесплатно» —
+            скидка 100%, то есть решение клиники.
+          */}
+          <span title="В записи YCLIENTS стоимость не проставлена. Это не бесплатный приём: цену мог не заполнить администратор. В выручке такой визит считается нулём.">
+            без суммы в записи{" "}
+            <b className={`num ${state.quality.freeOfCharge > 0 ? "text-accent-text" : "text-text"}`}>
+              {state.quality.freeOfCharge}
+            </b>
           </span>
-          <span>
+          <span title="Скидка 100% в записи YCLIENTS: приём отдан бесплатно намеренно">
             отдано бесплатно <b className="num text-text">{state.quality.free}</b>
           </span>
           <span>
@@ -153,6 +161,16 @@ export function YclientsBlock() {
             </b>
           </span>
         </div>
+        {state.quality.freeOfCharge > 0 ? (
+          <p className="text-text-muted mt-2 text-xs">
+            Приёмов без суммы в записи:{" "}
+            <b className="num text-accent-text">{state.quality.freeOfCharge}</b>. Скидки 100% там
+            нет и к курсу они не привязаны — в YCLIENTS у них просто не заполнена стоимость. Мы
+            считаем их нулём, как есть: подставлять цену из прайса нельзя, это была бы выручка,
+            которой не было. Список услуг и номера записей называет{" "}
+            <span className="num">scripts/report-check.ts</span>.
+          </p>
+        ) : null}
         {state.quality.withoutService > 0 ? (
           <p className="text-text-muted mt-2 text-xs">
             Записей без выбранной услуги:{" "}
