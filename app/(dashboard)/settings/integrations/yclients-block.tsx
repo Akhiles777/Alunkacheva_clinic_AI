@@ -151,8 +151,8 @@ export function YclientsBlock() {
               {state.quality.freeOfCharge}
             </b>
           </span>
-          <span title="Скидка 100% в записи YCLIENTS: приём отдан бесплатно намеренно">
-            отдано бесплатно <b className="num text-text">{state.quality.free}</b>
+          <span title="В записи YCLIENTS стоит скидка 100%: подарок либо приём, входящий в стоимость основного. У курсовых услуг такая скидка означает оплату курсом и сюда не попадает.">
+            со скидкой 100% <b className="num text-text">{state.quality.free}</b>
           </span>
           <span>
             задвоенных приёмов{" "}

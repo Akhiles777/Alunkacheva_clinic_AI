@@ -606,8 +606,8 @@ async function main() {
   const LABEL: Record<string, string> = {
     RECORD: "стоимость из записи YCLIENTS",
     PREPAID: "сеанс курса — оплачен в день продажи",
-    FREE: "подарок, скидка 100%",
-    UNKNOWN: "бесплатно: стоимости в записи нет",
+    FREE: "скидка 100% на НЕкурсовой услуге: подарок или входит в основной приём",
+    UNKNOWN: "цена в записи не проставлена (это НЕ «бесплатно»)",
     PRICE_LIST: "СТАРОЕ ПРАВИЛО, цена из прайса",
   };
   for (const [src, v] of [...srcAcc.entries()].sort((a, b) => b[1].sum - a[1].sum)) {
@@ -644,6 +644,43 @@ async function main() {
     },
     orderBy: { startAt: "asc" },
   });
+  /**
+   * Скидка 100% — по услугам, поимённо.
+   *
+   * У курсовых услуг её больше не бывает: там она означает оплату курсом. Если
+   * такая строка всё же появилась, значит услугу не отметили курсовой — и её
+   * сеансы не попадают в курс, а в карточке стоят «скидка 100%».
+   */
+  const freeRows = await prisma.appointment.findMany({
+    where: {
+      companyId: company.id,
+      deletedAt: null,
+      status: "ARRIVED",
+      startAt: { gte: from, lt: now },
+      revenueSource: "FREE",
+    },
+    select: { primaryService: { select: { title: true, isCourse: true } } },
+  });
+  if (freeRows.length > 0) {
+    console.log("\n── приёмы со скидкой 100% ──");
+    const byService = new Map<string, { n: number; course: boolean }>();
+    for (const a of freeRows) {
+      const title = a.primaryService?.title ?? "услуга не выбрана";
+      const acc = byService.get(title) ?? { n: 0, course: Boolean(a.primaryService?.isCourse) };
+      acc.n += 1;
+      byService.set(title, acc);
+    }
+    for (const [title, v] of [...byService.entries()].sort((a, b) => b[1].n - a[1].n)) {
+      console.log(
+        `  ${title} — ${v.n}` +
+          (v.course
+            ? "  ✗ услуга курсовая: скидка 100% на ней означает оплату курсом,\n" +
+              "      а не подарок. Нужна выгрузка — после неё сеансы зачтутся в курс."
+            : ""),
+      );
+    }
+  }
+
   if (unpriced.length > 0) {
     console.log("\n── приёмы без проставленной цены (это НЕ «бесплатно») ──");
     const byService = new Map<string, { n: number; ids: number[] }>();

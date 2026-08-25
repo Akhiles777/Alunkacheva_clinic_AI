@@ -4,6 +4,7 @@ import {
   mapClient,
   mapRecord,
   mapRecordStatus,
+  courseAwareSource,
   revenueAfterCourse,
   mapResource,
   mapService,
@@ -192,5 +193,30 @@ describe("выручка визита, покрытого курсом", () => {
 
   it("нулевой сеанс так и остаётся нулевым", () => {
     expect(revenueAfterCourse(0, 0)).toEqual({ amount: 0, source: "PREPAID" });
+  });
+});
+
+/**
+ * Скидка 100% на курсовой услуге — оплата курсом, а не подарок.
+ *
+ * Администратор закрывает сеанс на абонемент двумя способами: списанием (цена
+ * обнуляется сама) и скидкой 100%. Второй вариант мы считали подарком, и сеанс
+ * не занимал места в курсе: у пациентки курс показывал «7/10, выпал из
+ * графика», хотя она сходила восемь раз, а сам сеанс стоял подписью
+ * «бесплатно» под названием услуги за 2 800 ₽.
+ */
+describe("скидка 100% и курсовые услуги", () => {
+  it("на курсовой услуге читается как оплата курсом", () => {
+    expect(courseAwareSource("FREE", true)).toBe("PREPAID");
+  });
+
+  it("на обычной услуге остаётся скидкой", () => {
+    expect(courseAwareSource("FREE", false)).toBe("FREE");
+  });
+
+  it("остальные источники не трогает", () => {
+    expect(courseAwareSource("RECORD", true)).toBe("RECORD");
+    expect(courseAwareSource("UNKNOWN", true)).toBe("UNKNOWN");
+    expect(courseAwareSource("PREPAID", false)).toBe("PREPAID");
   });
 });

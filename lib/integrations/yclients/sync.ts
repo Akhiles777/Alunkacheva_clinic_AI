@@ -7,7 +7,7 @@ import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
 import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
-import { revenueAfterCourse, serviceRevenue } from "./mappers";
+import { courseAwareSource, revenueAfterCourse, serviceRevenue } from "./mappers";
 import { splitVisitMinutes } from "./split-visit";
 import { removeVanished, windowIsTrustworthy } from "./vanished";
 import { adoptCandidate } from "./adopt";
@@ -923,7 +923,14 @@ async function saveRecordServices(
           money:
             serviceId && serviceId === coveredServiceId
               ? { amount: 0, source: "PREPAID" as const }
-              : serviceRevenue(sv),
+              : (() => {
+                  const m = serviceRevenue(sv);
+                  // Скидка 100% на курсовой услуге — оплата курсом, не подарок.
+                  return {
+                    ...m,
+                    source: courseAwareSource(m.source, lookups.courseYclientsServiceIds.has(sv.id)),
+                  };
+                })(),
           // Длительность услуги из справочника: у записи она одна на весь визит.
           minutes: lookups.durationByYclientsServiceId.get(sv.id) ?? 0,
         };
@@ -1236,10 +1243,12 @@ function revenueOf(
   // Осталась платная услуга — визит по-прежнему приносит деньги, просто
   // меньше. Ноль означает, что весь приём был сеансом курса.
   if (coveredByCourse) return revenueAfterCourse(r.revenue, courseMoney);
-  if (r.revenueSource !== "PREPAID") {
-    return { amount: r.revenue, source: r.revenueSource };
-  }
   const course = r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id));
+  // Скидка 100% на курсовой услуге — оплата курсом, а не подарок.
+  const source = courseAwareSource(r.revenueSource, course);
+  if (source !== "PREPAID") {
+    return { amount: r.revenue, source };
+  }
   return { amount: 0, source: course ? "PREPAID" : "UNKNOWN" };
 }
 
@@ -1559,15 +1568,21 @@ export async function upsertRecord(
   let revenueSource = r.revenueSource;
   if (covered) {
     revenueSource = restMoney > 0 ? "RECORD" : "PREPAID";
-  } else if (revenueSource === "PREPAID") {
+  } else if (revenueSource === "PREPAID" || revenueSource === "FREE") {
     const isCourse = lookups
       ? r.yclientsServiceIds.some((id) => lookups.courseYclientsServiceIds.has(id))
       : r.yclientsServiceIds.length > 0 &&
         (await prisma.service.count({
           where: { companyId, isCourse: true, yclientsServiceId: { in: r.yclientsServiceIds } },
         })) > 0;
+    // Скидка 100% на курсовой услуге — оплата курсом, а не подарок.
     // Ноль у обычной услуги — это «бесплатно», а не «оплачено курсом».
-    revenueSource = isCourse ? "PREPAID" : "UNKNOWN";
+    revenueSource =
+      revenueSource === "FREE"
+        ? courseAwareSource("FREE", isCourse)
+        : isCourse
+          ? "PREPAID"
+          : "UNKNOWN";
   }
 
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);

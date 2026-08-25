@@ -84,7 +84,7 @@ export function RevenueBreakdown({
   ).length;
   const notes = [
     byCourse > 0 ? `по курсу ${byCourse}` : null,
-    free > 0 ? `бесплатно ${free}` : null,
+    free > 0 ? `со скидкой 100% ${free}` : null,
     noPrice > 0 ? `без суммы ${noPrice}` : null,
   ].filter(Boolean);
 
@@ -205,9 +205,9 @@ export function RevenueBreakdown({
                   ) : row.appt.amountSource === "FREE" ? (
                     <span
                       className="text-text-subtle flex-none text-2xs"
-                      title="скидка 100% в записи YCLIENTS: приём отдан бесплатно"
+                      title="В записи YCLIENTS стоит скидка 100%. Так отмечают и подарок, и приём, входящий в стоимость основного."
                     >
-                      бесплатно
+                      скидка 100%
                     </span>
                   ) : (
                     /*
