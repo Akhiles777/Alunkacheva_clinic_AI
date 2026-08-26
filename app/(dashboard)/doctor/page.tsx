@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { visitTitle } from "@/lib/visit-title";
 import Link from "next/link";
 import { formatMinute } from "@/lib/metrics/occupancy";
 import { formatMoney } from "@/lib/format";
@@ -143,7 +144,9 @@ export default function DoctorPage() {
                           a.patientName
                         )}
                       </span>
-                      <span className="text-text-subtle block truncate text-xs">{a.service}</span>
+                      <span className="text-text-subtle block truncate text-xs">
+                        {visitTitle(a.parts, a.service)}
+                      </span>
                       {a.note ? (
                         <span className="text-text-muted block text-2xs italic">«{a.note}»</span>
                       ) : null}

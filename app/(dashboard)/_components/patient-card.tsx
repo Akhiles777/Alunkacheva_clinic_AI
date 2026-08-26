@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getPatientRecord } from "@/app/(dashboard)/patients/actions";
+import { needsBreakdown, visitTitle } from "@/lib/visit-title";
 import { formatMoney } from "@/lib/format";
 import {
   addNote,
@@ -435,7 +436,7 @@ export function PatientCardBody({
                     {visit.at && visit.kind !== "purchase" ? (
                       <span className="num text-text-subtle mr-1.5">{visitTime(visit.at)}</span>
                     ) : null}
-                    {visit.service}
+                    {visitTitle(visit.parts, visit.service)}
                   </span>
                   <span
                     className={`text-2xs ${
@@ -457,11 +458,9 @@ export function PatientCardBody({
                     13 000 ₽» при цене приёма восемь тысяч. Число противоречило
                     прайсу, и читалось как ошибка платформы.
                   */}
-                  {visit.parts && visit.parts.length > 1 ? (
+                  {needsBreakdown(visit.parts) ? (
                     <span className="text-text-subtle block text-2xs">
-                      {visit.parts
-                        .map((p) => `${p.title} — ${formatMoney(p.amount)}`)
-                        .join(" · ")}
+                      {visit.parts!.map((p) => `${p.title} — ${formatMoney(p.amount)}`).join(" · ")}
                     </span>
                   ) : null}
                 </span>

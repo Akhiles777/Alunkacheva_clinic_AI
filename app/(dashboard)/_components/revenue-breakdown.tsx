@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { needsBreakdown, visitTitle } from "@/lib/visit-title";
 import { formatMoney } from "@/lib/format";
 import type { Appt } from "@/app/_data/store";
 import type { CourseSaleRow } from "../courses/actions";
@@ -160,7 +161,7 @@ export function RevenueBreakdown({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm">
-                      {row.appt.service || "услуга не указана"}
+                      {visitTitle(row.appt.parts, row.appt.service)}
                     </span>
                     <span className="text-text-subtle text-2xs">
                       {row.appt.doctor}
@@ -172,7 +173,7 @@ export function RevenueBreakdown({
                       остеопата — 13 000 ₽» при цене 8 000 читается как ошибка,
                       хотя это 8 000 взрослому плюс 5 000 ребёнку.
                     */}
-                    {(row.appt.parts?.length ?? 0) > 1 ? (
+                    {needsBreakdown(row.appt.parts) ? (
                       <span className="text-text-subtle block text-2xs">
                         {row.appt.parts!
                           .map((p) => `${p.title} — ${formatMoney(p.amount)}`)

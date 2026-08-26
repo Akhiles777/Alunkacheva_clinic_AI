@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { visitTitle } from "@/lib/visit-title";
 import Link from "next/link";
 import { VisitNote } from "../_components/visit-note";
 import {
@@ -110,7 +111,7 @@ function ApptCard({ appt, readOnly = false }: { appt: Appt; readOnly?: boolean }
         )}
       </div>
       <div className="text-text-subtle truncate text-xs">
-        {appt.service} · {appt.doctor}
+        {visitTitle(appt.parts, appt.service)} · {appt.doctor}
       </div>
       <VisitNote appt={appt} />
       {appt.bookedByName ? (
