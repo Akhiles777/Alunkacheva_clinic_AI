@@ -305,7 +305,7 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
        * записи не привязали, и такой приём не попадает ни в разрез по услугам,
        * ни в курс. Номера таких записей называет scripts/report-check.ts.
        */
-      service: a.primaryService?.title ?? "услуга не выбрана в YCLIENTS",
+      service: a.primaryService?.title ?? "услуга не указана",
       doctor: a.staff?.name ?? "—",
       status: VISIT_STATUS_MAP[a.status] ?? "planned",
       amount: Number(a.revenue),

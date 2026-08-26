@@ -23,6 +23,7 @@ function matches(c: CourseView, filter: string): boolean {
 
 function reasonLine(c: CourseView): string {
   const parts = [`сеанс ${c.used} из ${c.total}`];
+  if (c.booked > 0) parts.push(`записан ещё на ${c.booked}`);
   if (c.daysAgo !== null) {
     parts.push(c.daysAgo === 0 ? "визит сегодня" : `последний визит ${c.daysAgo} дней назад`);
   }
@@ -116,8 +117,16 @@ export default function CoursesPage() {
                       style={{ width: `${Math.round((c.used / c.total) * 100)}%` }}
                     />
                   </div>
+                  {/*
+                    «Осталось» — про НЕзаписанные сеансы: это число отвечает на
+                    вопрос «кого звать». Записанные впереди называем отдельно,
+                    иначе экран зовёт пациента, у которого оставшиеся приёмы уже
+                    стоят в расписании.
+                  */}
                   <div className="num text-text-subtle mt-1 text-2xs">
-                    {c.used}/{c.total} · осталось {c.remaining}
+                    {c.used}/{c.total}
+                    {c.booked > 0 ? ` · записан ещё на ${c.booked}` : ""}
+                    {c.toBook > 0 ? ` · дозаписать ${c.toBook}` : ""}
                   </div>
                 </div>
 
@@ -156,7 +165,9 @@ export default function CoursesPage() {
           onClose={() => setWriteTo(null)}
           prefillPatientId={writeTo.patientId}
           prefillChannel={writeTo.channel === "instagram" ? "instagram" : "whatsapp"}
-          prefillMessage={`Здравствуйте! У вас остались сеансы курса «${writeTo.title}» (${writeTo.remaining} из ${writeTo.total}). Записать вас на следующий?`}
+          // Пишем про НЕзаписанные сеансы: предлагать запись человеку, у
+          // которого приём уже назначен, — повод для недоумения.
+          prefillMessage={`Здравствуйте! У вас остались сеансы курса «${writeTo.title}» (${writeTo.toBook} из ${writeTo.total}). Записать вас на следующий?`}
         />
       ) : null}
     </>

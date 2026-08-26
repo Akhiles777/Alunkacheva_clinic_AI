@@ -861,9 +861,21 @@ export interface CourseView {
   channel: Channel;
   courseId: string;
   title: string;
+  /** Сеансы, которые состоялись. */
   used: number;
   total: number;
+  /** Не пройдено: по этим сеансам клиника ещё не отработала деньги. */
   remaining: number;
+  /** Записан, но ещё не пришёл. */
+  booked: number;
+  /**
+   * Сеансы, на которые пациент ещё НЕ записан.
+   *
+   * Именно это число отвечает на вопрос «кого звать». «Осталось 6» при шести
+   * уже назначенных приёмах — повод для звонка человеку, который и так придёт
+   * завтра.
+   */
+  toBook: number;
   status: Course["status"];
   lastVisit: string;
   daysAgo: number | null;
@@ -887,6 +899,8 @@ export function allCourses(patients: Patient[] = db.patients): CourseView[] {
   for (const p of patients) {
     for (const c of p.courses) {
       const remaining = Math.max(c.total - c.used, 0);
+      const booked = c.booked ?? 0;
+      const toBook = Math.max(remaining - booked, 0);
       const hasFuture = c.hasFuture ?? c.status !== "stalled";
       const price = c.pricePerSession ?? 0;
       out.push({
@@ -898,13 +912,17 @@ export function allCourses(patients: Patient[] = db.patients): CourseView[] {
         used: c.used,
         total: c.total,
         remaining,
+        booked,
+        toBook,
         status: c.status,
         lastVisit: c.lastVisit,
         daysAgo: c.daysAgo ?? daysSince(c.lastVisit),
         hasFuture,
         moneyLeft: remaining * price,
         stalled: c.status === "stalled" && !hasFuture,
-        onFinish: c.status === "active" && remaining > 0 && remaining <= 2,
+        // «Пора дозаписать» — про НЕзаписанные сеансы. Иначе экран звал бы
+        // пациента, у которого оставшиеся приёмы уже стоят в расписании.
+        onFinish: c.status === "active" && toBook > 0 && toBook <= 2,
       });
     }
   }

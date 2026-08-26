@@ -518,7 +518,7 @@ export function PatientCardBody({
                     className="text-text-subtle flex-none text-xs"
                     title="В записи YCLIENTS стоимость не проставлена. Это не бесплатный приём: цену мог не заполнить администратор. В выручку такой визит идёт нулём."
                   >
-                    сумма не указана
+                    без суммы
                   </span>
                 )}
               </li>

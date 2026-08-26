@@ -219,7 +219,7 @@ export function RevenueBreakdown({
                       className="text-text-subtle flex-none text-2xs"
                       title="В записи YCLIENTS стоимость не проставлена. Это не бесплатный приём: цену мог не заполнить администратор."
                     >
-                      сумма не указана
+                      без суммы
                     </span>
                   )}
                 </li>
