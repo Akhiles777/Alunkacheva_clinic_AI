@@ -166,16 +166,46 @@ async function main() {
     const t = theirs.get(a.yclientsRecordId as number);
     return t && t.services === 0;
   });
-  console.log(
-    blankThere.length === 0
-      ? "  ✓ записей без услуги нет и в YCLIENTS"
-      : `\n── услуга не выбрана в самом YCLIENTS: ${blankThere.length} ──\n` +
-          blankThere
-            .slice(0, 20)
-            .map((a) => `  запись ${a.yclientsRecordId} · ${a.startAt.toISOString().slice(0, 16)} · ${a.status}`)
-            .join("\n") +
-          "\n  Правится в YCLIENTS: открыть запись и выбрать услугу.",
-  );
+  if (blankThere.length === 0) {
+    console.log("  ✓ записей без услуги нет и в YCLIENTS");
+  } else {
+    /**
+     * Список записей и одиночная запись — разные ответы YCLIENTS.
+     *
+     * На стоимости мы это уже ловили: список отдавал ноль там, где одиночная
+     * запись показывала 2 800 ₽ (см. scripts/cost-compare.ts). Прежде чем
+     * говорить «услугу не выбрали в YCLIENTS», спрашиваем каждую такую запись
+     * поимённо: если услуга там есть, дело не в клинике, а в том, что мы
+     * читаем неполный ответ.
+     */
+    console.log(`\n── услуги нет в списке записей: ${blankThere.length} ──`);
+    let lost = 0;
+    for (const a of blankThere.slice(0, 30)) {
+      const id = a.yclientsRecordId as number;
+      let one: YclientsRecord | null = null;
+      try {
+        one = await client.get<YclientsRecord>(client.endpoints.record(client.creds.companyId, id));
+      } catch {
+        one = null;
+      }
+      const svc = one?.services ?? [];
+      const titles = svc.map((x) => `${x.title?.trim() || "?"} — ${money(x.cost ?? 0)}`).join(", ");
+      if (svc.length > 0) lost += 1;
+      console.log(
+        `  запись ${id} · ${a.startAt.toISOString().slice(0, 16)} · ${a.status} — ` +
+          (svc.length > 0
+            ? `✗ ОДИНОЧНЫЙ ЗАПРОС ВИДИТ УСЛУГУ: ${titles}`
+            : one === null
+              ? "запись поимённо не открылась"
+              : "услуги нет и там — правится в YCLIENTS"),
+      );
+    }
+    console.log(
+      lost > 0
+        ? `\n  ✗ у ${lost} записей услуга есть, но список её не отдал — теряем при выгрузке МЫ.`
+        : "\n  Правится в YCLIENTS: открыть запись и выбрать услугу.",
+    );
+  }
 
   await prisma.$disconnect();
 }
