@@ -89,6 +89,8 @@ async function main() {
   const noService: typeof ours = [];
   const priceDiff: { row: (typeof ours)[number]; their: number }[] = [];
   let composed = 0;
+  /** Кто именно разошёлся — без номера записи чинить нечего. */
+  const composedRows: { row: (typeof ours)[number]; sum: number }[] = [];
 
   for (const a of ours) {
     const t = theirs.get(a.yclientsRecordId as number);
@@ -104,7 +106,10 @@ async function main() {
      */
     const oursAmount = Number(a.revenue);
     const composedSum = a.services.reduce((s, x) => s + Number(x.priceCharged), 0);
-    if (a.services.length > 0 && Math.abs(composedSum - oursAmount) > 0.5) composed += 1;
+    if (a.services.length > 0 && Math.abs(composedSum - oursAmount) > 0.5) {
+      composed += 1;
+      composedRows.push({ row: a, sum: composedSum });
+    }
     if (Math.abs(t.amount - oursAmount) > 0.5 && a.courseId === null && a.revenueSource !== "PREPAID") {
       priceDiff.push({ row: a, their: t.amount });
     }
@@ -136,11 +141,22 @@ async function main() {
     console.log(`  всего ${priceDiff.length}`);
   }
 
-  console.log(
-    composed === 0
-      ? "\n  ✓ состав визитов сходится с их суммой"
-      : `\n  ✗ у ${composed} визитов состав не сходится с суммой`,
-  );
+  if (composed === 0) {
+    console.log("\n  ✓ состав визитов сходится с их суммой");
+  } else {
+    console.log(`\n  ✗ у ${composed} визитов состав не сходится с суммой:`);
+    for (const c of composedRows.slice(0, 20)) {
+      console.log(
+        `      запись ${c.row.yclientsRecordId} · ${c.row.startAt.toISOString().slice(0, 16)}` +
+          ` · сумма ${money(Number(c.row.revenue))} · состав ${money(c.sum)}` +
+          ` · ${c.row.revenueSource}${c.row.courseId ? " · сеанс курса" : ""}`,
+      );
+    }
+    console.log(
+      "      Разрез по услугам считается по составу, а итог — по сумме визита:\n" +
+        "      пока они расходятся, два экрана показывают разные деньги.",
+    );
+  }
 
   /**
    * Записи, где услуги нет и в YCLIENTS. Их не чинит никакая выгрузка —

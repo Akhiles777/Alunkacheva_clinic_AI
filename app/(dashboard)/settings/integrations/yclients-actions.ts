@@ -84,6 +84,14 @@ export interface YclientsState {
      * привязали. Правится в YCLIENTS за минуту, но сперва это надо увидеть.
      */
     withoutService: number;
+    /**
+     * Те же записи поимённо: номер в YCLIENTS и день.
+     *
+     * Без номеров строка «записей без услуги: 7» — это повод искать их
+     * вручную по всему расписанию. С номерами администратор открывает каждую
+     * и дозаполняет за минуту. Ни имён, ни телефонов здесь нет (§7).
+     */
+    withoutServiceRows: { recordId: number | null; at: string }[];
   };
   /**
    * Расписание выгрузки: включено ли, когда прошёл последний круг и чем
@@ -207,7 +215,7 @@ export async function getYclientsState(): Promise<YclientsState> {
       where: { companyId, deletedAt: null, attendanceRaw: 1, startAt: { gt: new Date() } },
     }),
     // Ни основной услуги, ни состава: в YCLIENTS услугу к записи не привязали.
-    prisma.appointment.count({
+    prisma.appointment.findMany({
       where: {
         companyId,
         deletedAt: null,
@@ -215,6 +223,9 @@ export async function getYclientsState(): Promise<YclientsState> {
         primaryServiceId: null,
         services: { none: {} },
       },
+      select: { yclientsRecordId: true, startAt: true },
+      orderBy: { startAt: "desc" },
+      take: 20,
     }),
     /**
      * Задвоенные приёмы. Совпадение пациента, специалиста и точного времени
@@ -257,7 +268,11 @@ export async function getYclientsState(): Promise<YclientsState> {
       free,
       duplicateGroups: Number(duplicateRows[0]?.groups ?? 0),
       arrivedInFuture,
-      withoutService,
+      withoutService: withoutService.length,
+      withoutServiceRows: withoutService.map((a) => ({
+        recordId: a.yclientsRecordId,
+        at: when.format(a.startAt),
+      })),
     },
     schedule: {
       on: sched.включён,
