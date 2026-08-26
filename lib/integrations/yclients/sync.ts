@@ -895,6 +895,31 @@ async function saveRecordServices(
   );
   if (wanted.size === 0) return;
 
+  /**
+   * Услугу из записи убрали — состав обязан исчезнуть вместе с ней.
+   *
+   * Это делалось только для записей, попавших в разбор, а запись без услуг
+   * разбор пропускал вовсе: `parts.length === 0` уводил в `continue` раньше,
+   * чем визит попадал в список на перезапись. Старые строки состава оставались
+   * навсегда. На живых данных так и вышло: у записи 1871049840 услуги в
+   * YCLIENTS нет, сумма визита ноль — а в составе висели 5 000 ₽ от прежней
+   * услуги. Итог дня считает по сумме визита, разрез по услугам — по составу,
+   * и два экрана показывали разные деньги.
+   *
+   * Чистим независимо от `wanted`: такие записи наперечёт, а иначе стереть
+   * старый состав было бы нечем — сама запись с тех пор не менялась, и в
+   * разбор она больше никогда не попадёт.
+   */
+  const blank = dtos
+    .filter((d) => (d.services ?? []).length === 0)
+    .map((d) => apptByRecord.get(d.id)?.id)
+    .filter((id): id is string => typeof id === "string");
+  if (blank.length > 0) {
+    await prisma.appointmentService.deleteMany({
+      where: { companyId, appointmentId: { in: blank } },
+    });
+  }
+
   const rows: Prisma.AppointmentServiceCreateManyInput[] = [];
   const rewrite: string[] = [];
 
@@ -938,9 +963,13 @@ async function saveRecordServices(
       .filter((p): p is { serviceId: string; money: ReturnType<typeof serviceRevenue>; minutes: number } =>
         typeof p.serviceId === "string",
       );
-    if (parts.length === 0) continue;
-
+    /**
+     * Ни одна услуга записи не нашлась в нашем справочнике. Состав всё равно
+     * переписываем — то есть стираем: держать строки, которых в записи нет,
+     * значит приписывать визиту работу и деньги, которых там не осталось.
+     */
     rewrite.push(appt.id);
+    if (parts.length === 0) continue;
 
     /**
      * Одна и та же услуга в записи дважды — обычное дело: две капельницы за
