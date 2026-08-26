@@ -166,6 +166,19 @@ export function RevenueBreakdown({
                       {row.appt.doctor}
                       {row.appt.patientName ? ` · ${row.appt.patientName}` : ""}
                     </span>
+                    {/*
+                      Состав визита, когда услуг больше одной: иначе строка
+                      называет первую услугу, а сумму показывает за все. «Приём
+                      остеопата — 13 000 ₽» при цене 8 000 читается как ошибка,
+                      хотя это 8 000 взрослому плюс 5 000 ребёнку.
+                    */}
+                    {(row.appt.parts?.length ?? 0) > 1 ? (
+                      <span className="text-text-subtle block text-2xs">
+                        {row.appt.parts!
+                          .map((p) => `${p.title} — ${formatMoney(p.amount)}`)
+                          .join(" · ")}
+                      </span>
+                    ) : null}
                   </span>
                   {(row.appt.price ?? 0) > 0 ? (
                     /*

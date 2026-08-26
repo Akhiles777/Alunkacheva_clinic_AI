@@ -241,7 +241,9 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
           course: { select: { sessionsTotal: true } },
           staff: { select: { name: true } },
           primaryService: { select: { title: true, isCourse: true } },
-          services: { select: { service: { select: { isCourse: true } } } },
+          services: {
+            select: { priceCharged: true, service: { select: { title: true, isCourse: true } } },
+          },
         },
       },
     },
@@ -326,6 +328,19 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
         a.courseSessionIndex && a.course
           ? { index: a.courseSessionIndex, total: a.course.sessionsTotal }
           : null,
+      /**
+       * Состав визита — когда услуг больше одной.
+       *
+       * Одну услугу перечислять незачем: её название уже стоит строкой выше.
+       * А две и больше объясняют сумму, которая иначе противоречит прайсу.
+       */
+      parts:
+        a.services.length > 1
+          ? a.services.map((sv) => ({
+              title: sv.service.title,
+              amount: Number(sv.priceCharged),
+            }))
+          : undefined,
       // Курсовая ли услуга: по составу визита, а не только по основной.
       courseService:
         Boolean(a.primaryService?.isCourse) || a.services.some((sv) => sv.service.isCourse),

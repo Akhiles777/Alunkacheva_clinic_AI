@@ -67,7 +67,9 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
       primaryService: { select: { title: true, isCourse: true } },
       patient: { select: { name: true } },
       course: { select: { sessionsTotal: true } },
-      services: { select: { service: { select: { isCourse: true } } } },
+      services: {
+        select: { priceCharged: true, service: { select: { title: true, isCourse: true } } },
+      },
     },
     orderBy: { startAt: "asc" },
   });
@@ -109,6 +111,17 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
       r.courseSessionIndex && r.course
         ? { index: r.courseSessionIndex, total: r.course.sessionsTotal }
         : null,
+    /**
+     * Состав визита — когда услуг больше одной.
+     *
+     * Одна услуга уже названа строкой выше; две и больше объясняют сумму,
+     * которая иначе противоречит прайсу: «Взрослый приём — 13 000 ₽» это
+     * 8 000 взрослому плюс 5 000 ребёнку в одной записи.
+     */
+    parts:
+      r.services.length > 1
+        ? r.services.map((sv) => ({ title: sv.service.title, amount: Number(sv.priceCharged) }))
+        : undefined,
     // Курсовая ли услуга: по составу визита, а не только по основной.
     courseService:
       Boolean(r.primaryService?.isCourse) || r.services.some((sv) => sv.service.isCourse),
@@ -143,7 +156,9 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
       primaryService: { select: { title: true, isCourse: true } },
       patient: { select: { name: true } },
       course: { select: { sessionsTotal: true } },
-      services: { select: { service: { select: { isCourse: true } } } },
+      services: {
+        select: { priceCharged: true, service: { select: { title: true, isCourse: true } } },
+      },
     },
     orderBy: { startAt: "asc" },
   });
@@ -175,6 +190,17 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
       r.courseSessionIndex && r.course
         ? { index: r.courseSessionIndex, total: r.course.sessionsTotal }
         : null,
+    /**
+     * Состав визита — когда услуг больше одной.
+     *
+     * Одна услуга уже названа строкой выше; две и больше объясняют сумму,
+     * которая иначе противоречит прайсу: «Взрослый приём — 13 000 ₽» это
+     * 8 000 взрослому плюс 5 000 ребёнку в одной записи.
+     */
+    parts:
+      r.services.length > 1
+        ? r.services.map((sv) => ({ title: sv.service.title, amount: Number(sv.priceCharged) }))
+        : undefined,
     // Курсовая ли услуга: по составу визита, а не только по основной.
     courseService:
       Boolean(r.primaryService?.isCourse) || r.services.some((sv) => sv.service.isCourse),
