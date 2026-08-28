@@ -146,3 +146,20 @@ export function stripLeadingGreeting(text: string): string {
   if (!isGreeting(head)) return text;
   return rest.trim().length > 0 ? rest.trim() : text;
 }
+
+/**
+ * Убирать ли приветствие из ответа.
+ *
+ * Главное правило: **поздоровался человек — здороваемся и мы**, сколько бы раз
+ * за день это ни повторилось. «Здравствуйте, напомните адрес» получает
+ * «Здравствуйте! Наш адрес…», и никак иначе: не ответить на приветствие
+ * невежливо, а для клиники это заметнее любой экономии слов.
+ *
+ * Молчим только в одном случае: человек НЕ здоровался, а мы сегодня в этом
+ * диалоге уже поздоровались. Тогда «Здравствуйте!» в ответе на «какой адрес»
+ * выдаёт собеседника, который не помнит утреннего разговора.
+ */
+export function shouldDropGreeting(incoming: string, greetedToday: boolean): boolean {
+  if (greetingUsed(incoming) !== null) return false;
+  return greetedToday;
+}

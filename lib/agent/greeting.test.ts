@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INTRO, greetingText, startsWithGreeting, stripLeadingGreeting, withoutOffer } from "./greeting";
+import { DEFAULT_INTRO, greetingText, shouldDropGreeting, startsWithGreeting, stripLeadingGreeting, withoutOffer } from "./greeting";
 import { isGreeting } from "./text-actions";
 import { alreadyGreeted } from "./repetition";
 
@@ -159,5 +159,31 @@ describe("приветствие в начале ответа", () => {
 
   it("если кроме приветствия ничего нет — не опустошает ответ", () => {
     expect(stripLeadingGreeting("Здравствуйте!")).toBe("Здравствуйте!");
+  });
+});
+
+/**
+ * Главное правило вежливости: поздоровался человек — здороваемся и мы.
+ *
+ * Правило «второй раз за день не здороваемся» едва его не отменило: под него
+ * попадало и «Здравствуйте, напомните адрес». Приветствие в ответ на
+ * приветствие важнее экономии слов.
+ */
+describe("когда приветствие в ответе остаётся", () => {
+  it("человек поздоровался — здороваемся, даже если уже здоровались сегодня", () => {
+    expect(shouldDropGreeting("Здравствуйте, напомните пожалуйста адрес", true)).toBe(false);
+    expect(shouldDropGreeting("Доброе утро! Во сколько работаете?", true)).toBe(false);
+  });
+
+  it("голое приветствие — тем более", () => {
+    expect(shouldDropGreeting("Здравствуйте", true)).toBe(false);
+  });
+
+  it("человек не здоровался, а мы сегодня уже — приветствие убираем", () => {
+    expect(shouldDropGreeting("Какой у вас адрес?", true)).toBe(true);
+  });
+
+  it("сегодня ещё не здоровались — ответ не трогаем", () => {
+    expect(shouldDropGreeting("Какой у вас адрес?", false)).toBe(false);
   });
 });

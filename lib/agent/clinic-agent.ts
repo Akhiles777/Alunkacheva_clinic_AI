@@ -43,7 +43,13 @@ import { shouldNotifyEscalation, type EscalationReason } from "./escalation-wind
 import { consentFromText, greetingUsed, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 import { alreadyGreeted, alreadySaid } from "./repetition";
-import { greetingText, startsWithGreeting, stripLeadingGreeting, withoutOffer } from "./greeting";
+import {
+  greetingText,
+  shouldDropGreeting,
+  startsWithGreeting,
+  stripLeadingGreeting,
+  withoutOffer,
+} from "./greeting";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
@@ -576,15 +582,16 @@ async function respond(
    * слышит «Здравствуйте!» от собеседника, который час назад отвечал ему на
    * другой вопрос. Это выдаёт автоответчик и читается как потеря памяти.
    *
-   * Исключение — голое приветствие: на «здравствуйте» отвечают
-   * «здравствуйте», сколько бы раз за день это ни повторилось. Молчать в ответ
-   * на приветствие хуже, чем поздороваться дважды.
+   * Главное правило при этом остаётся главным: **поздоровался человек —
+   * здороваемся и мы**, сколько бы раз за день это ни повторилось.
+   * «Здравствуйте, напомните адрес» получает «Здравствуйте! Наш адрес…».
+   * Молчим только тогда, когда человек не здоровался сам, — решает
+   * shouldDropGreeting, и правило проверено тестами отдельно от базы.
    */
-  const bareGreeting = ctx.incomingText ? isGreeting(ctx.incomingText) : false;
-  const greetedBefore =
-    ctx.incomingText && !bareGreeting ? await greetedToday(conversationId) : false;
+  const drop =
+    ctx.incomingText && shouldDropGreeting(ctx.incomingText, await greetedToday(conversationId));
   const withHello = ctx.incomingText
-    ? greetedBefore
+    ? drop
       ? stripLeadingGreeting(reply.text)
       : greetIfNeeded(ctx.incomingText, reply.text, "")
     : reply.text;
