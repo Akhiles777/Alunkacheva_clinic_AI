@@ -1,22 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { shouldHandBack, shouldRemind, MAX_REMINDERS } from "./handback-rule";
+import { shouldHandBack, shouldRemind, HANDBACK_HOURS, MAX_REMINDERS } from "./handback-rule";
 
 const NOW = new Date("2026-08-19T15:00:00+03:00");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
 const HOUR = 60;
 
-describe("возврат диалога агенту через сутки", () => {
-  it("сутки тишины — забирает агент", () => {
-    expect(shouldHandBack({ createdAt: ago(24 * HOUR + 1) }, NOW)).toBe(true);
+describe("возврат диалога агенту", () => {
+  /**
+   * Четыре часа — решение заказчика (август 2026). Прежде были сутки, и
+   * вечернее обращение ждало агента до следующего вечера.
+   *
+   * Границы считаем от самой константы: число задаётся в одном месте, и тест
+   * не должен требовать правки при его изменении.
+   */
+  it("тишина дольше срока — забирает агент", () => {
+    expect(shouldHandBack({ createdAt: ago(HANDBACK_HOURS * HOUR + 1) }, NOW)).toBe(true);
   });
 
-  it("двадцать три часа — ещё рано", () => {
-    expect(shouldHandBack({ createdAt: ago(23 * HOUR) }, NOW)).toBe(false);
+  it("на минуту раньше срока — ещё рано", () => {
+    expect(shouldHandBack({ createdAt: ago(HANDBACK_HOURS * HOUR - 1) }, NOW)).toBe(false);
   });
 
   it("считаем от последнего сообщения, чьим бы оно ни было", () => {
-    // Сотрудник ответил вчера и разговор затих — это тоже конец разговора.
-    expect(shouldHandBack({ createdAt: ago(30 * HOUR) }, NOW)).toBe(true);
+    // Сотрудник ответил утром и разговор затих — это тоже конец разговора.
+    expect(shouldHandBack({ createdAt: ago(HANDBACK_HOURS * HOUR + 60) }, NOW)).toBe(true);
+  });
+
+  it("срок — ровно четыре часа", () => {
+    expect(HANDBACK_HOURS).toBe(4);
   });
 
   it("переписки нет — возвращать нечего", () => {
@@ -57,7 +68,9 @@ describe("напоминание сотрудникам", () => {
     expect(shouldRemind({ last: waiting(31), remindedAt: null, reminderCount: 0 }, NOW)).toBe(true);
   });
 
-  it("после суток не напоминаем: диалог забирает агент", () => {
-    expect(shouldRemind({ last: waiting(25 * HOUR), remindedAt: null }, NOW)).toBe(false);
+  it("после возврата не напоминаем: диалог забирает агент", () => {
+    expect(
+      shouldRemind({ last: waiting(HANDBACK_HOURS * HOUR + 60), remindedAt: null }, NOW),
+    ).toBe(false);
   });
 });

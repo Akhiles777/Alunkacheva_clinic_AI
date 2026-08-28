@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { greetingText, DEFAULT_INTRO, withoutOffer } from "./greeting";
+import { DEFAULT_INTRO, greetingText, startsWithGreeting, stripLeadingGreeting, withoutOffer } from "./greeting";
 import { isGreeting } from "./text-actions";
 import { alreadyGreeted } from "./repetition";
 
@@ -121,5 +121,43 @@ describe("опечатки в приветствии", () => {
     // Иначе на «Здраствуйте, сколько стоит приём?» уйдёт дежурная фраза
     // вместо ответа.
     expect(isGreeting("Здраствуйте, сколько стоит приём?")).toBe(false);
+  });
+});
+
+/**
+ * Второй раз за день не здороваемся.
+ *
+ * Диалог возвращается агенту через четыре часа. Человек, разговаривавший с
+ * клиникой утром, спрашивает адрес — и слышит «Здравствуйте!» от собеседника,
+ * который час назад отвечал ему на другой вопрос. Это выдаёт автоответчик.
+ */
+describe("приветствие в начале ответа", () => {
+  it("узнаёт приветствие в первом предложении", () => {
+    expect(startsWithGreeting("Здравствуйте! Адрес — Ленина, 5")).toBe(true);
+    expect(startsWithGreeting("Доброе утро, слушаю вас")).toBe(true);
+  });
+
+  it("не считает приветствием упоминание в середине", () => {
+    expect(startsWithGreeting("Работаем в будни с 8:00, добрый день начинается рано")).toBe(false);
+    expect(startsWithGreeting("Адрес — Ленина, 5")).toBe(false);
+  });
+
+  it("снимает дежурное приветствие, оставляя ответ", () => {
+    expect(stripLeadingGreeting("Здравствуйте! Адрес — Ленина, 5")).toBe("Адрес — Ленина, 5");
+    expect(stripLeadingGreeting("Добрый день. Приём стоит 8 000 ₽")).toBe("Приём стоит 8 000 ₽");
+  });
+
+  it("обращение по имени не трогает: это не дежурная фраза", () => {
+    expect(stripLeadingGreeting("Здравствуйте, Мария! Адрес — Ленина, 5")).toBe(
+      "Здравствуйте, Мария! Адрес — Ленина, 5",
+    );
+  });
+
+  it("ответ без приветствия оставляет как есть", () => {
+    expect(stripLeadingGreeting("Адрес — Ленина, 5")).toBe("Адрес — Ленина, 5");
+  });
+
+  it("если кроме приветствия ничего нет — не опустошает ответ", () => {
+    expect(stripLeadingGreeting("Здравствуйте!")).toBe("Здравствуйте!");
   });
 });

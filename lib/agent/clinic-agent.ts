@@ -43,7 +43,8 @@ import { shouldNotifyEscalation, type EscalationReason } from "./escalation-wind
 import { consentFromText, greetingUsed, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 import { alreadyGreeted, alreadySaid } from "./repetition";
-import { greetingText, withoutOffer } from "./greeting";
+import { greetingText, startsWithGreeting, stripLeadingGreeting, withoutOffer } from "./greeting";
+import { startOfClinicDay } from "@/lib/clinic-time";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
 import { focusedAnswer } from "./focused-answer";
@@ -79,11 +80,12 @@ import { stuckInMisunderstanding } from "./confusion";
  * флаг: пауза должна истекать сама, иначе диалог навсегда останется без бота.
  *
  * Ровно столько же, сколько ждёт возврат диалога агенту, и это одно число не
- * случайно. Прежде пауза была двенадцать часов, а статус «ведёт человек»
- * снимать было некому: с двенадцатого часа по двадцать четвёртый агент уже
- * отвечал, а диалог всё ещё числился за сотрудником — и добор неотвеченных
- * его обходил. Поведение и статус расходились, и понять по экрану, кто ведёт
- * разговор, было нельзя.
+ * случайно. Прежде пауза была двенадцать часов при возврате через сутки, и
+ * статус «ведёт человек» снимать было некому: с двенадцатого часа агент уже
+ * отвечал, а диалог всё ещё числился за сотрудником — добор неотвеченных его
+ * обходил. Поведение и статус расходились, и понять по экрану, кто ведёт
+ * разговор, было нельзя. Поэтому число одно на оба правила: меняется здесь —
+ * меняется и там.
  */
 export const HUMAN_TAKEOVER_HOURS = HANDBACK_HOURS;
 
@@ -566,9 +568,25 @@ async function respond(
   conversationId: string,
   reply: AgentReply,
 ): Promise<AgentReply> {
-  // Поздоровались с нами — здороваемся в ответ. Одно место на все ветки.
+  /**
+   * Поздоровались с нами — здороваемся в ответ. Одно место на все ветки.
+   *
+   * Но не второй раз за день. Диалог возвращается агенту через четыре часа
+   * (§6.4), и человек, разговаривавший с клиникой утром, спрашивает адрес — а
+   * слышит «Здравствуйте!» от собеседника, который час назад отвечал ему на
+   * другой вопрос. Это выдаёт автоответчик и читается как потеря памяти.
+   *
+   * Исключение — голое приветствие: на «здравствуйте» отвечают
+   * «здравствуйте», сколько бы раз за день это ни повторилось. Молчать в ответ
+   * на приветствие хуже, чем поздороваться дважды.
+   */
+  const bareGreeting = ctx.incomingText ? isGreeting(ctx.incomingText) : false;
+  const greetedBefore =
+    ctx.incomingText && !bareGreeting ? await greetedToday(conversationId) : false;
   const withHello = ctx.incomingText
-    ? greetIfNeeded(ctx.incomingText, reply.text, "")
+    ? greetedBefore
+      ? stripLeadingGreeting(reply.text)
+      : greetIfNeeded(ctx.incomingText, reply.text, "")
     : reply.text;
   const text = forMessenger(withHello);
   /**
@@ -1443,6 +1461,31 @@ async function spokeWithin(conversationId: string, windowMs: number): Promise<bo
     select: { id: true },
   });
   return said !== null;
+}
+
+/**
+ * Здоровались ли мы с этим человеком сегодня.
+ *
+ * Считаем по суткам клиники, а не сервера: на UTC-хостинге «сегодня»
+ * начиналось бы в три ночи, и утренний разговор попадал бы во вчера.
+ *
+ * Смотрим только начало наших сообщений: слова «добрый день» встречаются и в
+ * середине справки о графике работы, а это не приветствие.
+ */
+async function greetedToday(conversationId: string): Promise<boolean> {
+  const rows = await prisma.message.findMany({
+    where: {
+      conversationId,
+      direction: "OUT",
+      deletedAt: null,
+      isDraft: false,
+      createdAt: { gte: startOfClinicDay(new Date()) },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { body: true },
+  });
+  return rows.some((m) => startsWithGreeting(m.body));
 }
 
 /**

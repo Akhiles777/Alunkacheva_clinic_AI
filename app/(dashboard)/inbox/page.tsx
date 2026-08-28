@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { HANDBACK_HOURS } from "@/lib/agent/handback-rule";
 import {
   CHANNEL_LABEL,
   DIALOG_FILTERS,
@@ -309,7 +310,8 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
             <button
               type="button"
               onClick={() => returnToBot(dialog.id)}
-              title="Снять паузу агента: после ручного ответа он молчит сутки, потом диалог возвращается сам"
+              /* Срок берём из самого правила: подпись не должна отставать от него. */
+              title={`Снять паузу агента: после ручного ответа он молчит ${HANDBACK_HOURS} ч, потом диалог возвращается сам`}
               className="border-border text-text-muted hover:bg-hover flex-none rounded-md border px-2.5 py-1 text-2xs"
             >
               Вернуть агенту
