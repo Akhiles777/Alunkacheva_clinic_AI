@@ -167,7 +167,15 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
    * Ассистент на вопрос «какая выручка вчера» отвечал, что дневного среза нет.
    * Данные лежали в базе, просто в сводку не попадали.
    */
-  const daily = await revenueByDay(companyId, 14, now);
+  /**
+   * Месяц дней, а не две недели.
+   *
+   * На «посчитай за август с 1 по 25» аналитик отвечал месячными итогами: в
+   * справке лежали только четырнадцать последних дней, и сложить нужный
+   * отрезок было не из чего. Разрезы по услугам и людям остаются у последних
+   * семи дней — иначе справка распухает без пользы.
+   */
+  const daily = await revenueByDay(companyId, 31, now);
   const todayKey = daily[daily.length - 1]?.date;
   const yesterdayKey = daily[daily.length - 2]?.date;
   lines.push("");
@@ -181,7 +189,8 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     "Первичный — первый в истории пациента визит со статусом «пришёл»; повторный — " +
       "любой следующий. Первичные плюс повторные равны числу пришедших. Это не то же " +
       "самое, что «новые пациенты»: новым считается первое появление телефона в базе, " +
-      "даже если человек ещё не дошёл до приёма.",
+      "даже если человек ещё не дошёл до приёма. Отмена и неявка тоже разные вещи: об " +
+      "отмене предупредили и время можно было продать заново, неявка — молча не пришёл.",
   );
   lines.push(
     "Выручка дня — деньги, принятые в этот день: стоимость приёмов плюс проданные " +
@@ -205,9 +214,35 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
      */
     const kinds =
       d.arrived > 0 ? `, первичных ${d.firstVisits}, повторных ${d.repeatVisits}` : "";
+    // Отмены и неявки — разные вещи, и обе спрашивают. Новых пациентов тоже.
+    const misses =
+      (d.noShow > 0 ? `, неявок ${d.noShow}` : "") +
+      (d.cancelled > 0 ? `, отмен ${d.cancelled}` : "") +
+      (d.newPatients > 0 ? `, новых пациентов ${d.newPatients}` : "");
     lines.push(
-      `- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}${kinds}${course}${sold}`,
+      `- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}${kinds}${misses}${course}${sold}`,
     );
+    /**
+     * Разрезы дня с первичными внутри.
+     *
+     * «Первичные на остеопатию за сегодня» — обычный вопрос, и без первичных
+     * внутри среза ответить на него нечем: аналитик видел только число приёмов
+     * по услуге.
+     */
+    if (d.byService.length > 0) {
+      lines.push(
+        `    по услугам: ${d.byService
+          .map((x) => `${x.name} — ${x.arrived} приёмов (первичных ${x.first}), ${x.revenue} ₽`)
+          .join("; ")}`,
+      );
+    }
+    if (d.byStaff.length > 0) {
+      lines.push(
+        `    по специалистам: ${d.byStaff
+          .map((x) => `${x.name} — ${x.arrived} приёмов (первичных ${x.first}), ${x.revenue} ₽`)
+          .join("; ")}`,
+      );
+    }
   }
 
   const coursesYear = Number(coursesYearAgg._sum.amount ?? 0);

@@ -20,6 +20,15 @@ import { averageCheck } from "@/lib/metrics/summary";
 export interface RevenueSlice {
   name: string;
   arrived: number;
+  /**
+   * Первичные внутри среза.
+   *
+   * «Первичные пациенты на остеопатию за сегодня» — обычный вопрос владельца,
+   * и ответить на него было нечем: разрез по услугам знал только число
+   * приёмов. Первичность — свойство визита пациента (§8), поэтому она честно
+   * считается в любом срезе, где этот визит участвует.
+   */
+  first: number;
   revenue: number;
 }
 
@@ -34,6 +43,22 @@ export interface RevenueDay {
   /** Все остальные пришедшие. Первичные плюс повторные равны пришедшим. */
   repeatVisits: number;
   noShow: number;
+  /**
+   * Отменённые записи этого дня.
+   *
+   * На «сколько отмен с начала недели» отвечать было нечем: дневные строки
+   * знали только пришедших и неявки. Отмена — не неявка: за неё предупредили,
+   * и время можно было продать заново.
+   */
+  cancelled: number;
+  /**
+   * Новые пациенты этого дня — первое появление телефона в базе (§8).
+   *
+   * Не то же самое, что первичный визит: человек мог оставить телефон в
+   * переписке и до приёма не дойти. Карточки без известной даты первого
+   * обращения сюда не идут — они не «новые», а перенесённые из YCLIENTS.
+   */
+  newPatients: number;
   revenue: number;
   avgCheck: number;
   /**
@@ -97,7 +122,8 @@ export async function revenueByDay(
     where: {
       companyId,
       deletedAt: null,
-      status: { in: ["ARRIVED", "NO_SHOW"] },
+      // Отменённые тоже: их считаем отдельно, к деньгам они отношения не имеют.
+      status: { in: ["ARRIVED", "NO_SHOW", "CANCELLED"] },
       startAt: { gte: from, lt: to },
     },
     select: {
@@ -132,6 +158,8 @@ export async function revenueByDay(
      */
     first: number;
     noShow: number;
+    cancelled: number;
+    newPatients: number;
     /**
      * Оплаченные чеки дня — знаменатель среднего чека: приёмы с суммой плюс
      * продажи курсов. Сеанс курса и бесплатный приём в чек не идут.
@@ -148,6 +176,8 @@ export async function revenueByDay(
     arrived: 0,
     first: 0,
     noShow: 0,
+    cancelled: 0,
+    newPatients: 0,
     paying: 0,
     revenue: 0,
     coursesSold: 0,
@@ -165,7 +195,32 @@ export async function revenueByDay(
    */
   const purchases = await coursePurchasesBetween(companyId, from, to);
 
+  /**
+   * Новые пациенты по дням — первое появление телефона в базе (§8).
+   *
+   * Спрашивают об этом постоянно («новые за сегодня»), а в дневных строках
+   * этого числа не было: аналитик знал только итог за месяц. Карточки, у
+   * которых дату первого обращения взять было неоткуда, не считаем — иначе вся
+   * перенесённая из YCLIENTS база станет притоком одного дня.
+   */
+  const fresh = await prisma.patient.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      firstSeenExact: true,
+      firstSeenAt: { gte: from, lt: to },
+    },
+    select: { firstSeenAt: true },
+  });
+
   const byDay = new Map<string, DayAcc>();
+  for (const p of fresh) {
+    const key = dayKey.format(p.firstSeenAt);
+    const acc = byDay.get(key) ?? empty();
+    acc.newPatients += 1;
+    byDay.set(key, acc);
+  }
+
   for (const p of purchases) {
     const key = dayKey.format(p.at);
     const acc = byDay.get(key) ?? empty();
@@ -185,12 +240,18 @@ export async function revenueByDay(
     const svc = acc.service.get(p.serviceTitle) ?? {
       name: p.serviceTitle,
       arrived: 0,
+      first: 0,
       revenue: 0,
     };
     svc.revenue += p.amount;
     acc.service.set(p.serviceTitle, svc);
     if (p.staffName) {
-      const st = acc.staff.get(p.staffName) ?? { name: p.staffName, arrived: 0, revenue: 0 };
+      const st = acc.staff.get(p.staffName) ?? {
+        name: p.staffName,
+        arrived: 0,
+        first: 0,
+        revenue: 0,
+      };
       st.revenue += p.amount;
       acc.staff.set(p.staffName, st);
     }
@@ -208,8 +269,10 @@ export async function revenueByDay(
       if (r.revenueSource === "PREPAID") acc.courseSessions += 1;
 
       const add = (map: Map<string, RevenueSlice>, name: string) => {
-        const cur = map.get(name) ?? { name, arrived: 0, revenue: 0 };
+        const cur = map.get(name) ?? { name, arrived: 0, first: 0, revenue: 0 };
         cur.arrived += 1;
+        // Первичность — свойство визита, поэтому она верна в любом срезе.
+        if (r.isFirstVisit) cur.first += 1;
         cur.revenue += Number(r.revenue);
         map.set(name, cur);
       };
@@ -225,8 +288,9 @@ export async function revenueByDay(
       if (r.services.length > 0) {
         for (const sv of r.services) {
           const name = sv.service.title;
-          const cur = acc.service.get(name) ?? { name, arrived: 0, revenue: 0 };
+          const cur = acc.service.get(name) ?? { name, arrived: 0, first: 0, revenue: 0 };
           cur.arrived += 1;
+          if (r.isFirstVisit) cur.first += 1;
           cur.revenue += Number(sv.priceCharged);
           acc.service.set(name, cur);
         }
@@ -235,8 +299,10 @@ export async function revenueByDay(
         // писать) — тогда остаётся основная услуга.
         add(acc.service, r.primaryService?.title ?? "услуга не указана");
       }
-    } else {
+    } else if (r.status === "NO_SHOW") {
       acc.noShow += 1;
+    } else {
+      acc.cancelled += 1;
     }
     byDay.set(key, acc);
   }
@@ -259,6 +325,8 @@ export async function revenueByDay(
       firstVisits: v.first,
       repeatVisits: v.arrived - v.first,
       noShow: v.noShow,
+      cancelled: v.cancelled,
+      newPatients: v.newPatients,
       revenue: v.revenue,
       avgCheck: averageCheck(v.revenue, v.paying),
       coursesSold: v.coursesSold,

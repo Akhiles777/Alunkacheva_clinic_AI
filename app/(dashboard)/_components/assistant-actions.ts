@@ -21,6 +21,7 @@ import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { buildClinicSnapshot } from "@/lib/assistant/server-context";
 import { personaFor } from "@/lib/assistant/personas";
+import { toPlainText } from "@/lib/assistant/plain-text";
 
 /**
  * Ассистент говорит от роли вошедшего сотрудника. Роль берём из сессии, а не
@@ -102,8 +103,14 @@ export async function askAI(
     const data = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
     };
-    const text = data.choices?.[0]?.message?.content?.trim();
-    return { text: text && text.length > 0 ? text : null };
+    /**
+     * Разметку снимаем на выходе.
+     *
+     * Просьбы в промпте модель соблюдает через раз, а ответ уходит человеку
+     * каждый раз: владелец видел «провела **39 визитов**» со звёздочками.
+     */
+    const text = toPlainText(data.choices?.[0]?.message?.content?.trim() ?? "");
+    return { text: text.length > 0 ? text : null };
   } catch (e) {
     return { text: null, error: e instanceof Error ? e.name : "unknown" };
   } finally {

@@ -553,6 +553,9 @@ export async function getOwnerAiContext(): Promise<string> {
         // первичных» аналитик отвечать не мог, этого числа ему не давали.
         `${d.arrived > 0 ? `, первичных ${d.firstVisits}, повторных ${d.repeatVisits}` : ""}` +
         `${d.noShow > 0 ? `, неявок ${d.noShow}` : ""}` +
+        // Отмена — не неявка: о ней предупредили. И то и другое спрашивают.
+        `${d.cancelled > 0 ? `, отмен ${d.cancelled}` : ""}` +
+        `${d.newPatients > 0 ? `, новых пациентов ${d.newPatients}` : ""}` +
         `${d.avgCheck > 0 ? `, средний чек ${d.avgCheck} ₽` : ""}`,
     );
     /**
