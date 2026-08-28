@@ -29,6 +29,10 @@ export interface RevenueDay {
   /** «18 августа, вторник». */
   label: string;
   arrived: number;
+  /** Первичные: первый в истории пациента визит со статусом «пришёл» (§8). */
+  firstVisits: number;
+  /** Все остальные пришедшие. Первичные плюс повторные равны пришедшим. */
+  repeatVisits: number;
   noShow: number;
   revenue: number;
   avgCheck: number;
@@ -101,6 +105,8 @@ export async function revenueByDay(
       status: true,
       revenue: true,
       revenueSource: true,
+      // Первичный визит — первый в истории пациента со статусом «пришёл» (§8).
+      isFirstVisit: true,
       staff: { select: { name: true } },
       /**
        * Состав визита, а не только основная услуга.
@@ -117,6 +123,14 @@ export async function revenueByDay(
 
   interface DayAcc {
     arrived: number;
+    /**
+     * Первичные: первый в истории пациента визит со статусом «пришёл» (§8).
+     *
+     * Без этого числа ИИ-аналитик не мог ответить на «сколько сегодня
+     * первичных» — в дневных строках его просто не было, и модель отвечала
+     * общими словами о данных, которых ей не дали.
+     */
+    first: number;
     noShow: number;
     /**
      * Оплаченные чеки дня — знаменатель среднего чека: приёмы с суммой плюс
@@ -132,6 +146,7 @@ export async function revenueByDay(
   }
   const empty = (): DayAcc => ({
     arrived: 0,
+    first: 0,
     noShow: 0,
     paying: 0,
     revenue: 0,
@@ -187,6 +202,7 @@ export async function revenueByDay(
     const acc = byDay.get(key) ?? empty();
     if (r.status === "ARRIVED") {
       acc.arrived += 1;
+      if (r.isFirstVisit) acc.first += 1;
       acc.revenue += Number(r.revenue);
       if (Number(r.revenue) > 0) acc.paying += 1;
       if (r.revenueSource === "PREPAID") acc.courseSessions += 1;
@@ -240,6 +256,8 @@ export async function revenueByDay(
       date: key,
       label: dayLabel.format(at),
       arrived: v.arrived,
+      firstVisits: v.first,
+      repeatVisits: v.arrived - v.first,
       noShow: v.noShow,
       revenue: v.revenue,
       avgCheck: averageCheck(v.revenue, v.paying),

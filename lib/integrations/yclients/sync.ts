@@ -236,23 +236,58 @@ export async function syncServices(companyId: string, client: YclientsClientHand
    */
   const failures: string[] = [];
 
+  /** Услуги, цену которых клиника задала у нас: её выгрузка не переписывает. */
+  const locked = new Set(
+    (
+      await prisma.service.findMany({
+        where: { companyId, priceLocked: true, yclientsServiceId: { not: null } },
+        select: { yclientsServiceId: true },
+      })
+    )
+      .map((x) => x.yclientsServiceId)
+      .filter((x): x is number => x !== null),
+  );
+
   for (const dto of dtos) {
     const s = mapService(dto);
     try {
       const own = adoptCandidate(s.title, unlinked, taken.has(s.yclientsServiceId));
+      /**
+       * Цену, заданную у нас, выгрузка не трогает.
+       *
+       * «Настройки → Услуги» позволяли её изменить, а ближайшая выгрузка
+       * возвращала значение из YCLIENTS — правка не держалась и четверти часа.
+       * Цену YCLIENTS запоминаем отдельным полем: по нему видно, от чего
+       * отличается наша, и есть куда вернуться.
+       */
+      const price = locked.has(s.yclientsServiceId) ? {} : { price: s.price };
       if (own) {
         // Связываем свою строку вместо создания второй. Привязки к кабинетам,
         // база знаний и ссылки визитов остаются при ней.
         const linked = await prisma.service.updateMany({
           where: { id: own, companyId, yclientsServiceId: null },
-          data: { yclientsServiceId: s.yclientsServiceId, title: s.title, price: s.price, durationMin: s.durationMin, isActive: s.isActive },
+          data: {
+            yclientsServiceId: s.yclientsServiceId,
+            title: s.title,
+            ...price,
+            yclientsPrice: s.price,
+            durationMin: s.durationMin,
+            isActive: s.isActive,
+          },
         });
         if (linked.count > 0) continue;
       }
       await prisma.service.upsert({
         where: { companyId_yclientsServiceId: { companyId, yclientsServiceId: s.yclientsServiceId } },
-        update: { title: s.title, price: s.price, durationMin: s.durationMin, kind: s.kind, isActive: s.isActive },
-        create: { companyId, ...s },
+        update: {
+          title: s.title,
+          ...price,
+          yclientsPrice: s.price,
+          durationMin: s.durationMin,
+          kind: s.kind,
+          isActive: s.isActive,
+        },
+        create: { companyId, ...s, yclientsPrice: s.price },
       });
     } catch (e) {
       failures.push(`${s.yclientsServiceId}: ${(e as Error)?.message?.slice(0, 120) ?? e}`);

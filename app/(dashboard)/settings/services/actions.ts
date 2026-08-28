@@ -18,6 +18,16 @@ export interface ServiceRow {
   title: string;
   kind: ServiceKind;
   price: number;
+  /**
+   * Цена задана у нас и выгрузкой не перезаписывается.
+   *
+   * Экран позволял менять цену, а ближайшая выгрузка возвращала значение из
+   * YCLIENTS — правка не держалась и четверти часа, и это читалось как «не
+   * сохраняется».
+   */
+  priceLocked: boolean;
+  /** Что по этой услуге говорит YCLIENTS: видно, от чего отличается наша цена. */
+  yclientsPrice: number | null;
   durationMin: number;
   isActive: boolean;
   isCourse: boolean;
@@ -64,6 +74,8 @@ export async function getServices(): Promise<ServicesPayload> {
       title: s.title,
       kind: s.kind,
       price: Number(s.price),
+      priceLocked: s.priceLocked,
+      yclientsPrice: s.yclientsPrice === null ? null : Number(s.yclientsPrice),
       durationMin: s.durationMin,
       isActive: s.isActive,
       isCourse: s.isCourse,
@@ -171,7 +183,7 @@ async function save(
 
   const existing = await prisma.service.findMany({
     where: { companyId },
-    select: { id: true, title: true },
+    select: { id: true, title: true, price: true, priceLocked: true },
   });
   const submitted = clean.filter((r) => !r.id.startsWith("new-")).map((r) => r.id);
   /**
@@ -213,11 +225,29 @@ async function save(
     for (const del of toDelete) {
       await tx.service.delete({ where: { id: del.id } });
     }
+    const before = new Map(existing.map((e) => [e.id, e]));
     for (const r of clean) {
+      /**
+       * Цену изменили руками — значит она наша, и выгрузка её не перепишет.
+       *
+       * Отметку ставим только при настоящем изменении: сохранение экрана без
+       * правки цены не должно молча отвязывать услугу от YCLIENTS. Вернуть
+       * цену провайдера можно кнопкой «взять из YCLIENTS».
+       */
+      const was = before.get(r.id);
+      const priceChanged = was !== undefined && Number(was.price) !== r.price;
+      /**
+       * Кнопка «в YCLIENTS» вернула цену провайдера и сняла отметку — тогда
+       * услуга снова обновляется выгрузкой. Иначе отметка ставится сама, как
+       * только цену изменили руками, и держится, пока её не снимут.
+       */
+      const released =
+        !r.priceLocked && r.yclientsPrice !== null && r.price === r.yclientsPrice;
       const data = {
         title: r.title.trim(),
         kind: r.kind,
         price: r.price,
+        priceLocked: released ? false : priceChanged || Boolean(was?.priceLocked),
         durationMin: r.durationMin,
         isActive: r.isActive,
         isCourse: r.isCourse,

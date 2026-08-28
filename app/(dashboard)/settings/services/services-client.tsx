@@ -26,6 +26,9 @@ function blankService(): ServiceRow {
     title: "Новая услуга",
     kind: "OTHER",
     price: 0,
+    // Заведённая у нас услуга в YCLIENTS не существует: её цена наша по определению.
+    priceLocked: true,
+    yclientsPrice: null,
     durationMin: 30,
     isActive: true,
     isCourse: false,
@@ -176,6 +179,31 @@ export function ServicesClient({ initial }: { initial: ServicesPayload }) {
                 />
                 <span className="text-text-subtle text-2xs">₽</span>
               </label>
+              {/*
+                Чья это цена — наша или YCLIENTS.
+
+                Без пометки правка выглядела бессмысленной: экран позволял её
+                изменить, а выгрузка через четверть часа возвращала прежнее
+                значение. Теперь наша цена держится, и видно, от чего она
+                отличается и как вернуть провайдерскую.
+              */}
+              {s.priceLocked && !s.id.startsWith("new-") ? (
+                <span className="text-text-subtle flex items-center gap-1.5 text-2xs">
+                  <span title="Цена задана в клинике: выгрузка её не перезапишет">наша цена</span>
+                  {s.yclientsPrice !== null && s.yclientsPrice !== s.price ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        patch(s.id, { price: s.yclientsPrice ?? 0, priceLocked: false })
+                      }
+                      className="border-border hover:bg-hover rounded-md border px-1.5 py-0.5"
+                      title="Вернуть цену, которую отдаёт YCLIENTS, и снова обновлять её выгрузкой"
+                    >
+                      в YCLIENTS {s.yclientsPrice} ₽
+                    </button>
+                  ) : null}
+                </span>
+              ) : null}
               <label className="flex items-center gap-2 text-sm">
                 <Toggle checked={s.isActive} onChange={(v) => patch(s.id, { isActive: v })} />
                 активна

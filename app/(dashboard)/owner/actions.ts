@@ -549,6 +549,9 @@ export async function getOwnerAiContext(): Promise<string> {
     const mark = d.date === todayKey ? " — СЕГОДНЯ" : d.date === yesterdayKey ? " — ВЧЕРА" : "";
     lines.push(
       `- ${d.date} (${d.label})${mark}: выручка ${d.revenue} ₽, пришли ${d.arrived}` +
+        // Первичные и повторные — в каждой строке: на «сколько сегодня
+        // первичных» аналитик отвечать не мог, этого числа ему не давали.
+        `${d.arrived > 0 ? `, первичных ${d.firstVisits}, повторных ${d.repeatVisits}` : ""}` +
         `${d.noShow > 0 ? `, неявок ${d.noShow}` : ""}` +
         `${d.avgCheck > 0 ? `, средний чек ${d.avgCheck} ₽` : ""}`,
     );
