@@ -51,3 +51,39 @@ describe("кого добираем", () => {
     expect(needsAnswer({}, NOW)).toBe(false);
   });
 });
+
+/**
+ * Возврат диалога агенту не значит «переиграть старую переписку».
+ *
+ * Живой случай: разговор кончился в 13:50 репликой пациента «Ок», на которую
+ * администратор уже ответил. Через четыре часа диалог вернулся агенту, добор
+ * нашёл последнее сообщение пациента и написал «Хорошо, если появятся вопросы
+ * — я здесь». Со стороны это бот, который очнулся и заговорил сам с собой.
+ */
+describe("после возврата агенту", () => {
+  const pausedUntil = new Date(NOW.getTime() - 5 * 60_000);
+
+  it("на сообщение, пришедшее при человеке, не отвечаем", () => {
+    expect(
+      needsAnswer(
+        { last: { direction: "IN", createdAt: minutesAgo(240) }, botPausedUntil: pausedUntil },
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("на новое сообщение после возврата — отвечаем", () => {
+    expect(
+      needsAnswer(
+        { last: { direction: "IN", createdAt: minutesAgo(4) }, botPausedUntil: pausedUntil },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it("паузы не было вовсе — правило ничего не меняет", () => {
+    expect(
+      needsAnswer({ last: { direction: "IN", createdAt: minutesAgo(10) } }, NOW),
+    ).toBe(true);
+  });
+});

@@ -155,6 +155,18 @@ export async function POST(req: Request) {
         direction: "OUT",
         authorType: "STAFF",
         body,
+        /**
+         * Вложения сохраняем и у исходящих.
+         *
+         * Их здесь не было вовсе: сотрудник отправлял с телефона две
+         * фотографии, в переписке оставалась строка «[фотография]
+         * [фотография]» — сами файлы открыть было нельзя, потому что записей о
+         * них не появлялось. Пометки в тексте при этом не убирались: инбокс
+         * снимает их, только когда вложения есть.
+         */
+        attachments: event.attachments?.length
+          ? (event.attachments as unknown as object[])
+          : undefined,
         externalId: event.externalId,
         status: "SENT",
         sentAt: new Date(),

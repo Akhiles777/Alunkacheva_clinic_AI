@@ -3,6 +3,7 @@ import { normalizePhone } from "@/lib/phone";
 import { notifyStaff, escalationRecipients } from "@/lib/server/notify";
 import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
+import { patientServices, priceLine, priceListText } from "./price-list";
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { focusLine, focusOf, searchText } from "./focus";
@@ -439,7 +440,7 @@ async function clinicContext(
   const matched = question ? matchServices(question, services) : [];
   if (matched.length > 0) {
     lines.push("", "ПОДХОДИТ ПОД ВОПРОС (цену и длительность бери только отсюда):");
-    for (const s of matched) lines.push(`• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
+    for (const s of patientServices(matched)) lines.push(priceLine(s));
   }
 
   /**
@@ -453,8 +454,15 @@ async function clinicContext(
   const focus = question ? focusLine(focusOf(question, whomFor(question), staff.map((p) => p.name))) : "";
   if (focus) lines.push("", focus);
 
+  /**
+   * Модели даём тот же список, что видит пациент.
+   *
+   * Заготовки с нулевой и рублёвой ценой она цитировала как настоящие цены —
+   * «Сдача анализов — 1 ₽» при чеке в несколько тысяч. И «0 мин» она тоже
+   * зачитывала: незаполненное поле выглядело как длительность приёма.
+   */
   lines.push("", "Все услуги и цены:");
-  for (const s of services) lines.push(`• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
+  for (const s of patientServices(services)) lines.push(priceLine(s));
   lines.push("", "Часы работы:");
   for (const d of schedule) lines.push(`${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
   const closed = [1, 2, 3, 4, 5, 6, 7].filter((w) => !schedule.some((d) => d.weekday === w));
@@ -1627,12 +1635,23 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
     });
   }
   if (data === "prices") {
-    const services = await getServices(ctx.companyId);
-    const lines = services.map((s) => `• ${s.title} — ${s.price} ₽, ${s.durationMin} мин`);
-    return respond(ctx, conversationId, {
-      text: `Услуги и цены:\n${lines.join("\n")}`,
-      buttons: mainMenu(),
-    });
+    /**
+     * Пациенту — только то, что он может купить.
+     *
+     * Прежде уходил весь справочник целиком: сорок восемь строк вместе с
+     * заготовками («Название — 0 ₽», «IV-ТЕРАПИЯ — 1 ₽») и служебными
+     * позициями («БОС/персонал»). Человек, спросивший цену, получал стену
+     * текста, в которой свою услугу нужно было ещё найти.
+     */
+    const text = priceListText(await getServices(ctx.companyId));
+    if (text === null) {
+      await escalate(ctx.companyId, conversationId, "MISUNDERSTOOD", "Цены не заполнены в справочнике").catch(() => {});
+      return respond(ctx, conversationId, {
+        text: "Цены уточнит администратор — передал(а) ему вопрос.",
+        buttons: mainMenu(),
+      });
+    }
+    return respond(ctx, conversationId, { text, buttons: mainMenu() });
   }
 
   if (data === "address") {

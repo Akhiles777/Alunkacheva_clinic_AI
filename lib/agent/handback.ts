@@ -72,9 +72,15 @@ export async function handBackAndRemind(companyId: string): Promise<HandbackResu
       await prisma.$transaction([
         prisma.conversation.update({
           where: { id: d.id },
+          /**
+           * Отметку о паузе НЕ снимаем: она осталась в прошлом и больше ничего
+           * не запрещает, но служит границей «досюда разговор вёл человек».
+           * По ней добор отличает новое сообщение от старого — иначе агент,
+           * получив диалог обратно, отвечает на реплику четырёхчасовой
+           * давности, на которую администратор уже ответил.
+           */
           data: {
             status: "BOT_ACTIVE",
-            botPausedUntil: null,
             remindedAt: null,
             reminderCount: 0,
           },
