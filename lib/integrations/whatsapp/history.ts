@@ -93,6 +93,9 @@ export async function importWhatsappHistory(input: {
       // отвечал живой человек, а не бот.
       authorType: m.direction === "IN" ? ("PATIENT" as const) : ("STAFF" as const),
       body: m.text,
+      // Файлы истории тоже сохраняем: без них фотография из прошлогодней
+      // переписки остаётся подписью, которую нельзя открыть.
+      attachments: m.attachments.length ? (m.attachments as unknown as object[]) : undefined,
       externalId: m.externalId,
       status: m.direction === "OUT" ? ("SENT" as const) : undefined,
       sentAt: m.direction === "OUT" ? m.at : undefined,

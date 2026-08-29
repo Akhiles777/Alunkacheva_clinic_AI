@@ -30,13 +30,50 @@ describe("parseHistory", () => {
     expect(rows.map((r) => r.text)).toEqual(["ответ на сообщение", "ссылка", "фото анализа"]);
   });
 
-  it("помечает нетекстовое сообщение, но не теряет его", () => {
+  it("нетекстовое сообщение подписываем по-человечески", () => {
     const rows = parseHistory([
       { idMessage: "a", type: "incoming", timestamp: 1, typeMessage: "imageMessage" },
     ]);
-    // Содержимое нам недоступно, но факт обмена важен для понимания разговора.
+    // «[imageMessage]» — тип провайдера, он в переписке ничего не объясняет.
     expect(rows).toHaveLength(1);
-    expect(rows[0].text).toBe("[imageMessage]");
+    expect(rows[0].text).toBe("[фотография]");
+    // Ссылки нет — вложение остаётся подписью, открывать нечего.
+    expect(rows[0].attachments[0].source).toEqual({ provider: "NONE" });
+  });
+
+  /**
+   * Файлы истории раньше терялись целиком: фотография превращалась в подпись,
+   * которую нельзя открыть. Для переписки, которая шла на телефоне до
+   * подключения платформы, это половина содержания.
+   */
+  it("вытаскивает файл из истории — и из корня записи, и из fileMessageData", () => {
+    const rows = parseHistory([
+      {
+        idMessage: "a",
+        type: "outgoing",
+        timestamp: 1,
+        typeMessage: "imageMessage",
+        downloadUrl: "https://api.green-api.com/file/a.jpg",
+        caption: "вот снимок",
+      },
+      {
+        idMessage: "b",
+        type: "incoming",
+        timestamp: 2,
+        typeMessage: "documentMessage",
+        fileMessageData: {
+          downloadUrl: "https://api.green-api.com/file/b.pdf",
+          fileName: "анализы.pdf",
+          mimeType: "application/pdf",
+        },
+      },
+    ]);
+    expect(rows[0].attachments[0].source).toEqual({
+      provider: "WHATSAPP",
+      url: "https://api.green-api.com/file/a.jpg",
+    });
+    expect(rows[0].text).toBe("[фотография] вот снимок");
+    expect(rows[1].attachments[0].fileName).toBe("анализы.pdf");
   });
 
   it("пропускает строки без идентификатора, времени и содержимого", () => {

@@ -3,6 +3,12 @@ import { decryptSecret } from "@/lib/crypto";
 import { chatIdFromPhone } from "./chat-id";
 import { normalizePhone } from "@/lib/phone";
 import {
+  KIND_LABEL,
+  messageBody,
+  type AttachmentKind,
+  type IncomingAttachment,
+} from "@/lib/agent/attachments";
+import {
   ENDPOINTS,
   GREEN_API_BASE,
   isWhatsappEnabled,
@@ -197,6 +203,14 @@ export interface HistoryMessage {
   direction: "IN" | "OUT";
   text: string;
   at: Date;
+  /**
+   * Файлы сообщения.
+   *
+   * История их теряла: фотография превращалась в строку «[imageMessage]», и
+   * открыть её было нельзя — ссылки провайдера мы не сохраняли. Для переписки,
+   * которая шла на телефоне до подключения платформы, это половина содержания.
+   */
+  attachments: IncomingAttachment[];
 }
 
 /**
@@ -231,6 +245,19 @@ export async function fetchChatHistory(
  * Разбор ответа истории. Отдельно от запроса — чтобы проверять тестами без
  * сети: формат у провайдера разный для текста, подписи к файлу и цитаты.
  */
+/** Тип сообщения провайдера → наш вид вложения. Те же соответствия, что в вебхуке. */
+const KIND_BY_HISTORY_TYPE: Record<string, AttachmentKind> = {
+  imageMessage: "photo",
+  videoMessage: "video",
+  documentMessage: "document",
+  audioMessage: "voice",
+  voiceMessage: "voice",
+  pttMessage: "voice",
+  stickerMessage: "sticker",
+  locationMessage: "location",
+  contactMessage: "contact",
+};
+
 export function parseHistory(rows: unknown[]): HistoryMessage[] {
   const out: HistoryMessage[] = [];
   for (const raw of rows) {
@@ -246,6 +273,15 @@ export function parseHistory(rows: unknown[]): HistoryMessage[] {
       extendedTextMessageData?: { text?: string };
       caption?: string;
       typeMessage?: string;
+      downloadUrl?: string;
+      mimeType?: string;
+      fileName?: string;
+      fileMessageData?: {
+        downloadUrl?: string;
+        caption?: string;
+        mimeType?: string;
+        fileName?: string;
+      };
     };
     if (!m.idMessage || !m.timestamp) continue;
 
@@ -254,11 +290,32 @@ export function parseHistory(rows: unknown[]): HistoryMessage[] {
       m.extendedTextMessage?.text ??
       m.extendedTextMessageData?.text ??
       m.caption ??
+      m.fileMessageData?.caption ??
       ""
     ).trim();
-    // Нетекстовые сообщения истории помечаем: содержимое нам недоступно, но
-    // сам факт обмена важен для понимания разговора.
-    const body = text || (m.typeMessage ? `[${m.typeMessage}]` : "");
+
+    /**
+     * Файл сообщения. Провайдер кладёт ссылку то в корень записи, то в
+     * fileMessageData — берём оба варианта, иначе половина фотографий
+     * останется подписью «[imageMessage]».
+     */
+    const kind = m.typeMessage ? KIND_BY_HISTORY_TYPE[m.typeMessage] : undefined;
+    const url = m.downloadUrl ?? m.fileMessageData?.downloadUrl;
+    const attachments: IncomingAttachment[] = kind
+      ? [
+          {
+            kind,
+            label: KIND_LABEL[kind],
+            source: url ? { provider: "WHATSAPP", url } : { provider: "NONE" },
+            mimeType: m.mimeType ?? m.fileMessageData?.mimeType,
+            fileName: m.fileName ?? m.fileMessageData?.fileName,
+          },
+        ]
+      : [];
+
+    // Нетекстовое сообщение подписываем по-человечески: «[фотография]», а не
+    // «[imageMessage]». Тип провайдера в переписке ничего не объясняет.
+    const body = messageBody(text, attachments) || (m.typeMessage ? `[${m.typeMessage}]` : "");
     if (!body) continue;
 
     out.push({
@@ -266,6 +323,7 @@ export function parseHistory(rows: unknown[]): HistoryMessage[] {
       direction: m.type === "outgoing" ? "OUT" : "IN",
       text: body.slice(0, 4000),
       at: new Date(m.timestamp * 1000),
+      attachments,
     });
   }
   // От старых к новым: в таком порядке они лягут в переписку.

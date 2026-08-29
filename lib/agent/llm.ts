@@ -139,6 +139,47 @@ export async function answerLLM(
     return null;
   }
 
+  /**
+   * Одна повторная попытка на обрыв и таймаут.
+   *
+   * Молчание агента — самый заметный для клиники сбой: пациенту приходится
+   * писать дважды, а администратор видит бота, который «иногда не отвечает».
+   * Причина у этого одна и та же — единичный таймаут или оборванное
+   * соединение к провайдеру модели. Вторая попытка снимает почти все такие
+   * случаи и стоит секунд, а не денег: на ошибку ответа (4xx, 5xx с телом)
+   * повтора нет — там дело не во времени, и второй заход даст ту же ошибку.
+   *
+   * Вебхуку это не мешает: провайдеру мессенджера мы отвечаем сразу, а разговор
+   * ведём после ответа.
+   */
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const answer = await askOnce({
+      key,
+      question,
+      clinicContext,
+      history,
+      extraRules,
+      patientName,
+      lastAttempt: attempt === 2,
+    });
+    if (answer !== RETRY) return answer;
+  }
+  return null;
+}
+
+/** Признак «попытка сорвалась по времени или связи — можно повторить». */
+const RETRY = Symbol("retry");
+
+async function askOnce(input: {
+  key: string;
+  question: string;
+  clinicContext: string;
+  history: Turn[];
+  extraRules?: string;
+  patientName?: string | null;
+  lastAttempt: boolean;
+}): Promise<string | null | typeof RETRY> {
+  const { key, question, clinicContext, history, extraRules, patientName } = input;
   try {
     const res = await fetch(`${BASE_URL}/chat/completions`, {
       method: "POST",
@@ -199,9 +240,11 @@ export async function answerLLM(
     const name = (e as Error)?.name;
     console.error(
       name === "TimeoutError"
-        ? `[agent] модель не ответила за ${TIMEOUT_MS} мс, длина справки ${clinicContext.length} знаков`
-        : `[agent] сбой обращения к модели: ${String((e as Error)?.message ?? e).slice(0, 200)}`,
+        ? `[agent] модель не ответила за ${TIMEOUT_MS} мс, длина справки ${clinicContext.length} знаков` +
+            (input.lastAttempt ? "" : " — повторяю")
+        : `[agent] сбой обращения к модели: ${String((e as Error)?.message ?? e).slice(0, 200)}` +
+            (input.lastAttempt ? "" : " — повторяю"),
     );
-    return null;
+    return input.lastAttempt ? null : RETRY;
   }
 }
