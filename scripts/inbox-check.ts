@@ -82,6 +82,54 @@ async function main() {
     );
   }
 
+  /**
+   * Доставка ответов — по каналам.
+   *
+   * «Бот иногда не отвечает» бывает двух совершенно разных сортов: агент не
+   * составил ответ (тогда сообщения нет вовсе) или составил, а провайдер его
+   * не принял (сообщение есть, но осталось в очереди). Различить их по экрану
+   * нельзя — в инбоксе ответ виден в обоих случаях, а у пациента его нет.
+   *
+   * Считаем по последней неделе: старое всё равно уже не доставить.
+   */
+  const week = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  const outgoing = await prisma.message.groupBy({
+    by: ["channel", "status"],
+    where: {
+      companyId: company.id,
+      direction: "OUT",
+      deletedAt: null,
+      isDraft: false,
+      createdAt: { gte: week },
+    },
+    _count: { _all: true },
+  });
+
+  console.log("\nответы за неделю — по каналам:");
+  const outgoingByChannel = new Map<string, Map<string, number>>();
+  for (const r of outgoing) {
+    const m = outgoingByChannel.get(r.channel) ?? new Map<string, number>();
+    m.set(r.status, r._count._all);
+    outgoingByChannel.set(r.channel, m);
+  }
+  if (outgoingByChannel.size === 0) {
+    console.log("  ответов за неделю не было");
+  }
+  for (const [channel, statuses] of outgoingByChannel) {
+    const total = [...statuses.values()].reduce((a, b) => a + b, 0);
+    const stuck = (statuses.get("QUEUED") ?? 0) + (statuses.get("FAILED") ?? 0);
+    console.log(
+      `  ${channel.padEnd(10)} всего ${String(total).padStart(4)} · ` +
+        [...statuses.entries()].map(([st, n]) => `${st} ${n}`).join(", ") +
+        (stuck > 0 ? `  ← ${stuck} не доставлено` : "  ✓"),
+    );
+  }
+  console.log(
+    "  QUEUED/FAILED означает, что ответ агент составил, а провайдер его не принял:\n" +
+      "  в переписке он есть, у пациента — нет. Молчание агента выглядит так же,\n" +
+      "  но там ответа нет и в базе.",
+  );
+
   await prisma.$disconnect();
 }
 
