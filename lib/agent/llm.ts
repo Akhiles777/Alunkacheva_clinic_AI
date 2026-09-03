@@ -1,4 +1,6 @@
 import { CLINIC_NAME } from "@/lib/brand";
+import { finishAgentRun, startAgentRun } from "./run-log";
+import type { AgentRunOutcome } from "@/generated/prisma/enums";
 
 /**
  * Ответ пациенту по справке клиники. Тот же провайдер, что у ассистента в
@@ -126,6 +128,11 @@ export async function answerLLM(
    * ни остальных данных (§7).
    */
   patientName?: string | null,
+  /**
+   * Куда писать журнал попыток. Не передан — журнал не ведётся (так вызывают
+   * из тестов и разовых скриптов), ответ от этого не меняется.
+   */
+  log?: { companyId: string; conversationId: string },
 ): Promise<string | null> {
   const key = process.env.ROUTER_AI;
   if (!key) {
@@ -152,8 +159,17 @@ export async function answerLLM(
    * Вебхуку это не мешает: провайдеру мессенджера мы отвечаем сразу, а разговор
    * ведём после ответа.
    */
+  /**
+   * Каждая попытка — строка в журнале, включая повтор. Иначе «модель ответила
+   * со второго раза» неотличимо от «ответила сразу», а именно эта разница и
+   * объясняет, почему пациенту иногда приходится ждать вдвое дольше.
+   */
+  let previousRun: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const answer = await askOnce({
+    const runId: string | null = log
+      ? await startAgentRun({ ...log, model: MODEL, retryOf: previousRun })
+      : null;
+    const attemptResult = await askOnce({
       key,
       question,
       clinicContext,
@@ -162,13 +178,37 @@ export async function answerLLM(
       patientName,
       lastAttempt: attempt === 2,
     });
-    if (answer !== RETRY) return answer;
+
+    await finishAgentRun(runId, {
+      outcome: attemptResult.outcome,
+      promptTokens: attemptResult.promptTokens,
+      completionTokens: attemptResult.completionTokens,
+      error: attemptResult.error,
+    });
+
+    if (!attemptResult.retry) return attemptResult.text;
+    previousRun = runId;
   }
   return null;
 }
 
-/** Признак «попытка сорвалась по времени или связи — можно повторить». */
-const RETRY = Symbol("retry");
+/**
+ * Чем кончилась одна попытка.
+ *
+ * Возвращаем объектом, а не строкой: журналу нужны причина, расход токенов и
+ * признак «можно повторить». Держать это в переменных модуля нельзя — агент
+ * отвечает нескольким пациентам одновременно, и такие переменные перепутали бы
+ * их между собой.
+ */
+interface Attempt {
+  text: string | null;
+  outcome: AgentRunOutcome;
+  /** Сорвалось по времени или связи — имеет смысл повторить. */
+  retry: boolean;
+  error?: unknown;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+}
 
 async function askOnce(input: {
   key: string;
@@ -178,7 +218,7 @@ async function askOnce(input: {
   extraRules?: string;
   patientName?: string | null;
   lastAttempt: boolean;
-}): Promise<string | null | typeof RETRY> {
+}): Promise<Attempt> {
   const { key, question, clinicContext, history, extraRules, patientName } = input;
   try {
     const res = await fetch(`${BASE_URL}/chat/completions`, {
@@ -220,31 +260,54 @@ async function askOnce(input: {
        */
       const body = await res.text().catch(() => "");
       console.error(`[agent] модель ответила ${res.status}: ${body.slice(0, 200)}`);
-      return null;
+      // Ошибка ответа — не про время: повтор даст ту же ошибку.
+      return {
+        text: null,
+        outcome: "PROVIDER_ERROR",
+        retry: false,
+        error: `RouterAI ${res.status}`,
+      };
     }
 
     const json = (await res.json()) as {
       choices?: { message?: { content?: string }; finish_reason?: string }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const choice = json.choices?.[0];
     const text = choice?.message?.content?.trim();
+    const promptTokens = json.usage?.prompt_tokens ?? null;
+    const completionTokens = json.usage?.completion_tokens ?? null;
     if (!text) {
       console.error(
         `[agent] модель вернула пустой ответ (finish_reason: ${choice?.finish_reason ?? "нет"}), ` +
           `длина справки ${clinicContext.length} знаков`,
       );
-      return null;
+      return {
+        text: null,
+        outcome: "EMPTY_RESPONSE",
+        retry: false,
+        error: `пустой ответ, finish_reason: ${choice?.finish_reason ?? "нет"}`,
+        promptTokens,
+        completionTokens,
+      };
     }
-    return text;
+    return { text, outcome: "OK", retry: false, promptTokens, completionTokens };
   } catch (e) {
     const name = (e as Error)?.name;
+    const timeout = name === "TimeoutError";
     console.error(
-      name === "TimeoutError"
+      timeout
         ? `[agent] модель не ответила за ${TIMEOUT_MS} мс, длина справки ${clinicContext.length} знаков` +
             (input.lastAttempt ? "" : " — повторяю")
         : `[agent] сбой обращения к модели: ${String((e as Error)?.message ?? e).slice(0, 200)}` +
             (input.lastAttempt ? "" : " — повторяю"),
     );
-    return input.lastAttempt ? null : RETRY;
+    return {
+      text: null,
+      outcome: timeout ? "TIMEOUT" : "PROVIDER_ERROR",
+      // Повторяем только то, что могло сорваться случайно.
+      retry: !input.lastAttempt,
+      error: timeout ? `таймаут ${TIMEOUT_MS} мс` : `сбой связи: ${name ?? "неизвестно"}`,
+    };
   }
 }

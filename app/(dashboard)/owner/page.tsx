@@ -4,6 +4,8 @@ import { can } from "@/lib/server/authz";
 import { getOwnerReport, getWeeklyDynamics } from "./actions";
 import { OwnerAssistant } from "./owner-assistant";
 import { WeeklyCharts } from "./weekly-charts";
+import { AgentSection } from "./agent-section";
+import { getAgentStats } from "@/lib/server/agent-stats";
 
 export const metadata = { title: "Владелец" };
 
@@ -38,7 +40,12 @@ export default async function OwnerPage() {
     );
   }
 
-  const [report, weekly] = await Promise.all([getOwnerReport(), getWeeklyDynamics()]);
+  const [report, weekly, agent] = await Promise.all([
+    getOwnerReport(),
+    getWeeklyDynamics(),
+    // Период тот же, что и у остального кабинета: «Месяц» из отчётов.
+    getAgentStats(session.companyId, "month"),
+  ]);
 
   return (
     <>
@@ -201,6 +208,11 @@ export default async function OwnerPage() {
             </table>
           </div>
         </section>
+
+        <AgentSection
+          stats={agent}
+          periodLabel={`за ${report.period.days} дней · ${report.period.from} — ${report.period.to}`}
+        />
 
         <div className="mt-4">
           <OwnerAssistant />

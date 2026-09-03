@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { getAgentStats } from "@/lib/server/agent-stats";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { revenueByDay } from "@/lib/server/daily-revenue";
 import { getDashboardMetricsDb } from "@/lib/server/analytics";
@@ -362,6 +363,65 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
           m.rooms.map((r) => `${r.roomName} — ${Math.round(r.periodOccupancy * 100)}%`).join("; "),
       );
     }
+  }
+
+  /**
+   * Работа ассистента — теми же функциями, что и раздел в кабинете владельца.
+   *
+   * Без этих строк на «сколько диалогов агент закрыл сам» и «за сколько мы
+   * отвечаем» аналитик отвечал общими словами: чисел ему просто не давали.
+   * Считать здесь своё нельзя — это была бы вторая правда о работе агента.
+   */
+  const agent = await getAgentStats(companyId, "month");
+  if (agent.hasData) {
+    lines.push("");
+    lines.push("# Работа ассистента за месяц");
+    lines.push(
+      "«Закрыл сам» — разговор, где сутки после ответа агента не вмешивался сотрудник, " +
+        "не заводилась эскалация и пациент не переспросил в ближайшие два часа. Это не то же " +
+        "самое, что «агент ответил»: ответивший невпопад успешным не считается.",
+    );
+    lines.push(
+      agent.autonomy.rate === null
+        ? "- Автономность: агент в периоде не отвечал."
+        : `- Закрыл сам ${agent.autonomy.closedByAgent} из ${agent.autonomy.total} разговоров ` +
+          `(${Math.round(agent.autonomy.rate * 100)}%); ушло человеку ${agent.autonomy.wentToHuman}.`,
+    );
+    lines.push(
+      agent.reliability.attempts === 0
+        ? "- Обращений к модели в периоде не было."
+        : `- Попыток ответить ${agent.reliability.attempts}, успешных ` +
+          `${agent.reliability.ok} (${Math.round((agent.reliability.okRate ?? 0) * 100)}%), ` +
+          `таймаутов ${agent.reliability.timeout}, ошибок провайдера ${agent.reliability.providerError}; ` +
+          `повтор спас ${agent.reliability.savedByRetry} ответов.`,
+    );
+    const speed = (label: string, st: { medianMs: number | null; count: number }) =>
+      st.count === 0 ? `${label}: не было` : `${label}: медиана ${Math.round((st.medianMs ?? 0) / 1000)} с (${st.count})`;
+    lines.push(
+      `- Скорость первого ответа — ${speed("ассистент", agent.responseTime.agent)}; ` +
+        `${speed("человек в рабочие часы", agent.responseTime.staffWorkingHours)}; ` +
+        `${speed("человек вне часов", agent.responseTime.staffAfterHours)}. ` +
+        `Без ответа осталось обращений: ${agent.responseTime.unanswered}.`,
+    );
+    if (agent.escalations.length > 0) {
+      lines.push(
+        "- Эскалации по поводам: " +
+          agent.escalations.map((e) => `${e.reason} — ${e.count}`).join("; ") +
+          `; не разобрано ${agent.escalationAck.unacknowledged}.`,
+      );
+    }
+    lines.push(
+      agent.savings.byTopic.length === 0
+        ? "- Сэкономленное время посчитать не по чему: ни по одной теме не набралось пяти ручных " +
+          "ответов для сравнения. Не придумывай это число."
+        : `- Сэкономлено примерно ${(agent.savings.savedMs / 3600000).toFixed(1)} ч по ` +
+          `${agent.savings.byTopic.length} темам. Встречное число обязательно называть рядом: ` +
+          `на эскалации люди потратили ${(agent.savings.escalationCostMs / 3600000).toFixed(1)} ч ` +
+          `(${agent.savings.escalations} разговоров).` +
+          (agent.savings.skippedTopics.length > 0
+            ? ` Ещё для ${agent.savings.skippedTopics.length} тем данных не хватило — их вклад не учтён.`
+            : ""),
+    );
   }
 
   /**

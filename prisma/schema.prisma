@@ -261,6 +261,7 @@ model Company {
   messages                 Message[]
   inquiries                Inquiry[]
   escalations              Escalation[]
+  agentRuns                AgentRun[]
   appointments             Appointment[]
   appointmentServices      AppointmentService[]
   services                 Service[]
@@ -430,6 +431,7 @@ model Conversation {
   inquiries    Inquiry[]
   escalations  Escalation[]
   appointments Appointment[]
+  agentRuns    AgentRun[]
 
   @@unique([companyId, channel, externalUserId])
   @@index([companyId, status, lastMessageAt])
@@ -519,6 +521,68 @@ model Inquiry {
   @@index([companyId, channel, startedAt])
   @@index([companyId, outcome])
   @@map("inquiries")
+}
+
+/// Одна попытка агента ответить пациенту.
+///
+/// До этой таблицы сбои модели жили только в журнале процесса: «бот иногда
+/// молчит» оставалось ощущением, а не числом, и восстановить историю отказов
+/// постфактум было нельзя. Строка пишется на КАЖДУЮ попытку, включая повтор
+/// после таймаута.
+///
+/// Персональных данных здесь нет намеренно (§7): ни тел сообщений, ни имён.
+/// Только идентификаторы и техническая причина отказа.
+enum AgentRunOutcome {
+  /// Модель ответила, ответ ушёл пациенту.
+  OK
+  /// Не уложилась в срок.
+  TIMEOUT
+  /// Провайдер вернул ошибку или сеть не дала до него дойти.
+  PROVIDER_ERROR
+  /// Ответила пустотой — так бывает при обрыве генерации.
+  EMPTY_RESPONSE
+  /// Вопрос ушёл человеку. Это не сбой: часть тем агенту запрещена (§6).
+  ESCALATED
+  /// Агент промолчал намеренно: пауза после перехвата, сообщение старше
+  /// возврата, выключенный ассистент. В надёжности такие строки не участвуют.
+  SUPPRESSED
+}
+
+model AgentRun {
+  id             String          @id @default(cuid())
+  companyId      String
+  conversationId String
+  /// Ответ агента, если он состоялся. Пусто у сбоя, эскалации и молчания.
+  messageId      String?
+  triggeredAt    DateTime        @db.Timestamptz(3)
+  finishedAt     DateTime?       @db.Timestamptz(3)
+  /// Сколько заняла попытка. Материализовано: по нему считаются p50/p95, и
+  /// вычитать даты на каждой строке отчёта незачем.
+  latencyMs      Int?
+  outcome        AgentRunOutcome
+  escalationId   String?
+  /// Записи справочника, которые пошли в ответ. По ним считается польза
+  /// записи — отдельного счётчика в KnowledgeEntry нет намеренно: он
+  /// разъедется с фактами при первом же сбое пересчёта.
+  knowledgeEntryIds String[]
+  model          String?
+  promptTokens     Int?
+  completionTokens Int?
+  /// Только техническая причина: «таймаут 12000 мс», «RouterAI 429».
+  /// Эхо пользовательского текста сюда не попадает — чистится при записи.
+  errorText      String?
+  /// Предыдущая попытка, если эта — повтор после таймаута или обрыва.
+  retryOf        String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, triggeredAt])
+  @@index([conversationId])
+  @@index([outcome, triggeredAt])
+  @@map("agent_runs")
 }
 
 model Escalation {

@@ -4,6 +4,18 @@ import { notifyStaff, escalationRecipients } from "@/lib/server/notify";
 import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
 import { patientServices, priceLine, priceListText } from "./price-list";
+import { logAgentRun } from "./run-log";
+
+/**
+ * Идентификатор записи справочника, если он известен.
+ *
+ * `matchKnowledge` работает с обычными объектами и в тестах вызывается без
+ * идентификаторов — там их и не должно быть. Пустой список честнее пустой
+ * строки: «запись без номера» в журнал не пишем.
+ */
+function knowledgeIdOf(row: { id?: string }): string[] {
+  return typeof row.id === "string" && row.id ? [row.id] : [];
+}
 import { confidentMatch, matchKnowledge } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { focusLine, focusOf, searchText } from "./focus";
@@ -260,15 +272,32 @@ async function escalate(companyId: string, conversationId: string, reason: Escal
     return;
   }
 
-  await prisma.escalation.create({
-    data: {
-      companyId,
-      conversationId,
-      reason,
-      urgency: reason === "MEDICAL_QUESTION" ? "HIGH" : "NORMAL",
-      status: "OPEN",
-    },
-  }).catch(() => {});
+  const created = await prisma.escalation
+    .create({
+      data: {
+        companyId,
+        conversationId,
+        reason,
+        urgency: reason === "MEDICAL_QUESTION" ? "HIGH" : "NORMAL",
+        status: "OPEN",
+      },
+      select: { id: true },
+    })
+    .catch(() => null);
+
+  /**
+   * Эскалация — строка в журнале попыток агента.
+   *
+   * Это не сбой: часть тем агенту запрещена (§6), и передача человеку —
+   * штатный исход. Но без этой строки нельзя посчитать, сколько разговоров
+   * агент довёл сам, а сколько отдал, — а именно это и есть мера его пользы.
+   */
+  await logAgentRun({
+    companyId,
+    conversationId,
+    outcome: "ESCALATED",
+    escalationId: created?.id ?? null,
+  });
   await notifyStaff({
     companyId,
     // Вызов человека будит только администраторов: отвечать пациенту им.
@@ -398,7 +427,7 @@ async function clinicContext(
     getServices(companyId),
     prisma.knowledgeEntry.findMany({
       where: { companyId, isActive: true },
-      select: { topic: true, question: true, answer: true },
+      select: { id: true, topic: true, question: true, answer: true },
     }),
     prisma.clinicSchedule.findMany({
       where: { companyId },
@@ -703,6 +732,15 @@ export async function handlePatientMessage(
       conversation.botPausedUntil > new Date()) ||
     (openEscalation !== null && askedForAdmin);
   if (paused) {
+    /**
+     * Молчание намеренное: диалог ведёт человек. В надёжности агента такие
+     * строки не участвуют — он не пытался и не мог ответить.
+     */
+    await logAgentRun({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      outcome: "SUPPRESSED",
+    });
     const pausedBody = messageBody(input.text ?? "", attachments);
     if (pausedBody) {
       await saveMessage({
@@ -1012,7 +1050,7 @@ async function replyToQuestion(
 
   const allKnowledge = await prisma.knowledgeEntry.findMany({
     where: { companyId: ctx.companyId, isActive: true },
-    select: { topic: true, question: true, answer: true },
+    select: { id: true, topic: true, question: true, answer: true },
   });
 
   /**
@@ -1214,6 +1252,8 @@ async function replyToQuestion(
      */
     intakePrompt(),
     await patientNameFor(conversation.id),
+    // Журнал попыток: по нему считается надёжность агента (§«Работа ассистента»).
+    { companyId: ctx.companyId, conversationId: conversation.id },
   );
 
   /**
@@ -1330,6 +1370,18 @@ async function replyToQuestion(
   if (confidentMatch(exact)) {
     const trimmed = focusedAnswer(exact!.row.answer, asked, staffNames);
     if (!alreadySaid(said, trimmed)) {
+      /**
+       * Ответ дословно из справочника — запись сработала.
+       *
+       * Именно это и есть «польза записи»: не то, что она лежит в контексте
+       * модели (там лежат все), а то, что ответ пациенту составлен ею.
+       */
+      await logAgentRun({
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        outcome: "OK",
+        knowledgeEntryIds: knowledgeIdOf(exact!.row),
+      });
       return respond(ctx, conversation.id, { text: trimmed, buttons: mainMenu() });
     }
   }
@@ -1355,6 +1407,12 @@ async function replyToQuestion(
   if (best && meaningful) {
     const trimmed = focusedAnswer(best.row.answer, asked, staffNames);
     if (!alreadySaid(said, trimmed)) {
+      await logAgentRun({
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        outcome: "OK",
+        knowledgeEntryIds: knowledgeIdOf(best.row),
+      });
       return respond(ctx, conversation.id, { text: trimmed, buttons: mainMenu() });
     }
   }
@@ -1659,7 +1717,7 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
     // а не пересказываем весь справочник.
     const rows = await prisma.knowledgeEntry.findMany({
       where: { companyId: ctx.companyId, isActive: true },
-      select: { topic: true, question: true, answer: true },
+      select: { id: true, topic: true, question: true, answer: true },
     });
     const m = matchKnowledge("адрес как добраться где находитесь", rows);
     if (m && m.topicCoverage > 0) {
