@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/db";
 import { classifyPatientVisits, type VisitInput } from "./visits";
+import {
+  attributeSource,
+  LOOKAHEAD_MS,
+  LOOKBACK_DAYS,
+  type DialogTouch,
+} from "./source-attribution";
 
 /**
  * Пересчёт производных полей визита: первичный он или повторный.
@@ -166,4 +172,180 @@ export async function recomputeVisitKinds(
   }
 
   return { patients: patients.length, updated };
+}
+
+/**
+ * Откуда пришёл пациент: вывод источника визита из переписки.
+ *
+ * Источник в YCLIENTS не проставлен ни у одного визита — администраторы это
+ * поле не заполняют. Вся воронка по источникам показывала одну строку
+ * «источник не указан», то есть не показывала ничего.
+ *
+ * Переписка есть только у нас, и она отвечает на вопрос честно: человек,
+ * писавший в WhatsApp за неделю до записи, пришёл из WhatsApp. Где переписки
+ * рядом нет — источник остаётся неизвестным. Подставлять «звонок» нельзя:
+ * отсутствие сообщения не доказывает звонок (§8, правило «догадка не факт»).
+ *
+ * Пересчёт идемпотентен: на неизменных данных не делает ни одного UPDATE.
+ */
+export interface SourceRecomputeResult {
+  /** Сколько визитов рассмотрено (ручные сюда не входят — их не трогаем). */
+  scanned: number;
+  /** Источник выведен из переписки. */
+  derived: number;
+  /** Выведенный ранее источник пришлось снять: переписка больше не подходит. */
+  cleared: number;
+  /** Визитов с ручным источником — их пересчёт обошёл стороной. */
+  manualKept: number;
+  /** Осталось без источника после пересчёта. */
+  unknown: number;
+}
+
+export async function recomputeAppointmentSources(
+  companyId: string,
+  patientIds?: string[],
+): Promise<SourceRecomputeResult> {
+  const empty: SourceRecomputeResult = {
+    scanned: 0,
+    derived: 0,
+    cleared: 0,
+    manualKept: 0,
+    unknown: 0,
+  };
+  if (patientIds && patientIds.length === 0) return empty;
+
+  const scope = {
+    companyId,
+    deletedAt: null,
+    ...(patientIds ? { patientId: { in: patientIds } } : {}),
+  } as const;
+
+  /**
+   * Ручные не читаем вовсе — только считаем.
+   *
+   * Администратор, проставивший источник руками, знает больше нас: он говорил
+   * с человеком. Пересчёт, переписывающий такую отметку, обесценивает саму
+   * возможность её поставить — второй раз её никто вводить не станет.
+   */
+  const manualKept = await prisma.appointment.count({
+    where: { ...scope, sourceConfidence: "MANUAL" },
+  });
+
+  const appts = await prisma.appointment.findMany({
+    where: { ...scope, sourceConfidence: { not: "MANUAL" } },
+    select: {
+      id: true,
+      patientId: true,
+      createdAtYclients: true,
+      sourceId: true,
+      sourceConfidence: true,
+    },
+  });
+  if (appts.length === 0) return { ...empty, manualKept };
+
+  const patients = [...new Set(appts.map((a) => a.patientId))];
+
+  /**
+   * Источник канала. У диалога он обычно проставлен при создании, но у старых
+   * записей бывает пуст — тогда берём по коду канала. Кода нет в справочнике —
+   * диалог в вывод не идёт: выдумывать источник не из чего.
+   */
+  const sources = await prisma.source.findMany({
+    where: { companyId },
+    select: { id: true, code: true },
+  });
+  const sourceByCode = new Map(sources.map((s) => [s.code, s.id]));
+
+  const conversations = await prisma.conversation.findMany({
+    where: { companyId, patientId: { in: patients }, deletedAt: null },
+    select: { id: true, patientId: true, channel: true, sourceId: true },
+  });
+
+  const dialogSource = new Map<string, string>();
+  const dialogPatient = new Map<string, string>();
+  for (const c of conversations) {
+    const sourceId = c.sourceId ?? sourceByCode.get(c.channel.toLowerCase()) ?? null;
+    if (!sourceId || !c.patientId) continue;
+    dialogSource.set(c.id, sourceId);
+    dialogPatient.set(c.id, c.patientId);
+  }
+
+  /**
+   * Сообщения пациентов в окне вокруг самой ранней и самой поздней записи.
+   * Читаем одним запросом: ходить в базу за каждым визитом — сотни запросов
+   * каждой выгрузкой.
+   */
+  const byPatient = new Map<string, DialogTouch[]>();
+  if (dialogSource.size > 0) {
+    // Границы окна — свёрткой, а не спредом: `Math.min(...массив)` на истории
+    // в десятки тысяч записей упирается в предел аргументов вызова.
+    let first = Infinity;
+    let last = -Infinity;
+    for (const a of appts) {
+      const t = a.createdAtYclients.getTime();
+      if (t < first) first = t;
+      if (t > last) last = t;
+    }
+    const from = new Date(first - LOOKBACK_DAYS * 24 * 3600 * 1000);
+    const to = new Date(last + LOOKAHEAD_MS);
+
+    const messages = await prisma.message.findMany({
+      where: {
+        conversationId: { in: [...dialogSource.keys()] },
+        direction: "IN",
+        deletedAt: null,
+        isDraft: false,
+        createdAt: { gte: from, lte: to },
+      },
+      select: { conversationId: true, createdAt: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    for (const m of messages) {
+      const patientId = dialogPatient.get(m.conversationId);
+      const sourceId = dialogSource.get(m.conversationId);
+      if (!patientId || !sourceId) continue;
+      const list = byPatient.get(patientId);
+      const touch: DialogTouch = {
+        conversationId: m.conversationId,
+        sourceId,
+        messageAt: m.createdAt,
+      };
+      if (list) list.push(touch);
+      else byPatient.set(patientId, [touch]);
+    }
+  }
+
+  const now = new Date();
+  const result: SourceRecomputeResult = { ...empty, scanned: appts.length, manualKept };
+
+  for (const a of appts) {
+    const verdict = attributeSource({
+      createdAt: a.createdAtYclients,
+      current: { sourceId: a.sourceId, confidence: a.sourceConfidence },
+      touches: byPatient.get(a.patientId) ?? [],
+    });
+
+    if (verdict.confidence === "DERIVED") result.derived += 1;
+    else result.unknown += 1;
+
+    if (!verdict.changed) continue;
+    if (verdict.confidence === "UNKNOWN" && a.sourceConfidence === "DERIVED") result.cleared += 1;
+
+    /**
+     * `conversationId` визита не трогаем сознательно: там живёт атрибуция
+     * «запись создана из диалога» (§8, «пришло из переписки»). Рядом идущая
+     * переписка — это не то же самое, и подмена завысила бы заслугу агента.
+     */
+    await prisma.appointment.update({
+      where: { id: a.id },
+      data: {
+        sourceId: verdict.sourceId,
+        sourceConfidence: verdict.confidence,
+        sourceDerivedAt: verdict.confidence === "DERIVED" ? now : null,
+      },
+    });
+  }
+
+  return result;
 }

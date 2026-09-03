@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { averageCheck, noShowRate } from "./summary";
+import { averageCheck, noShowRate, withSourceShares } from "./summary";
 /**
  * Одна метрика — одна функция. «Неявки» считались в кабинете владельца от всех
  * незаменённых визитов, а в карточке специалиста — от состоявшихся исходов:
@@ -30,5 +30,34 @@ describe("доля неявок", () => {
 
   it("все не пришли — сто процентов", () => {
     expect(noShowRate(0, 3)).toBe(100);
+  });
+});
+
+describe("разрез по источникам", () => {
+  const rows = [
+    { code: "telegram", title: "Telegram", inquiries: 3, booked: 3 },
+    { code: "none", title: "Источник неизвестен", inquiries: 0, booked: 720, unknown: true },
+    { code: "whatsapp", title: "WhatsApp", inquiries: 42, booked: 14 },
+  ];
+
+  it("известные источники — по убыванию обращений", () => {
+    expect(withSourceShares(rows).map((r) => r.code)).toEqual(["whatsapp", "telegram", "none"]);
+  });
+
+  /**
+   * «Неизвестен» — не источник, а признание незнания. Прыгая по списку в
+   * зависимости от числа обращений, строка читалась бы как ещё один канал.
+   */
+  it("строка «неизвестен» всегда последняя, даже с большим числом обращений", () => {
+    const loud = [
+      { code: "none", title: "Источник неизвестен", inquiries: 900, booked: 720, unknown: true },
+      { code: "whatsapp", title: "WhatsApp", inquiries: 42, booked: 14 },
+    ];
+    expect(withSourceShares(loud).map((r) => r.code)).toEqual(["whatsapp", "none"]);
+  });
+
+  it("строку «неизвестен» не выбрасывает: 720 записей — это величина", () => {
+    const out = withSourceShares(rows);
+    expect(out.find((r) => r.unknown)?.booked).toBe(720);
   });
 });

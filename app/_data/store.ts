@@ -38,6 +38,7 @@ import {
   createAppointmentDb,
   rescheduleApptDb,
   setApptNoteDb,
+  setApptSourceDb,
   setApptStatusDb,
 } from "@/app/(dashboard)/schedule/actions";
 
@@ -141,6 +142,17 @@ export interface Appt {
   /** «Дополнительно»: отзыв клиента, проблема, примечание. Анализируется ИИ. */
   note?: string | null;
   /**
+   * Откуда пришёл пациент и насколько это известно.
+   *
+   * MANUAL — проставил администратор, DERIVED — выведено из переписки рядом с
+   * созданием записи, UNKNOWN — не знаем. Три разных утверждения, и на экране
+   * они не должны выглядеть одинаково: выведенное можно поправить, ручное —
+   * это уже ответ человека.
+   */
+  sourceCode?: string | null;
+  sourceTitle?: string | null;
+  sourceConfidence?: "MANUAL" | "DERIVED" | "UNKNOWN";
+  /**
    * Кто записал, если это не сам посетитель: родитель записывает ребёнка,
    * супруг — супругу. Администратору важно знать, кому звонить, а на приём
    * придёт другой человек.
@@ -186,6 +198,14 @@ export interface Visit {
   paidEarlier?: boolean;
   /** Покупка курса — событие пациента, но не приём. */
   kind?: "visit" | "purchase";
+  /**
+   * Откуда пришёл пациент на этот визит и насколько это известно.
+   * Разбирается в карточке: старые визиты в расписании уже не видны, а
+   * поправить их источник администратор может только здесь.
+   */
+  sourceCode?: string | null;
+  sourceTitle?: string | null;
+  sourceConfidence?: "MANUAL" | "DERIVED" | "UNKNOWN";
 }
 /** Вложение сообщения: голосовое, фотография, документ. */
 export interface MessageAttachment {
@@ -616,6 +636,30 @@ export function updatePatient(id: string, patch: Partial<Pick<Patient, "name" | 
   }
 }
 
+/**
+ * Источник визита из карточки пациента.
+ *
+ * Та же отметка MANUAL, что и в списке дня, — просто дотянуться до старого
+ * визита можно только отсюда. Пустой код снимает отметку: «не знаю» честнее
+ * наугад выбранного канала.
+ */
+export function setVisitSource(
+  patientId: string,
+  visitId: string,
+  code: string | null,
+  title: string | null,
+) {
+  replacePatient(patientId, (p) => ({
+    ...p,
+    visits: p.visits.map((v) =>
+      v.id === visitId
+        ? { ...v, sourceCode: code, sourceTitle: title, sourceConfidence: code ? "MANUAL" : "UNKNOWN" }
+        : v,
+    ),
+  }));
+  void setApptSourceDb(visitId, code).catch(writeFailed("источник визита не сохранён"));
+}
+
 export function removePatient(id: string) {
   commit({
     ...db,
@@ -963,6 +1007,19 @@ export function markArrived(id: string) {
 export function setApptNote(id: string, note: string) {
   replaceAppt(id, (a) => ({ ...a, note: note.trim() || null }));
   void setApptNoteDb(id, note).catch(writeFailed("заметка по визиту не сохранена"));
+}
+/**
+ * Проставить источник визита руками — отметка становится MANUAL, и выгрузка
+ * её больше не трогает. Пустой код снимает отметку: это «не знаю», а не «звонок».
+ */
+export function setApptSource(id: string, code: string | null, title: string | null) {
+  replaceAppt(id, (a) => ({
+    ...a,
+    sourceCode: code,
+    sourceTitle: title,
+    sourceConfidence: code ? "MANUAL" : "UNKNOWN",
+  }));
+  void setApptSourceDb(id, code).catch(writeFailed("источник визита не сохранён"));
 }
 export function markNoShow(id: string) {
   replaceAppt(id, (a) => ({ ...a, status: "no_show" }));

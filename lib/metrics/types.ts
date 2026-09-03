@@ -261,6 +261,26 @@ export interface SourceStat {
   booked: number;
   /** Доля от максимума по источникам — длина бара, 0..1. */
   share: number;
+  /**
+   * Строка «источник неизвестен». Не источник из справочника, а прямое
+   * признание: откуда пришли эти записи, мы не знаем. Показывается наравне с
+   * остальными и своим числом — иначе доли считаются от одних опознанных.
+   */
+  unknown?: boolean;
+}
+
+/**
+ * Чем известен источник у записей периода.
+ *
+ * MANUAL — проставил человек, DERIVED — выведено из переписки рядом с
+ * созданием записи, UNKNOWN — переписки рядом не было. Показывается рядом с
+ * разрезом: доверие к разрезу зависит от того, сколько в нём выведенного.
+ */
+export interface SourceAttribution {
+  manual: number;
+  derived: number;
+  unknown: number;
+  total: number;
 }
 
 export interface StaffStat {
@@ -310,6 +330,7 @@ export interface DashboardMetrics {
   visitMix: VisitMix;
   rooms: RoomDay[];
   sources: SourceStat[];
+  sourceAttribution: SourceAttribution;
   staff: StaffStat[];
   /** Когда роллапы последний раз пересчитывались. */
   updatedAt: string;

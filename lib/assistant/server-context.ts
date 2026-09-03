@@ -334,6 +334,19 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
           sources.map((s) => `${s.title} — ${s.inquiries} обращений, ${s.booked} записей`).join("; "),
       );
     }
+    /**
+     * Чем известен источник. Без этой строки аналитик выдавал бы разрез по
+     * источникам за измеренный факт, хотя большая его часть выведена из
+     * переписки, а часть записей источника не имеет вовсе.
+     */
+    if (m.sourceAttribution.total > 0) {
+      lines.push(
+        `Источник записей: вручную ${m.sourceAttribution.manual}, выведено из переписки ` +
+          `${m.sourceAttribution.derived}, неизвестен ${m.sourceAttribution.unknown} из ` +
+          `${m.sourceAttribution.total}. Неизвестный источник — звонок или приход без ` +
+          `переписки; каналом его называть нельзя.`,
+      );
+    }
 
     const staff = m.staff.filter((s) => s.appointments > 0);
     if (staff.length) {

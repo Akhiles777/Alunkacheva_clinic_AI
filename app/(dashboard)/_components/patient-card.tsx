@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getPatientRecord } from "@/app/(dashboard)/patients/actions";
 import { needsBreakdown, visitTitle } from "@/lib/visit-title";
+import { SourcePicker } from "./visit-source";
 import { formatMoney } from "@/lib/format";
 import {
   addNote,
@@ -18,6 +19,7 @@ import {
   removeRelation,
   resolveNote,
   setPrimaryPhone,
+  setVisitSource,
   toggleWhatsapp,
   useDb,
   type NoteKind,
@@ -463,6 +465,24 @@ export function PatientCardBody({
                       {visit.parts!.map((p) => `${p.title} — ${formatMoney(p.amount)}`).join(" · ")}
                     </span>
                   ) : null}
+                  {/*
+                    Откуда пришёл пациент. Правится здесь, а не только в
+                    расписании: старый визит в списке дня уже не найти, а
+                    именно старые визиты и остались без источника.
+
+                    У покупки курса источника нет — это касовая операция, а не
+                    обращение, и спрашивать «откуда пришёл» тут не о чем.
+                  */}
+                  {visit.kind === "purchase" ? null : (
+                    <SourcePicker
+                      state={{
+                        code: visit.sourceCode ?? null,
+                        title: visit.sourceTitle ?? null,
+                        confidence: visit.sourceConfidence ?? "UNKNOWN",
+                      }}
+                      onPick={(code, title) => setVisitSource(patient.id, visit.id, code, title)}
+                    />
+                  )}
                 </span>
                 {/*
                   Деньги показываем у состоявшегося приёма и у покупки курса.

@@ -293,16 +293,44 @@ export default async function AnalyticsPage({
               <ul className="flex flex-col gap-3">
                 {m.sources.map((s) => (
                   <li key={s.code} className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
-                    <span className="truncate text-sm">{s.title}</span>
+                    <span className={`truncate text-sm ${s.unknown ? "text-text-muted" : ""}`}>
+                      {s.title}
+                    </span>
                     <div className="flex items-center gap-3">
                       <Bar value={s.share} />
                       <span className="num text-text-subtle w-32 flex-none text-right text-2xs">
-                        {formatNumber(s.inquiries)} → {formatNumber(s.booked)} ({formatPercent(s.inquiries ? s.booked / s.inquiries : 0)})
+                        {/*
+                          У неизвестного источника конверсия не считается:
+                          обращения и записи в этой строке — про разных людей.
+                          Показываем долю записей — это и есть размер дыры.
+                        */}
+                        {s.unknown
+                          ? `${formatNumber(s.booked)} записей · ${formatPercent(
+                              m.sourceAttribution.total
+                                ? s.booked / m.sourceAttribution.total
+                                : 0,
+                            )}`
+                          : `${formatNumber(s.inquiries)} → ${formatNumber(s.booked)} (${formatPercent(s.inquiries ? s.booked / s.inquiries : 0)})`}
                       </span>
                     </div>
                   </li>
                 ))}
               </ul>
+
+              {/*
+                Чем известен источник. Без этой подписи «WhatsApp — 60%»
+                читается как измеренный факт, хотя за ним стоит вывод из
+                переписки рядом с созданием записи.
+              */}
+              {m.sourceAttribution.total > 0 ? (
+                <p className="text-text-subtle mt-4 text-2xs">
+                  Источник у {formatNumber(m.sourceAttribution.derived)} из{" "}
+                  {formatNumber(m.sourceAttribution.total)} записей выведен из переписки, у{" "}
+                  {formatNumber(m.sourceAttribution.manual)} проставлен вручную,{" "}
+                  {formatNumber(m.sourceAttribution.unknown)} остались неизвестными. Неизвестный
+                  источник — это звонок или приход без переписки; догадкой он не заполняется.
+                </p>
+              ) : null}
             </Card>
           ) : null}
 

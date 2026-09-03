@@ -277,6 +277,7 @@ export async function getDashboardMetricsDb(
         isFirstVisit: true,
         courseId: true,
         sourceId: true,
+        sourceConfidence: true,
         roomId: true,
         // Привязка визита к диалогу: по ней воронка считает, сколько
         // обращений в переписке дошло до записи.
@@ -491,17 +492,38 @@ export async function getDashboardMetricsDb(
    * попадало ни в одну строку. Из YCLIENTS источник не приходит вовсе, значит
    * почти каждая запись клиники была невидима: разрез показывал нули и
    * выглядел сломанным, хотя записи есть. Та же болезнь, что была у услуг.
+   *
+   * Строка стоит наравне с остальными и своим числом: неизвестное — это
+   * величина, а не пустое место. Пока её не было, доли считались от одних
+   * только опознанных записей, и «WhatsApp — 100%» означало «одна запись из
+   * семисот сорока одной». Обращения без источника сюда тоже попадают: диалог
+   * из старого импорта мог остаться без канала.
    */
   const withoutSource = booked.filter((a) => a.sourceId === null).length;
-  if (withoutSource > 0) {
+  const inquiriesWithoutSource = inquiries.bySource.get(null) ?? 0;
+  if (withoutSource > 0 || inquiriesWithoutSource > 0) {
     sourceStats.push({
       code: "none",
-      title: "Источник не указан",
-      inquiries: 0,
+      title: "Источник неизвестен",
+      inquiries: inquiriesWithoutSource,
       booked: withoutSource,
       share: 0,
+      unknown: true,
     });
   }
+
+  /**
+   * Откуда взялся источник: проставлен человеком, выведен из переписки или
+   * неизвестен. Число рядом с разрезом, потому что доверие к разрезу зависит
+   * от него: «выведено из переписки» — это факт с оговоркой (рядом был
+   * разговор), а не запись администратора.
+   */
+  const sourceAttribution = {
+    manual: booked.filter((a) => a.sourceConfidence === "MANUAL").length,
+    derived: booked.filter((a) => a.sourceConfidence === "DERIVED").length,
+    unknown: booked.filter((a) => a.sourceConfidence === "UNKNOWN").length,
+    total: booked.length,
+  };
 
   return {
     period: {
@@ -569,6 +591,7 @@ export async function getDashboardMetricsDb(
     },
     rooms: buildRoomDays(rooms, booked, from, to, closed, schedule, roomOccupancy),
     sources: withSourceShares(sourceStats),
+    sourceAttribution,
     staff: withStaffShares(staffStats).sort((a, b) => b.revenue - a.revenue),
     updatedAt: now.toISOString(),
   };

@@ -4,7 +4,12 @@ import { getYclientsClient, type YclientsClientHandle } from "./client";
 import { markFailed, markOk, markRunning, readCursor } from "./sync-cursor";
 import { apiDate, hasNextPage, monthWindows, PAGE_SIZE } from "./paging";
 import { CLIENT_FIELDS, HISTORY_YEARS } from "./config";
-import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
+import {
+  backfillFirstSeen,
+  backfillRooms,
+  recomputeAppointmentSources,
+  recomputeVisitKinds,
+} from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
 import { recordChanged } from "./changed";
 import { courseAwareSource, revenueAfterCourse, serviceRevenue } from "./mappers";
@@ -44,7 +49,7 @@ import type {
  */
 export interface SyncResult {
   skipped: boolean;
-  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "courseSessions" | "courseSessionsRepriced", number>>;
+  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "sources" | "courseSessions" | "courseSessionsRepriced", number>>;
   errors: string[];
 }
 
@@ -90,6 +95,11 @@ export async function syncAll(companyId: string, options: SyncOptions = {}): Pro
     counts.rooms = await backfillRooms(companyId);
     // Дата первого обращения не позже первого визита: чиним уже загруженные.
     counts.firstSeen = await backfillFirstSeen(companyId);
+    /**
+     * Источник визита из переписки: в YCLIENTS его не проставляет никто, и без
+     * этого шага разрез по источникам показывает одну строку «не указан».
+     */
+    counts.sources = (await recomputeAppointmentSources(companyId)).derived;
     /**
      * Курсы собираются из записей — после них, а не до: разбор опирается на
      * стоимость визитов, которую только что записала выгрузка.

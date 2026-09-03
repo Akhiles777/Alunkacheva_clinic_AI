@@ -66,6 +66,8 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
       room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true, isCourse: true } },
       patient: { select: { name: true } },
+      // Источник обращения: администратор проставляет его прямо в списке дня.
+      source: { select: { code: true, title: true } },
       course: { select: { sessionsTotal: true } },
       services: {
         select: { priceCharged: true, service: { select: { title: true, isCourse: true } } },
@@ -126,6 +128,9 @@ export async function getAppointmentsForStore(): Promise<Appt[]> {
     courseService:
       Boolean(r.primaryService?.isCourse) || r.services.some((sv) => sv.service.isCourse),
     note: r.note,
+    sourceCode: r.source?.code ?? null,
+    sourceTitle: r.source?.title ?? null,
+    sourceConfidence: r.sourceConfidence,
     bookedByName: r.bookedByName,
   }));
 }
@@ -155,6 +160,8 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
       room: { select: { name: true, sortOrder: true } },
       primaryService: { select: { title: true, isCourse: true } },
       patient: { select: { name: true } },
+      // Источник обращения: администратор проставляет его прямо в списке дня.
+      source: { select: { code: true, title: true } },
       course: { select: { sessionsTotal: true } },
       services: {
         select: { priceCharged: true, service: { select: { title: true, isCourse: true } } },
@@ -205,6 +212,9 @@ export async function getAppointmentsForDay(dateIso: string): Promise<Appt[]> {
     courseService:
       Boolean(r.primaryService?.isCourse) || r.services.some((sv) => sv.service.isCourse),
     note: r.note,
+    sourceCode: r.source?.code ?? null,
+    sourceTitle: r.source?.title ?? null,
+    sourceConfidence: r.sourceConfidence,
     bookedByName: r.bookedByName,
   }));
 }
@@ -710,4 +720,53 @@ export async function getClinicDay(dateIso?: string): Promise<ClinicDayView> {
       staff: r.defaultForStaff.map((s) => s.name),
     })),
   };
+}
+
+/**
+ * Справочник источников для ручной простановки.
+ *
+ * Только активные и без «неизвестен»: неизвестное — это не выбор из списка,
+ * а его отсутствие, и отдельным пунктом оно живёт в самом переключателе.
+ */
+export async function getSourceOptions(): Promise<{ code: string; title: string }[]> {
+  const session = await getSession();
+  const rows = await prisma.source.findMany({
+    where: { companyId: session.companyId, isActive: true },
+    orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
+    select: { code: true, title: true },
+  });
+  return rows.map((r) => ({ code: r.code, title: r.title }));
+}
+
+/**
+ * Проставить источник визита руками.
+ *
+ * Отметка становится MANUAL и больше не меняется никогда: ни выгрузкой, ни
+ * ночным пересчётом. Администратор говорил с человеком — он знает, откуда тот
+ * пришёл, а вывод из переписки этого знать не может.
+ *
+ * Пустой код — это «не знаю»: отметка снимается совсем, и вывод из переписки
+ * снова вправе назвать источник. Так работает отмена ошибочного клика; чтобы
+ * закрепить «звонок» или «пришёл сам», их выбирают явно.
+ */
+export async function setApptSourceDb(id: string, code: string | null): Promise<void> {
+  const session = await getSession();
+  const source = code
+    ? await prisma.source.findFirst({
+        where: { companyId: session.companyId, code },
+        select: { id: true },
+      })
+    : null;
+  // Код передан, а источника с ним нет — молчать нельзя: экран показал бы
+  // проставленный источник, которого в базе не появилось.
+  if (code && !source) throw new Error("Источник не найден");
+
+  await prisma.appointment.updateMany({
+    where: { id, companyId: session.companyId },
+    data: {
+      sourceId: source?.id ?? null,
+      sourceConfidence: source ? "MANUAL" : "UNKNOWN",
+      sourceDerivedAt: null,
+    },
+  });
 }

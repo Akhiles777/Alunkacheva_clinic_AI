@@ -5,7 +5,12 @@ import {
   RECENT_BACK_DAYS,
   RECENT_FORWARD_DAYS,
 } from "@/lib/integrations/yclients/sync";
-import { backfillFirstSeen, backfillRooms, recomputeVisitKinds } from "@/lib/metrics/recompute";
+import {
+  backfillFirstSeen,
+  backfillRooms,
+  recomputeAppointmentSources,
+  recomputeVisitKinds,
+} from "@/lib/metrics/recompute";
 import { answerUnanswered } from "@/lib/agent/unanswered";
 import { handBackAndRemind } from "@/lib/agent/handback";
 
@@ -241,11 +246,13 @@ export async function runSyncCycle(): Promise<SyncRunInfo> {
  * короткого круга. Отдельной функцией, чтобы её падение не уносило с собой
  * переписку.
  */
-async function syncRecent(companyId: string): Promise<{ records: number; recomputed: number }> {
+async function syncRecent(
+  companyId: string,
+): Promise<{ records: number; recomputed: number; sources: number }> {
   const sync = await syncRecentRecords(companyId);
   // YCLIENTS выключен — пересчитывать нечего, и гонять базу каждые три минуты
   // впустую тоже незачем.
-  if (sync.skipped) return { records: 0, recomputed: 0 };
+  if (sync.skipped) return { records: 0, recomputed: 0, sources: 0 };
 
   /**
    * Пересчёт — только по пациентам этого окна.
@@ -266,11 +273,17 @@ async function syncRecent(companyId: string): Promise<{ records: number; recompu
     select: { patientId: true },
     distinct: ["patientId"],
   });
-  const kinds = await recomputeVisitKinds(
-    companyId,
-    touched.map((t) => t.patientId).filter((id): id is string => Boolean(id)),
-  );
-  return { records: sync.records, recomputed: kinds.updated };
+  const patientIds = touched.map((t) => t.patientId).filter((id): id is string => Boolean(id));
+  const kinds = await recomputeVisitKinds(companyId, patientIds);
+  /**
+   * Источник свежих записей — тем же кругом, по тем же пациентам.
+   *
+   * Человек пишет в WhatsApp и его записывают в тот же час; ждать полного
+   * круга ради одного поля незачем, а перебирать ради двух дней всю базу —
+   * тем более.
+   */
+  const sources = await recomputeAppointmentSources(companyId, patientIds);
+  return { records: sync.records, recomputed: kinds.updated, sources: sources.derived };
 }
 
 /**
@@ -332,6 +345,7 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
         клиника: company.name,
         записей: sync?.records ?? "выгрузка не удалась",
         пересчитано: sync?.recomputed ?? 0,
+        источниковВыведено: sync?.sources ?? 0,
         возвратДиалогов: handback,
         доборНеотвеченных: sweep,
       });

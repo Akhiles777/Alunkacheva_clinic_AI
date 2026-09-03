@@ -58,10 +58,16 @@ export function withStaffShares(
   }));
 }
 
-/** Бары по источникам нормируются по максимуму, а не по сумме. */
+/**
+ * Бары по источникам нормируются по максимуму, а не по сумме.
+ *
+ * Строка «источник неизвестен» всегда последняя и в сортировке не участвует:
+ * это не источник, а признание незнания. Прыгая по списку в зависимости от
+ * числа обращений, она читалась бы как ещё один канал.
+ */
 export function withSourceShares(rows: Omit<SourceStat, "share">[]): SourceStat[] {
   const max = Math.max(0, ...rows.map((row) => row.inquiries));
-  return rows
-    .map((row) => ({ ...row, share: max === 0 ? 0 : row.inquiries / max }))
-    .sort((a, b) => b.inquiries - a.inquiries);
+  const scaled = rows.map((row) => ({ ...row, share: max === 0 ? 0 : row.inquiries / max }));
+  const known = scaled.filter((row) => !row.unknown).sort((a, b) => b.inquiries - a.inquiries);
+  return [...known, ...scaled.filter((row) => row.unknown)];
 }

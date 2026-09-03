@@ -5,6 +5,8 @@ import { notFound } from "next/navigation";
 import { getToday, type CabinetNow, type FreeWindowRow } from "@/app/_data/today";
 import { AgentSection } from "../owner/agent-section";
 import type { AgentStats } from "@/lib/server/agent-stats";
+import type { SourceStat } from "@/lib/metrics/types";
+import { SourcePicker } from "../_components/visit-source";
 
 /**
  * Витрина граничных состояний — служебный экран визуальной проверки.
@@ -183,6 +185,18 @@ const LONG_WINDOWS: FreeWindowRow[] = [
   { id: "lw2", time: "16:00", startMinute: 960, cabName: "Кабинет 1", direction: "Остеопатия", duration: "1 ч", soon: false },
 ];
 
+/**
+ * Разрез по источникам на день внедрения: источник известен у двух десятков
+ * записей из семисот сорока одной. Строка «неизвестен» — самая большая, и
+ * прятать её нельзя.
+ */
+const SOURCES_MOSTLY_UNKNOWN: SourceStat[] = [
+  { code: "whatsapp", title: "WhatsApp", inquiries: 42, booked: 14, share: 1 },
+  { code: "instagram", title: "Instagram", inquiries: 9, booked: 4, share: 0.21 },
+  { code: "telegram", title: "Telegram", inquiries: 3, booked: 3, share: 0.07 },
+  { code: "none", title: "Источник неизвестен", inquiries: 0, booked: 720, share: 0, unknown: true },
+];
+
 function Case({
   title,
   note,
@@ -295,6 +309,76 @@ export default function StatesPage() {
 
       <Case title="Ассистент: крупные числа" note="четырёхзначные значения и длинные темы">
         <AgentSection stats={AGENT_BIG} periodLabel="за 90 дней · 05.06 — 03.09" />
+      </Case>
+
+      {/*
+        Источник визита в трёх состояниях. Они выглядят по-разному не для
+        красоты: «Instagram» и «Instagram · из переписки» — разные утверждения,
+        и администратор должен видеть, правит он догадку системы или чужой
+        ответ. Справочник на этом экране не грузится — нажатие покажет строку
+        загрузки, и это тоже состояние.
+      */}
+      <Case title="Источник визита" note="проставлен человеком, выведен из переписки, неизвестен">
+        <div className="border-border bg-surface flex max-w-[560px] flex-col gap-3 rounded-xl border p-5">
+          <SourcePicker
+            state={{ code: "instagram", title: "Instagram", confidence: "MANUAL" }}
+            onPick={() => {}}
+          />
+          <SourcePicker
+            state={{ code: "whatsapp", title: "WhatsApp", confidence: "DERIVED" }}
+            onPick={() => {}}
+          />
+          <SourcePicker state={{ code: null, title: null, confidence: "UNKNOWN" }} onPick={() => {}} />
+          {/* Длинное название источника не должно ломать строку визита. */}
+          <SourcePicker
+            state={{
+              code: "referral",
+              title: "Рекомендация коллеги из соседней клиники",
+              confidence: "MANUAL",
+            }}
+            onPick={() => {}}
+          />
+          {/* Только чтение: чужой день, отметки там не ставят. */}
+          <SourcePicker
+            state={{ code: "phone", title: "Звонок", confidence: "MANUAL" }}
+            readOnly
+            onPick={() => {}}
+          />
+        </div>
+      </Case>
+
+      {/*
+        Разрез по источникам, когда источник неизвестен почти везде. Это
+        боевое состояние на день внедрения: 741 визит из 741 без источника.
+        Строка «неизвестен» стоит наравне с остальными и со своим числом —
+        иначе доли считаются от одних опознанных записей и «WhatsApp — 100%»
+        означает одну запись из семисот сорока одной.
+      */}
+      <Case title="Источники: почти всё неизвестно" note="строка «неизвестен» не прячется">
+        <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+          <ul className="flex flex-col gap-3">
+            {SOURCES_MOSTLY_UNKNOWN.map((s) => (
+              <li key={s.code} className="grid grid-cols-[120px_minmax(0,1fr)] items-center gap-3">
+                <span className={`truncate text-sm ${s.unknown ? "text-text-muted" : ""}`}>
+                  {s.title}
+                </span>
+                <div className="flex items-center gap-3">
+                  <div className="bg-list-gap rounded-pill h-2 flex-1 overflow-hidden">
+                    <div className="bg-accent rounded-pill h-full" style={{ width: `${s.share * 100}%` }} />
+                  </div>
+                  <span className="num text-text-subtle w-32 flex-none text-right text-2xs">
+                    {s.unknown ? `${s.booked} записей · 97%` : `${s.inquiries} → ${s.booked}`}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="text-text-subtle mt-4 text-2xs">
+            Источник у 18 из 741 записей выведен из переписки, у 3 проставлен вручную, 720 остались
+            неизвестными. Неизвестный источник — это звонок или приход без переписки; догадкой он не
+            заполняется.
+          </p>
+        </div>
       </Case>
 
       <Case title="Ошибка" note="что не прочиталось и что делать">

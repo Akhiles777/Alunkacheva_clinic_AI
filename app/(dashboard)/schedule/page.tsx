@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { visitTitle } from "@/lib/visit-title";
 import Link from "next/link";
 import { VisitNote } from "../_components/visit-note";
+import { VisitSource } from "../_components/visit-source";
 import {
   getDb,
   markArrived,
@@ -114,6 +115,7 @@ function ApptCard({ appt, readOnly = false }: { appt: Appt; readOnly?: boolean }
         {visitTitle(appt.parts, appt.service)} · {appt.doctor}
       </div>
       <VisitNote appt={appt} />
+      <VisitSource appt={appt} readOnly={readOnly} />
       {appt.bookedByName ? (
         // Кто записал, если на приём придёт другой человек: администратору
         // нужно знать, кому звонить при переносе.

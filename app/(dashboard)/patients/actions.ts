@@ -240,6 +240,8 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
           courseSessionIndex: true,
           course: { select: { sessionsTotal: true } },
           staff: { select: { name: true } },
+          sourceConfidence: true,
+          source: { select: { code: true, title: true } },
           primaryService: { select: { title: true, isCourse: true } },
           services: {
             select: { priceCharged: true, service: { select: { title: true, isCourse: true } } },
@@ -312,6 +314,11 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
       status: VISIT_STATUS_MAP[a.status] ?? "planned",
       amount: Number(a.revenue),
       amountSource: a.revenueSource,
+      // Источник визита: в YCLIENTS его не проставляет никто, у нас он либо
+      // выведен из переписки, либо назван администратором.
+      sourceCode: a.source?.code ?? null,
+      sourceTitle: a.source?.title ?? null,
+      sourceConfidence: a.sourceConfidence,
       /**
        * Деньги по визиту приняты, хотя в записи дня стоит ноль.
        *
