@@ -212,3 +212,83 @@ export function escalationBreakdown(rows: EscalationRow[]): EscalationSlice[] {
     })
     .sort((a, b) => b.count - a.count);
 }
+
+// ─────────────────────────────────────────── работа агента до передачи
+
+/**
+ * Что агент делает на самом деле.
+ *
+ * «Закрыл сам» — честная, но узкая метрика: она считает разговоры, после
+ * которых никто ни во что не вмешался. По устройству клиники так и не должно
+ * быть часто — расписанием агент не распоряжается (§6), время называет
+ * администратор. Агент доводит человека до готовой заявки, а записывает её
+ * человек, и в метрике «закрыл сам» вся эта работа выглядит провалом.
+ *
+ * Поэтому рядом считается вторая, по реальной схеме: агент ОФОРМИЛ заявку —
+ * ответил, довёл до данных для записи и передал администратору. Дальше видно,
+ * сколько таких заявок стали настоящими записями.
+ *
+ * Это не замена первой метрике, а её пара. Одна отвечает «сколько агент
+ * закрыл без людей», вторая — «сколько работы он для людей сделал».
+ */
+export interface AssistDialog {
+  conversationId: string;
+  /** Агент отвечал в этом разговоре. */
+  agentReplied: boolean;
+  /** Пациент прислал данные для записи после ответа агента. */
+  intakeAt: Date | null;
+  /** Разговор перешёл человеку: сотрудник написал или завелась эскалация. */
+  handedOverAt: Date | null;
+  /** Запись, созданная у этого пациента после передачи. */
+  bookedAt: Date | null;
+}
+
+export interface AgentAssist {
+  /** Разговоров с участием агента. */
+  total: number;
+  /** Из них: агент довёл до данных для записи и передал администратору. */
+  prepared: number;
+  /** Из подготовленных: стали настоящей записью. */
+  booked: number;
+  /** Доля подготовленных среди разговоров агента. */
+  prepareRate: number | null;
+  /** Доля записей среди подготовленных: цена вопроса для владельца. */
+  bookRate: number | null;
+}
+
+/** Сколько ждём записи после передачи заявки администратору. */
+export const BOOKING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Заявка считается оформленной, только если выполнено всё:
+ *
+ *   — агент в этом разговоре отвечал (иначе заслуга не его);
+ *   — пациент прислал данные для записи ПОСЛЕ этого;
+ *   — разговор перешёл человеку.
+ *
+ * Без третьего условия «оформил» означало бы «пациент что-то написал», без
+ * второго — «агент поговорил». Ни то, ни другое не работа.
+ */
+export function preparedByAgent(d: AssistDialog): boolean {
+  return d.agentReplied && d.intakeAt !== null && d.handedOverAt !== null;
+}
+
+export function agentAssist(dialogs: AssistDialog[]): AgentAssist {
+  const withAgent = dialogs.filter((d) => d.agentReplied);
+  const prepared = withAgent.filter(preparedByAgent);
+  const booked = prepared.filter(
+    (d) =>
+      d.bookedAt !== null &&
+      d.handedOverAt !== null &&
+      d.bookedAt.getTime() >= d.handedOverAt.getTime() &&
+      d.bookedAt.getTime() - d.handedOverAt.getTime() <= BOOKING_WINDOW_MS,
+  );
+
+  return {
+    total: withAgent.length,
+    prepared: prepared.length,
+    booked: booked.length,
+    prepareRate: withAgent.length === 0 ? null : prepared.length / withAgent.length,
+    bookRate: prepared.length === 0 ? null : booked.length / prepared.length,
+  };
+}

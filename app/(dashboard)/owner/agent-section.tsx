@@ -1,4 +1,5 @@
 import { formatNumber, formatPercent } from "@/lib/format";
+import { Donut } from "../_components/donut";
 import type { AgentStats } from "@/lib/server/agent-stats";
 
 /**
@@ -35,6 +36,12 @@ function hours(ms: number): string {
   if (h < 1) return `${Math.round(ms / 60000)} мин`;
   return `${h.toFixed(1).replace(".", ",")} ч`;
 }
+
+const logDay = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "long",
+  timeZone: "Europe/Moscow",
+});
 
 const REASON_LABEL: Record<string, string> = {
   AGENT_REQUEST: "агент сам позвал",
@@ -94,7 +101,7 @@ function Speed({
 }
 
 export function AgentSection({ stats, periodLabel }: { stats: AgentStats; periodLabel: string }) {
-  const { reliability: rel, autonomy, savings, responseTime: rt } = stats;
+  const { reliability: rel, autonomy, savings, responseTime: rt, assist } = stats;
 
   return (
     <section className="border-border bg-surface mt-4 rounded-xl border p-5">
@@ -140,9 +147,58 @@ export function AgentSection({ stats, periodLabel }: { stats: AgentStats; period
             </div>
           </div>
 
+          {/* ── что агент сделал: по реальной схеме работы */}
+          <div>
+            <h3 className="text-text-muted mb-2 text-2xs">Что агент сделал</h3>
+            {/*
+              «Закрыл сам» — узкая метрика: она считает разговоры, после
+              которых никто ни во что не вмешался. По устройству клиники так и
+              не должно быть часто: расписанием агент не распоряжается, время
+              называет администратор. Здесь — вторая половина картины: сколько
+              человек агент довёл до готовой заявки и сколько таких заявок
+              стали настоящими записями.
+            */}
+            <div className="border-border bg-surface rounded-xl border px-4 py-4">
+              <Donut
+                total={assist.total}
+                totalLabel="разговоров"
+                empty="за период агент не отвечал ни в одном разговоре"
+                slices={[
+                  {
+                    label: "Оформил заявку и передал",
+                    value: assist.prepared,
+                    hint: "довёл до данных для записи, дальше администратор",
+                  },
+                  {
+                    label: "Ответил без заявки",
+                    value: Math.max(assist.total - assist.prepared, 0),
+                    hint: "справочный разговор: цена, адрес, часы",
+                  },
+                ]}
+              />
+              <p className="text-text-muted mt-3 text-xs leading-relaxed">
+                {assist.prepared === 0
+                  ? "Готовых заявок за период не было: агент отвечал справкой, до данных для записи разговор не доходил."
+                  : `Из ${formatNumber(assist.prepared)} оформленных заявок записью стали ` +
+                    `${formatNumber(assist.booked)}` +
+                    (assist.bookRate === null ? "" : ` — ${formatPercent(assist.bookRate)}`) +
+                    ". Заявка считается оформленной, если агент ответил, пациент прислал данные для записи и разговор перешёл человеку."}
+              </p>
+            </div>
+          </div>
+
           {/* ── надёжность */}
           <div>
             <h3 className="text-text-muted mb-2 text-2xs">Надёжность</h3>
+            {/*
+              Прочерк без даты читается как поломка, а означает «журнала тогда
+              ещё не было». Журнал попыток появился позже самой системы.
+            */}
+            <p className="text-text-subtle mb-2 text-2xs">
+              {stats.logSince
+                ? `журнал попыток ведётся с ${logDay.format(stats.logSince)}`
+                : "журнал попыток пуст: обращений к модели ещё не было"}
+            </p>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <Figure
                 label="Успешных попыток"
@@ -200,6 +256,20 @@ export function AgentSection({ stats, periodLabel }: { stats: AgentStats; period
           {stats.escalations.length > 0 ? (
             <div>
               <h3 className="text-text-muted mb-2 text-2xs">Почему звали человека</h3>
+              {/*
+                Круг отвечает на вопрос «чего больше», таблица — «сколько и как
+                быстро разобрали». Это разные вопросы, и одно другое не
+                заменяет.
+              */}
+              <div className="border-border bg-surface mb-3 rounded-xl border px-4 py-4">
+                <Donut
+                  totalLabel="эскалаций"
+                  slices={stats.escalations.map((e) => ({
+                    label: REASON_LABEL[e.reason] ?? e.reason,
+                    value: e.count,
+                  }))}
+                />
+              </div>
               <div className="-mx-1 overflow-x-auto px-1">
                 <table className="w-full min-w-[440px] border-collapse text-sm">
                   <thead>

@@ -8,6 +8,8 @@ import {
   percentile,
   type AgentRunRow,
   type AutonomyDialog,
+  agentAssist,
+  type AssistDialog,
 } from "./agent";
 
 const T = (iso: string) => new Date(iso);
@@ -197,5 +199,59 @@ describe("эскалации по поводам", () => {
       { reason: "KEYWORD", createdAt: T("2026-09-03T10:00:00+03:00"), acknowledgedAt: T("2026-09-03T09:00:00+03:00") },
     ]);
     expect(row.medianToAckMs).toBeNull();
+  });
+});
+
+describe("агент оформил заявку", () => {
+  const t = (iso: string) => new Date(iso);
+  const dialog = (over: Partial<AssistDialog> = {}): AssistDialog => ({
+    conversationId: "c1",
+    agentReplied: true,
+    intakeAt: t("2026-09-01T10:00:00+03:00"),
+    handedOverAt: t("2026-09-01T10:05:00+03:00"),
+    bookedAt: t("2026-09-02T09:00:00+03:00"),
+    ...over,
+  });
+
+  it("все три условия — заявка оформлена и стала записью", () => {
+    const a = agentAssist([dialog()]);
+    expect(a.prepared).toBe(1);
+    expect(a.booked).toBe(1);
+    expect(a.bookRate).toBe(1);
+  });
+
+  /**
+   * Без данных для записи это просто разговор. «Оформил» не должно означать
+   * «пациент что-то написал».
+   */
+  it("без данных для записи заявки нет", () => {
+    expect(agentAssist([dialog({ intakeAt: null })]).prepared).toBe(0);
+  });
+
+  it("без передачи человеку заявки нет", () => {
+    expect(agentAssist([dialog({ handedOverAt: null })]).prepared).toBe(0);
+  });
+
+  it("разговор без агента в знаменатель не идёт", () => {
+    const a = agentAssist([dialog({ agentReplied: false })]);
+    expect(a.total).toBe(0);
+    expect(a.prepareRate).toBeNull();
+  });
+
+  it("запись позже недели заслугой заявки не считается", () => {
+    const a = agentAssist([dialog({ bookedAt: t("2026-09-20T09:00:00+03:00") })]);
+    expect(a.prepared).toBe(1);
+    expect(a.booked).toBe(0);
+  });
+
+  it("запись ДО передачи заявке не засчитывается", () => {
+    const a = agentAssist([dialog({ bookedAt: t("2026-08-30T09:00:00+03:00") })]);
+    expect(a.booked).toBe(0);
+  });
+
+  it("пусто — прочерки, а не нули", () => {
+    const a = agentAssist([]);
+    expect(a.prepareRate).toBeNull();
+    expect(a.bookRate).toBeNull();
   });
 });

@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "./modal";
 import { askAI } from "./assistant-actions";
 import { useDb } from "@/app/_data/store";
-import { answerQuery, SUGGESTIONS } from "@/lib/assistant/engine";
+import { SUGGESTIONS } from "@/lib/assistant/engine";
+import { aiFailureText } from "@/lib/assistant/failure";
 import { buildAssistantContext } from "@/lib/assistant/context";
 
 interface ChatMessage {
@@ -49,10 +50,15 @@ export function AssistantChat() {
         .filter((m) => m !== WELCOME)
         .map((m) => ({ role: m.role, content: m.text }));
       const res = await askAI(q, context, history);
-      const answer = res.text ?? answerQuery(q, db.patients).text;
-      setMessages((m) => [...m, { role: "assistant", text: answer }]);
-    } catch {
-      setMessages((m) => [...m, { role: "assistant", text: answerQuery(q, db.patients).text }]);
+      /**
+       * Не ответил — так и говорим. Подмена локальным движком давала уверенный
+       * ответ не на заданный вопрос, и понять, что разбора не было, было
+       * нельзя.
+       */
+      setMessages((m) => [...m, { role: "assistant", text: res.text ?? aiFailureText(res.error) }]);
+    } catch (e) {
+      const name = e instanceof Error ? e.name : "unknown";
+      setMessages((m) => [...m, { role: "assistant", text: aiFailureText(name) }]);
     } finally {
       setThinking(false);
     }

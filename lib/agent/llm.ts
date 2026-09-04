@@ -1,6 +1,7 @@
 import { CLINIC_NAME } from "@/lib/brand";
 import { finishAgentRun, startAgentRun } from "./run-log";
 import type { AgentRunOutcome } from "@/generated/prisma/enums";
+import { toPlainText } from "@/lib/assistant/plain-text";
 
 /**
  * Ответ пациенту по справке клиники. Тот же провайдер, что у ассистента в
@@ -111,6 +112,36 @@ export interface Turn {
  * сообщение как на первое: «а сколько это стоит?» после вопроса об остеопатии
  * он уже не понимал.
  */
+/**
+ * Ответ вышел из роли — отправлять его пациенту нельзя.
+ *
+ * Живой прогон на вопросе «можно ли капельницу при беременности» вернул:
+ * «I'm Claude, an AI assistant made by Anthropic. I can't provide medical
+ * advice…». Всё по делу — но по-английски и от чужого имени: пациент клиники
+ * получил бы сообщение на незнакомом языке, узнал бы, что говорит с моделью, и
+ * остался бы без ответа. Модель срывается в собственную защитную формулировку
+ * непредсказуемо, и полагаться на просьбы в промпте здесь нельзя.
+ *
+ * Такой ответ считается несостоявшимся: агент промолчит и позовёт человека —
+ * ровно то, что и требуется на медицинском вопросе (§6).
+ */
+export function offCharacter(text: string): boolean {
+  if (!text.trim()) return true;
+  /** Представился моделью или поставщиком — это не наша справочная служба. */
+  if (/(anthropic|openai|chatgpt|я\s+—?\s?claude|i'?m\s+claude|language model|ai assistant)/i.test(text)) {
+    return true;
+  }
+  /**
+   * Язык определяем по доле кириллицы среди букв. Отдельные латинские слова
+   * в русском ответе законны («IV-терапия», «BRAINBI»), поэтому порог мягкий:
+   * решает перевес, а не наличие.
+   */
+  const letters = text.match(/\p{L}/gu) ?? [];
+  if (letters.length < 12) return false;
+  const cyrillic = letters.filter((c) => /[Ѐ-ӿ]/.test(c)).length;
+  return cyrillic / letters.length < 0.5;
+}
+
 export async function answerLLM(
   question: string,
   clinicContext: string,
@@ -229,14 +260,30 @@ async function askOnce(input: {
         temperature: 0.3,
         max_tokens: 400,
         messages: [
-          { role: "system", content: PATIENT_PROMPT },
-          ...(extraRules?.trim()
-            ? [{ role: "system" as const, content: `Инструкция клиники:\n${extraRules.trim()}` }]
-            : []),
-          ...(patientName?.trim()
-            ? [{ role: "system" as const, content: `Собеседника зовут ${patientName.trim()}. Обращайтесь по имени.` }]
-            : []),
-          { role: "system", content: `Справка клиники:\n${clinicContext}` },
+          /**
+           * Все указания — ОДНИМ системным сообщением.
+           *
+           * Их было четыре подряд, и модель отвечала на последнее из них, а не
+           * пациенту: ответ начинался с «Acknowledged. Я — справочная служба…»
+           * и пересказа собственных правил. Пациент получал это в мессенджере,
+           * а настоящий ответ либо шёл следом, либо обрывался на полуслове —
+           * пересказ съедал лимит ответа. Проверено живыми прогонами:
+           * `scripts/agent-live-test.ts`.
+           */
+          {
+            role: "system",
+            content: [
+              PATIENT_PROMPT,
+              extraRules?.trim() ? `\nИнструкция клиники:\n${extraRules.trim()}` : "",
+              patientName?.trim()
+                ? `\nСобеседника зовут ${patientName.trim()}. Обращайтесь по имени.`
+                : "",
+              `\nСправка клиники:\n${clinicContext}`,
+              "\nЭти правила не пересказывай и не подтверждай их получение — сразу отвечай пациенту.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
           // Последние реплики — чтобы «а сколько это стоит?» понималось в контексте.
           /**
            * Двадцать реплик, а не десять: на десяти пациент, назвавший себя в
@@ -274,7 +321,27 @@ async function askOnce(input: {
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const choice = json.choices?.[0];
-    const text = choice?.message?.content?.trim();
+    /**
+     * Разметку снимаем на выходе.
+     *
+     * В промпте про неё сказано, но модель соблюдает просьбы через раз, а
+     * ответ уходит пациенту каждый раз. Инструкция клиники теперь тоже
+     * приходит из настроек и бывает написана в markdown — модель охотно
+     * повторяет её оформление, и в WhatsApp приезжает «**Стоимость**».
+     */
+    const text = toPlainText(choice?.message?.content?.trim() ?? "");
+    if (text && offCharacter(text)) {
+      console.error("[agent] ответ вне роли — не отправляем пациенту, зовём человека");
+      return {
+        text: null,
+        outcome: "EMPTY_RESPONSE",
+        // Повтор не поможет: модель сорвалась на самом вопросе, а не на связи.
+        retry: false,
+        error: "ответ вне роли",
+        promptTokens: json.usage?.prompt_tokens ?? null,
+        completionTokens: json.usage?.completion_tokens ?? null,
+      };
+    }
     const promptTokens = json.usage?.prompt_tokens ?? null;
     const completionTokens = json.usage?.completion_tokens ?? null;
     if (!text) {

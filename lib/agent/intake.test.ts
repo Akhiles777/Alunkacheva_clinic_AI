@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { intakePrompt, looksLikeIntake, DEFAULT_INTAKE_PROMPT, asksForIntake, inIntakeFlow, nameFromIntake } from "./intake";
+import { intakePrompt, looksLikeIntake, DEFAULT_INTAKE_PROMPT, MAX_INSTRUCTION_CHARS, asksForIntake, inIntakeFlow, nameFromIntake } from "./intake";
 
 /**
  * Строки взяты из живых переписок клиники: именно так пациенты присылают
@@ -115,5 +115,22 @@ describe("имя из анкеты", () => {
   it("не выдумывает имя там, где его нет", () => {
     expect(nameFromIntake("Взрослая женщина, головная боль")).toBeNull();
     expect(nameFromIntake("сколько стоит приём")).toBeNull();
+  });
+});
+
+describe("длина инструкции", () => {
+  /**
+   * Чем длиннее инструкция клиники, тем слабее модель держится за базовые
+   * правила, которые идут перед ней. «Не обещай запись» дороже любого
+   * регламента, поэтому длину режем.
+   */
+  it("длинный регламент обрезается", () => {
+    const long = "а".repeat(MAX_INSTRUCTION_CHARS + 500);
+    expect(intakePrompt(long).length).toBe(MAX_INSTRUCTION_CHARS);
+  });
+
+  it("обычная инструкция проходит целиком", () => {
+    const text = "Спрашивай ФИО, возраст и жалобу одним сообщением.";
+    expect(intakePrompt(text)).toBe(text);
   });
 });

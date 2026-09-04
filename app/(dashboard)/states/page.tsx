@@ -75,6 +75,8 @@ const NO_RELIABILITY = {
 };
 
 const AGENT_EMPTY: AgentStats = {
+  assist: { total: 0, prepared: 0, booked: 0, prepareRate: null, bookRate: null },
+  logSince: null,
   hasData: false,
   reliability: NO_RELIABILITY,
   autonomy: { total: 0, closedByAgent: 0, wentToHuman: 0, rate: null },
@@ -85,6 +87,8 @@ const AGENT_EMPTY: AgentStats = {
 };
 
 const AGENT_NO_BASE: AgentStats = {
+  assist: { total: 40, prepared: 12, booked: 7, prepareRate: 0.3, bookRate: 7 / 12 },
+  logSince: new Date("2026-09-04T10:00:00+03:00"),
   hasData: true,
   reliability: {
     ...NO_RELIABILITY,
@@ -127,6 +131,8 @@ const AGENT_NO_BASE: AgentStats = {
 };
 
 const AGENT_BIG: AgentStats = {
+  assist: { total: 412, prepared: 168, booked: 121, prepareRate: 168 / 412, bookRate: 121 / 168 },
+  logSince: new Date("2026-06-05T10:00:00+03:00"),
   hasData: true,
   reliability: {
     ...NO_RELIABILITY,

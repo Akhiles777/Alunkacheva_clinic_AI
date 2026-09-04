@@ -2,12 +2,15 @@ import { prisma } from "@/lib/db";
 import { periodBounds } from "@/lib/server/analytics";
 import type { PeriodKey } from "@/lib/metrics/types";
 import {
+  agentAssist,
   agentAutonomy,
   agentReliability,
   closedByAgent,
   escalationBreakdown,
   type AgentAutonomy,
   type AgentReliability,
+  type AgentAssist,
+  type AssistDialog,
   type AutonomyDialog,
   type EscalationSlice,
 } from "@/lib/metrics/agent";
@@ -21,6 +24,8 @@ import {
 } from "@/lib/metrics/response-time";
 import { agentSavings, type SavingsReport } from "@/lib/metrics/agent-savings";
 import { confidentMatch, matchKnowledge, type KnowledgeRow } from "@/lib/agent/knowledge";
+import { looksLikeIntake } from "@/lib/agent/intake";
+import { BOOKING_WINDOW_MS } from "@/lib/metrics/agent";
 
 /**
  * Данные для раздела «Работа ассистента».
@@ -39,6 +44,16 @@ export interface AgentStats {
   escalationAck: FirstResponseStats & { unacknowledged: number };
   responseTime: FirstResponseReport;
   savings: SavingsReport;
+  /**
+   * Работа агента по реальной схеме: оформил заявку — передал — записали.
+   * «Закрыл сам» отвечает на другой вопрос и остаётся рядом.
+   */
+  assist: AgentAssist;
+  /**
+   * С какого момента ведётся журнал попыток. Без этой даты прочерк в
+   * «Надёжности» читается как поломка, а означает «журнала тогда не было».
+   */
+  logSince: Date | null;
 }
 
 /**
@@ -251,6 +266,19 @@ export async function getAgentStats(companyId: string, period: PeriodKey): Promi
     escalationCostMs: ackedMs.reduce((a, b) => a + b, 0),
   });
 
+  /**
+   * Работа по реальной схеме: агент оформил заявку — передал администратору —
+   * тот записал. Считается по тем же диалогам периода.
+   */
+  const assist = await assistOf(companyId, messages, escalations, from, to);
+
+  /** С какого момента журнал вообще ведётся: прочерк без даты — не число. */
+  const firstRun = await prisma.agentRun.findFirst({
+    where: { companyId },
+    orderBy: { triggeredAt: "asc" },
+    select: { triggeredAt: true },
+  });
+
   return {
     hasData: runs.length > 0 || messages.length > 0 || escalations.length > 0,
     reliability,
@@ -259,5 +287,109 @@ export async function getAgentStats(companyId: string, period: PeriodKey): Promi
     escalationAck,
     responseTime,
     savings,
+    assist,
+    logSince: firstRun?.triggeredAt ?? null,
   };
+}
+
+/**
+ * Диалоги для метрики «оформил заявку».
+ *
+ * Данные для записи узнаём тем же правилом, что и агент (`looksLikeIntake`):
+ * имя из нескольких слов и число рядом. Второе определение здесь означало бы,
+ * что агент считает заявкой одно, а отчёт — другое.
+ */
+async function assistOf(
+  companyId: string,
+  messages: {
+    conversationId: string;
+    direction: string;
+    authorType: string;
+    body: string;
+    createdAt: Date;
+  }[],
+  escalations: { conversationId: string; createdAt: Date }[],
+  from: Date,
+  to: Date,
+): Promise<AgentAssist> {
+  const byDialog = new Map<string, AssistDialog>();
+  const ensure = (conversationId: string): AssistDialog => {
+    const found = byDialog.get(conversationId);
+    if (found) return found;
+    const created: AssistDialog = {
+      conversationId,
+      agentReplied: false,
+      intakeAt: null,
+      handedOverAt: null,
+      bookedAt: null,
+    };
+    byDialog.set(conversationId, created);
+    return created;
+  };
+
+  for (const m of messages) {
+    const d = ensure(m.conversationId);
+    if (m.direction === "OUT" && m.authorType === "BOT") {
+      d.agentReplied = true;
+      continue;
+    }
+    /**
+     * Данные для записи засчитываем только ПОСЛЕ ответа агента: пациент,
+     * приславший ФИО первым сообщением, оформил себя сам.
+     */
+    if (m.direction === "IN" && m.authorType === "PATIENT" && d.agentReplied && !d.intakeAt) {
+      if (looksLikeIntake(m.body)) d.intakeAt = m.createdAt;
+      continue;
+    }
+    if (m.direction === "OUT" && m.authorType === "STAFF" && d.intakeAt && !d.handedOverAt) {
+      d.handedOverAt = m.createdAt;
+    }
+  }
+
+  // Эскалация — тоже передача человеку, и часто она раньше его ответа.
+  for (const e of escalations) {
+    const d = byDialog.get(e.conversationId);
+    if (!d || !d.intakeAt) continue;
+    if (e.createdAt < d.intakeAt) continue;
+    if (!d.handedOverAt || e.createdAt < d.handedOverAt) d.handedOverAt = e.createdAt;
+  }
+
+  const prepared = [...byDialog.values()].filter((d) => d.intakeAt && d.handedOverAt);
+  if (prepared.length > 0) {
+    /**
+     * Записи ищем по пациенту диалога: заявку оформляют в переписке, а запись
+     * администратор заводит в YCLIENTS, и связи между ними нет никакой, кроме
+     * человека и времени.
+     */
+    const convs = await prisma.conversation.findMany({
+      where: { id: { in: prepared.map((d) => d.conversationId) }, patientId: { not: null } },
+      select: { id: true, patientId: true },
+    });
+    const patientOf = new Map(convs.map((c) => [c.id, c.patientId as string]));
+    const patientIds = [...new Set([...patientOf.values()])];
+
+    if (patientIds.length > 0) {
+      const appts = await prisma.appointment.findMany({
+        where: {
+          companyId,
+          deletedAt: null,
+          status: { not: "CANCELLED" },
+          patientId: { in: patientIds },
+          createdAtYclients: { gte: from, lt: new Date(to.getTime() + BOOKING_WINDOW_MS) },
+        },
+        select: { patientId: true, createdAtYclients: true },
+        orderBy: { createdAtYclients: "asc" },
+      });
+      for (const d of prepared) {
+        const patientId = patientOf.get(d.conversationId);
+        if (!patientId || !d.handedOverAt) continue;
+        const hit = appts.find(
+          (a) => a.patientId === patientId && a.createdAtYclients >= (d.handedOverAt as Date),
+        );
+        d.bookedAt = hit?.createdAtYclients ?? null;
+      }
+    }
+  }
+
+  return agentAssist([...byDialog.values()]);
 }

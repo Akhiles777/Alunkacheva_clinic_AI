@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { askAI } from "../_components/assistant-actions";
+import { aiFailureText } from "@/lib/assistant/failure";
 import { Spinner } from "../_components/page-skeleton";
 import { getOwnerAiContext } from "./actions";
 import {
@@ -12,8 +13,6 @@ import {
   renameAiChat,
   type AiChatSummary,
 } from "./chat-actions";
-import { useDb } from "@/app/_data/store";
-import { answerQuery } from "@/lib/assistant/engine";
 
 interface Msg {
   role: "user" | "assistant";
@@ -46,7 +45,6 @@ const WELCOME: Msg = {
  * остаётся в чате сотрудников как голосовые сообщения.
  */
 export function OwnerAssistant() {
-  const db = useDb();
   const [chats, setChats] = useState<AiChatSummary[]>([]);
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([WELCOME]);
@@ -110,9 +108,18 @@ export function OwnerAssistant() {
     try {
       const context = await getOwnerAiContext();
       const res = await askAI(q, context, history, "owner");
-      answer = res.text ?? answerQuery(q, db.patients).text;
-    } catch {
-      answer = answerQuery(q, db.patients).text;
+      /**
+       * Не ответил — так и говорим.
+       *
+       * Здесь стояла подмена: не получилось у модели — отвечал локальный
+       * движок по правилам. Владелец спрашивал «как повысить выручку» и
+       * получал сводку по случайному пациенту, а следом «скоро подключим
+       * полноценный ИИ» — уверенный ответ не на его вопрос. Это хуже
+       * молчания: по такому ответу нельзя понять, что разбора не было.
+       */
+      answer = res.text ?? aiFailureText(res.error);
+    } catch (e) {
+      answer = aiFailureText(e instanceof Error ? e.name : "unknown");
     }
     setMessages((m) => [...m, { role: "assistant", text: answer }]);
     setThinking(false);
@@ -151,7 +158,16 @@ export function OwnerAssistant() {
         <span className="text-text-subtle text-2xs">разбор по данным клиники</span>
       </div>
 
-      <div className="flex h-[min(60vh,540px)] min-h-0 max-md:flex-col">
+      {/*
+        На телефоне высота не фиксируется.
+
+        Раньше здесь стояло `h-[min(60vh,540px)]` и на узком экране обе панели
+        складывались друг под друга ВНУТРИ этой высоты: список разборов,
+        подсказки и поле ввода съедали её почти целиком, и на сам разбор
+        оставалось две строки. Именно так «сломалась адаптивность»: экран не
+        уезжал, он схлопывался.
+      */}
+      <div className="flex h-[min(60vh,540px)] min-h-0 max-md:h-auto max-md:flex-col">
         {/* Список разборов. Каждый — своя задача, к которой можно вернуться. */}
         <aside className="border-border flex w-[210px] flex-none flex-col border-r max-md:w-full max-md:border-r-0 max-md:border-b">
           <button
@@ -161,7 +177,7 @@ export function OwnerAssistant() {
           >
             + Новый разбор
           </button>
-          <div className="flex-1 overflow-auto max-md:max-h-[132px]">
+          <div className="flex-1 overflow-auto max-md:max-h-[104px]">
             {chats.length === 0 ? (
               <p className="text-text-subtle px-4 py-3 text-2xs leading-relaxed">
                 Сохранённых разборов пока нет. Задайте вопрос — разговор сохранится сам и будет
@@ -217,8 +233,9 @@ export function OwnerAssistant() {
           </div>
         </aside>
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col px-5 py-4">
-          <div className="flex-1 space-y-3 overflow-auto pr-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col px-5 py-4 max-md:px-4">
+          {/* Разбору нужна собственная высота: на телефоне он главное на экране. */}
+          <div className="flex-1 space-y-3 overflow-auto pr-1 max-md:min-h-[48vh]">
             {opening ? (
               <div className="flex h-full items-center justify-center">
                 <Spinner label="Открываем разбор" />
