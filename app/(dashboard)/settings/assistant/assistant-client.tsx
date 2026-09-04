@@ -13,9 +13,10 @@ import {
   Toggle,
 } from "../_components/ui";
 import { saveSection } from "../blob-actions";
-import { deleteKnowledge, saveKnowledge } from "./actions";
+import { approveKnowledge, deleteKnowledge, revokeKnowledgeApproval, saveKnowledge } from "./actions";
 import { mergeKeepingOrder } from "@/lib/merge-list";
 import { DEFAULT_INTAKE_PROMPT } from "@/lib/agent/intake";
+import { GapsBlock, type GapDraft, type GapsData } from "./gaps-block";
 
 type AssistantConfig = typeof settingsStore.assistant;
 
@@ -38,6 +39,26 @@ function newKnowledgeItem(): KnowledgeItem {
   return { id, topic: "", question: "", answer: "", serviceId: null, isActive: true };
 }
 
+/**
+ * Черновик записи из пробела.
+ *
+ * Медицинская тема создаётся ВЫКЛЮЧЕННОЙ: справка такой темы уходит пациенту
+ * дословно, и включить её можно только после утверждения врачом. Обычная —
+ * включённой, как и всякая новая запись: выключенная по умолчанию была
+ * ловушкой, администратор заполнял ответ и не понимал, почему ассистент про
+ * него не знает.
+ */
+function draftFromGap(draft: GapDraft): KnowledgeItem {
+  return {
+    ...newKnowledgeItem(),
+    topic: draft.topic.slice(0, 120),
+    question: draft.question,
+    answer: draft.answer,
+    isActive: !draft.medical,
+    needsDoctorApproval: draft.medical,
+  };
+}
+
 
 /**
  * Одна запись справочника.
@@ -51,13 +72,32 @@ const KnowledgeRow = memo(function KnowledgeRow({
   serviceOptions,
   onPatch,
   onDelete,
+  used,
+  canApprove,
+  onApprove,
+  onRevoke,
 }: {
   item: KnowledgeItem;
   serviceOptions: { id: string; title: string }[];
   onPatch: (id: string, next: Partial<KnowledgeItem>) => void;
   onDelete: (item: KnowledgeItem) => void;
+  /**
+   * Сколько раз запись составила ответ пациенту. Считается по журналу попыток
+   * агента; отдельного счётчика в записи нет намеренно — он разъедется с
+   * фактами, и расхождение будет нечем объяснить.
+   */
+  used: number;
+  canApprove: boolean;
+  onApprove: (item: KnowledgeItem) => void;
+  onRevoke: (item: KnowledgeItem) => void;
 }) {
   const k = item;
+  /**
+   * Медицинская запись без утверждения врача включаться не должна — и не
+   * может: сервер такую отправку отклоняет. Переключатель здесь заблокирован,
+   * чтобы человек узнал об этом до сохранения, а не из ошибки после.
+   */
+  const awaitingDoctor = Boolean(k.needsDoctorApproval) && !k.approvedAt;
   return (
     <li className="border-border-soft rounded-lg border p-3">
       {/*
@@ -86,8 +126,11 @@ const KnowledgeRow = memo(function KnowledgeRow({
         </select>
         <div className="flex items-center gap-1.5">
           <Toggle
-            checked={k.isActive}
-            onChange={(v) => onPatch(k.id, { isActive: v })}
+            checked={k.isActive && !awaitingDoctor}
+            onChange={(v) => {
+              if (awaitingDoctor) return;
+              onPatch(k.id, { isActive: v });
+            }}
             label={`${k.topic} активна`}
           />
           <button
@@ -113,6 +156,37 @@ const KnowledgeRow = memo(function KnowledgeRow({
         rows={2}
         className="mt-2"
       />
+      {/*
+        Польза записи: сколько раз она составила ответ. Ноль — тоже ответ:
+        либо об этом не спрашивают, либо подбор запись не находит, и тогда
+        дело в формулировке вопроса, а не в тексте справки.
+      */}
+      <div className="text-text-subtle mt-1.5 text-2xs">
+        {used > 0 ? `ответов с ней: ${used}` : "ни разу не пригодилась"}
+      </div>
+      {/*
+        Медицинская запись: кто её утвердил и когда. Ассистент отвечает такой
+        справкой дословно, поэтому утверждает её врач, а не тот, кто быстрее
+        набрал текст в переписке. Правка текста утверждение снимает.
+      */}
+      {k.needsDoctorApproval ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className={`text-2xs ${awaitingDoctor ? "text-accent-text" : "text-text-subtle"}`}>
+            {awaitingDoctor
+              ? "Медицинская тема · ждёт утверждения врача, включить нельзя"
+              : `Медицинская тема · утвердил(а) ${k.approvedByName ?? "врач"}`}
+          </span>
+          {canApprove ? (
+            <button
+              type="button"
+              onClick={() => (awaitingDoctor ? onApprove(k) : onRevoke(k))}
+              className="border-border text-text-muted hover:bg-hover rounded-md border px-2.5 py-1 text-2xs"
+            >
+              {awaitingDoctor ? "Утвердить" : "Отозвать утверждение"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 });
@@ -120,9 +194,20 @@ const KnowledgeRow = memo(function KnowledgeRow({
 export function AssistantClient({
   initial,
   serviceOptions,
+  gaps,
+  usage,
+  usageSince,
+  canApprove,
 }: {
   initial: AssistantData;
   serviceOptions: { id: string; title: string }[];
+  gaps: GapsData;
+  /** Сколько ответов составила каждая запись за срок разбора пробелов. */
+  usage: Record<string, number>;
+  /** С какого момента журнал ведётся: до него счёт был нулевым у всех. */
+  usageSince: string | null;
+  /** Врач или владелец: только они утверждают медицинские справки. */
+  canApprove: boolean;
 }) {
   const [assistant, setAssistant] = useState<AssistantConfig>(() =>
     structuredClone(initial.assistant),
@@ -157,6 +242,9 @@ export function AssistantClient({
    * на экране появлялось «Не удалось сохранить» — человек считал, что запись
    * потерялась.
    */
+  /** Отказ на утверждении врача — отдельно от проверки формы. */
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+
   const noTopic = knowledge.find((k) => !k.topic.trim());
   const noAnswer = knowledge.find((k) => k.isActive && k.answer.trim().length === 0);
   const error = noTopic
@@ -178,6 +266,35 @@ export function AssistantClient({
     setDeleteTarget(item);
     setDeleteError(null);
   }, []);
+
+  /**
+   * Утверждение врача — отдельное действие, а не часть общего «Сохранить».
+   *
+   * Врач утверждает конкретный текст, а не всё, что администратор успел
+   * наменять в форме. Поэтому отметка ставится сразу и отдельно; несохранённые
+   * правки в других строках она не трогает.
+   */
+  const applyApproval = useCallback(
+    async (item: KnowledgeItem, action: (id: string) => Promise<KnowledgeItem[]>) => {
+      setApprovalError(null);
+      try {
+        const saved = await action(item.id);
+        setKnowledge((current) => mergeKeepingOrder(current, saved, keyOf));
+      } catch (e) {
+        setApprovalError((e as Error)?.message ?? "Не удалось изменить утверждение");
+      }
+    },
+    [],
+  );
+
+  const approveEntry = useCallback(
+    (item: KnowledgeItem) => void applyApproval(item, approveKnowledge),
+    [applyApproval],
+  );
+  const revokeEntry = useCallback(
+    (item: KnowledgeItem) => void applyApproval(item, revokeKnowledgeApproval),
+    [applyApproval],
+  );
 
   function removeDraft(id: string) {
     setKnowledge((ks) => ks.filter((k) => k.id !== id));
@@ -329,7 +446,40 @@ export function AssistantClient({
         </form>
       </Group>
 
+      {/*
+        Пробелы — над базой знаний: сначала видно, чего не хватает, потом
+        редактор, куда падает черновик. Кнопка в этом блоке ничего не
+        сохраняет — она добавляет строку ниже, и её надо прочитать.
+      */}
+      <GapsBlock
+        data={gaps}
+        onDraft={(draft) => {
+          const item = draftFromGap(draft);
+          setQuery("");
+          setKnowledge((items) => [...items, item]);
+          setDirtyKnowledgeIds((ids) => new Set(ids).add(item.id));
+        }}
+      />
+
       <Group title="База знаний" hint="ассистент отвечает только этими текстами">
+        {/*
+          Ноль ответов у записи может означать «не спрашивают», а может —
+          «журнала тогда ещё не было». Разница важная: по первому прочтению
+          запись удаляют.
+        */}
+        {usageSince ? (
+          <p className="text-text-subtle text-2xs">
+            Счёт ответов ведётся с{" "}
+            {new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" }).format(
+              new Date(usageSince),
+            )}
+            : раньше журнала попыток не было.
+          </p>
+        ) : (
+          <p className="text-text-subtle text-2xs">
+            Журнал попыток ещё пуст — счёт ответов появится, когда ассистент начнёт отвечать.
+          </p>
+        )}
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -347,6 +497,10 @@ export function AssistantClient({
                 serviceOptions={serviceOptions}
                 onPatch={patchKnowledge}
                 onDelete={requestDelete}
+                used={usage[k.id] ?? 0}
+                canApprove={canApprove}
+                onApprove={approveEntry}
+                onRevoke={revokeEntry}
               />
             ))
           )}
@@ -370,6 +524,8 @@ export function AssistantClient({
           + Добавить запись
         </button>
       </Group>
+
+      {approvalError ? <p className="text-accent-text text-sm">{approvalError}</p> : null}
 
       <div className="flex items-center gap-3">
         <SaveBar

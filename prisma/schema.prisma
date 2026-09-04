@@ -1073,7 +1073,8 @@ model StaffUser {
   aiChats                  AiChat[]
   createdNotes             PatientNote[]
   createdCallLogs          CallLog[]
-  knowledgeEdits           KnowledgeEntry[]
+  knowledgeEdits           KnowledgeEntry[]  @relation("KnowledgeUpdatedBy")
+  knowledgeApprovals       KnowledgeEntry[]  @relation("KnowledgeApprovedBy")
   settingEdits             Setting[]
   consentDocuments         ConsentDocument[]
   internalChatParticipants InternalChatParticipant[]
@@ -1661,13 +1662,23 @@ model KnowledgeEntry {
   serviceId   String?
   isActive    Boolean @default(true)
   updatedById String?
+  /// Медицинская тема: подготовка, противопоказания, состояние пациента.
+  ///
+  /// Агент отвечает такими текстами ДОСЛОВНО (§6, правило 1), поэтому
+  /// утверждает их врач, а не администратор. Пока утверждения нет, запись
+  /// нельзя включить: сочинённое противопоказание — это вред пациенту и риск
+  /// по ст. 13 323-ФЗ, а не неточность в тексте.
+  needsDoctorApproval Boolean   @default(false)
+  approvedById        String?
+  approvedAt          DateTime? @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  service   Service?   @relation(fields: [serviceId], references: [id], onDelete: SetNull)
-  updatedBy StaffUser? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  service    Service?   @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  updatedBy  StaffUser? @relation("KnowledgeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  approvedBy StaffUser? @relation("KnowledgeApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, isActive])
   @@index([companyId, serviceId])

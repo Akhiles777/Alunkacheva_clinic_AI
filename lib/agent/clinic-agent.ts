@@ -16,7 +16,7 @@ import { logAgentRun } from "./run-log";
 function knowledgeIdOf(row: { id?: string }): string[] {
   return typeof row.id === "string" && row.id ? [row.id] : [];
 }
-import { confidentMatch, matchKnowledge } from "./knowledge";
+import { confidentMatch, matchKnowledge, usableKnowledgeWhere } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { focusLine, focusOf, searchText } from "./focus";
 import { patientVisitsContext } from "./patient-visits";
@@ -426,7 +426,7 @@ async function clinicContext(
   const [services, knowledge, schedule, staff] = await Promise.all([
     getServices(companyId),
     prisma.knowledgeEntry.findMany({
-      where: { companyId, isActive: true },
+      where: usableKnowledgeWhere(companyId),
       select: { id: true, topic: true, question: true, answer: true },
     }),
     prisma.clinicSchedule.findMany({
@@ -1049,7 +1049,7 @@ async function replyToQuestion(
   }
 
   const allKnowledge = await prisma.knowledgeEntry.findMany({
-    where: { companyId: ctx.companyId, isActive: true },
+    where: usableKnowledgeWhere(ctx.companyId),
     select: { id: true, topic: true, question: true, answer: true },
   });
 
@@ -1716,7 +1716,7 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
     // Адрес — из справочника клиники. Нет записи — честно зовём человека,
     // а не пересказываем весь справочник.
     const rows = await prisma.knowledgeEntry.findMany({
-      where: { companyId: ctx.companyId, isActive: true },
+      where: usableKnowledgeWhere(ctx.companyId),
       select: { id: true, topic: true, question: true, answer: true },
     });
     const m = matchKnowledge("адрес как добраться где находитесь", rows);

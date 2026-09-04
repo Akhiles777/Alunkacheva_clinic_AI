@@ -7,6 +7,7 @@ import { AgentSection } from "../owner/agent-section";
 import type { AgentStats } from "@/lib/server/agent-stats";
 import type { SourceStat } from "@/lib/metrics/types";
 import { SourcePicker } from "../_components/visit-source";
+import { GapsBlock, type GapsData } from "../settings/assistant/gaps-block";
 
 /**
  * Витрина граничных состояний — служебный экран визуальной проверки.
@@ -197,6 +198,70 @@ const SOURCES_MOSTLY_UNKNOWN: SourceStat[] = [
   { code: "none", title: "Источник неизвестен", inquiries: 0, booked: 720, share: 0, unknown: true },
 ];
 
+/** Пробелов нет: эскалаций «нечем ответить» за срок не было вовсе. */
+const GAPS_EMPTY: GapsData = { clusters: [], total: 0, withoutQuestion: 0, windowDays: 90 };
+
+/**
+ * Боевая картина: один вопрос повторяется, второй — медицинский, а к части
+ * эскалаций вопрос не нашёлся. Все три случая должны читаться по-разному.
+ */
+const GAPS_FULL: GapsData = {
+  total: 14,
+  withoutQuestion: 3,
+  windowDays: 90,
+  clusters: [
+    {
+      key: "адрес-клини",
+      title: "подскажите адрес клиники",
+      count: 6,
+      lastAt: "2026-09-02T09:15:00.000Z",
+      reasons: ["MISUNDERSTOOD"],
+      medical: false,
+      questions: [
+        { id: "q1", text: "подскажите адрес клиники", at: "2026-09-02T09:15:00.000Z" },
+        { id: "q2", text: "а где вы находитесь, как доехать от вокзала", at: "2026-08-30T14:02:00.000Z" },
+      ],
+      answers: [
+        {
+          text: "Мы на Ленина 1, второй этаж, вход со двора. Парковка есть перед зданием.",
+          at: "2026-09-02T09:22:00.000Z",
+          authorName: "Мила",
+        },
+      ],
+    },
+    {
+      key: "беремен-капельниц",
+      title: "можно ли капельницу при беременности",
+      count: 3,
+      lastAt: "2026-08-28T11:40:00.000Z",
+      reasons: ["MEDICAL_QUESTION"],
+      medical: true,
+      questions: [
+        { id: "q3", text: "можно ли капельницу при беременности", at: "2026-08-28T11:40:00.000Z" },
+      ],
+      answers: [
+        {
+          text: "Вам с вашим сроком лучше не надо, приходите после родов.",
+          at: "2026-08-28T12:10:00.000Z",
+          authorName: "Гаджи Абдурахманович Алунукачев",
+        },
+      ],
+    },
+    {
+      key: "оплат-рассроч",
+      title: "можно ли оплатить курс частями",
+      count: 2,
+      lastAt: "2026-08-20T08:05:00.000Z",
+      reasons: ["MISUNDERSTOOD"],
+      medical: false,
+      questions: [
+        { id: "q4", text: "можно ли оплатить курс частями", at: "2026-08-20T08:05:00.000Z" },
+      ],
+      answers: [],
+    },
+  ],
+};
+
 function Case({
   title,
   note,
@@ -378,6 +443,25 @@ export default function StatesPage() {
             неизвестными. Неизвестный источник — это звонок или приход без переписки; догадкой он не
             заполняется.
           </p>
+        </div>
+      </Case>
+
+      {/*
+        Пробелы в справочнике. Пустое состояние — не «0 групп», а фраза: за
+        срок ассистент ни разу не остался без ответа. Это разные утверждения.
+      */}
+      <Case title="Пробелы: за срок ни одного" note="пусто показываем словами">
+        <div className="max-w-[820px]">
+          <GapsBlock data={GAPS_EMPTY} onDraft={() => {}} />
+        </div>
+      </Case>
+
+      <Case
+        title="Пробелы: медицинская тема и длинные вопросы"
+        note="кнопка создаёт черновик, а не запись"
+      >
+        <div className="max-w-[820px]">
+          <GapsBlock data={GAPS_FULL} onDraft={() => {}} />
         </div>
       </Case>
 

@@ -73,6 +73,18 @@ function stem(word: string): string {
 }
 
 /**
+ * Значимые слова текста, приведённые к основе.
+ *
+ * Та же нормализация, которой агент ищет ответ, — её же использует разбор
+ * пробелов в справочнике. Две разные нормализации означали бы, что вопросы,
+ * которые агент считает одинаковыми, на экране «Пробелы» окажутся в разных
+ * группах, и наоборот.
+ */
+export function stemsOf(text: string): string[] {
+  return words(text).map(stem);
+}
+
+/**
  * Лучшая запись справочника для вопроса и её оценка (0..1).
  * Оценка — доля слов вопроса, нашедшихся в записи.
  */
@@ -187,3 +199,36 @@ export function confidentMatch(
 
 /** Порог уверенности: ниже него отвечать нельзя, вопрос уходит человеку. */
 export const KNOWLEDGE_MIN_SCORE = 0.34;
+
+/**
+ * Можно ли отвечать этой записью.
+ *
+ * Медицинская справка идёт пациенту дословно (§6, правило 1), поэтому
+ * утверждает её врач. Неутверждённая медицинская запись для агента не
+ * существует — не «показывается с оговоркой», а не существует: оговорку
+ * пациент не увидит, он увидит текст.
+ */
+export function knowledgeUsable(entry: {
+  isActive: boolean;
+  needsDoctorApproval?: boolean;
+  approvedAt?: Date | null;
+}): boolean {
+  if (!entry.isActive) return false;
+  if (!entry.needsDoctorApproval) return true;
+  return entry.approvedAt != null;
+}
+
+/**
+ * Условие отбора записей, которыми агент вправе отвечать.
+ *
+ * Одно на все места чтения: три одинаковых `{ isActive: true }` в разных
+ * функциях означали бы, что новое правило забудут в одном из них — и
+ * неутверждённая медицинская справка уйдёт пациенту именно оттуда.
+ */
+export function usableKnowledgeWhere(companyId: string) {
+  return {
+    companyId,
+    isActive: true,
+    OR: [{ needsDoctorApproval: false }, { approvedAt: { not: null } }],
+  };
+}

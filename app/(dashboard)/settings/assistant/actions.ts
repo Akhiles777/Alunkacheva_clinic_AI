@@ -37,9 +37,29 @@ export async function getKnowledge(): Promise<KnowledgeItem[]> {
     // Устойчивый порядок: у записей с одинаковой темой он иначе прыгает при
     // каждом сохранении, и строка «уезжает» из-под курсора.
     orderBy: [{ topic: "asc" }, { createdAt: "asc" }],
-    select: { id: true, topic: true, question: true, answer: true, serviceId: true, isActive: true },
+    select: {
+      id: true,
+      topic: true,
+      question: true,
+      answer: true,
+      serviceId: true,
+      isActive: true,
+      needsDoctorApproval: true,
+      approvedAt: true,
+      approvedBy: { select: { name: true } },
+    },
   });
-  return rows;
+  return rows.map((r) => ({
+    id: r.id,
+    topic: r.topic,
+    question: r.question,
+    answer: r.answer,
+    serviceId: r.serviceId,
+    isActive: r.isActive,
+    needsDoctorApproval: r.needsDoctorApproval,
+    approvedAt: r.approvedAt?.toISOString() ?? null,
+    approvedByName: r.approvedBy?.name ?? null,
+  }));
 }
 
 /** Ключ, по которому запись узнаётся независимо от идентификатора. */
@@ -80,7 +100,14 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
    */
   const existing = await prisma.knowledgeEntry.findMany({
     where: { companyId: session.companyId },
-    select: { id: true, topic: true, question: true },
+    select: {
+      id: true,
+      topic: true,
+      question: true,
+      answer: true,
+      needsDoctorApproval: true,
+      approvedAt: true,
+    },
   });
   const byId = new Map(existing.map((e) => [e.id, e]));
   const byKey = new Map(existing.map((e) => [naturalKey(e.topic, e.question), e.id]));
@@ -89,7 +116,7 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
   const creates: Record<string, unknown>[] = [];
 
   for (const k of deduped.values()) {
-    const data = {
+    const data: Record<string, unknown> = {
       topic: k.topic.trim(),
       question: k.question.trim(),
       answer: k.answer.trim(),
@@ -98,6 +125,47 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
       updatedById: session.userId,
     };
     const targetId = byId.has(k.id) ? k.id : byKey.get(naturalKey(k.topic, k.question));
+    const before = targetId ? byId.get(targetId) : undefined;
+
+    /**
+     * Медицинская отметка приходит не от экрана, а из базы.
+     *
+     * Иначе снять её мог бы кто угодно, отправив форму без этого поля, — и
+     * весь смысл утверждения врачом сводился бы к галочке, которую можно
+     * обойти. У новой записи отметку задаёт то, откуда она создаётся: экран
+     * «Пробелы» помечает медицинские группы сам.
+     */
+    const medical = before ? before.needsDoctorApproval : Boolean(k.needsDoctorApproval);
+    data.needsDoctorApproval = medical;
+
+    /**
+     * Утверждение врача относится к КОНКРЕТНОМУ тексту. Текст переписали —
+     * утверждения больше нет: иначе достаточно получить одобрение на
+     * безобидную справку и заменить её содержимое.
+     */
+    if (before?.approvedAt && medical) {
+      const changed =
+        before.answer.trim() !== data.answer ||
+        before.question.trim() !== data.question ||
+        before.topic.trim() !== data.topic;
+      if (changed) {
+        data.approvedAt = null;
+        data.approvedById = null;
+        data.isActive = false;
+      }
+    }
+
+    /**
+     * Неутверждённая медицинская справка не включается. Не «включается с
+     * предупреждением» — предупреждение увидит администратор, а текст прочтёт
+     * пациент.
+     */
+    if (medical && !before?.approvedAt && data.isActive) {
+      throw new Error(
+        `Тема «${k.topic}» медицинская: включить запись можно после утверждения врачом`,
+      );
+    }
+
     if (targetId) updates.push({ id: targetId, data });
     else creates.push({ companyId: session.companyId, ...data });
   }
@@ -155,5 +223,78 @@ export async function deleteKnowledge(id: string): Promise<KnowledgeItem[]> {
     meta: { deleted: 1 },
   });
 
+  return getKnowledge();
+}
+
+/**
+ * Кто вправе утверждать медицинскую справку.
+ *
+ * Врач и владелец. Администратор — нет: он пишет пациентам каждый день и
+ * лучше всех знает, как ответить вежливо, но за противопоказание отвечает не
+ * он. Право «править настройки» здесь не подходит по смыслу — оно про
+ * настройки, а не про медицину.
+ */
+const APPROVERS = ["DOCTOR", "OWNER"] as const;
+
+function assertApprover(role: string) {
+  if (!(APPROVERS as readonly string[]).includes(role)) {
+    throw new Error("Утвердить медицинскую справку может врач или владелец");
+  }
+}
+
+/**
+ * Утвердить медицинскую справку.
+ *
+ * Утверждение относится к тому тексту, который врач прочитал: правка текста
+ * снимает его (см. saveKnowledge). Поэтому здесь ничего, кроме отметки, не
+ * меняется — включает запись человек отдельным действием и осознанно.
+ */
+export async function approveKnowledge(id: string): Promise<KnowledgeItem[]> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  assertApprover(session.role);
+
+  const result = await prisma.knowledgeEntry.updateMany({
+    where: { id, companyId: session.companyId, needsDoctorApproval: true },
+    data: { approvedAt: new Date(), approvedById: session.userId },
+  });
+  if (result.count === 0) throw new Error("Запись не найдена или не требует утверждения");
+
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "knowledge",
+    entityId: id,
+    meta: { approved: true },
+  });
+  return getKnowledge();
+}
+
+/**
+ * Отозвать утверждение — и сразу выключить запись.
+ *
+ * Врач передумал; оставить текст работающим «до выяснения» нельзя: пациенты
+ * получают ответы каждую минуту, а выяснение занимает дни.
+ */
+export async function revokeKnowledgeApproval(id: string): Promise<KnowledgeItem[]> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  assertApprover(session.role);
+
+  const result = await prisma.knowledgeEntry.updateMany({
+    where: { id, companyId: session.companyId, needsDoctorApproval: true },
+    data: { approvedAt: null, approvedById: null, isActive: false },
+  });
+  if (result.count === 0) throw new Error("Запись не найдена или не требует утверждения");
+
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "knowledge",
+    entityId: id,
+    meta: { approvalRevoked: true },
+  });
   return getKnowledge();
 }

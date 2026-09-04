@@ -92,6 +92,13 @@ export interface KnowledgeItem {
   answer: string;
   serviceId: string | null;
   isActive: boolean;
+  /**
+   * Медицинская тема: ответ уходит пациенту дословно, и утверждает его врач.
+   * Пока не утверждено — запись нельзя включить.
+   */
+  needsDoctorApproval?: boolean;
+  approvedAt?: string | null;
+  approvedByName?: string | null;
 }
 
 export interface TemplateItem {
