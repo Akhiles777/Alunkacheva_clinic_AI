@@ -40,6 +40,17 @@ export interface AiTurn {
   content: string;
 }
 
+/**
+ * Обрезать по последнему законченному предложению.
+ *
+ * Если законченных предложений нет вовсе (ответ короче одного), возвращаем как
+ * есть: пустота хуже обрывка.
+ */
+function trimToSentence(text: string): string {
+  const cut = Math.max(text.lastIndexOf("."), text.lastIndexOf("!"), text.lastIndexOf("?"));
+  return cut > 40 ? text.slice(0, cut + 1) : text;
+}
+
 export async function askAI(
   question: string,
   context: string,
@@ -82,9 +93,15 @@ export async function askAI(
       body: JSON.stringify({
         model: MODEL,
         temperature: 0.4,
-        // Запас намеренно выше ожидаемой длины: краткость задаётся промптом, а
-        // не обрезкой. Обрыв ответа на полуслове хуже длинного ответа.
-        max_tokens: 900,
+        /**
+         * Запас намеренно выше ожидаемой длины: краткость задаётся промптом, а
+         * не обрезкой. Обрыв ответа на полуслове хуже длинного ответа.
+         *
+         * Девятисот не хватало. На просьбу «проведи глубокий анализ» разбор
+         * обрывался словом «Важн» — владелец видел половину мысли и не мог
+         * понять, это всё или связь пропала.
+         */
+        max_tokens: 1800,
         messages: [
           // Инструкции + свежий срез базы. Пересобираем каждый запрос — данные
           // могли измениться между репликами.
@@ -101,7 +118,7 @@ export async function askAI(
       return { text: null, error: `http_${res.status}` };
     }
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
     };
     /**
      * Разметку снимаем на выходе.
@@ -109,8 +126,22 @@ export async function askAI(
      * Просьбы в промпте модель соблюдает через раз, а ответ уходит человеку
      * каждый раз: владелец видел «провела **39 визитов**» со звёздочками.
      */
-    const text = toPlainText(data.choices?.[0]?.message?.content?.trim() ?? "");
-    return { text: text.length > 0 ? text : null };
+    const choice = data.choices?.[0];
+    const text = toPlainText(choice?.message?.content?.trim() ?? "");
+    if (text.length === 0) return { text: null };
+
+    /**
+     * Ответ упёрся в лимит — обрываем по последнему законченному предложению
+     * и говорим об этом прямо.
+     *
+     * Половина слова на экране выглядит как оборванная связь, и владелец не
+     * знает, всё ли это. Оборванная мысль хуже короткой: по ней нельзя понять,
+     * что вывод не дописан.
+     */
+    if (choice?.finish_reason === "length") {
+      return { text: `${trimToSentence(text)}\n\n(Разбор длиннее, чем помещается в один ответ. Спросите «продолжи» — досказу.)` };
+    }
+    return { text };
   } catch (e) {
     return { text: null, error: e instanceof Error ? e.name : "unknown" };
   } finally {
