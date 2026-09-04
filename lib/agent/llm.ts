@@ -150,12 +150,22 @@ export interface Turn {
  * никогда. Правило выглядит рабочим и молча не срабатывает — ровно на этом
  * уже обжигался код агента, для чего и заведён `lib/agent/word-boundary.ts`.
  */
-const PREAMBLE_MARKERS = [
-  /^(acknowledged|understood|got it|принято|понял[аи]?|подтверждаю|хорошо)(?!\p{L})/iu,
-  /^(я|i)\s*[—–-]?\s*(справочная|the |am |'m )/iu,
-  /^я\s+справочная\s+служба/iu,
-  /^i\s?'?m\s+(an?|the)\s/iu,
-  /(система|системн\p{L}+ сообщени|system message|в роли|fictional character)/iu,
+/**
+ * Приписка о себе — узнаётся по разговору о правилах и о роли, а не по
+ * вежливому началу.
+ *
+ * «Хорошо, записал ваши данные» начинается так же, как «Хорошо. Я справочная
+ * служба…», и выбросить первый абзац значило бы потерять сам ответ. Поэтому
+ * голое подтверждение отрезается, только если оно короткое и ничего не несёт.
+ */
+const META_MARKERS = [
+  /**
+   * Представление собой. Ищется в любом месте абзаца, а не только в начале:
+   * модель начинает с «Acknowledged.» и представляется вторым предложением.
+   */
+  /(я|i)\s*[—–-]?\s*(справочная служба|am the|'m the|am an|'m an)/iu,
+  /я\s+справочная\s+служба/iu,
+  /(системн\p{L}+ сообщени|system message|в роли|fictional character|ai assistant)/iu,
   /^(начинаю отвечать|отвечаю на ваш вопрос|готов[аы]? помочь)(?!\p{L})/iu,
 ];
 
@@ -183,8 +193,15 @@ export function stripPreamble(text: string): string {
   const parts = body.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
   if (parts.length < 2) return text.trim();
 
+  /** Короткое подтверждение без содержания: «Принято.», «Acknowledged.». */
+  const bareAck = (p: string) =>
+    /^(acknowledged|understood|got it|принято|понял[аи]?|подтверждаю|хорошо|готов[аы]?)(?!\p{L})/iu.test(p) &&
+    p.split(/\s+/).length <= 3;
+
   let i = 0;
-  while (i < parts.length - 1 && PREAMBLE_MARKERS.some((re) => re.test(parts[i]))) i += 1;
+  while (i < parts.length - 1 && (META_MARKERS.some((re) => re.test(parts[i])) || bareAck(parts[i]))) {
+    i += 1;
+  }
   return parts.slice(i).join("\n\n");
 }
 
