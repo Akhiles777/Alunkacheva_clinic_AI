@@ -394,6 +394,17 @@ export interface WeekPoint {
    * проданные курсы. Сеансы курса и бесплатные приёмы не в счёт.
    */
   paying: number;
+  /**
+   * Первичные и повторные визиты недели.
+   *
+   * Аналитик на вопрос «сколько первичных за неделю» отвечал, что разбивки
+   * нет: в недельном итоге лежали только деньги и число приёмов. Вычесть одно
+   * из другого он не может и не должен — считать он не умеет (§8).
+   */
+  first: number;
+  repeat: number;
+  /** Новые пациенты недели — первое появление телефона в базе (§8). */
+  newPatients: number;
 }
 export interface WeeklyDynamics {
   weeks: WeekPoint[];
@@ -433,20 +444,53 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
   const rows = await prisma.appointment.findMany({
     // Верхняя граница обязательна: без неё в динамику попадали будущие недели.
     where: { companyId: session.companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since, lt: new Date() } },
-    select: { startAt: true, revenue: true, patientId: true },
+    select: { startAt: true, revenue: true, patientId: true, isFirstVisit: true },
+  });
+
+  /** Новые пациенты недели — по дате первого обращения, как в отчётах (§8). */
+  const fresh = await prisma.patient.findMany({
+    where: {
+      companyId: session.companyId,
+      deletedAt: null,
+      firstSeenExact: true,
+      firstSeenAt: { gte: since, lt: new Date() },
+    },
+    select: { firstSeenAt: true },
   });
 
   const buckets = new Map<
     number,
-    { revenue: number; clients: Set<string>; appts: number; paying: number }
+    {
+      revenue: number;
+      clients: Set<string>;
+      appts: number;
+      paying: number;
+      first: number;
+      newPatients: number;
+    }
   >();
+  const empty = () => ({
+    revenue: 0,
+    clients: new Set<string>(),
+    appts: 0,
+    paying: 0,
+    first: 0,
+    newPatients: 0,
+  });
   for (const r of rows) {
     const key = weekStart(r.startAt);
-    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0, paying: 0 };
+    const b = buckets.get(key) ?? empty();
     b.revenue += Number(r.revenue);
     if (r.patientId) b.clients.add(r.patientId);
     b.appts += 1;
+    if (r.isFirstVisit) b.first += 1;
     if (Number(r.revenue) > 0) b.paying += 1;
+    buckets.set(key, b);
+  }
+  for (const p of fresh) {
+    const key = weekStart(p.firstSeenAt);
+    const b = buckets.get(key) ?? empty();
+    b.newPatients += 1;
     buckets.set(key, b);
   }
 
@@ -463,7 +507,7 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
    */
   for (const p of await coursePurchasesBetween(session.companyId, since, new Date())) {
     const key = weekStart(p.at);
-    const b = buckets.get(key) ?? { revenue: 0, clients: new Set<string>(), appts: 0, paying: 0 };
+    const b = buckets.get(key) ?? empty();
     b.revenue += p.amount;
     // Приёмом продажа не считается, а чеком — да: у неё есть клиент и сумма.
     b.paying += 1;
@@ -482,6 +526,11 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
       clients: b.clients.size,
       appts: b.appts,
       paying: b.paying,
+      first: b.first,
+      // Повторные считаем здесь, а не отдают вычитать читателю: разность двух
+      // чисел в чужой голове — тоже арифметика, а её мы уже один раз проиграли.
+      repeat: b.appts - b.first,
+      newPatients: b.newPatients,
     };
   });
 

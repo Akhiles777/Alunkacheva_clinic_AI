@@ -158,6 +158,38 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   const sourceById = new Map(sourceTitles.map((s) => [s.id, s.title]));
 
   const lines: string[] = [];
+  /**
+   * Какое сегодня число — первой строкой.
+   *
+   * Аналитик отвечал «в данных за сегодня (25 августа)», когда шло пятое
+   * сентября: даты в справке он видел, а какая из них сегодняшняя — выводил
+   * сам и ошибался. Дневные строки помечены словом СЕГОДНЯ, но опираться на
+   * одну метку в длинной сводке ненадёжно.
+   */
+  const today = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(now);
+  lines.push(`# Сегодня: ${today} (${clinicDateKey(now)}), время клиники — Москва.`);
+  lines.push(
+    "Все «сегодня», «вчера» и «за неделю» считай от этой даты, а не от последней " +
+      "встреченной в данных.",
+  );
+  /**
+   * Ноль — это число, а не отсутствие данных.
+   *
+   * Пропущенные поля читались как «такого среза нет»: аналитик отвечал, что
+   * разбивки по новым пациентам по дням не существует, хотя в тот день их
+   * просто не было.
+   */
+  lines.push(
+    "Ноль в сводке пишется числом. Если поле названо и равно нулю — значит измерено " +
+      "и равно нулю; отсутствующим считай только то, чего в сводке нет вовсе.",
+  );
+  lines.push("");
   lines.push("# База клиники (все данные, не только сегодня)");
   lines.push(
     `Пациентов всего: ${patients}; с визитами: ${withVisits}; обратились сегодня: ${newToday}.`,
@@ -233,13 +265,17 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
      * Определение то же, что в отчётах (§8): первичный — первый в истории
      * пациента визит со статусом «пришёл».
      */
-    const kinds =
-      d.arrived > 0 ? `, первичных ${d.firstVisits}, повторных ${d.repeatVisits}` : "";
+    /**
+     * Нули пишем, а не пропускаем.
+     *
+     * Раньше поле опускалось, если оно ноль, — и аналитик отвечал «разбивки по
+     * новым пациентам в разрезе дней нет», хотя разбивка была: в тот день
+     * новых просто не появилось. Пропущенное число неотличимо от
+     * отсутствующего, и это та же ошибка, что структурный ноль на экране (§8).
+     */
+    const kinds = `, первичных ${d.firstVisits}, повторных ${d.repeatVisits}`;
     // Отмены и неявки — разные вещи, и обе спрашивают. Новых пациентов тоже.
-    const misses =
-      (d.noShow > 0 ? `, неявок ${d.noShow}` : "") +
-      (d.cancelled > 0 ? `, отмен ${d.cancelled}` : "") +
-      (d.newPatients > 0 ? `, новых пациентов ${d.newPatients}` : "");
+    const misses = `, неявок ${d.noShow}, отмен ${d.cancelled}, новых пациентов ${d.newPatients}`;
     lines.push(
       `- ${d.date} (${d.label})${mark}: ${d.revenue} ₽, пришли ${d.arrived}${kinds}${misses}${course}${sold}`,
     );
@@ -253,9 +289,19 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     if (d.byService.length > 0) {
       const top = d.byService.slice(0, TOP_IN_DAY);
       const rest = d.byService.length - top.length;
+      /**
+       * Первичные И повторные — оба числа явно.
+       *
+       * Прежде стояли приёмы и первичные, а повторные предлагалось вычесть.
+       * Вычитание — тоже арифметика, а на ней аналитик уже один раз ошибся
+       * (§8): считать он не должен вовсе.
+       */
       lines.push(
         `    по услугам: ${top
-          .map((x) => `${x.name} — ${x.arrived} приёмов (первичных ${x.first}), ${x.revenue} ₽`)
+          .map(
+            (x) =>
+              `${x.name} — приёмов ${x.arrived} (первичных ${x.first}, повторных ${x.arrived - x.first}), ${x.revenue} ₽`,
+          )
           .join("; ")}${rest > 0 ? `; и ещё ${rest} услуг помельче` : ""}`,
       );
     }
@@ -264,7 +310,10 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
       const rest = d.byStaff.length - top.length;
       lines.push(
         `    по специалистам: ${top
-          .map((x) => `${x.name} — ${x.arrived} приёмов (первичных ${x.first}), ${x.revenue} ₽`)
+          .map(
+            (x) =>
+              `${x.name} — приёмов ${x.arrived} (первичных ${x.first}, повторных ${x.arrived - x.first}), ${x.revenue} ₽`,
+          )
           .join("; ")}${rest > 0 ? `; и ещё ${rest}` : ""}`,
       );
     }
@@ -340,7 +389,8 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     );
     for (const w of weekly.weeks) {
       lines.push(
-        `- ${w.label}: ${money(w.revenue)}, пришли ${w.appts}, клиентов ${w.clients}, ` +
+        `- ${w.label}: ${money(w.revenue)}, пришли ${w.appts} (первичных ${w.first}, ` +
+          `повторных ${w.repeat}), клиентов ${w.clients}, новых пациентов ${w.newPatients}, ` +
           `оплаченных чеков ${w.paying}`,
       );
     }
