@@ -7,6 +7,7 @@ import { WeeklyCharts } from "./weekly-charts";
 import { AgentSection } from "./agent-section";
 import { getAgentStats } from "@/lib/server/agent-stats";
 import { getCourseEconomics } from "@/lib/server/course-economics";
+import { logTimings, timed } from "@/lib/server/timing";
 import { CourseEconomicsBlock } from "../_components/course-economics";
 
 export const metadata = { title: "Владелец" };
@@ -42,17 +43,27 @@ export default async function OwnerPage() {
     );
   }
 
-  const [report, weekly, agent, courses] = await Promise.all([
-    getOwnerReport(),
-    getWeeklyDynamics(),
+  /**
+   * Замер каждого блока — в журнал сервера. Какой из четырёх отчётов тянет,
+   * по экрану не понять, а гадать по коду мы договорились не гадать.
+   */
+  const parts = await Promise.all([
+    timed("отчёт", () => getOwnerReport()),
+    timed("динамика", () => getWeeklyDynamics()),
     // Период тот же, что и у остального кабинета: «Месяц» из отчётов.
-    getAgentStats(session.companyId, "month"),
+    timed("ассистент", () => getAgentStats(session.companyId, "month")),
     /**
      * Экономика курсов — теми же функциями, что во вкладке «Курсы» отчётов.
      * Одна метрика — одна функция (§8).
      */
-    getCourseEconomics(session.companyId, "month"),
-  ]);
+    timed("курсы", () => getCourseEconomics(session.companyId, "month")),
+  ] as const);
+  logTimings("кабинет владельца", [...parts]);
+
+  const report = parts[0].value;
+  const weekly = parts[1].value;
+  const agent = parts[2].value;
+  const courses = parts[3].value;
 
   return (
     <>

@@ -40,7 +40,10 @@ async function main() {
       revenue: true,
       staff: { select: { name: true } },
       primaryService: { select: { title: true } },
-      services: { select: { priceCharged: true, service: { select: { title: true } } } },
+      primaryServiceId: true,
+      services: {
+        select: { priceCharged: true, serviceId: true, service: { select: { title: true } } },
+      },
     },
     orderBy: { startAt: "asc" },
   });
@@ -129,18 +132,25 @@ async function main() {
     where: { companyId: company.id },
     select: { id: true, title: true, price: true, isActive: true },
   });
+  /**
+   * Приёмы считаем по СТРОКЕ справочника, а не по названию.
+   *
+   * Считая по названию, обе строки-тёзки получали одно и то же число:
+   * «приёмов 7 · выключена» и «приёмов 7 · включена» — при том что приёмы
+   * держатся ровно за одну из них. По такому списку нельзя решить, какую
+   * сливать, а решение по нему принимают.
+   */
   const apptCount = new Map<string, number>();
+  const bump = (id: string) => apptCount.set(id, (apptCount.get(id) ?? 0) + 1);
   for (const a of appts) {
-    for (const p of a.services) apptCount.set(p.service.title, (apptCount.get(p.service.title) ?? 0) + 1);
-    if (a.services.length === 0 && a.primaryService) {
-      apptCount.set(a.primaryService.title, (apptCount.get(a.primaryService.title) ?? 0) + 1);
-    }
+    for (const p of a.services) bump(p.serviceId);
+    if (a.services.length === 0 && a.primaryServiceId) bump(a.primaryServiceId);
   }
 
   const idle = classifyIdleServices(
     services.map((s) => ({
       title: s.title,
-      appointments: apptCount.get(s.title) ?? 0,
+      appointments: apptCount.get(s.id) ?? 0,
       price: Number(s.price),
     })),
   );
@@ -167,7 +177,7 @@ async function main() {
   const byTitle = new Map<string, { title: string; id: string; appts: number; active: boolean }[]>();
   for (const s of services) {
     const key = normalizeServiceTitle(s.title);
-    const row = { title: s.title, id: s.id, appts: apptCount.get(s.title) ?? 0, active: s.isActive };
+    const row = { title: s.title, id: s.id, appts: apptCount.get(s.id) ?? 0, active: s.isActive };
     const list = byTitle.get(key);
     if (list) list.push(row);
     else byTitle.set(key, [row]);
@@ -181,7 +191,14 @@ async function main() {
         console.log(`      ${r.id} · приёмов ${r.appts} · ${r.active ? "включена" : "выключена"}`);
       }
     }
-    console.log("    Слить их можно в «Настройки → Услуги»; приёмы держатся за конкретную строку.");
+    console.log("    Слить их можно в «Настройки → Услуги»; приёмы держатся за конкретную строку —");
+    console.log("    оставляйте ту, у которой они есть, иначе работа уйдёт с экранов.");
+    const split = twins.filter((g) => g.filter((r) => r.appts > 0).length > 1);
+    if (split.length > 0) {
+      console.log(`\n    ВНИМАНИЕ: у ${split.length} названий приёмы лежат на РАЗНЫХ строках сразу —`);
+      console.log("    разрез по услугам по ним заведомо разъезжается:");
+      for (const g of split) console.log(`      «${g[0].title}»`);
+    }
   }
 }
 

@@ -225,33 +225,47 @@ export async function getAgentStats(companyId: string, period: PeriodKey): Promi
    * Берём шире периода намеренно: за неделю ручных ответов по теме почти
    * наверняка меньше пяти, и вся экономия схлопнулась бы в «недостаточно
    * данных» на ровном месте.
+   *
+   * Два ограничения — ради скорости кабинета владельца, а не ради экономии
+   * памяти. Раньше здесь читались ВСЕ сообщения клиники за квартал вместе с
+   * телами, и каждый ручной ответ сверялся со ВСЕМ справочником: сотни
+   * записей на тысячу пар — это секунды процессорного времени на каждое
+   * открытие страницы.
+   *
+   *   — если агент не закрыл ни одного разговора с известной темой, сравнивать
+   *     не с чем, и читать переписку незачем вовсе;
+   *   — сверяем только с теми записями справочника, чьи темы агент закрывал:
+   *     остальные не могут дать совпадение, которое кому-то нужно.
    */
-  const manualSince = new Date(to.getTime() - 90 * 24 * 60 * 60 * 1000);
-  const manualRows = await prisma.message.findMany({
-    where: {
-      companyId,
-      deletedAt: null,
-      isDraft: false,
-      createdAt: { gte: manualSince, lt: to },
-      authorType: { in: ["PATIENT", "STAFF"] },
-    },
-    select: { conversationId: true, authorType: true, body: true, createdAt: true },
-    orderBy: { createdAt: "asc" },
-  });
-
   const manual: { topic: string; ms: number }[] = [];
-  const pending = new Map<string, { at: Date; body: string }>();
-  for (const m of manualRows) {
-    if (m.authorType === "PATIENT") {
-      if (!pending.has(m.conversationId)) pending.set(m.conversationId, { at: m.createdAt, body: m.body });
-      continue;
+  if (closedTopics.size > 0) {
+    const relevant = knowledge.filter((k) => closedTopics.has(k.topic));
+    const manualSince = new Date(to.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const manualRows = await prisma.message.findMany({
+      where: {
+        companyId,
+        deletedAt: null,
+        isDraft: false,
+        createdAt: { gte: manualSince, lt: to },
+        authorType: { in: ["PATIENT", "STAFF"] },
+      },
+      select: { conversationId: true, authorType: true, body: true, createdAt: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const pending = new Map<string, { at: Date; body: string }>();
+    for (const m of manualRows) {
+      if (m.authorType === "PATIENT") {
+        if (!pending.has(m.conversationId)) pending.set(m.conversationId, { at: m.createdAt, body: m.body });
+        continue;
+      }
+      const ask = pending.get(m.conversationId);
+      if (!ask) continue;
+      pending.delete(m.conversationId);
+      const topic = topicOf(ask.body, relevant);
+      if (!topic) continue;
+      manual.push({ topic, ms: m.createdAt.getTime() - ask.at.getTime() });
     }
-    const ask = pending.get(m.conversationId);
-    if (!ask) continue;
-    pending.delete(m.conversationId);
-    const topic = topicOf(ask.body, knowledge);
-    if (!topic) continue;
-    manual.push({ topic, ms: m.createdAt.getTime() - ask.at.getTime() });
   }
 
   const ackedMs = escalations
