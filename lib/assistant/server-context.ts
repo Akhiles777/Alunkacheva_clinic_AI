@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { getCallbackQueue } from "@/lib/server/callback-queue";
+import { getCourseEconomics } from "@/lib/server/course-economics";
 import { getAgentStats } from "@/lib/server/agent-stats";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { revenueByDay } from "@/lib/server/daily-revenue";
@@ -299,6 +300,50 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
 
   lines.push("");
   lines.push(`# Переписка\nДиалогов: ${dialogs}; открытых эскалаций: ${openEscalations}.`);
+
+  /**
+   * Экономика курсов — теми же функциями, что вкладка отчётов и кабинет
+   * владельца. Обязательства называем обязательствами: сложенные с выручкой,
+   * они дают деньги, которых не было.
+   */
+  const courses = await getCourseEconomics(companyId, "month").catch(() => null);
+  if (courses?.hasCourses) {
+    const c = courses.completion;
+    const o = courses.outstanding;
+    const r = courses.repurchase;
+    lines.push("");
+    lines.push("# Экономика курсов");
+    lines.push(
+      c.rate === null
+        ? `Доходимость за ${courses.periodLabel}: решившихся курсов нет — судить рано (идут ${c.inProgress}).`
+        : `Доходимость за ${courses.periodLabel}: дошли ${c.completed} из ${c.completed + c.abandoned} ` +
+          `решившихся (${Math.round(c.rate * 100)}%), ещё идут ${c.inProgress}. Сеансов пройдено ` +
+          `${c.sessionsUsed} из ${c.sessionsPaid} оплаченных.`,
+    );
+    lines.push(
+      `Оплачено вперёд и не отработано: ${money(o.obligation)} — ${o.sessions} сеансов в ` +
+        `${o.courses} курсах; из них у выпавших из графика ${money(o.atRisk)}. ` +
+        `ЭТО НЕ ВЫРУЧКА: деньги за курсы получены в дни продаж и посчитаны тогда же. ` +
+        `Складывать эту сумму с выручкой периода нельзя.`,
+    );
+    lines.push(
+      r.rate === null
+        ? `Повторные покупки: судить не по кому — закончивших давно нет (ждём ${r.tooEarly}).`
+        : `Повторные покупки за ${r.windowDays} дней после конца курса: ${r.repurchased} из ` +
+          `${r.cohort} (${Math.round(r.rate * 100)}%), ждём ещё ${r.tooEarly}` +
+          (r.medianDaysToRepurchase === null
+            ? "."
+            : `; возвращаются через ${r.medianDaysToRepurchase} дн. (медиана).`),
+    );
+    if (courses.rhythm.length) {
+      lines.push(
+        "Ритм сеансов: " +
+          courses.rhythm
+            .map((x) => `${x.serviceTitle} — раз в ${x.medianDays ?? "?"} дн. (медиана)`)
+            .join("; "),
+      );
+    }
+  }
 
   /**
    * Очередь «Кому позвонить» — теми же расчётами, что и экран.

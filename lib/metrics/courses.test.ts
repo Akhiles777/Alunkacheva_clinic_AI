@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { courseSessionRevenue, recognizeVisitRevenue, splitCourseAmount } from "./courses";
+import {
+  courseCompletion,
+  courseRepurchase,
+  courseSessionRevenue,
+  outstandingCourseValue,
+  recognizeVisitRevenue,
+  sessionInterval,
+  splitCourseAmount,
+  type CourseFact,
+} from "./courses";
 
 describe("splitCourseAmount", () => {
   it("делит ровную сумму поровну", () => {
@@ -89,5 +98,232 @@ describe("recognizeVisitRevenue", () => {
         courseSessionIndex: null,
       }),
     ).toBe(0);
+  });
+});
+
+describe("доходимость курсов", () => {
+  const base = (over: Partial<CourseFact> = {}): CourseFact => ({
+    courseId: "c1",
+    patientId: "p1",
+    serviceTitle: "БОС-терапия",
+    purchasedAt: new Date("2026-06-01T10:00:00+03:00"),
+    sessionsTotal: 10,
+    sessionsUsed: 4,
+    sessionsBooked: 0,
+    pricePerSession: 2800,
+    sessionDates: [new Date("2026-08-01T10:00:00+03:00")],
+    thresholdDays: 14,
+    hasFuture: false,
+    ...over,
+  });
+  const NOW = new Date("2026-09-04T12:00:00+03:00");
+
+  it("пройденный курс считается дошедшим", () => {
+    const r = courseCompletion([base({ sessionsUsed: 10 })], NOW);
+    expect(r.completed).toBe(1);
+    expect(r.rate).toBe(1);
+  });
+
+  it("брошенный: сеансы не кончились, записи нет, порог пройден", () => {
+    const r = courseCompletion([base()], NOW);
+    expect(r.abandoned).toBe(1);
+    expect(r.rate).toBe(0);
+  });
+
+  /**
+   * Курс, купленный вчера, не «брошен» — он идёт. Считая его брошенным,
+   * каждый свежий месяц показывал бы ноль доходимости, и по метрике
+   * перестали бы смотреть.
+   */
+  it("идущий курс в долю не входит", () => {
+    const r = courseCompletion(
+      [base({ sessionDates: [new Date("2026-09-01T10:00:00+03:00")] })],
+      NOW,
+    );
+    expect(r.inProgress).toBe(1);
+    expect(r.rate).toBeNull();
+  });
+
+  it("курс с будущей записью идёт, даже если пауза длинная", () => {
+    const r = courseCompletion([base({ hasFuture: true })], NOW);
+    expect(r.inProgress).toBe(1);
+  });
+
+  it("без порога курс не решён и назван отдельно", () => {
+    const r = courseCompletion([base({ thresholdDays: null })], NOW);
+    expect(r.undecidable).toBe(1);
+    expect(r.rate).toBeNull();
+  });
+
+  it("доля считается только по решившимся", () => {
+    const r = courseCompletion(
+      [
+        base({ courseId: "a", sessionsUsed: 10 }),
+        base({ courseId: "b" }),
+        base({ courseId: "c", sessionDates: [new Date("2026-09-02T10:00:00+03:00")] }),
+      ],
+      NOW,
+    );
+    expect(r.rate).toBe(0.5);
+    expect(r.inProgress).toBe(1);
+  });
+
+  it("сеансы считаются отдельным числом", () => {
+    const r = courseCompletion([base({ sessionsUsed: 4, sessionsTotal: 10 })], NOW);
+    expect(r.sessionsUsed).toBe(4);
+    expect(r.sessionsPaid).toBe(10);
+  });
+});
+
+describe("обязательства по курсам", () => {
+  const NOW = new Date("2026-09-04T12:00:00+03:00");
+  const base = (over: Partial<CourseFact> = {}): CourseFact => ({
+    courseId: "c1",
+    patientId: "p1",
+    serviceTitle: "БОС-терапия",
+    purchasedAt: new Date("2026-06-01T10:00:00+03:00"),
+    sessionsTotal: 10,
+    sessionsUsed: 4,
+    sessionsBooked: 0,
+    pricePerSession: 2800,
+    sessionDates: [new Date("2026-08-01T10:00:00+03:00")],
+    thresholdDays: 14,
+    hasFuture: false,
+    ...over,
+  });
+
+  it("считает неотработанные сеансы в рублях", () => {
+    const r = outstandingCourseValue([base()], NOW);
+    expect(r.sessions).toBe(6);
+    expect(r.obligation).toBe(6 * 2800);
+  });
+
+  it("пройденный курс обязательств не оставляет", () => {
+    const r = outstandingCourseValue([base({ sessionsUsed: 10 })], NOW);
+    expect(r.courses).toBe(0);
+    expect(r.obligation).toBe(0);
+  });
+
+  /**
+   * Выпавшие из графика — те же деньги, но вернуть их труднее: человека надо
+   * сначала позвать. Число показывается рядом, а не растворяется в общем.
+   */
+  it("выделяет деньги выпавших из графика", () => {
+    const r = outstandingCourseValue(
+      [
+        base({ courseId: "идёт", sessionDates: [new Date("2026-09-02T10:00:00+03:00")] }),
+        base({ courseId: "выпал" }),
+      ],
+      NOW,
+    );
+    expect(r.atRiskCourses).toBe(1);
+    expect(r.atRisk).toBe(6 * 2800);
+    expect(r.obligation).toBe(12 * 2800);
+  });
+
+  it("записанные вперёд сеансы считаются отдельно", () => {
+    const r = outstandingCourseValue([base({ sessionsBooked: 2 })], NOW);
+    expect(r.scheduledSessions).toBe(2);
+  });
+});
+
+describe("интервал между сеансами", () => {
+  const d = (iso: string) => new Date(`${iso}T10:00:00+03:00`);
+
+  it("медиана и среднее считаются по промежуткам", () => {
+    const r = sessionInterval([d("2026-08-01"), d("2026-08-08"), d("2026-08-15")]);
+    expect(r.medianDays).toBe(7);
+    expect(r.gaps).toBe(2);
+  });
+
+  /**
+   * Один отпуск в три недели сдвигает среднее так, что типичный ритм
+   * исчезает. Медиана его показывает, среднее стоит рядом.
+   */
+  it("медиана устойчива к одному длинному перерыву", () => {
+    const r = sessionInterval([d("2026-08-01"), d("2026-08-08"), d("2026-08-15"), d("2026-09-20")]);
+    expect(r.medianDays).toBe(7);
+    expect(r.meanDays).toBeGreaterThan(10);
+    expect(r.maxDays).toBe(36);
+  });
+
+  it("одному сеансу интервала не отвести", () => {
+    const r = sessionInterval([d("2026-08-01")]);
+    expect(r.medianDays).toBeNull();
+    expect(r.gaps).toBe(0);
+  });
+
+  it("порядок дат на входе не важен", () => {
+    const straight = sessionInterval([d("2026-08-01"), d("2026-08-08")]);
+    const reversed = sessionInterval([d("2026-08-08"), d("2026-08-01")]);
+    expect(reversed.medianDays).toBe(straight.medianDays);
+  });
+});
+
+describe("повторные покупки курсов", () => {
+  const NOW = new Date("2026-09-04T12:00:00+03:00");
+  const daysAgo = (n: number) => new Date(NOW.getTime() - n * 24 * 3600 * 1000);
+
+  it("купил второй курс в окне — вернулся", () => {
+    const r = courseRepurchase(
+      [{ patientId: "p1", finishedAt: daysAgo(120), laterPurchases: [daysAgo(90)] }],
+      NOW,
+    );
+    expect(r.cohort).toBe(1);
+    expect(r.repurchased).toBe(1);
+    expect(r.rate).toBe(1);
+    expect(r.medianDaysToRepurchase).toBe(30);
+  });
+
+  it("не купил, окно прошло — не вернулся", () => {
+    const r = courseRepurchase(
+      [{ patientId: "p1", finishedAt: daysAgo(200), laterPurchases: [] }],
+      NOW,
+    );
+    expect(r.rate).toBe(0);
+  });
+
+  /**
+   * У человека, прошедшего последний сеанс на прошлой неделе, ещё не было
+   * времени вернуться. Записывать его в «не вернулся» — врать про клинику.
+   */
+  it("закончил недавно — в долю не идёт", () => {
+    const r = courseRepurchase(
+      [{ patientId: "p1", finishedAt: daysAgo(10), laterPurchases: [] }],
+      NOW,
+    );
+    expect(r.cohort).toBe(0);
+    expect(r.tooEarly).toBe(1);
+    expect(r.rate).toBeNull();
+  });
+
+  it("успел вернуться до конца окна — считается сразу", () => {
+    const r = courseRepurchase(
+      [{ patientId: "p1", finishedAt: daysAgo(10), laterPurchases: [daysAgo(3)] }],
+      NOW,
+    );
+    expect(r.cohort).toBe(1);
+    expect(r.repurchased).toBe(1);
+  });
+
+  it("покупка позже окна возвратом не считается", () => {
+    const r = courseRepurchase(
+      [{ patientId: "p1", finishedAt: daysAgo(300), laterPurchases: [daysAgo(100)] }],
+      NOW,
+    );
+    expect(r.repurchased).toBe(0);
+  });
+
+  it("покупка до конца курса не считается возвратом", () => {
+    const r = courseRepurchase(
+      [{ patientId: "p1", finishedAt: daysAgo(200), laterPurchases: [daysAgo(250)] }],
+      NOW,
+    );
+    expect(r.repurchased).toBe(0);
+  });
+
+  it("пустая когорта — доля неизвестна, а не ноль", () => {
+    const r = courseRepurchase([], NOW);
+    expect(r.rate).toBeNull();
   });
 });

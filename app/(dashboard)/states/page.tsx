@@ -9,6 +9,8 @@ import type { SourceStat } from "@/lib/metrics/types";
 import { SourcePicker } from "../_components/visit-source";
 import { GapsBlock, type GapsData } from "../settings/assistant/gaps-block";
 import { QueueClient, type QueueData } from "../queue/queue-client";
+import { CourseEconomicsBlock } from "../_components/course-economics";
+import type { CourseEconomics } from "@/lib/server/course-economics";
 
 /**
  * Витрина граничных состояний — служебный экран визуальной проверки.
@@ -350,6 +352,83 @@ const QUEUE_FULL: QueueData = {
   ],
 };
 
+/**
+ * Свежий месяц: курсы купили, но ни один ещё не решился. Доля неизвестна —
+ * ноль означал бы «никто не дошёл», а это другое утверждение.
+ */
+const COURSES_EARLY: CourseEconomics = {
+  hasCourses: true,
+  periodLabel: "сентябрь",
+  completion: {
+    completed: 0,
+    abandoned: 0,
+    inProgress: 4,
+    rate: null,
+    sessionsUsed: 3,
+    sessionsPaid: 40,
+    undecidable: 2,
+  },
+  outstanding: {
+    obligation: 103600,
+    sessions: 37,
+    courses: 4,
+    atRisk: 0,
+    atRiskCourses: 0,
+    scheduledSessions: 6,
+  },
+  repurchase: {
+    cohort: 0,
+    repurchased: 0,
+    rate: null,
+    tooEarly: 3,
+    medianDaysToRepurchase: null,
+    windowDays: 90,
+  },
+  rhythm: [],
+};
+
+/** Боевая картина квартала: четырёхзначные суммы и длинные названия услуг. */
+const COURSES_FULL: CourseEconomics = {
+  hasCourses: true,
+  periodLabel: "квартал",
+  completion: {
+    completed: 14,
+    abandoned: 9,
+    inProgress: 11,
+    rate: 14 / 23,
+    sessionsUsed: 218,
+    sessionsPaid: 340,
+    undecidable: 0,
+  },
+  outstanding: {
+    obligation: 1284000,
+    sessions: 122,
+    courses: 31,
+    atRisk: 344400,
+    atRiskCourses: 9,
+    scheduledSessions: 28,
+  },
+  repurchase: {
+    cohort: 12,
+    repurchased: 5,
+    rate: 5 / 12,
+    tooEarly: 4,
+    medianDaysToRepurchase: 34,
+    windowDays: 90,
+  },
+  rhythm: [
+    { serviceTitle: "БОС-терапия, сеанс", medianDays: 7, meanDays: 9.4, gaps: 186, courses: 24 },
+    {
+      serviceTitle: "IV-терапия, капельница (расширенный протокол)",
+      medianDays: 3,
+      meanDays: 4.2,
+      gaps: 64,
+      courses: 9,
+    },
+    { serviceTitle: "Нейромедитация", medianDays: 14, meanDays: 15.5, gaps: 12, courses: 3 },
+  ],
+};
+
 function Case({
   title,
   note,
@@ -569,6 +648,22 @@ export default function StatesPage() {
       >
         <div className="border-border rounded-xl border">
           <QueueClient data={QUEUE_FULL} />
+        </div>
+      </Case>
+
+      {/*
+        Экономика курсов в свежем месяце: решившихся курсов ещё нет, судить
+        рано. Прочерк и слова, а не «0%»: ноль означал бы «никто не дошёл».
+      */}
+      <Case title="Курсы: судить рано" note="прочерк вместо нуля — это разные утверждения">
+        <div className="border-border bg-surface max-w-[820px] rounded-xl border p-5">
+          <CourseEconomicsBlock data={COURSES_EARLY} />
+        </div>
+      </Case>
+
+      <Case title="Курсы: обязательства и возвраты" note="крупные суммы и подпись «это не выручка»">
+        <div className="border-border bg-surface max-w-[820px] rounded-xl border p-5">
+          <CourseEconomicsBlock data={COURSES_FULL} />
         </div>
       </Case>
 

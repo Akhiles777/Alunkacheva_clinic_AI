@@ -6,6 +6,8 @@ import { OwnerAssistant } from "./owner-assistant";
 import { WeeklyCharts } from "./weekly-charts";
 import { AgentSection } from "./agent-section";
 import { getAgentStats } from "@/lib/server/agent-stats";
+import { getCourseEconomics } from "@/lib/server/course-economics";
+import { CourseEconomicsBlock } from "../_components/course-economics";
 
 export const metadata = { title: "Владелец" };
 
@@ -40,11 +42,16 @@ export default async function OwnerPage() {
     );
   }
 
-  const [report, weekly, agent] = await Promise.all([
+  const [report, weekly, agent, courses] = await Promise.all([
     getOwnerReport(),
     getWeeklyDynamics(),
     // Период тот же, что и у остального кабинета: «Месяц» из отчётов.
     getAgentStats(session.companyId, "month"),
+    /**
+     * Экономика курсов — теми же функциями, что во вкладке «Курсы» отчётов.
+     * Одна метрика — одна функция (§8).
+     */
+    getCourseEconomics(session.companyId, "month"),
   ]);
 
   return (
@@ -213,6 +220,19 @@ export default async function OwnerPage() {
           stats={agent}
           periodLabel={`за ${report.period.days} дней · ${report.period.from} — ${report.period.to}`}
         />
+
+        {/*
+          Экономика курсов. Обязательства стоят рядом с выручкой месяца, и
+          подпись «это не выручка» здесь не украшение: без неё два числа
+          складывают.
+        */}
+        <section className="border-border bg-surface mt-4 rounded-xl border p-5">
+          <h2 className="text-sm font-medium">Экономика курсов</h2>
+          <p className="text-text-subtle mb-4 text-2xs">
+            доходимость и возвраты — за {courses.periodLabel}; обязательства — на сегодня
+          </p>
+          <CourseEconomicsBlock data={courses} />
+        </section>
 
         <div className="mt-4">
           <OwnerAssistant />

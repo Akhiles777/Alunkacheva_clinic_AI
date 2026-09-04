@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { getDashboardMetricsDb, getServicesLoadDb } from "@/lib/server/analytics";
+import { getCourseEconomics } from "@/lib/server/course-economics";
+import { CourseEconomicsBlock } from "../_components/course-economics";
 import { getSession } from "@/lib/server/session";
 import { formatDuration, formatMoney, formatMoneyPrecise, formatNumber, formatPercent } from "@/lib/format";
 import {
@@ -21,6 +23,7 @@ const TABS = [
   { id: "staff", label: "Специалисты" },
   { id: "services", label: "Услуги" },
   { id: "rooms", label: "Кабинеты" },
+  { id: "courses", label: "Курсы" },
 ];
 const PERIODS: { id: PeriodKey; label: string }[] = [
   /*
@@ -96,9 +99,15 @@ export default async function AnalyticsPage({
   const tab = TABS.some((t) => t.id === rawTab) ? (rawTab as string) : "funnel";
 
   const session = await getSession();
-  const [m, servicesLoad] = await Promise.all([
+  const [m, servicesLoad, courseEconomics] = await Promise.all([
     getDashboardMetricsDb(session.companyId, period),
     getServicesLoadDb(session.companyId, period),
+    /**
+     * Экономика курсов — теми же функциями, что в кабинете владельца.
+     * Курс главный товар клиники, и две версии этих чисел на двух экранах
+     * означали бы, что владелец поверит удобной.
+     */
+    getCourseEconomics(session.companyId, period),
   ]);
   const q = (t: string, p: PeriodKey) => `/analytics?tab=${t}&period=${p}`;
 
@@ -331,6 +340,15 @@ export default async function AnalyticsPage({
                   источник — это звонок или приход без переписки; догадкой он не заполняется.
                 </p>
               ) : null}
+            </Card>
+          ) : null}
+
+          {tab === "courses" ? (
+            <Card
+              title="Экономика курсов"
+              hint="доходимость, обязательства и возвраты — не выручка"
+            >
+              <CourseEconomicsBlock data={courseEconomics} />
             </Card>
           ) : null}
 
