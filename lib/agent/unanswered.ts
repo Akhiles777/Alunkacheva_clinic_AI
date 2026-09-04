@@ -163,7 +163,15 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
   for (const conv of conversations) {
     const last = conv.messages[0];
     // Кого добираем — решает одно правило, проверенное тестами.
-    if (!last || !needsAnswer({ last, botPausedUntil: conv.botPausedUntil }, new Date())) continue;
+    if (
+      !last ||
+      !needsAnswer(
+        { last: { ...last, body: last.body }, botPausedUntil: conv.botPausedUntil },
+        new Date(),
+      )
+    ) {
+      continue;
+    }
 
     try {
       const reply = await handlePatientMessage(

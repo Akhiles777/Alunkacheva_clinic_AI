@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS } from "./unanswered-rule";
+import { needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS, nothingToAnswer } from "./unanswered-rule";
 
 const NOW = new Date("2026-08-17T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
@@ -85,5 +85,55 @@ describe("после возврата агенту", () => {
     expect(
       needsAnswer({ last: { direction: "IN", createdAt: minutesAgo(10) } }, NOW),
     ).toBe(true);
+  });
+});
+
+/**
+ * Пациентка подтвердила запись у администратора и прислала сердечко. Через
+ * несколько часов агент написал сам: «Рады видеть, что вы подтвердили
+ * запись…». Разговор был закончен, вопроса не было, сообщение пришло ночью.
+ */
+describe("отвечать нечего", () => {
+  it("одно сердечко — не вопрос", () => {
+    expect(nothingToAnswer("❤️")).toBe(true);
+    expect(nothingToAnswer("👍")).toBe(true);
+    expect(nothingToAnswer("🌹🌹")).toBe(true);
+  });
+
+  it("пустое сообщение и вложение без текста", () => {
+    expect(nothingToAnswer("")).toBe(true);
+    expect(nothingToAnswer("   ")).toBe(true);
+    // Тела нет вовсе — значит мы его не знаем, а не что оно пустое: молчать
+    // из-за неизвестности нельзя.
+    expect(nothingToAnswer(undefined)).toBe(false);
+  });
+
+  it("короткая вежливость ответа не требует", () => {
+    expect(nothingToAnswer("Спасибо!")).toBe(true);
+    expect(nothingToAnswer("ок")).toBe(true);
+    expect(nothingToAnswer("Хорошо, спасибо")).toBe(true);
+    expect(nothingToAnswer("Благодарю Вас 🌹")).toBe(true);
+  });
+
+  /** Вопрос — всегда повод ответить, чем бы он ни был обставлен. */
+  it("вопрос отвечать надо даже с благодарностью", () => {
+    expect(nothingToAnswer("Спасибо, а во сколько?")).toBe(false);
+    expect(nothingToAnswer("ок?")).toBe(false);
+  });
+
+  it("обычное сообщение отвечать надо", () => {
+    expect(nothingToAnswer("Хочу перенести запись")).toBe(false);
+    expect(nothingToAnswer("Сколько стоит остеопатия")).toBe(false);
+    // Длинное сообщение — не жест вежливости, даже если начинается со «спасибо».
+    expect(nothingToAnswer("Спасибо большое вам за помощь вчера")).toBe(false);
+  });
+
+  it("добор такое сообщение пропускает", () => {
+    const now = new Date("2026-09-05T01:28:00+03:00");
+    const heart = {
+      last: { direction: "IN" as const, createdAt: new Date("2026-09-05T01:00:00+03:00"), body: "❤️" },
+      botPausedUntil: null,
+    };
+    expect(needsAnswer(heart, now)).toBe(false);
   });
 });
