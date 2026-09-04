@@ -29,12 +29,33 @@ export interface ScheduleException {
   closed: boolean;
 }
 
+/**
+ * Запасной порог «пора звать» по умолчанию — те же четырнадцать дней, что
+ * стояли константой в коде экрана курсов до появления настройки. Значение
+ * начальное: клиника меняет его в «Настройки → Клиника» и вправе очистить —
+ * тогда по услугам без своего порога не зовут вовсе.
+ */
+export const STALLED_DEFAULT_DAYS = 14;
+
 export interface ClinicSettings {
   name: string;
   timezone: string;
   dayBoundaryMinute: number; // граница отчётных суток
   schedule: DaySchedule[];
   exceptions: ScheduleException[];
+  /**
+   * Через сколько дней без визита пациента пора звать — если у услуги свой
+   * порог не задан.
+   *
+   * Здесь стояла константа 14 в коде экрана курсов. Ритм у услуг разный (БОС
+   * раз в неделю, остеопатия раз в месяц), и одно число на всех означало, что
+   * половину зовут рано, а половину поздно. Пусть решает клиника: у услуги
+   * порог точнее, а это — запасной для тех, где его не задали.
+   *
+   * null — запасного порога нет: тогда пациент по услуге без порога в очередь
+   * не идёт вовсе, и число таких случаев экран называет вслух.
+   */
+  stalledDefaultDays: number | null;
 }
 
 export interface RoomSettings {
@@ -160,6 +181,7 @@ export const settingsStore = {
       { id: "e1", date: "2026-01-01", label: "Новый год", closed: true },
       { id: "e2", date: "2026-06-14", label: "Санитарный день", closed: true },
     ],
+    stalledDefaultDays: 14,
   } as ClinicSettings,
   rooms: ROOMS,
   services: SERVICES,

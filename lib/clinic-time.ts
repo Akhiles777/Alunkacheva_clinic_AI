@@ -54,3 +54,22 @@ export function clinicDayRange(at: Date = new Date(), tz: string = CLINIC_TZ) {
   const start = startOfClinicDay(at, tz);
   return { start, end: startOfClinicDay(new Date(start.getTime() + 36 * 3600_000), tz) };
 }
+
+/**
+ * Минута суток в зоне клиники: 13:40 → 820.
+ *
+ * Расписание, окна и загрузка считаются в минутах от полуночи КЛИНИКИ, а не
+ * сервера. Час разницы означал бы окна, которых нет, и занятость там, где
+ * пусто.
+ */
+export function clinicMinuteOfDay(at: Date, tz: string = CLINIC_TZ): number {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(at);
+  const h = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const m = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  return h * 60 + m;
+}

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { getCallbackQueue } from "@/lib/server/callback-queue";
 import { getAgentStats } from "@/lib/server/agent-stats";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { revenueByDay } from "@/lib/server/daily-revenue";
@@ -298,6 +299,57 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
 
   lines.push("");
   lines.push(`# Переписка\nДиалогов: ${dialogs}; открытых эскалаций: ${openEscalations}.`);
+
+  /**
+   * Очередь «Кому позвонить» — теми же расчётами, что и экран.
+   *
+   * Без неё аналитик отвечал про выпавших из курса своей арифметикой по
+   * карточкам пациентов, и число расходилось с экраном. Одна метрика — одна
+   * функция (§8): владелец поверит удобной, а расхождение всплывёт в
+   * разговоре с клиентом.
+   */
+  const queue = await getCallbackQueue(companyId).catch(() => null);
+  if (queue) {
+    const byKind = new Map<string, { n: number; money: number }>();
+    for (const r of queue.rows) {
+      const acc = byKind.get(r.kind) ?? { n: 0, money: 0 };
+      acc.n += 1;
+      acc.money += r.money ?? 0;
+      byKind.set(r.kind, acc);
+    }
+    const label: Record<string, string> = {
+      COURSE_STALLED: "выпали из курса",
+      COURSE_FINISHING: "курс на финише",
+      NO_SHOW: "не пришли",
+      SLEEPING: "давно не были",
+    };
+    lines.push("");
+    lines.push("# Кому позвонить (рабочая очередь)");
+    lines.push(
+      queue.rows.length === 0
+        ? "Список пуст: у всех кандидатов есть будущая запись."
+        : `Всего ${queue.rows.length}: ` +
+          [...byKind]
+            .map(([kind, v]) => `${label[kind] ?? kind} — ${v.n} на ${money(v.money)}`)
+            .join("; "),
+    );
+    if (queue.withoutThreshold > 0) {
+      lines.push(
+        `Ещё ${queue.withoutThreshold} человек не в списке: у их услуги не задан порог ` +
+          `«пора звать», а запасного порога клиники нет. Это незаполненная настройка, ` +
+          `а не отсутствие кандидатов.`,
+      );
+    }
+    lines.push(
+      `Из списка за ${queue.outcome.days} дней написали ${queue.outcome.outreaches}, ` +
+        `записались ${queue.outcome.booked}, дошли ${queue.outcome.arrived} на ` +
+        `${money(queue.outcome.revenue)}. Деньги — только состоявшихся визитов.`,
+    );
+    lines.push(
+      "Суммы в очереди разные по смыслу: у курсов это уже полученные деньги " +
+        "(обязательство отработать), у остальных — цена по прайсу, то есть план, а не выручка.",
+    );
+  }
 
   /**
    * Разрезы по периодам — теми же расчётами, что и в «Отчётах».

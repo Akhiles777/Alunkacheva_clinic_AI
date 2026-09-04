@@ -291,6 +291,7 @@ model Company {
   callLogs                 CallLog[]
   messageTemplates         MessageTemplate[]
   knowledgeEntries         KnowledgeEntry[]
+  callbackOutreaches       CallbackOutreach[]
   settings                 Setting[]
   credentials              Credential[]
   clinicSchedules          ClinicSchedule[]
@@ -342,6 +343,7 @@ model Patient {
   coursePurchases    CoursePurchase[]
   bookedAppointments Appointment[]     @relation("AppointmentBookedByPatient")
   courses            Course[]
+  callbackOutreaches CallbackOutreach[]
   // Телефон вынесен в отдельную таблицу: у пациента несколько номеров,
   // WhatsApp и звонки бывают на разных. Поиск идёт по всем.
   phones             PatientPhone[]
@@ -1074,6 +1076,7 @@ model StaffUser {
   createdNotes             PatientNote[]
   createdCallLogs          CallLog[]
   knowledgeEdits           KnowledgeEntry[]  @relation("KnowledgeUpdatedBy")
+  callbackOutreaches       CallbackOutreach[]
   knowledgeApprovals       KnowledgeEntry[]  @relation("KnowledgeApprovedBy")
   settingEdits             Setting[]
   consentDocuments         ConsentDocument[]
@@ -1653,6 +1656,44 @@ model MessageTemplate {
 
 /// База знаний ассистента. Ассистент отвечает ТОЛЬКО текстами отсюда, не
 /// сочиняет (§3.7, §6.3). Часть тем — медицинские, формулирует их клиника.
+/// Повод, по которому человек попал в очередь «Кому позвонить».
+enum CallbackKind {
+  COURSE_STALLED
+  COURSE_FINISHING
+  NO_SHOW
+  SLEEPING
+}
+
+/// Обращение из очереди «Кому позвонить»: администратор написал этому
+/// пациенту по этому поводу.
+///
+/// Нужно, чтобы честно ответить, работает ли список: запись, появившаяся у
+/// пациента через два дня после звонка, — заслуга очереди, а запись человека,
+/// которому никто не звонил, — нет. Без этой отметки «эффект списка»
+/// пришлось бы приписывать себе все записи подряд.
+model CallbackOutreach {
+  id          String       @id @default(cuid())
+  companyId   String
+  patientId   String
+  kind        CallbackKind
+  /// Основание строкой — то, что администратор читал перед звонком.
+  basis       String
+  /// Сумма, которая стояла в строке. Может быть неизвестна — тогда NULL, а
+  /// не ноль: ноль означал бы «денег нет», а мы просто не знали цену.
+  money       Decimal?     @db.Decimal(12, 2)
+  staffUserId String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company   Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  patient   Patient    @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  staffUser StaffUser? @relation(fields: [staffUserId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([companyId, patientId, createdAt])
+  @@map("callback_outreaches")
+}
+
 model KnowledgeEntry {
   id          String  @id @default(cuid())
   companyId   String

@@ -8,6 +8,7 @@ import type { AgentStats } from "@/lib/server/agent-stats";
 import type { SourceStat } from "@/lib/metrics/types";
 import { SourcePicker } from "../_components/visit-source";
 import { GapsBlock, type GapsData } from "../settings/assistant/gaps-block";
+import { QueueClient, type QueueData } from "../queue/queue-client";
 
 /**
  * Витрина граничных состояний — служебный экран визуальной проверки.
@@ -262,6 +263,93 @@ const GAPS_FULL: GapsData = {
   ],
 };
 
+/** Звонить некому: у всех есть будущая запись. Это результат, а не пустота. */
+const QUEUE_EMPTY: QueueData = {
+  rows: [],
+  withoutThreshold: 0,
+  outcome: { outreaches: 0, booked: 0, arrived: 0, revenue: 0, days: 30 },
+  slots: [
+    { date: "2026-09-04", label: "чт, 4 сент.", windows: [], closedLabel: null },
+    { date: "2026-09-05", label: "пт, 5 сент.", windows: null, closedLabel: "Санитарный день" },
+    { date: "2026-09-06", label: "сб, 6 сент.", windows: [], closedLabel: null },
+  ],
+  attributionDays: 7,
+};
+
+/**
+ * Боевая картина: закрытое окно, отсутствие переписки, неизвестная сумма,
+ * четырёхзначные деньги и фамилия, которая обязана не ломать строку.
+ */
+const QUEUE_FULL: QueueData = {
+  withoutThreshold: 42,
+  outcome: { outreaches: 18, booked: 7, arrived: 5, revenue: 41200, days: 30 },
+  attributionDays: 7,
+  rows: [
+    {
+      patientId: "p1",
+      patientName: "Абдурахманова-Гаджиева Патимат Магомедовна",
+      kind: "COURSE_STALLED",
+      basis: "БОС-терапия, сеанс · сеанс 4 из 10 · последний сеанс 24 дн. назад · порог услуги 14 дн. · будущих записей нет",
+      money: 16800,
+      moneyKind: "PREPAID",
+      days: 24,
+      courseId: "c1",
+      contact: { channel: "whatsapp", windowOpen: false, windowHoursLeft: null, hasDialog: true, phone: null },
+    },
+    {
+      patientId: "p2",
+      patientName: "Устинова Я. Б.",
+      kind: "COURSE_FINISHING",
+      basis: "Нейромедитация · сеанс 8 из 10 · дозаписать осталось 2 · последний сеанс вчера",
+      money: 12000,
+      moneyKind: "PREPAID",
+      days: 1,
+      courseId: "c2",
+      contact: { channel: "instagram", windowOpen: true, windowHoursLeft: 19, hasDialog: true, phone: null },
+    },
+    {
+      patientId: "p3",
+      patientName: "Фадеев Б. Г.",
+      kind: "NO_SHOW",
+      basis: "не пришёл 3 дн. назад · Остеопатия, приём · не перезаписан",
+      money: 8000,
+      moneyKind: "POTENTIAL",
+      days: 3,
+      contact: { channel: "telegram", windowOpen: true, windowHoursLeft: 4, hasDialog: true, phone: null },
+      courseId: null,
+    },
+    {
+      patientId: "p4",
+      patientName: "Цветков Д. Ж.",
+      kind: "SLEEPING",
+      basis: "последний визит 96 дн. назад · Забор анализов · запасной порог клиники 14 дн.",
+      money: null,
+      moneyKind: "POTENTIAL",
+      days: 96,
+      courseId: null,
+      contact: { channel: null, windowOpen: false, windowHoursLeft: null, hasDialog: false, phone: "+7 928 000-00-00" },
+    },
+  ],
+  slots: [
+    {
+      date: "2026-09-04",
+      label: "чт, 4 сент.",
+      windows: [
+        { roomName: "Кабинет 2 — БОС-терапии", from: "14:30", to: "16:00", durationMin: 90 },
+        { roomName: "Кабинет 3 — остеопата", from: "17:00", to: "21:00", durationMin: 240 },
+      ],
+      closedLabel: null,
+    },
+    { date: "2026-09-05", label: "пт, 5 сент.", windows: null, closedLabel: "Санитарный день" },
+    {
+      date: "2026-09-06",
+      label: "сб, 6 сент.",
+      windows: [{ roomName: "Кабинет 1 — процедурный", from: "09:00", to: "12:00", durationMin: 180 }],
+      closedLabel: null,
+    },
+  ],
+};
+
 function Case({
   title,
   note,
@@ -462,6 +550,25 @@ export default function StatesPage() {
       >
         <div className="max-w-[820px]">
           <GapsBlock data={GAPS_FULL} onDraft={() => {}} />
+        </div>
+      </Case>
+
+      {/*
+        Очередь «Кому позвонить». Пустая — это не сбой: у всех, кто мог бы
+        попасть в список, есть будущая запись. Так и написано словами.
+      */}
+      <Case title="Кому позвонить: звонить некому" note="пусто — это результат, а не поломка">
+        <div className="border-border rounded-xl border">
+          <QueueClient data={QUEUE_EMPTY} />
+        </div>
+      </Case>
+
+      <Case
+        title="Кому позвонить: закрытое окно, неизвестная сумма, длинные фамилии"
+        note="состояние окна видно до попытки написать"
+      >
+        <div className="border-border rounded-xl border">
+          <QueueClient data={QUEUE_FULL} />
         </div>
       </Case>
 

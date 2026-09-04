@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
 import { coursePurchasesBetween } from "@/lib/server/course-revenue";
+import { getClinicSettings } from "../settings/clinic/actions";
 
 /**
  * Курсы пациентов для экранов.
@@ -88,8 +89,18 @@ export interface CourseRecord {
   pricePerSession: number;
 }
 
-/** Сколько дней без сеанса считается «выпал» — по умолчанию две недели. */
-const STALLED_DEFAULT_DAYS = 14;
+/**
+ * Сколько дней без сеанса считается «выпал».
+ *
+ * Здесь стояла константа 14. Ритм у услуг разный — БОС ходят раз в неделю,
+ * остеопатию раз в месяц, — и одно число на всех означало, что половину зовут
+ * рано, а половину поздно. Теперь порог берётся из услуги, а запасной задаёт
+ * клиника в «Настройки → Клиника»; пусто — по таким услугам не звать вовсе.
+ *
+ * Экран курсов и очередь «Кому позвонить» обязаны считать это одинаково:
+ * иначе на одном написано «выпал», на другом человека нет, и обе строки
+ * одинаково не заслуживают доверия.
+ */
 
 export async function getCoursesForStore(): Promise<CourseRecord[]> {
   const session = await getSession();
@@ -146,6 +157,9 @@ export async function getCoursesForStore(): Promise<CourseRecord[]> {
   });
   const svcByCourse = new Map(serviceIdOf.map((r) => [r.id, r.serviceId]));
 
+  /** Запасной порог клиники — тот же, что у очереди «Кому позвонить». */
+  const stalledFallback = (await getClinicSettings()).stalledDefaultDays;
+
   const todayKey = clinicDateKey(now);
   return courses.map((c) => {
     const last = c.appointments[0]?.startAt ?? null;
@@ -154,7 +168,7 @@ export async function getCoursesForStore(): Promise<CourseRecord[]> {
         ? null
         : Math.max(0, Math.round((today.getTime() - startOfClinicDay(last).getTime()) / 86_400_000));
     const hasFuture = futureKeys.has(`${c.patientId}|${svcByCourse.get(c.id) ?? ""}`);
-    const limit = c.service.stalledAfterDays ?? STALLED_DEFAULT_DAYS;
+    const limit = c.service.stalledAfterDays ?? stalledFallback;
     const done = c.status === "COMPLETED" || c.sessionsUsed >= c.sessionsTotal;
     return {
       patientId: c.patientId,
@@ -168,7 +182,13 @@ export async function getCoursesForStore(): Promise<CourseRecord[]> {
        * курс, хотя человек уже записан на оставшиеся шесть.
        */
       booked: c.sessionsBooked,
-      status: done ? "done" : !hasFuture && daysAgo !== null && daysAgo > limit ? "stalled" : "active",
+      status:
+        done
+          ? "done"
+          : // Порога нет ни у услуги, ни у клиники — «выпал» сказать не на чем.
+            !hasFuture && daysAgo !== null && limit !== null && daysAgo > limit
+            ? "stalled"
+            : "active",
       lastVisit:
         last === null
           ? "нет сеансов"

@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
+import { STALLED_DEFAULT_DAYS } from "@/app/_data/settings";
 import { requirePermission } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
 
@@ -40,7 +41,16 @@ export interface ClinicData {
   dayBoundaryMinute: number;
   schedule: ClinicDaySchedule[];
   exceptions: ClinicException[];
+  /**
+   * Запасной порог «пора звать» в днях — для услуг, где свой не задан.
+   *
+   * Раньше это была константа 14 в коде экрана курсов. Кто именно потерян и
+   * через сколько дней — решает клиника, а не разработчик: null означает «по
+   * таким услугам не звать вовсе», и очередь честно скажет, скольких обошла.
+   */
+  stalledDefaultDays: number | null;
 }
+
 
 function defaultSchedule(): ClinicDaySchedule[] {
   return Array.from({ length: 7 }, (_, i) => ({
@@ -64,13 +74,29 @@ export async function getClinicSettings(): Promise<ClinicData> {
 
   if (row?.value && typeof row.value === "object") {
     const blob = row.value as unknown as ClinicData;
-    return { ...blob, exceptions };
+    /**
+     * Настройка появилась позже самой записи: у клиники, настроившей график
+     * раньше, поля просто нет. Подставляем прежнее поведение — четырнадцать
+     * дней, — а не null: иначе очередь опустела бы молча.
+     */
+    return {
+      ...blob,
+      /**
+       * Различаем «поля нет» и «поле очищено». `?? 14` вернуло бы четырнадцать
+       * дней клинике, которая нарочно стёрла запасной порог, — и настройка
+       * оказалась бы необнуляемой.
+       */
+      stalledDefaultDays:
+        "stalledDefaultDays" in blob ? blob.stalledDefaultDays : STALLED_DEFAULT_DAYS,
+      exceptions,
+    };
   }
   return {
     name: company?.name ?? "Клиника",
     timezone: company?.timezone ?? "Europe/Moscow",
     dayBoundaryMinute: 0,
     schedule: defaultSchedule(),
+    stalledDefaultDays: STALLED_DEFAULT_DAYS,
     exceptions,
   };
 }

@@ -103,6 +103,28 @@ export function ClinicClient({ initial }: { initial: ClinicData }) {
             ariaLabel="Граница отчётных суток"
           />
         </Field>
+        {/*
+          Запасной порог «пора звать». У услуги он точнее и перекрывает этот;
+          здесь — для тех услуг, где его не задали. Пусто означает «не звать
+          по таким услугам вовсе»: придумывать за клинику, через сколько дней
+          человек считается потерянным, мы не вправе.
+        */}
+        <Field
+          label="Пора звать, если не был (дней)"
+          hint="запасной порог для услуг, где свой не задан; пусто — не звать"
+          htmlFor="clinic-stalled"
+        >
+          <TextInput
+            id="clinic-stalled"
+            inputMode="numeric"
+            value={form.stalledDefaultDays === null ? "" : String(form.stalledDefaultDays)}
+            onChange={(e) => {
+              const raw = e.target.value.replace(/\D/g, "");
+              patch({ stalledDefaultDays: raw === "" ? null : Math.min(Number(raw), 999) });
+            }}
+            className="max-w-[120px]"
+          />
+        </Field>
       </Group>
 
       <Group title="Рабочие часы" hint="кабинеты наследуют эти часы, если не заданы свои">

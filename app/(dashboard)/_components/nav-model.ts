@@ -30,6 +30,8 @@ const NAV_COMMON: NavItem[] = [
   { label: "Чат", href: "/chat" },
   { label: "Пациенты", href: "/patients" },
   { label: "Курсы", href: "/courses" },
+  // Рабочая очередь администратора: кому звонить и что предложить.
+  { label: "Кому позвонить", href: "/queue" },
   { label: "Кабинеты", href: "/schedule" },
   { label: "Отчёты", href: "/analytics" },
 ];
