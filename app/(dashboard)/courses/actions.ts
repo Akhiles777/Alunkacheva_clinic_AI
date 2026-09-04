@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
 import { coursePurchasesBetween } from "@/lib/server/course-revenue";
-import { getClinicSettings } from "../settings/clinic/actions";
+import { stalledFallbackDays } from "@/lib/server/stalled-threshold";
 
 /**
  * Курсы пациентов для экранов.
@@ -158,7 +158,7 @@ export async function getCoursesForStore(): Promise<CourseRecord[]> {
   const svcByCourse = new Map(serviceIdOf.map((r) => [r.id, r.serviceId]));
 
   /** Запасной порог клиники — тот же, что у очереди «Кому позвонить». */
-  const stalledFallback = (await getClinicSettings()).stalledDefaultDays;
+  const stalledFallback = await stalledFallbackDays(session.companyId);
 
   const todayKey = clinicDateKey(now);
   return courses.map((c) => {

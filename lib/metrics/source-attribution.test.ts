@@ -121,6 +121,31 @@ describe("вывод источника", () => {
   });
 });
 
+describe("запись, созданная из диалога", () => {
+  /**
+   * Прямая связь сильнее окна: агент завёл запись прямо в переписке, и
+   * терять источник из-за того, что последнее сообщение пациента оказалось
+   * на час раньше границы, нельзя.
+   */
+  it("источник не стирается, даже если переписка вне окна", () => {
+    const r = attributeSource(
+      input({
+        touches: [],
+        fromConversation: true,
+        current: { sourceId: "src-whatsapp", confidence: "DERIVED" },
+      }),
+    );
+    expect(r.sourceId).toBe("src-whatsapp");
+    expect(r.changed).toBe(false);
+  });
+
+  it("без источника связь с диалогом ничего не даёт", () => {
+    const r = attributeSource(input({ touches: [], fromConversation: true }));
+    expect(r.sourceId).toBeNull();
+    expect(r.confidence).toBe("UNKNOWN");
+  });
+});
+
 describe("идемпотентность", () => {
   it("повторный пересчёт на тех же данных ничего не меняет", () => {
     const first = attributeSource(input());

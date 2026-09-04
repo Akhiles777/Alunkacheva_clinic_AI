@@ -163,7 +163,13 @@ export function courseCompletion(courses: CourseFact[], now: Date = new Date()):
       completed += 1;
       continue;
     }
-    if (c.hasFuture || c.sessionsBooked > 0) {
+    /**
+     * Идёт — значит есть БУДУЩИЙ сеанс. Считать «идущим» курс, у которого
+     * просто висят незакрытые прошлые визиты, нельзя: администратор не всегда
+     * ставит отметку «пришёл», и такой курс никогда бы не стал брошенным —
+     * ровно у тех пациентов, за которыми хуже всего следят.
+     */
+    if (c.hasFuture) {
       inProgress += 1;
       continue;
     }
@@ -235,8 +241,9 @@ export function outstandingCourseValue(
 
     const last = c.sessionDates[c.sessionDates.length - 1] ?? c.purchasedAt;
     const idle = Math.floor((now.getTime() - last.getTime()) / DAY);
-    const stalled =
-      !c.hasFuture && c.sessionsBooked === 0 && c.thresholdDays !== null && idle > c.thresholdDays;
+    // Та же мерка, что у доходимости: решает будущий сеанс, а не незакрытые
+    // прошлые визиты.
+    const stalled = !c.hasFuture && c.thresholdDays !== null && idle > c.thresholdDays;
     if (stalled) {
       atRisk += money;
       atRiskCourses += 1;

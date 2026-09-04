@@ -135,8 +135,16 @@ export async function getKnowledgeGaps(companyId: string): Promise<GapsReport> {
      */
     const asked = [...thread]
       .reverse()
-      .find((m) => m.authorType === "PATIENT" && m.createdAt <= e.createdAt);
-    if (!asked || !asked.body.trim()) {
+      .find(
+        (m) =>
+          m.authorType === "PATIENT" &&
+          m.createdAt <= e.createdAt &&
+          // Пустое тело — это фотография или голосовое. Останавливаться на
+          // нём нельзя: вопрос словами был строкой раньше, и без него
+          // эскалация уходила в «вопрос не нашёлся».
+          m.body.trim().length > 0,
+      );
+    if (!asked) {
       withoutQuestion += 1;
       continue;
     }

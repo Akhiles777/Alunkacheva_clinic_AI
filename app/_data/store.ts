@@ -867,12 +867,20 @@ export function markDialogRead(dialogId: string) {
 }
 
 /** Начать диалог. Если окно закрыто, первым сообщением идёт только шаблон. */
-export function startDialog(input: {
+/**
+ * Написать пациенту первым.
+ *
+ * Асинхронна намеренно: раньше запись в базу шла «в фоне», а экран сразу
+ * показывал «Сообщение отправлено». Отправка могла не состояться вовсе —
+ * провайдер не принял, номера нет, в Instagram первым писать нельзя, — и
+ * человек об этом не узнавал. Теперь результат ждём и показываем.
+ */
+export async function startDialog(input: {
   channel: DialogChannel;
   name: string;
   patientId: string | null;
   message: string;
-}): string {
+}): Promise<{ ok: boolean; dialogId: string | null; error?: string }> {
   const id = uid("d");
   const messageId = uid("m");
   const dialog: Dialog = {
@@ -890,15 +898,26 @@ export function startDialog(input: {
     windowMinutesLeft: null,
     messages: [{ id: messageId, from: "staff", text: input.message, at: "сейчас", attachments: [] }],
   };
-  commit({ ...db, dialogs: [dialog, ...db.dialogs] });
-  void startDialogDb({
+  const res = await startDialogDb({
     id,
     messageId,
     channel: input.channel,
     patientId: input.patientId,
     message: input.message,
-  }).catch(writeFailed("не удалось начать диалог"));
-  return id;
+  }).catch((e) => {
+    writeFailed("не удалось начать диалог")(e);
+    return { ok: false, dialogId: null, error: (e as Error)?.message ?? "не удалось начать диалог" };
+  });
+
+  /**
+   * Показываем диалог, только если сообщение действительно ушло. Строка в
+   * списке при неудавшейся отправке — это ложь на экране: администратор
+   * считает, что написал, и больше не возвращается к этому пациенту.
+   */
+  if (res.ok && res.dialogId) {
+    commit({ ...db, dialogs: [{ ...dialog, id: res.dialogId }, ...db.dialogs] });
+  }
+  return res;
 }
 
 // ─────────────────────────────────────────────── курсы (плоский список)

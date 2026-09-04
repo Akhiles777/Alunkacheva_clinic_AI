@@ -258,6 +258,14 @@ export async function createBooking(input: {
           roomId: staff.defaultRoomId,
           primaryServiceId: service.id,
           sourceId: input.sourceId ?? null,
+          /**
+           * Источник известен точно: запись заводится прямо в переписке, из
+           * которой мы её и создаём. Оставить UNKNOWN значило бы отдать её
+           * ночному пересчёту, а тот судит по окну времени и может стереть
+           * то, что мы знаем наверняка.
+           */
+          sourceConfidence: input.sourceId ? ("DERIVED" as const) : ("UNKNOWN" as const),
+          sourceDerivedAt: input.sourceId ? new Date() : null,
           conversationId: input.conversationId ?? null,
           startAt: start,
           endAt: end,

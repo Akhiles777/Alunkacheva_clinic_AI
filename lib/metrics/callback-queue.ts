@@ -73,6 +73,17 @@ export interface QueueInput {
   servicePrice: number | null;
   noShowAt: Date | null;
   noShowTitle: string | null;
+  /**
+   * Порог и цена берутся у ПРОПУЩЕННОЙ услуги, а не у последнего визита.
+   *
+   * Иначе получалось два перекоса. У пациента, который вообще ни разу не
+   * дошёл, порога не было вовсе — и неявка трёхлетней давности висела в
+   * списке вечно. А сумма показывалась от другой услуги: человек не пришёл на
+   * остеопатию за 8 000, а в строке стояла цена забора анализов.
+   */
+  noShowThresholdDays: number | null;
+  noShowThresholdFrom: ThresholdSource;
+  noShowPrice: number | null;
   courses: QueueCourse[];
 }
 
@@ -188,16 +199,15 @@ function candidatesFor(input: QueueInput, now: Date): QueueRow[] {
    * дальше это уже не «не пришёл на той неделе», а «давно не был», и звать
    * надо другими словами.
    */
-  if (input.noShowAt) {
+  if (input.noShowAt && input.noShowThresholdDays !== null) {
     const days = daysBetween(input.noShowAt, now);
-    const within = input.thresholdDays === null || days <= input.thresholdDays;
-    if (within) {
+    if (days <= input.noShowThresholdDays) {
       rows.push({
         patientId: input.patientId,
         patientName: input.patientName,
         kind: "NO_SHOW",
-        basis: `не пришёл ${ago(days)}${input.noShowTitle ? ` · ${input.noShowTitle}` : ""} · не перезаписан`,
-        money: input.servicePrice,
+        basis: `не пришёл ${ago(days)}${input.noShowTitle ? ` · ${input.noShowTitle}` : ""} · не перезаписан · ${THRESHOLD_LABEL[input.noShowThresholdFrom]} ${input.noShowThresholdDays} дн.`,
+        money: input.noShowPrice,
         moneyKind: "POTENTIAL",
         days,
         courseId: null,
@@ -254,7 +264,8 @@ export function buildQueue(inputs: QueueInput[], now: Date = new Date()): QueueR
        */
       const couldBeStalled =
         input.courses.some((c) => c.thresholdDays === null && sessionsToBook(c) > 0) ||
-        (input.courses.length === 0 && input.lastVisitAt !== null && input.thresholdDays === null);
+        (input.courses.length === 0 && input.lastVisitAt !== null && input.thresholdDays === null) ||
+        (input.noShowAt !== null && input.noShowThresholdDays === null);
       if (couldBeStalled) withoutThreshold += 1;
       continue;
     }

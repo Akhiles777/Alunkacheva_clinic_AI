@@ -28,6 +28,9 @@ const patient = (over: Partial<QueueInput> = {}): QueueInput => ({
   servicePrice: 2800,
   noShowAt: null,
   noShowTitle: null,
+  noShowThresholdDays: 14,
+  noShowThresholdFrom: "SERVICE",
+  noShowPrice: 8000,
   courses: [],
   ...over,
 });
@@ -139,10 +142,44 @@ describe("поводы", () => {
    */
   it("неявка старше порога поводом уже не считается", () => {
     const q = buildQueue(
-      [patient({ noShowAt: daysAgo(40), thresholdDays: 14, lastVisitAt: null })],
+      [patient({ noShowAt: daysAgo(40), noShowThresholdDays: 14, lastVisitAt: null })],
       NOW,
     );
     expect(q.rows.some((r) => r.kind === "NO_SHOW")).toBe(false);
+  });
+
+  /**
+   * Порог неявки — у пропущенной услуги, а не у последнего визита. У
+   * пациента, который вообще ни разу не дошёл, порога последнего визита нет
+   * вовсе, и неявка трёхлетней давности висела бы в списке вечно.
+   */
+  it("без порога у пропущенной услуги неявка в список не идёт", () => {
+    const q = buildQueue(
+      [patient({ noShowAt: daysAgo(3), noShowThresholdDays: null, lastVisitAt: null })],
+      NOW,
+    );
+    expect(q.rows).toHaveLength(0);
+    expect(q.withoutThreshold).toBe(1);
+  });
+
+  /**
+   * Сумма — цена пропущенной услуги. Человек не пришёл на остеопатию за
+   * 8 000, и в строке должна стоять она, а не цена того, на что он ходил в
+   * прошлом году.
+   */
+  it("сумма неявки — цена пропущенной услуги", () => {
+    const q = buildQueue(
+      [
+        patient({
+          noShowAt: daysAgo(3),
+          noShowPrice: 8000,
+          servicePrice: 1500,
+          lastVisitAt: null,
+        }),
+      ],
+      NOW,
+    );
+    expect(q.rows[0].money).toBe(8000);
   });
 
   it("запасной порог клиники назван своим именем", () => {

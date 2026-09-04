@@ -37,6 +37,15 @@ export interface AttributionInput {
   current: { sourceId: string | null; confidence: SourceConfidence };
   /** Сообщения пациента во всех его диалогах. */
   touches: DialogTouch[];
+  /**
+   * Запись создана ИЗ диалога: её завёл агент прямо в переписке.
+   *
+   * Это не догадка по времени, а прямая связь — сильнее любого окна. Такой
+   * источник пересчёт не трогает: иначе запись, сделанная агентом в WhatsApp,
+   * теряла бы источник только потому, что последнее сообщение пациента
+   * оказалось на час раньше границы окна.
+   */
+  fromConversation?: boolean;
 }
 
 export interface AttributionResult {
@@ -79,6 +88,8 @@ export function attributeSource(input: AttributionInput): AttributionResult {
   });
 
   if (input.current.confidence === "MANUAL") return keep();
+  // Запись заведена из переписки — источник известен точно, гадать не о чем.
+  if (input.fromConversation && input.current.sourceId) return keep();
 
   const near = input.touches.filter((t) => inWindow(input.createdAt, t.messageAt));
   if (near.length === 0) {

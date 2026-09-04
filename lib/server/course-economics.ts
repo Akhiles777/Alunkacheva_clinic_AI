@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { getClinicSettings } from "@/app/(dashboard)/settings/clinic/actions";
+import { stalledFallbackDays } from "@/lib/server/stalled-threshold";
 import { periodBounds, periodLabel } from "@/lib/server/analytics";
 import type { PeriodKey } from "@/lib/metrics/types";
 import {
@@ -47,8 +47,7 @@ export interface CourseEconomics {
 
 /** Все курсы клиники в виде, понятном чистым функциям. */
 async function courseFacts(companyId: string): Promise<CourseFact[]> {
-  const clinic = await getClinicSettings();
-  const fallback = clinic.stalledDefaultDays;
+  const fallback = await stalledFallbackDays(companyId);
 
   const rows = await prisma.course.findMany({
     where: { companyId, status: { in: ["ACTIVE", "COMPLETED"] } },

@@ -239,6 +239,9 @@ export async function recomputeAppointmentSources(
       createdAtYclients: true,
       sourceId: true,
       sourceConfidence: true,
+      // Запись, заведённая агентом прямо в переписке: связь прямая, и
+      // пересчёт по окну её не перебивает.
+      conversationId: true,
     },
   });
   if (appts.length === 0) return { ...empty, manualKept };
@@ -324,6 +327,7 @@ export async function recomputeAppointmentSources(
       createdAt: a.createdAtYclients,
       current: { sourceId: a.sourceId, confidence: a.sourceConfidence },
       touches: byPatient.get(a.patientId) ?? [],
+      fromConversation: a.conversationId !== null,
     });
 
     if (verdict.confidence === "DERIVED") result.derived += 1;

@@ -21,7 +21,15 @@ import { getSourceOptions } from "@/app/(dashboard)/schedule/actions";
 /** Справочник тянем один раз на страницу, а не на каждую строку. */
 let cache: Promise<{ code: string; title: string }[]> | null = null;
 function options() {
-  cache ??= getSourceOptions();
+  /**
+   * Неудачный запрос из кэша выбрасываем: иначе одна ошибка сети запирала
+   * справочник до перезагрузки страницы — каждая следующая попытка получала
+   * тот же отклонённый промис и ту же надпись «не загрузился».
+   */
+  cache ??= getSourceOptions().catch((e) => {
+    cache = null;
+    throw e;
+  });
   return cache;
 }
 

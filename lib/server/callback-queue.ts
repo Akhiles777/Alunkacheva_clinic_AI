@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { freeGaps } from "@/lib/metrics/occupancy";
 import { clinicMinuteOfDay } from "@/lib/clinic-time";
 import { clinicDateKey, clinicDayFor } from "@/lib/server/clinic-day";
-import { getClinicSettings } from "@/app/(dashboard)/settings/clinic/actions";
+import { stalledFallbackDays } from "@/lib/server/stalled-threshold";
 import {
   buildQueue,
   type CandidateKind,
@@ -36,6 +36,13 @@ export interface QueueContact {
   windowOpen: boolean;
   /** Сколько часов окна осталось. null — окна нет или оно закрыто. */
   windowHoursLeft: number | null;
+  /**
+   * Сколько дней назад пациент писал сам. null — не писал ни разу.
+   *
+   * Для WhatsApp это единственное честное число: жёсткого окна там нет, а
+   * давность разговора всё равно решает, как начинать.
+   */
+  lastInboundDays: number | null;
   /** Переписки нет вовсе: писать первым некуда, остаётся телефон. */
   hasDialog: boolean;
   phone: string | null;
@@ -46,7 +53,13 @@ export interface QueueRowView extends QueueRow {
 }
 
 export interface QueueOutcome {
-  /** Скольким написали из списка за срок. */
+  /**
+   * Скольким ЛЮДЯМ написали из списка за срок.
+   *
+   * По людям, а не по нажатиям: два сообщения одному пациенту — это один
+   * человек, и доля «записались из написанных» иначе занижалась бы тем
+   * сильнее, чем настойчивее работает администратор.
+   */
   outreaches: number;
   /** Скольких из них записали в течение 7 дней. */
   booked: number;
@@ -80,8 +93,7 @@ export async function getCallbackQueue(companyId: string): Promise<CallbackQueue
    * константа: через сколько дней человек считается потерянным, решает
    * клиника. Пусто — по таким услугам не звать вовсе.
    */
-  const clinic = await getClinicSettings();
-  const fallback = clinic.stalledDefaultDays;
+  const fallback = await stalledFallbackDays(companyId);
   const thresholdOf = (own: number | null | undefined) =>
     own != null
       ? { thresholdDays: own, thresholdFrom: "SERVICE" as const }
@@ -89,15 +101,15 @@ export async function getCallbackQueue(companyId: string): Promise<CallbackQueue
 
   const [appts, courses, conversations, outcome] = await Promise.all([
     /**
-     * Визиты за историю и все будущие. Будущие нужны целиком: именно они
-     * убирают человека из очереди, и обрезать их окном нельзя — запись на
-     * ноябрь так же снимает вопрос, как запись на завтра.
+     * Визиты за историю и все будущие: нижняя граница есть, верхней нет.
+     * Будущие нужны целиком — именно они убирают человека из очереди, и
+     * запись на ноябрь снимает вопрос так же, как запись на завтра.
      */
     prisma.appointment.findMany({
       where: {
         companyId,
         deletedAt: null,
-        OR: [{ startAt: { gte: since } }, { startAt: { gte: now } }],
+        startAt: { gte: since },
       },
       select: {
         patientId: true,
@@ -134,7 +146,18 @@ export async function getCallbackQueue(companyId: string): Promise<CallbackQueue
      * этому времени и считается окно свободного ответа.
      */
     prisma.conversation.findMany({
-      where: { companyId, deletedAt: null, patientId: { not: null } },
+      where: {
+        companyId,
+        deletedAt: null,
+        patientId: { not: null },
+        /**
+         * Диалоги с адресом `local-…` остались от прежнего поведения кнопки
+         * «Написать»: она заводила переписку, которой нет ни в WhatsApp, ни в
+         * Instagram. Отправить туда нельзя, и показывать их как канал связи
+         * значит обещать несуществующее.
+         */
+        NOT: { externalUserId: { startsWith: "local-" } },
+      },
       select: {
         patientId: true,
         channel: true,
@@ -168,6 +191,9 @@ export async function getCallbackQueue(companyId: string): Promise<CallbackQueue
       servicePrice: null,
       noShowAt: null,
       noShowTitle: null,
+      noShowThresholdDays: null,
+      noShowThresholdFrom: "SERVICE",
+      noShowPrice: null,
       courses: [],
     };
     byPatient.set(patientId, created);
@@ -194,6 +220,15 @@ export async function getCallbackQueue(companyId: string): Promise<CallbackQueue
     if (a.status === "NO_SHOW" && (!row.noShowAt || a.startAt > row.noShowAt)) {
       row.noShowAt = a.startAt;
       row.noShowTitle = a.primaryService?.title ?? null;
+      /**
+       * Порог и цена — у пропущенной услуги, а не у последнего визита.
+       * Человек не пришёл на остеопатию за 8 000, и в строке должна стоять
+       * она, а не забор анализов, на который он ходил в прошлом году.
+       */
+      const t = thresholdOf(a.primaryService?.stalledAfterDays);
+      row.noShowThresholdDays = t.thresholdDays;
+      row.noShowThresholdFrom = t.thresholdFrom;
+      row.noShowPrice = a.primaryService?.price != null ? Number(a.primaryService.price) : null;
     }
   }
 
@@ -227,6 +262,9 @@ export async function getCallbackQueue(companyId: string): Promise<CallbackQueue
       channel: c.channel.toLowerCase() as QueueContact["channel"],
       windowOpen: leftMs > 0,
       windowHoursLeft: leftMs > 0 ? Math.floor(leftMs / 3600000) : null,
+      lastInboundDays: lastIn
+        ? Math.floor((now.getTime() - lastIn.getTime()) / (24 * 3600 * 1000))
+        : null,
       hasDialog: true,
       phone: null,
     });
@@ -249,6 +287,7 @@ export async function getCallbackQueue(companyId: string): Promise<CallbackQueue
         channel: null,
         windowOpen: false,
         windowHoursLeft: null,
+        lastInboundDays: null,
         hasDialog: false,
         phone: phoneOf.get(r.patientId) ?? null,
       },
@@ -316,7 +355,7 @@ export async function queueOutcome(
   }
 
   return {
-    outreaches: outreaches.length,
+    outreaches: new Set(outreaches.map((o) => o.patientId)).size,
     booked: bookedPatients.size,
     arrived,
     revenue,

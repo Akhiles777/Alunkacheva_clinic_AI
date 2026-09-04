@@ -149,6 +149,16 @@ describe("доходимость курсов", () => {
     expect(r.inProgress).toBe(1);
   });
 
+  /**
+   * Незакрытые прошлые визиты «идущим» курс не делают: отметку «пришёл»
+   * ставят не всегда, и такой курс никогда не стал бы брошенным — ровно у
+   * тех пациентов, за которыми хуже всего следят.
+   */
+  it("висящие незакрытые визиты в прошлом курс не спасают", () => {
+    const r = courseCompletion([base({ sessionsBooked: 3, hasFuture: false })], NOW);
+    expect(r.abandoned).toBe(1);
+  });
+
   it("без порога курс не решён и назван отдельно", () => {
     const r = courseCompletion([base({ thresholdDays: null })], NOW);
     expect(r.undecidable).toBe(1);

@@ -42,15 +42,34 @@ export function ComposeOverlay({
   const [patientId, setPatientId] = useState<string | null>(prefillPatientId);
   const [message, setMessage] = useState(prefillMessage);
   const [sentTo, setSentTo] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const matches = pquery.trim() ? searchPatients(pquery, db.patients).slice(0, 4) : [];
   const chosen = patientId ? findPatient(patientId) : null;
 
-  function send() {
-    if (!chosen || message.trim().length === 0) return;
-    const id = startDialog({ channel, name: chosen.name, patientId: chosen.id, message });
+  async function send() {
+    if (!chosen || message.trim().length === 0 || sending) return;
+    setSending(true);
+    setError(null);
+    const res = await startDialog({
+      channel,
+      name: chosen.name,
+      patientId: chosen.id,
+      message,
+    });
+    setSending(false);
+    /**
+     * «Отправлено» показываем только по факту отправки. Раньше эта надпись
+     * появлялась всегда: сообщение оседало в базе, пациент его не видел, а
+     * администратор был уверен, что написал.
+     */
+    if (!res.ok || !res.dialogId) {
+      setError(res.error ?? "Сообщение не отправлено");
+      return;
+    }
     setSentTo(chosen.name);
-    onSent?.(id);
+    onSent?.(res.dialogId);
   }
 
   return (
@@ -147,13 +166,19 @@ export function ComposeOverlay({
               />
             </div>
             <div className="border-border border-t px-5 py-4">
+              {/*
+                Причина отказа — словами и на месте. «WhatsApp: номер не
+                зарегистрирован» и «в Instagram первым пишет пациент» требуют
+                разных действий, и молчать о разнице нельзя.
+              */}
+              {error ? <p className="text-accent-text mb-2 text-sm">{error}</p> : null}
               <button
                 type="button"
-                disabled={!chosen || message.trim().length === 0}
-                onClick={send}
+                disabled={!chosen || message.trim().length === 0 || sending}
+                onClick={() => void send()}
                 className="bg-accent text-accent-contrast hover:bg-accent-hover w-full rounded-md py-2.5 text-sm font-medium disabled:opacity-45"
               >
-                Отправить
+                {sending ? "Отправляем…" : "Отправить"}
               </button>
             </div>
           </>

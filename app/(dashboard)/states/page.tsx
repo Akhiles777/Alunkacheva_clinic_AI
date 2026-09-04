@@ -296,7 +296,7 @@ const QUEUE_FULL: QueueData = {
       moneyKind: "PREPAID",
       days: 24,
       courseId: "c1",
-      contact: { channel: "whatsapp", windowOpen: false, windowHoursLeft: null, hasDialog: true, phone: null },
+      contact: { channel: "whatsapp", windowOpen: false, windowHoursLeft: null, lastInboundDays: 12, hasDialog: true, phone: null },
     },
     {
       patientId: "p2",
@@ -307,7 +307,7 @@ const QUEUE_FULL: QueueData = {
       moneyKind: "PREPAID",
       days: 1,
       courseId: "c2",
-      contact: { channel: "instagram", windowOpen: true, windowHoursLeft: 19, hasDialog: true, phone: null },
+      contact: { channel: "instagram", windowOpen: true, windowHoursLeft: 19, lastInboundDays: 0, hasDialog: true, phone: null },
     },
     {
       patientId: "p3",
@@ -317,7 +317,7 @@ const QUEUE_FULL: QueueData = {
       money: 8000,
       moneyKind: "POTENTIAL",
       days: 3,
-      contact: { channel: "telegram", windowOpen: true, windowHoursLeft: 4, hasDialog: true, phone: null },
+      contact: { channel: "telegram", windowOpen: true, windowHoursLeft: 4, lastInboundDays: 0, hasDialog: true, phone: null },
       courseId: null,
     },
     {
@@ -329,7 +329,7 @@ const QUEUE_FULL: QueueData = {
       moneyKind: "POTENTIAL",
       days: 96,
       courseId: null,
-      contact: { channel: null, windowOpen: false, windowHoursLeft: null, hasDialog: false, phone: "+7 928 000-00-00" },
+      contact: { channel: null, windowOpen: false, windowHoursLeft: null, lastInboundDays: null, hasDialog: false, phone: "+7 928 000-00-00" },
     },
   ],
   slots: [

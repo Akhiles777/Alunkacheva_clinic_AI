@@ -37,6 +37,8 @@ export interface QueueRowView {
     channel: "whatsapp" | "instagram" | "telegram" | null;
     windowOpen: boolean;
     windowHoursLeft: number | null;
+    /** Сколько дней назад пациент писал сам. null — не писал вовсе. */
+    lastInboundDays: number | null;
     hasDialog: boolean;
     phone: string | null;
   };
@@ -84,10 +86,15 @@ function moneyHint(kind: QueueRowView["moneyKind"]): string {
 }
 
 /**
- * Состояние окна — до попытки отправки.
+ * Что известно про канал — ДО того, как человек начал писать.
  *
- * В закрытое окно свободный текст не уйдёт. Написать об этом нужно раньше,
- * чем человек набрал сообщение, а не после.
+ * Формулировка разная по каналам, и это не придирка. Двадцатичетырёхчасовое
+ * окно — настоящее правило Instagram: вне его свободный текст Meta не
+ * пропускает, и сказать об этом нужно заранее. У WhatsApp через Green API
+ * такого ограничения нет: там работает личная сессия номера клиники.
+ * Написать «окно закрыто — не уйдёт» для WhatsApp значило бы выдать
+ * ограничение чужой платформы за факт и отговорить администратора писать
+ * тому, кому написать можно.
  */
 function windowNote(contact: QueueRowView["contact"]): { text: string; warn: boolean } {
   if (!contact.hasDialog) {
@@ -105,15 +112,33 @@ function windowNote(contact: QueueRowView["contact"]): { text: string; warn: boo
   if (contact.channel === "telegram") {
     return { text: `${channel} · открыть в «Диалогах»`, warn: true };
   }
-  if (contact.windowOpen) {
-    return {
-      text: `${channel} · окно открыто${
-        contact.windowHoursLeft !== null ? `, осталось ${contact.windowHoursLeft} ч` : ""
-      }`,
-      warn: false,
-    };
+
+  if (contact.channel === "instagram") {
+    return contact.windowOpen
+      ? {
+          text: `${channel} · окно ответа открыто${
+            contact.windowHoursLeft !== null ? `, осталось ${contact.windowHoursLeft} ч` : ""
+          }`,
+          warn: false,
+        }
+      : { text: `${channel} · окно ответа закрыто — свободный текст не уйдёт`, warn: true };
   }
-  return { text: `${channel} · окно закрыто — свободный текст не уйдёт`, warn: true };
+
+  /**
+   * WhatsApp: окна нет, но давность последнего сообщения пациента всё равно
+   * важна — по свежему разговору пишут иначе, чем в тишину полугодовой
+   * давности.
+   */
+  if (contact.windowOpen) {
+    return { text: `${channel} · пациент писал сегодня`, warn: false };
+  }
+  return {
+    text:
+      contact.lastInboundDays === null
+        ? `${channel} · пациент нам не писал`
+        : `${channel} · пациент писал ${contact.lastInboundDays} дн. назад`,
+    warn: false,
+  };
 }
 
 export function QueueClient({ data }: { data: QueueData }) {

@@ -10,6 +10,7 @@ import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { phoneFromChatId } from "@/lib/integrations/whatsapp/chat-id";
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
+import { chatIdFromPhone } from "@/lib/integrations/whatsapp/chat-id";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 import { KIND_LABEL, type AttachmentKind } from "@/lib/agent/attachments";
@@ -767,23 +768,124 @@ export async function markDialogReadDb(conversationId: string): Promise<{ ok: tr
   return { ok: true };
 }
 
+export interface StartDialogResult {
+  ok: boolean;
+  /** Диалог, в который легло сообщение: существующий или только что созданный. */
+  dialogId: string | null;
+  error?: string;
+}
+
+/**
+ * Написать пациенту первым.
+ *
+ * Раньше эта функция ТОЛЬКО писала в базу: создавала диалог с выдуманным
+ * адресом `local-…` и сохраняла исходящее сообщение, которого пациент никогда
+ * не видел. Экран показывал «Сообщение отправлено», в «Диалогах» появлялась
+ * переписка, а в WhatsApp не уходило ничего. Хуже, чем ошибка: система
+ * уверенно врала о выполненной работе.
+ *
+ * Теперь путь один и тот же для всех отправок:
+ *
+ *   — переписка с пациентом уже есть → пишем в неё через `sendMessageDb`,
+ *     который отправляет провайдеру и честно возвращает отказ;
+ *   — переписки нет и канал WhatsApp → отправляем по номеру из карточки и
+ *     заводим диалог с настоящим адресом чата, чтобы ответ пациента попал в
+ *     ту же переписку, а не завёл вторую;
+ *   — переписки нет и канал Instagram → отказ словами. Первым там пишет
+ *     пациент: Meta не даёт начать разговор, и делать вид, что дала, нельзя.
+ */
 export async function startDialogDb(input: {
   id: string;
   messageId: string;
   channel: DialogChannel;
   patientId: string | null;
   message: string;
-}): Promise<void> {
+}): Promise<StartDialogResult> {
   const session = await getSession();
+  if (!(await can(session, "MESSAGE_PATIENTS"))) {
+    return { ok: false, dialogId: null, error: "Нет права писать пациентам" };
+  }
+
+  const body = input.message.trim();
+  if (!body) return { ok: false, dialogId: null, error: "Пустое сообщение" };
+  if (!input.patientId) {
+    return { ok: false, dialogId: null, error: "Не выбран пациент" };
+  }
+
   const channel = input.channel === "instagram" ? "INSTAGRAM" : "WHATSAPP";
+
+  /**
+   * Существующая переписка — главный случай: из «Кому позвонить» и из курсов
+   * пишут тем, с кем уже говорили. Второй диалог с тем же человеком в том же
+   * канале означал бы, что ответ придёт в один, а история лежит в другом.
+   */
+  const existing = await prisma.conversation.findFirst({
+    where: {
+      companyId: session.companyId,
+      patientId: input.patientId,
+      channel,
+      deletedAt: null,
+      // Адреса `local-…` остались от прежнего поведения: отправить в них
+      // нельзя, и переиспользовать их тоже нельзя.
+      NOT: { externalUserId: { startsWith: "local-" } },
+    },
+    orderBy: { lastMessageAt: "desc" },
+    select: { id: true },
+  });
+
+  if (existing) {
+    const res = await sendMessageDb(existing.id, input.messageId, body);
+    return { ok: res.ok, dialogId: existing.id, error: res.ok ? undefined : res.error };
+  }
+
+  if (channel === "INSTAGRAM") {
+    return {
+      ok: false,
+      dialogId: null,
+      error: "В Instagram первым пишет пациент — начать разговор оттуда нельзя.",
+    };
+  }
+
+  /** Нового диалога в WhatsApp без номера не бывает: адресовать некуда. */
+  const phone = await prisma.patientPhone.findFirst({
+    where: { companyId: session.companyId, patientId: input.patientId },
+    orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+    select: { phone: true },
+  });
+  const chatId = chatIdFromPhone(phone?.phone);
+  if (!chatId) {
+    return { ok: false, dialogId: null, error: "У пациента нет номера — писать некуда." };
+  }
+
+  const sent = await sendWhatsapp(session.companyId, chatId, body);
+  if (!sent.ok) {
+    /**
+     * Не доставлено — диалога не заводим. Пустая переписка в списке читается
+     * как «мы написали», хотя не написали: пусть лучше администратор увидит
+     * причину и решит, звонить ли.
+     */
+    return { ok: false, dialogId: null, error: `WhatsApp: ${sent.error ?? "сообщение не отправлено"}` };
+  }
+
   const now = new Date();
-  await prisma.conversation.create({
+  /**
+   * Гонка двух администраторов: пара (компания, канал, адрес) уникальна, и
+   * второй create упал бы исключением, а сообщение к тому моменту уже ушло
+   * пациенту. Ловим и кладём сообщение в диалог, который создал первый.
+   */
+  const created = await createDialogOrJoin({
     data: {
       id: input.id,
       companyId: session.companyId,
       patientId: input.patientId,
       channel,
-      externalUserId: `local-${input.id}`,
+      /**
+       * Настоящий адрес чата, а не `local-…`: по нему вебхук найдёт ту же
+       * переписку, когда пациент ответит. Пара (компания, канал, адрес)
+       * уникальна — второй строки не появится.
+       */
+      externalUserId: chatId,
+      phoneE164: phone?.phone ?? null,
       status: "HUMAN_TAKEOVER",
       // Пауза агента вместе со статусом: без неё «ручной режим» был только
       // подписью на экране, а бот продолжал отвечать в этом диалоге.
@@ -798,10 +900,50 @@ export async function startDialogDb(input: {
           direction: "OUT",
           authorType: "STAFF",
           authorId: session.userId,
-          body: input.message.trim(),
+          body,
+          externalId: sent.externalId ?? null,
+          status: "SENT",
+          sentAt: now,
         },
       },
     },
+    select: { id: true },
   });
+
+  return { ok: true, dialogId: created.id };
+}
+
+/**
+ * Создать диалог, а если такой уже завёлся параллельно — дописать сообщение в
+ * него. Сообщение пациенту к этому моменту уже отправлено, и потерять его в
+ * гонке нельзя.
+ */
+async function createDialogOrJoin(
+  args: Parameters<typeof prisma.conversation.create>[0],
+): Promise<{ id: string }> {
+  try {
+    return await prisma.conversation.create(args);
+  } catch {
+    const data = args.data as {
+      companyId: string;
+      channel: "WHATSAPP" | "INSTAGRAM";
+      externalUserId: string;
+      messages?: { create: Record<string, unknown> };
+    };
+    const existing = await prisma.conversation.findFirstOrThrow({
+      where: {
+        companyId: data.companyId,
+        channel: data.channel,
+        externalUserId: data.externalUserId,
+      },
+      select: { id: true },
+    });
+    if (data.messages?.create) {
+      await prisma.message.create({
+        data: { ...(data.messages.create as object), conversationId: existing.id } as never,
+      });
+    }
+    return existing;
+  }
 }
 
