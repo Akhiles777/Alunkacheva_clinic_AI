@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getPatientRecord } from "@/app/(dashboard)/patients/actions";
 import { needsBreakdown, visitTitle } from "@/lib/visit-title";
 import { SourcePicker } from "./visit-source";
+import { PatientDossier } from "./patient-dossier";
 import { formatMoney } from "@/lib/format";
 import {
   addNote,
@@ -417,6 +418,16 @@ export function PatientCardBody({
           </div>
         </div>
       ) : null}
+
+      {/*
+        Личное дело — перед историей визитов: администратор открывает карточку
+        перед разговором, и первым ему нужен человек, а не список строк.
+        Считается на нашем сервере из своих данных; переписка наружу не уходит.
+      */}
+      <div className="border-border-soft mt-5 border-t pt-5">
+        <SectionLabel>Личное дело</SectionLabel>
+        <PatientDossier patientId={patient.id} />
+      </div>
 
       {/* визиты */}
       <div className="border-border-soft mt-5 border-t pt-5">

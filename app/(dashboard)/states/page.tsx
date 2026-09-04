@@ -10,6 +10,8 @@ import { SourcePicker } from "../_components/visit-source";
 import { GapsBlock, type GapsData } from "../settings/assistant/gaps-block";
 import { QueueClient, type QueueData } from "../queue/queue-client";
 import { CourseEconomicsBlock } from "../_components/course-economics";
+import { DossierBody } from "../_components/patient-dossier";
+import type { DossierView } from "../patients/actions";
 import type { CourseEconomics } from "@/lib/server/course-economics";
 
 /**
@@ -429,6 +431,116 @@ const COURSES_FULL: CourseEconomics = {
   ],
 };
 
+/** Ни визитов, ни переписки: дело не пустое — его пока нет. */
+const DOSSIER_EMPTY: DossierView = {
+  visits: { total: 0, arrived: 0, noShow: 0, cancelled: 0, unmarked: 0, firstAt: null, lastAt: null },
+  services: [],
+  staff: [],
+  rhythm: { medianDays: null, meanDays: null, gaps: 0 },
+  money: { total: 0, paidVisits: 0, avgCheck: null },
+  style: {
+    messages: 0,
+    enough: false,
+    medianLength: null,
+    medianReplyMinutes: null,
+    typicalHour: null,
+    greetsShare: null,
+    address: null,
+    voiceOrPhotos: 0,
+    askedForHuman: 0,
+  },
+  advice: [],
+  courses: [],
+  contact: { channel: null, lastInboundAt: null, dialogs: 0 },
+  source: null,
+};
+
+/** Один визит и два сообщения: ритма нет, манеры нет — и это сказано словами. */
+const DOSSIER_THIN: DossierView = {
+  ...DOSSIER_EMPTY,
+  visits: {
+    total: 1,
+    arrived: 1,
+    noShow: 0,
+    cancelled: 0,
+    unmarked: 0,
+    firstAt: "2026-08-20T09:00:00.000Z",
+    lastAt: "2026-08-20T09:00:00.000Z",
+  },
+  services: [{ title: "Консультация", count: 1, revenue: 3000 }],
+  staff: [{ name: "Омарова И.", count: 1 }],
+  money: { total: 3000, paidVisits: 1, avgCheck: 3000 },
+  style: { ...DOSSIER_EMPTY.style, messages: 2 },
+  contact: { channel: "WHATSAPP", lastInboundAt: "2026-08-19T18:20:00.000Z", dialogs: 1 },
+  source: { title: "WhatsApp", confidence: "DERIVED" },
+};
+
+/** Постоянная пациентка: курс, неявки, вечерняя переписка, длинные названия. */
+const DOSSIER_FULL: DossierView = {
+  visits: {
+    total: 34,
+    arrived: 29,
+    noShow: 2,
+    cancelled: 1,
+    unmarked: 2,
+    firstAt: "2024-11-12T09:00:00.000Z",
+    lastAt: "2026-09-01T15:30:00.000Z",
+  },
+  services: [
+    { title: "БОС-терапия, сеанс", count: 18, revenue: 50400 },
+    { title: 'Инфузия "Амино-Архитектура" (Белковое восстановление)', count: 7, revenue: 63000 },
+    { title: "Остеопатия, приём Ирины", count: 4, revenue: 32000 },
+  ],
+  staff: [
+    { name: "Абдурахманова-Гаджиева П. М.", count: 21 },
+    { name: "Омарова И.", count: 8 },
+  ],
+  rhythm: { medianDays: 9, meanDays: 12.4, gaps: 28 },
+  money: { total: 145400, paidVisits: 13, avgCheck: 11184 },
+  style: {
+    messages: 62,
+    enough: true,
+    medianLength: 28,
+    medianReplyMinutes: 214,
+    typicalHour: 21,
+    greetsShare: 0.82,
+    address: "formal",
+    voiceOrPhotos: 5,
+    askedForHuman: 2,
+  },
+  advice: [
+    { text: "Здоровается — поздоровайтесь в ответ.", basis: "приветствие в 82% сообщений" },
+    { text: "Обращается на «вы».", basis: "по словам в переписке" },
+    {
+      text: "Пишет коротко — длинный список услуг не прочитает.",
+      basis: "обычная длина сообщения 28 знаков",
+    },
+    {
+      text: "Пишет вечером — ответ раньше 21:00 ждать не стоит.",
+      basis: "обычное время сообщений — около 21:00",
+    },
+    { text: "Отвечает не сразу — молчание не значит отказ.", basis: "обычно отвечает через 3,6 ч" },
+    {
+      text: "Просил живого человека — не отдавайте разговор ассистенту.",
+      basis: "просил 2 раза",
+    },
+    {
+      text: "Не доходил дважды и больше — подтвердите запись накануне.",
+      basis: "неявок: 2",
+    },
+    {
+      text: "Ходит примерно раз в 9 дн. — от этого и предлагайте дату.",
+      basis: "по 28 промежуткам между визитами",
+    },
+  ],
+  courses: [
+    { title: "БОС-терапия, сеанс", used: 8, total: 10, booked: 2, status: "ACTIVE" },
+    { title: 'Инфузия "Амино-Архитектура" (Белковое восстановление)', used: 10, total: 10, booked: 0, status: "COMPLETED" },
+  ],
+  contact: { channel: "WHATSAPP", lastInboundAt: "2026-09-02T20:14:00.000Z", dialogs: 2 },
+  source: { title: "Instagram", confidence: "MANUAL" },
+};
+
 function Case({
   title,
   note,
@@ -664,6 +776,33 @@ export default function StatesPage() {
       <Case title="Курсы: обязательства и возвраты" note="крупные суммы и подпись «это не выручка»">
         <div className="border-border bg-surface max-w-[820px] rounded-xl border p-5">
           <CourseEconomicsBlock data={COURSES_FULL} />
+        </div>
+      </Case>
+
+      {/*
+        Личное дело. Два состояния, которые важнее полного: пустое (нечего
+        рассказывать — так и написано) и «мало наблюдений» — когда визиты есть,
+        а о манере общения судить не по чему. Совет, построенный на двух
+        сообщениях, администратор понесёт в разговор с живым человеком.
+      */}
+      <Case title="Личное дело: рассказывать нечего" note="ни визитов, ни переписки">
+        <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+          <DossierBody data={DOSSIER_EMPTY} />
+        </div>
+      </Case>
+
+      <Case
+        title="Личное дело: наблюдений мало"
+        note="визиты есть, о манере судить не по чему"
+      >
+        <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+          <DossierBody data={DOSSIER_THIN} />
+        </div>
+      </Case>
+
+      <Case title="Личное дело: полное" note="длинные названия услуг и четырёхзначные суммы">
+        <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+          <DossierBody data={DOSSIER_FULL} />
         </div>
       </Case>
 

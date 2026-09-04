@@ -7,6 +7,8 @@ import { can } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
 import { normalizePhone } from "@/lib/phone";
 import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/enums";
+import { getPatientDossier } from "@/lib/server/patient-profile";
+import type { PatientProfile } from "@/lib/metrics/patient-profile";
 
 /**
  * Пациенты в БД (§4): идентичность, телефоны (E.164), заметки, родственные связи.
@@ -719,5 +721,59 @@ export async function getPatientsOverview(): Promise<PatientsOverview> {
         count: s._count._all,
       }))
       .sort((a, b) => b.count - a.count),
+  };
+}
+
+/** Личное дело для экрана: даты строками — Date через границу не проходит. */
+export interface DossierView
+  extends Omit<PatientProfile, "visits"> {
+  visits: Omit<PatientProfile["visits"], "firstAt" | "lastAt"> & {
+    firstAt: string | null;
+    lastAt: string | null;
+  };
+  courses: { title: string; used: number; total: number; booked: number; status: string }[];
+  contact: { channel: string | null; lastInboundAt: string | null; dialogs: number };
+  source: { title: string | null; confidence: string } | null;
+}
+
+/**
+ * Личное дело пациента: что о человеке знает клиника.
+ *
+ * Отдельным действием, а не частью карточки: список пациентов его не
+ * запрашивает, а в карточке оно грузится по открытию. Тексты переписки
+ * разбираются на нашем сервере и наружу не уходят (§7).
+ */
+export async function getPatientDossierAction(id: string): Promise<DossierView | null> {
+  const session = await getSession();
+  const scope = await patientScope(session);
+  if (!scope) return null;
+  // Та же область видимости, что у карточки: врач не должен читать чужих.
+  const allowed = await prisma.patient.findFirst({
+    where: { id, companyId: session.companyId, deletedAt: null, ...scope },
+    select: { id: true },
+  });
+  if (!allowed) return null;
+
+  const d = await getPatientDossier(session.companyId, id);
+  if (!d) return null;
+
+  return {
+    visits: {
+      ...d.visits,
+      firstAt: d.visits.firstAt?.toISOString() ?? null,
+      lastAt: d.visits.lastAt?.toISOString() ?? null,
+    },
+    services: d.services,
+    staff: d.staff,
+    rhythm: d.rhythm,
+    money: d.money,
+    style: d.style,
+    advice: d.advice,
+    courses: d.courses,
+    contact: {
+      ...d.contact,
+      lastInboundAt: d.contact.lastInboundAt?.toISOString() ?? null,
+    },
+    source: d.source,
   };
 }
