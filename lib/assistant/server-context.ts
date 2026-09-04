@@ -2,8 +2,10 @@ import { prisma } from "@/lib/db";
 import { getCallbackQueue } from "@/lib/server/callback-queue";
 import { getCourseEconomics } from "@/lib/server/course-economics";
 import { coursePurchasesBetween, type CoursePurchaseRow } from "@/lib/server/course-revenue";
+import { getWeeklyDynamics } from "@/app/(dashboard)/owner/actions";
 import { getAgentStats } from "@/lib/server/agent-stats";
 import { clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
+import { closedDatesBetween } from "@/lib/server/clinic-day";
 import { revenueByDay } from "@/lib/server/daily-revenue";
 import { attendanceBetween, getDashboardMetricsDb } from "@/lib/server/analytics";
 
@@ -264,6 +266,82 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
         `    по специалистам: ${top
           .map((x) => `${x.name} — ${x.arrived} приёмов (первичных ${x.first}), ${x.revenue} ₽`)
           .join("; ")}${rest > 0 ? `; и ещё ${rest}` : ""}`,
+      );
+    }
+  }
+
+  /**
+   * График клиники и её выходные.
+   *
+   * Аналитик объяснял провал конца недели тем, что «22-го и 23-го клиника
+   * вообще не принимала», хотя суббота у клиники рабочая. Не имея графика, он
+   * выводил его из пустых дней — то есть придумывал причину под наблюдение.
+   * Пустой день бывает и от того, что никто не пришёл, и это разные выводы.
+   */
+  const [schedule, closed] = await Promise.all([
+    prisma.clinicSchedule.findMany({
+      where: { companyId },
+      orderBy: { weekday: "asc" },
+      select: { weekday: true, startMinute: true, endMinute: true },
+    }),
+    closedDatesBetween(
+      companyId,
+      new Date(now.getTime() - 120 * 24 * 3600 * 1000),
+      new Date(now.getTime() + 30 * 24 * 3600 * 1000),
+    ),
+  ]);
+  if (schedule.length > 0) {
+    const days = ["", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"];
+    const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    const working = schedule.filter((d) => d.endMinute > d.startMinute);
+    const off = schedule.filter((d) => d.endMinute <= d.startMinute).map((d) => days[d.weekday]);
+    lines.push("");
+    lines.push("# График клиники");
+    lines.push(
+      working.length > 0
+        ? `Рабочие дни: ${working.map((d) => `${days[d.weekday]} ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`).join(", ")}.`
+        : "Рабочие часы не заданы в настройках.",
+    );
+    if (off.length > 0) lines.push(`Выходные: ${off.join(", ")}.`);
+    lines.push(
+      closed.size > 0
+        ? `Клиника не работала (праздники, санитарные дни): ${[...closed].sort().join(", ")}.`
+        : "Отдельных нерабочих дней за последние месяцы не заведено.",
+    );
+    lines.push(
+      "Пустой день в рабочую дату означает, что никто не пришёл, а не что клиника закрыта. " +
+        "Не объясняй провал закрытием, если даты нет в списке выше.",
+    );
+  }
+
+  /**
+   * Недельные итоги — ГОТОВЫМИ, теми же числами, что на графике владельца.
+   *
+   * Владелец спросил про неделю 17–23 августа, и аналитик сложил дневные
+   * суммы сам: получил 300 100 ₽ там, где в отчёте 396 080 ₽, — пропустил
+   * день и ошибся в сложении оставшихся. Число выглядело посчитанным и было
+   * неверным, а это хуже отказа отвечать.
+   *
+   * Складывать модель не должна вообще. Одна метрика — одна функция (§8):
+   * график и аналитик берут недели из `getWeeklyDynamics`, и разойтись им
+   * теперь негде.
+   */
+  /**
+   * Права берёт сама: без VIEW_REVENUE она откажет, и блок просто не появится.
+   * Это правильно — недельная выручка не для всех ролей.
+   */
+  const weekly = await getWeeklyDynamics().catch(() => null);
+  if (weekly && weekly.weeks.length > 0) {
+    lines.push("");
+    lines.push("# Недели (готовые итоги — складывать дни самому НЕ НАДО)");
+    lines.push(
+      "Это те же числа, что на графике в кабинете владельца. Неделя — с понедельника " +
+        "по воскресенье. Выручка недели включает проданные в неё курсы.",
+    );
+    for (const w of weekly.weeks) {
+      lines.push(
+        `- ${w.label}: ${money(w.revenue)}, пришли ${w.appts}, клиентов ${w.clients}, ` +
+          `оплаченных чеков ${w.paying}`,
       );
     }
   }
