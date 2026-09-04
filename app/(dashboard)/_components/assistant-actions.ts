@@ -81,8 +81,23 @@ export async function askAI(
   const role = persona === "owner" ? "OWNER" : session.role;
   const systemPrompt = personaFor(role, canSeeRevenue);
 
+  /**
+   * Минута на разбор, а не сорок секунд.
+   *
+   * Справка выросла: в ней теперь дневные разрезы за месяц, продажи курсов и
+   * недельные итоги. Глубокий разбор по такому объёму пишется дольше, и
+   * прежний срок обрывал его на середине генерации.
+   */
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 40_000);
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+
+  /**
+   * Размер справки — в журнал. Если провайдер начнёт отказывать по длине,
+   * это будет видно сразу, а не после недели догадок.
+   */
+  if (fullContext.length > 60_000) {
+    console.warn(`[аналитик] справка ${fullContext.length} знаков — близко к пределу запроса`);
+  }
   try {
     const res = await fetch(`${BASE_URL}/chat/completions`, {
       method: "POST",
@@ -115,6 +130,13 @@ export async function askAI(
     });
 
     if (!res.ok) {
+      /**
+       * Тело ответа — в журнал. Код без описания не различает «кончился
+       * лимит», «слишком длинный запрос» и «неверная модель», а действия по
+       * ним разные. Владельцу показываем код, разработчику — причину.
+       */
+      const body = await res.text().catch(() => "");
+      console.error(`[аналитик] провайдер ответил ${res.status}: ${body.slice(0, 400)}`);
       return { text: null, error: `http_${res.status}` };
     }
     const data = (await res.json()) as {
@@ -143,7 +165,21 @@ export async function askAI(
     }
     return { text };
   } catch (e) {
-    return { text: null, error: e instanceof Error ? e.name : "unknown" };
+    /**
+     * Причина сбоя — в журнал целиком.
+     *
+     * Наружу уходило одно имя ошибки, и владелец видел «Ответ не получен:
+     * Error» — слово, которое не значит ничего. У сетевых сбоев Node прячет
+     * настоящую причину в `cause`: «fetch failed» снаружи, «terminated» или
+     * «ECONNRESET» внутри.
+     */
+    const name = e instanceof Error ? e.name : "unknown";
+    const detail =
+      e instanceof Error
+        ? `${e.name}: ${e.message}${e.cause ? ` (причина: ${String((e.cause as Error)?.message ?? e.cause)})` : ""}`
+        : String(e);
+    console.error(`[аналитик] запрос к модели упал — ${detail}; длина справки ${fullContext.length} знаков`);
+    return { text: null, error: name };
   } finally {
     clearTimeout(timeout);
   }

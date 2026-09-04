@@ -53,7 +53,9 @@ async function main() {
 
   // ── 2. знает ли Telegram, куда слать
   const me = await tg<{ username?: string }>("getMe");
-  console.log(`  бот: ${me?.username ? `@${me.username}` : "токен не принят Telegram"}`);
+  console.log(
+    `  бот: ${me?.username ? `@${me.username}` : "ответа нет — либо токен неверен, либо не достучались"}`,
+  );
 
   const info = await tg<{
     url?: string;
@@ -66,14 +68,26 @@ async function main() {
   console.log("\n── ВЕБХУК В TELEGRAM");
   if (!info) {
     /**
-     * getMe прошёл, а getWebhookInfo нет — значит токен верный, а связь с
-     * api.telegram.org рвётся. Это же и есть причина недоставленных ответов:
-     * входящие идут (Telegram стучится к нам сам), исходящие не уходят.
+     * Различаем два случая, а не сваливаем в один.
+     *
+     * Если не прошёл и getMe — с сервера вообще не достучаться до
+     * api.telegram.org. Если getMe прошёл, а getWebhookInfo нет — связь есть,
+     * но рвётся: это ровно то, из-за чего часть ответов не уходит, при том
+     * что входящие идут (Telegram стучится к нам сам).
      */
-    console.log("  ✗ ответ не получен, хотя токен принят.");
-    console.log("    Значит рвётся ИСХОДЯЩАЯ связь с api.telegram.org с этого сервера.");
-    console.log("    Проверить руками:");
-    console.log("      curl -s -m 10 https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo");
+    if (!me) {
+      console.log("  ✗ С ЭТОГО СЕРВЕРА ДО api.telegram.org НЕ ДОСТУЧАТЬСЯ.");
+      console.log("    Ни getMe, ни getWebhookInfo не ответили. Входящие при этом идут:");
+      console.log("    Telegram соединяется с нами сам, а мы с ним — нет.");
+    } else {
+      console.log("  ✗ ответ не получен, хотя getMe прошёл.");
+      console.log("    Связь с api.telegram.org есть, но рвётся — отсюда и недоставленные ответы.");
+    }
+    console.log("    Проверить руками (несколько раз подряд — сбой перемежающийся):");
+    console.log(
+      "      for i in 1 2 3; do curl -s -o /dev/null -w \"%{http_code} %{time_total}s\\n\" \\\n" +
+        "        -m 10 https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe; done",
+    );
   } else if (!info.url) {
     console.log("  ✗ АДРЕС НЕ ЗАРЕГИСТРИРОВАН. Telegram не знает, куда слать сообщения.");
     console.log("    Это и есть молчание бота. Зарегистрировать:");
@@ -161,6 +175,13 @@ async function main() {
     console.log("  бот ничего не отправлял");
   } else {
     for (const r of outbound) console.log(`  ${r.status.padEnd(10)} ${r._count._all}`);
+    const queued = outbound.find((r) => r.status === "QUEUED")?._count._all ?? 0;
+    if (queued > 0) {
+      console.log(
+        `  ${queued} в очереди: отметка о доставке не проставилась. Это не отказ —\n` +
+          "    сообщение, скорее всего, ушло, но результат отправки потерялся.",
+      );
+    }
     const failed = outbound.find((r) => r.status === "FAILED")?._count._all ?? 0;
     const sent = outbound.find((r) => r.status === "SENT")?._count._all ?? 0;
     if (failed > 0) {
