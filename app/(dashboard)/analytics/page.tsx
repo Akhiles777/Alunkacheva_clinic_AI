@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { getDashboardMetricsDb, getServicesLoadDb } from "@/lib/server/analytics";
+import { attendanceBetween, getDashboardMetricsDb, getServicesLoadDb } from "@/lib/server/analytics";
 import { getCourseEconomics } from "@/lib/server/course-economics";
+import { classifyIdleServices, type IdleReason } from "@/lib/metrics/service-load";
 import { CourseEconomicsBlock } from "../_components/course-economics";
 import { getSession } from "@/lib/server/session";
 import { formatDuration, formatMoney, formatMoneyPrecise, formatNumber, formatPercent } from "@/lib/format";
@@ -109,6 +110,15 @@ export default async function AnalyticsPage({
      */
     getCourseEconomics(session.companyId, period),
   ]);
+  /**
+   * Разобранность визитов — той же функцией, что у владельца: два числа под
+   * одной подписью расходиться не должны.
+   */
+  const attendance = await attendanceBetween(
+    session.companyId,
+    new Date(m.period.from),
+    new Date(m.period.to),
+  );
   const q = (t: string, p: PeriodKey) => `/analytics?tab=${t}&period=${p}`;
 
   return (
@@ -294,6 +304,44 @@ export default async function AnalyticsPage({
                   <span>Повторные <span className="num text-text font-medium">{m.visitMix.returned}</span></span>
                 </div>
               </Card>
+
+              {/*
+                Разобранность. Все числа этого экрана — первичные, повторные,
+                неявки, выручка — считаются от статуса, который ставит
+                администратор. Пока статуса нет, визит не «состоялся» и не
+                «неявка»: он висит запланированным, хотя его время прошло.
+                Не сказать об этом значит выдать «Неявки 0%» за измеренный
+                факт, когда это может быть «никто ничего не отмечает».
+              */}
+              <Card
+                title="Разобранность визитов"
+                hint="от отметок исхода зависят все числа выше"
+              >
+                {attendance.unmarked === 0 ? (
+                  <p className="text-text-muted text-sm">
+                    Все прошедшие приёмы периода отмечены — числам выше можно верить.
+                  </p>
+                ) : (
+                  <>
+                    <div className="readout text-2xl">
+                      {attendance.coverage === null
+                        ? "—"
+                        : formatPercent(attendance.coverage)}
+                    </div>
+                    <p className="text-text-muted mt-2 text-sm leading-relaxed">
+                      Без отметки исхода — {formatNumber(attendance.unmarked)} прошедших приёмов
+                      на {formatMoney(attendance.unmarkedMoney)}. Эти деньги не попали ни в
+                      выручку, ни в один разрез: визит без исхода не считается состоявшимся (§8).
+                      {attendance.oldestUnmarkedAt
+                        ? ` Самый старый — ${periodDay(attendance.oldestUnmarkedAt)}.`
+                        : ""}
+                    </p>
+                    <p className="text-text-subtle mt-1.5 text-2xs">
+                      Пока их не разобрать, «Неявки» и «Пришли» показывают меньше, чем было.
+                    </p>
+                  </>
+                )}
+              </Card>
             </div>
           ) : null}
 
@@ -459,16 +507,53 @@ export default async function AnalyticsPage({
               </ul>
 
               {(() => {
-                const idle = servicesLoad.filter((s) => s.appointments === 0);
+                /*
+                  Раньше здесь одной строкой перечислялось всё, у чего ноль
+                  приёмов: дубли справочника, служебные позиции и настоящие
+                  незаказанные услуги. «Остеопатия, приём Ирины» стояла в
+                  списке «без приёмов», хотя приёмы по ней идут каждый день —
+                  просто записаны на другую строку с тем же названием.
+                  Владелец справедливо спрашивал, почему её не видно.
+
+                  Причины требуют разных действий, поэтому и показаны врозь.
+                */
+                const idle = classifyIdleServices(servicesLoad);
                 if (idle.length === 0) return null;
+                const groups: { reason: IdleReason; title: string; hint: string }[] = [
+                  {
+                    reason: "DUPLICATE",
+                    title: "Дубли справочника",
+                    hint: "приёмы записаны на другую строку с тем же названием — строки нужно слить",
+                  },
+                  {
+                    reason: "NOT_ORDERED",
+                    title: "Не заказывали за период",
+                    hint: "услуга в прайсе есть, приёмов по ней не было",
+                  },
+                  {
+                    reason: "NO_PRICE",
+                    title: "Заготовки без цены",
+                    hint: "0 или 1 ₽ — цена не заведена, пациенту такую не называют",
+                  },
+                  { reason: "STAFF_ONLY", title: "Служебные", hint: "приём сотруднику, а не пациенту" },
+                ];
                 return (
-                  <div className="border-border-soft mt-4 border-t pt-3.5">
-                    <div className="text-text-subtle text-2xs">
-                      Без приёмов за период — {formatNumber(idle.length)}
-                    </div>
-                    <p className="text-text-muted mt-1 text-xs leading-relaxed">
-                      {idle.map((s) => s.title).join(" · ")}
-                    </p>
+                  <div className="border-border-soft mt-4 flex flex-col gap-3 border-t pt-3.5">
+                    {groups.map((g) => {
+                      const list = idle.filter((s) => s.reason === g.reason);
+                      if (list.length === 0) return null;
+                      return (
+                        <div key={g.reason}>
+                          <div className="text-text-subtle text-2xs">
+                            {g.title} — {formatNumber(list.length)}
+                            <span className="ml-1.5">· {g.hint}</span>
+                          </div>
+                          <p className="text-text-muted mt-1 text-xs leading-relaxed">
+                            {list.map((s) => s.title).join(" · ")}
+                          </p>
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })()}

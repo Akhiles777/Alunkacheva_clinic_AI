@@ -11,6 +11,7 @@ import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
 import { weekKeyOf } from "@/lib/metrics/types";
 import { revenueByDay } from "@/lib/server/daily-revenue";
+import { attendanceBetween } from "@/lib/server/analytics";
 
 /**
  * Серверный отчёт владельца — из БД (проекция Appointment + пациенты). Не мок:
@@ -59,6 +60,15 @@ export interface OwnerReport {
    */
   coursesWithoutStaff: number;
   noShowRatePct: number;
+  /**
+   * Прошедшие приёмы без отметки исхода и деньги, повисшие в них.
+   *
+   * Без этого числа «Неявки 0%» читается как «неявок нет», а означать может
+   * «никто ничего не отмечает». Разница решающая: в первом случае клиника
+   * работает отлично, во втором мы просто не знаем.
+   */
+  unmarked: number;
+  unmarkedMoney: number;
   firstVisits: number;
   patients: { total: number; primary: number; noConsent: number };
   staff: OwnerStaffRow[];
@@ -233,8 +243,15 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    * постоянный пациент пишет в тот же чат месяцами (§8), и «новых диалогов»
    * тут было бы почти ноль при живой переписке каждый день.
    */
-  const [appts, patients, dialogs, calls] = await Promise.all([
+  const [appts, attendance, patients, dialogs, calls] = await Promise.all([
     loadAppts(session.companyId),
+    /**
+     * Разобранность визитов — отдельным чтением, потому что отменённые в
+     * `loadAppts` не попадают, а исходом они всё-таки являются. Считается той
+     * же функцией, что и в отчётах: два числа под одной подписью расходиться
+     * не должны.
+     */
+    attendanceBetween(session.companyId, period.start, period.end),
     patientCounts(session.companyId),
     prisma.conversation.count({
       where: {
@@ -330,6 +347,8 @@ export async function getOwnerReport(): Promise<OwnerReport> {
      * и два числа под подписью «Неявки» расходились вдвое.
      */
     noShowRatePct: noShowRate(arrived, noShow),
+    unmarked: attendance.unmarked,
+    unmarkedMoney: attendance.unmarkedMoney,
     /**
      * Первичные — первый визит пациента СО СТАТУСОМ «пришёл» (§8).
      *

@@ -4,7 +4,7 @@ import { getCourseEconomics } from "@/lib/server/course-economics";
 import { getAgentStats } from "@/lib/server/agent-stats";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { revenueByDay } from "@/lib/server/daily-revenue";
-import { getDashboardMetricsDb } from "@/lib/server/analytics";
+import { attendanceBetween, getDashboardMetricsDb } from "@/lib/server/analytics";
 
 /**
  * Снимок клиники для ИИ-аналитика — из базы.
@@ -598,6 +598,26 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   ]);
   lines.push("");
   lines.push(`# Потери\nОтменённых записей: ${cancelled}; неявок: ${noShow}.`);
+
+  /**
+   * Разобранность визитов. Без неё аналитик отвечает «неявок почти нет» там,
+   * где на самом деле «исход не отмечен у половины приёмов», — и владелец
+   * принимает решение по числу, которого никто не измерял.
+   */
+  const attendance = await attendanceBetween(
+    companyId,
+    new Date(Date.now() - 90 * 24 * 3600 * 1000),
+    new Date(),
+  ).catch(() => null);
+  if (attendance && attendance.unmarked > 0) {
+    lines.push(
+      `За 90 дней БЕЗ ОТМЕТКИ исхода остались ${attendance.unmarked} прошедших приёмов на ` +
+        `${money(attendance.unmarkedMoney)}. Эти деньги не вошли ни в выручку, ни в один ` +
+        `разрез, а доля неявок посчитана только по отмеченным. Говоря о неявках и о ` +
+        `доходимости, называй это число: без него «неявок мало» может означать ` +
+        `«никто ничего не отмечает».`,
+    );
+  }
 
   return lines.join("\n");
 }

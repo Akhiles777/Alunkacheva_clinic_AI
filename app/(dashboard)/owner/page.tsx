@@ -1,4 +1,4 @@
-import { formatMoney } from "@/lib/format";
+import { formatMoney, formatNumber } from "@/lib/format";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { getOwnerReport, getWeeklyDynamics } from "./actions";
@@ -76,7 +76,20 @@ export default async function OwnerPage() {
               это объём работы клиники. Сколько из них состоялось — подписью. */}
           <Tile label="Визитов" value={report.appts} hint={`пришли ${report.arrived}`} />
           <Tile label="Первичных" value={report.firstVisits} />
-          <Tile label="Неявки" value={`${report.noShowRatePct}%`} />
+          {/*
+            Неявки без числа неразобранных — утверждение, которого мы не
+            делали. «0%» означает либо «неявок не было», либо «никто не
+            отмечает исход»; разница решающая, и она должна быть на экране.
+          */}
+          <Tile
+            label="Неявки"
+            value={`${report.noShowRatePct}%`}
+            hint={
+              report.unmarked > 0
+                ? `не отмечено ${formatNumber(report.unmarked)} приёмов на ${formatMoney(report.unmarkedMoney)}`
+                : "все прошедшие приёмы отмечены"
+            }
+          />
           <Tile label="Загрузка" value={`${report.avgLoadPct}%`} hint="3 кабинета" />
           {/* Единственная плитка не про период: это вся база клиники. Так и
               подписана — иначе она читается как «пациентов за 30 дней». */}

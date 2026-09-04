@@ -57,3 +57,77 @@ export function loadByService(
 
   return result.sort((a, b) => b.ratio - a.ratio);
 }
+
+/**
+ * Почему у услуги нет приёмов за период.
+ *
+ * Строка «Без приёмов за период — 31» перечисляла подряд всё, у чего ноль:
+ * дубли справочника, служебные позиции и настоящие незаказанные услуги. На
+ * экране это читалось как «остеопатию Ирины никто не берёт», хотя приёмы по
+ * ней идут каждый день — просто записаны на другую строку с тем же названием.
+ *
+ * Разные причины требуют разных действий: дубль надо слить, служебную позицию
+ * не трогать, а незаказанную услугу обсуждать с клиникой. Сваленные в кучу,
+ * они не значат ничего.
+ */
+export type IdleReason = "DUPLICATE" | "STAFF_ONLY" | "NO_PRICE" | "NOT_ORDERED";
+
+export interface IdleService {
+  title: string;
+  reason: IdleReason;
+}
+
+export interface ServiceRowForIdle {
+  title: string;
+  appointments: number;
+  /** Цена по прайсу: 0 и 1 ₽ — заготовки, а не услуги. */
+  price: number;
+}
+
+/**
+ * Название для сравнения: регистр, «ё», кавычки и лишние пробелы не должны
+ * делать из одной услуги две.
+ *
+ * «Остеопатия, приём Ирины» и «Остеопатия, прием Ирины» — одна и та же услуга,
+ * набранная дважды разными руками. Ровно так справочник и задваивается.
+ */
+export function normalizeServiceTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[«»"'`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Служебная позиция клиники: приём сотруднику, а не пациенту. */
+function isStaffOnly(title: string): boolean {
+  return /персонал/i.test(title);
+}
+
+/**
+ * Разложить услуги без приёмов по причинам.
+ *
+ * Дублем считается строка, у которой есть тёзка С приёмами: работа записана
+ * на неё, а эта висит пустой. Обратное неверно — две пустые строки с одним
+ * названием дублями назвать нельзя, приёмов нет ни у одной.
+ */
+export function classifyIdleServices(rows: ServiceRowForIdle[]): IdleService[] {
+  const busyTitles = new Set(
+    rows.filter((r) => r.appointments > 0).map((r) => normalizeServiceTitle(r.title)),
+  );
+
+  return rows
+    .filter((r) => r.appointments === 0)
+    .map((r) => {
+      const key = normalizeServiceTitle(r.title);
+      const reason: IdleReason = busyTitles.has(key)
+        ? "DUPLICATE"
+        : isStaffOnly(r.title)
+          ? "STAFF_ONLY"
+          : r.price <= 1
+            ? "NO_PRICE"
+            : "NOT_ORDERED";
+      return { title: r.title, reason };
+    });
+}

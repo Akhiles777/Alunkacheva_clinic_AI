@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadByService } from "./service-load";
+import { loadByService , classifyIdleServices, normalizeServiceTitle } from "./service-load";
 
 describe("loadByService", () => {
   const serviceRooms = {
@@ -63,5 +63,49 @@ describe("loadByService", () => {
     ];
     const load = loadByService(appts, serviceRooms, roomMinutes);
     expect(load.map((l) => l.serviceId)).toEqual(["osteo", "iv", "lab"]);
+  });
+});
+
+describe("услуги без приёмов", () => {
+  /**
+   * Главный случай, ради которого разбор и написан: приёмы идут каждый день,
+   * а услуга стоит в списке «без приёмов» — потому что визиты записаны на
+   * другую строку с тем же названием.
+   */
+  it("тёзка строки с приёмами — это дубль справочника", () => {
+    const out = classifyIdleServices([
+      { title: "Остеопатия, приём Ирины", appointments: 42, price: 8000 },
+      { title: "Остеопатия, прием Ирины", appointments: 0, price: 8000 },
+    ]);
+    expect(out).toEqual([{ title: "Остеопатия, прием Ирины", reason: "DUPLICATE" }]);
+  });
+
+  it("«ё» и кавычки на сравнение не влияют", () => {
+    expect(normalizeServiceTitle('Инфузия «Анти-Спазм»')).toBe(normalizeServiceTitle('Инфузия "Анти-Спазм"'));
+    expect(normalizeServiceTitle("приём")).toBe(normalizeServiceTitle("прием"));
+  });
+
+  it("две пустые строки с одним названием дублями не считаются", () => {
+    // Приёмов нет ни у одной — сказать, что работа записана на соседнюю,
+    // не на чем.
+    const out = classifyIdleServices([
+      { title: "Консультация", appointments: 0, price: 3000 },
+      { title: "консультация", appointments: 0, price: 3000 },
+    ]);
+    expect(out.every((s) => s.reason === "NOT_ORDERED")).toBe(true);
+  });
+
+  it("служебные и заготовки названы своими именами", () => {
+    const out = classifyIdleServices([
+      { title: "БОС/персонал", appointments: 0, price: 0 },
+      { title: "Название", appointments: 0, price: 0 },
+      { title: "IV-ТЕРАПИЯ", appointments: 0, price: 1 },
+      { title: "Нейромедитация", appointments: 0, price: 6000 },
+    ]);
+    expect(out.map((s) => s.reason)).toEqual(["STAFF_ONLY", "NO_PRICE", "NO_PRICE", "NOT_ORDERED"]);
+  });
+
+  it("услуга с приёмами в список не попадает", () => {
+    expect(classifyIdleServices([{ title: "Забор крови", appointments: 3, price: 500 }])).toEqual([]);
   });
 });

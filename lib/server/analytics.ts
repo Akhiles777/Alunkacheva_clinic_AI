@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { attendanceAudit, type AttendanceAudit } from "@/lib/metrics/attendance";
 import { buildFunnel } from "@/lib/metrics/funnel";
 import { busyMinutes, freeGaps, occupancyRate, type Interval } from "@/lib/metrics/occupancy";
 import { countInquiriesFromDb } from "@/lib/metrics/inquiries";
@@ -762,6 +763,12 @@ export interface ServiceLoadRow {
   /** Приёмов за период — по ним и считается занятое время. */
   appointments: number;
   /**
+   * Цена по прайсу. Нужна не для денег (§8), а чтобы отличить заготовку
+   * («Название — 0 ₽», «IV-ТЕРАПИЯ — 1 ₽») от услуги, которую действительно
+   * не заказывали.
+   */
+  price: number;
+  /**
    * Услуга выключена в справочнике, но приёмы по ней были.
    *
    * Такая строка раньше пропадала из отчёта целиком вместе со своими часами:
@@ -826,7 +833,13 @@ export async function getServicesLoadDb(
     }),
     prisma.service.findMany({
       where: { companyId },
-      select: { id: true, title: true, isActive: true, rooms: { select: { roomId: true } } },
+      select: {
+        id: true,
+        title: true,
+        price: true,
+        isActive: true,
+        rooms: { select: { roomId: true } },
+      },
     }),
     prisma.room.count({ where: { companyId } }),
   ]);
@@ -889,6 +902,7 @@ export async function getServicesLoadDb(
       availableMinutes: available,
       ratio: available > 0 ? busy / available : 0,
       appointments: stat?.count ?? 0,
+      price: Number(s.price),
       inactive: !s.isActive,
     };
   });
@@ -907,6 +921,8 @@ export async function getServicesLoadDb(
       availableMinutes: roomCount * minutesPerRoom,
       ratio: 0,
       appointments: orphanCount,
+      // Не услуга справочника, а дыра в данных: цены у неё нет по смыслу.
+      price: 0,
       inactive: false,
     });
   }
@@ -920,4 +936,26 @@ export async function getServicesLoadDb(
      * занята больше всего.
      */
     .sort((a, b) => b.busyMinutes - a.busyMinutes || b.ratio - a.ratio);
+}
+
+/**
+ * Разобранность визитов за период: сколько прошедших приёмов остались без
+ * исхода и сколько денег в них повисло.
+ *
+ * Отдельным чтением и одной функцией на все экраны: «Неявки 0%» рядом с
+ * «не отмечено 214 приёмов» и «Неявки 0%» без второго числа — это разные
+ * утверждения, и второе неправда.
+ */
+export async function attendanceBetween(
+  companyId: string,
+  from: Date,
+  to: Date,
+): Promise<AttendanceAudit> {
+  const rows = await prisma.appointment.findMany({
+    where: { companyId, deletedAt: null, startAt: { gte: from, lt: to } },
+    select: { startAt: true, status: true, revenue: true },
+  });
+  return attendanceAudit(
+    rows.map((r) => ({ startAt: r.startAt, status: r.status, revenue: Number(r.revenue) })),
+  );
 }
