@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { handlePatientMessage, type AgentChannel } from "./clinic-agent";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
-import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
+import { lastSendError, sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS } from "./unanswered-rule";
 
 /**
@@ -53,6 +53,12 @@ export async function markDelivery(
   conversationId: string,
   body: string,
   ok: boolean,
+  /**
+   * Почему не ушло. Раньше не записывалось вовсе: в базе оставалось «FAILED»
+   * без объяснения, и со стороны это выглядело как «бот молчит без причины».
+   * А он отвечал — просто сообщения не доходили, и разбираться было не с чем.
+   */
+  reason?: string | null,
 ): Promise<void> {
   const row = await prisma.message.findFirst({
     where: { companyId, conversationId, direction: "OUT", body, status: "QUEUED" },
@@ -63,7 +69,9 @@ export async function markDelivery(
   await prisma.message
     .update({
       where: { id: row.id },
-      data: ok ? { status: "SENT", sentAt: new Date() } : { status: "FAILED" },
+      data: ok
+        ? { status: "SENT", sentAt: new Date(), failureReason: null }
+        : { status: "FAILED", failureReason: reason?.slice(0, 300) ?? null },
     })
     .catch(() => {});
 }
@@ -81,7 +89,9 @@ async function deliver(
   }
   if (channel === "TELEGRAM") {
     const res = await sendTelegram(Number(externalUserId), reply.text, reply.buttons);
-    return res ? { ok: true } : { ok: false, error: "Telegram не принял сообщение" };
+    // Причину берём у клиента: «не принял сообщение» не отличает блокировку
+    // бота от оборванной связи, а действия по ним разные.
+    return res ? { ok: true } : { ok: false, error: lastSendError() ?? "Telegram не принял сообщение" };
   }
   // Instagram отвечает только внутри суточного окна — добором не пользуемся.
   return { ok: false, error: `канал ${channel} добор не поддерживает` };
@@ -174,7 +184,7 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
 
       // У каналов разные ответы на отправку: приводим к одному виду.
       const sent = await deliver(companyId, conv.channel, conv.externalUserId, reply);
-      await markDelivery(companyId, conv.id, reply.text, sent.ok);
+      await markDelivery(companyId, conv.id, reply.text, sent.ok, sent.error);
 
       if (sent.ok) result.отвечено += 1;
       else {

@@ -65,7 +65,15 @@ async function main() {
 
   console.log("\n── ВЕБХУК В TELEGRAM");
   if (!info) {
-    console.log("  ответ не получен — проверьте токен и связь с api.telegram.org");
+    /**
+     * getMe прошёл, а getWebhookInfo нет — значит токен верный, а связь с
+     * api.telegram.org рвётся. Это же и есть причина недоставленных ответов:
+     * входящие идут (Telegram стучится к нам сам), исходящие не уходят.
+     */
+    console.log("  ✗ ответ не получен, хотя токен принят.");
+    console.log("    Значит рвётся ИСХОДЯЩАЯ связь с api.telegram.org с этого сервера.");
+    console.log("    Проверить руками:");
+    console.log("      curl -s -m 10 https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo");
   } else if (!info.url) {
     console.log("  ✗ АДРЕС НЕ ЗАРЕГИСТРИРОВАН. Telegram не знает, куда слать сообщения.");
     console.log("    Это и есть молчание бота. Зарегистрировать:");
@@ -132,6 +140,52 @@ async function main() {
       },
     },
   });
+
+  /**
+   * Доставка исходящих — главный вопрос, если update-ы доходят. Бот может
+   * отвечать исправно, а пациент не получать ничего.
+   */
+  const outbound = await prisma.message.groupBy({
+    by: ["status"],
+    where: {
+      companyId: company.id,
+      channel: "TELEGRAM",
+      direction: "OUT",
+      deletedAt: null,
+      createdAt: { gte: new Date(Date.now() - 30 * 24 * 3600 * 1000) },
+    },
+    _count: { _all: true },
+  });
+  console.log("\n── ОТПРАВКА ОТВЕТОВ (30 дней)");
+  if (outbound.length === 0) {
+    console.log("  бот ничего не отправлял");
+  } else {
+    for (const r of outbound) console.log(`  ${r.status.padEnd(10)} ${r._count._all}`);
+    const failed = outbound.find((r) => r.status === "FAILED")?._count._all ?? 0;
+    const sent = outbound.find((r) => r.status === "SENT")?._count._all ?? 0;
+    if (failed > 0) {
+      console.log(
+        `  ✗ не доставлено ${failed} из ${failed + sent}: бот отвечал, пациент не получил.`,
+      );
+      const reasons = await prisma.message.findMany({
+        where: {
+          companyId: company.id,
+          channel: "TELEGRAM",
+          direction: "OUT",
+          status: "FAILED",
+          failureReason: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: { createdAt: true, failureReason: true },
+      });
+      if (reasons.length === 0) {
+        console.log("    причины не записаны — они появятся у сообщений после этого обновления");
+      } else {
+        for (const r of reasons) console.log(`    ${when(r.createdAt)} — ${r.failureReason}`);
+      }
+    }
+  }
 
   console.log("\n── ДИАЛОГИ В TELEGRAM");
   if (convs.length === 0) {

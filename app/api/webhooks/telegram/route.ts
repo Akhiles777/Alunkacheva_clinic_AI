@@ -4,7 +4,14 @@ import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { runSerial } from "@/lib/server/background";
 import { markDelivery } from "@/lib/agent/unanswered";
-import { answerCallback, isTelegramConfigured, removeKeyboard, requestPhone, sendText } from "@/lib/integrations/telegram/client";
+import {
+  answerCallback,
+  isTelegramConfigured,
+  lastSendError,
+  removeKeyboard,
+  requestPhone,
+  sendText,
+} from "@/lib/integrations/telegram/client";
 import { attachmentsFrom, TelegramAttachmentFields } from "@/lib/integrations/telegram/attachments";
 
 /**
@@ -158,7 +165,15 @@ export async function POST(req: Request) {
           : await sendText(chatId, reply.text, reply.buttons);
 
       if (reply.conversationId) {
-        await markDelivery(company.id, reply.conversationId, reply.text, Boolean(sent)).catch(
+        /**
+         * Причину отказа берём у клиента и кладём рядом со статусом. Без неё
+         * «FAILED» в базе не отличить от «FAILED»: заблокировал бот, кончился
+         * лимит, оборвалась связь — это три разные проблемы и три разных
+         * действия.
+         */
+        const reason = sent ? null : lastSendError();
+        if (!sent) console.error(`[telegram] ответ не ушёл в чат ${chatId}: ${reason}`);
+        await markDelivery(company.id, reply.conversationId, reply.text, Boolean(sent), reason).catch(
           () => {},
         );
       }

@@ -20,23 +20,83 @@ export interface InlineButton {
   data: string;
 }
 
+/**
+ * Последняя причина отказа Telegram — для диагностики.
+ *
+ * Отправка возвращала `null` на любую неудачу, и причина исчезала: в базе
+ * оставалось «FAILED» без объяснения. На боевом сервере это выглядело так,
+ * будто бот молчит без причины, — а он отвечал, просто сообщения не уходили.
+ * Разбираться было не с чем.
+ *
+ * Держим в переменной модуля намеренно: это диагностика последней попытки, а
+ * не состояние разговора. Перепутать её между пациентами нельзя — она нигде
+ * не решает, что отвечать, и читается сразу после вызова.
+ */
+let lastError: string | null = null;
+
+/** Почему не ушло последнее сообщение. Пусто — всё прошло. */
+export function lastSendError(): string | null {
+  return lastError;
+}
+
+/**
+ * Сколько раз пробуем достучаться до Telegram.
+ *
+ * Сеть до api.telegram.org с российского сервера работает с перебоями: одно
+ * сообщение уходит, следующее нет. Одна повторная попытка через полсекунды
+ * закрывает большую часть таких обрывов и стоит ничего. Больше повторов не
+ * делаем: вебхук обязан ответить Telegram быстро, иначе он пришлёт update
+ * заново и пациент получит два ответа.
+ */
+const ATTEMPTS = 2;
+const RETRY_DELAY_MS = 500;
+
 async function call<T>(method: string, body: unknown): Promise<T | null> {
   const t = token();
-  if (!t) return null;
-  try {
-    const res = await fetch(`${API}/bot${t}/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      // Вебхук должен ответить Telegram быстро, иначе он повторит доставку.
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { ok: boolean; result?: T };
-    return json.ok ? (json.result ?? null) : null;
-  } catch {
+  if (!t) {
+    lastError = "TELEGRAM_BOT_TOKEN не задан";
     return null;
   }
+
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(`${API}/bot${t}/${method}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        // Вебхук должен ответить Telegram быстро, иначе он повторит доставку.
+        signal: AbortSignal.timeout(15_000),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        /**
+         * Описание ошибки Telegram кладёт в тело: «chat not found», «bot was
+         * blocked by the user», «Too Many Requests: retry after 30». Каждая
+         * означает своё, и без текста они неразличимы.
+         */
+        lastError = `Telegram ${res.status}: ${text.slice(0, 200)}`;
+        // Отказ по сути (403, 400) повтором не лечится — только сетевой сбой.
+        if (res.status < 500 && res.status !== 429) return null;
+      } else {
+        const json = JSON.parse(text) as { ok: boolean; result?: T; description?: string };
+        if (json.ok) {
+          lastError = null;
+          return json.result ?? null;
+        }
+        lastError = `Telegram отказал: ${json.description ?? "без объяснения"}`;
+        return null;
+      }
+    } catch (e) {
+      /**
+       * Сюда попадают обрыв связи и таймаут — то, ради чего и нужен повтор.
+       * Имя ошибки говорит, что именно: TimeoutError, TypeError (fetch failed).
+       */
+      lastError = `Связь с Telegram: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`;
+    }
+
+    if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+  }
+  return null;
 }
 
 /**
