@@ -42,7 +42,7 @@ function rhythmLabel(days: number | null): string {
 }
 
 export function CourseEconomicsBlock({ data }: { data: CourseEconomics }) {
-  const { completion: c, outstanding: o, repurchase: r } = data;
+  const { completion: c, outstanding: o, repurchase: r, repurchaseAllTime: all } = data;
 
   if (!data.hasCourses) {
     return (
@@ -140,6 +140,48 @@ export function CourseEconomicsBlock({ data }: { data: CourseEconomics }) {
 
       {/* ── повторные покупки */}
       <div>
+        {/*
+          За месяц когорта почти всегда пуста: курс кончился, окно ожидания в
+          90 дней ещё не прошло, и экран показывал прочерк с «ждём 7».
+          Число честное, но владельцу оно не отвечает ни на что. Поэтому,
+          когда за период судить не по кому, показываем ту же метрику за всю
+          историю — и прямо говорим, что это другой отрезок.
+        */}
+        {r.rate === null && all.rate !== null ? (
+          <>
+            <h3 className="text-text-muted mb-2 text-2xs">
+              Возвращаются ли за вторым курсом — за всю историю (окно {all.windowDays} дней)
+            </h3>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Figure
+                label="Купили ещё курс"
+                value={formatPercent(all.rate)}
+                hint={`${formatNumber(all.repurchased)} из ${formatNumber(all.cohort)} закончивших`}
+                title="За период считать не по кому: все, кто закончил курс, сделали это недавно, и окно ожидания ещё не прошло. Здесь та же метрика по всей истории."
+              />
+              <Figure
+                label="Возвращаются через"
+                value={
+                  all.medianDaysToRepurchase === null
+                    ? "—"
+                    : `${formatNumber(all.medianDaysToRepurchase)} дн.`
+                }
+                hint="медиана по вернувшимся"
+              />
+              <Figure
+                label="Закончили за период"
+                value={formatNumber(r.cohort + r.tooEarly)}
+                hint="курсов дошло до последнего сеанса"
+              />
+              <Figure
+                label="Ждём"
+                value={formatNumber(r.tooEarly)}
+                hint={`окно ${r.windowDays} дней ещё не прошло`}
+              />
+            </div>
+          </>
+        ) : (
+          <>
         <h3 className="text-text-muted mb-2 text-2xs">
           Возвращаются ли за вторым курсом (окно {r.windowDays} дней)
         </h3>
@@ -170,6 +212,8 @@ export function CourseEconomicsBlock({ data }: { data: CourseEconomics }) {
             hint="курсов дошло до последнего сеанса"
           />
         </div>
+          </>
+        )}
       </div>
 
       {/* ── ритм */}

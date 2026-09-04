@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/db";
 import { getCallbackQueue } from "@/lib/server/callback-queue";
 import { getCourseEconomics } from "@/lib/server/course-economics";
+import { coursePurchasesBetween, type CoursePurchaseRow } from "@/lib/server/course-revenue";
 import { getAgentStats } from "@/lib/server/agent-stats";
-import { startOfClinicDay } from "@/lib/clinic-time";
+import { clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
 import { revenueByDay } from "@/lib/server/daily-revenue";
 import { attendanceBetween, getDashboardMetricsDb } from "@/lib/server/analytics";
 
@@ -178,7 +179,22 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
    * отрезок было не из чего. Разрезы по услугам и людям остаются у последних
    * семи дней — иначе справка распухает без пользы.
    */
-  const daily = await revenueByDay(companyId, 31, now);
+  /**
+   * Разрезы дня — по ВСЕМ дням месяца, а не по последним семи.
+   *
+   * Владелец спросил, какие услуги дали пик недели 17–23 августа, и аналитик
+   * честно ответил, что разбивки за те дни у него нет: она начиналась с 29
+   * августа. Данные лежали в базе — их просто не давали. Экономия на длине
+   * справки обошлась в невозможность ответить на прямой вопрос о лучшей
+   * неделе года.
+   *
+   * Размер держим в узде не обрезкой дней, а обрезкой списка внутри дня:
+   * шесть строк по услугам и по людям отвечают на вопрос «из чего сложилось»,
+   * седьмая уже не меняет вывода.
+   */
+  const daily = await revenueByDay(companyId, 31, now, 31);
+  /** Сколько позиций показываем внутри дня. */
+  const TOP_IN_DAY = 6;
   const todayKey = daily[daily.length - 1]?.date;
   const yesterdayKey = daily[daily.length - 2]?.date;
   lines.push("");
@@ -233,16 +249,63 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
      * по услуге.
      */
     if (d.byService.length > 0) {
+      const top = d.byService.slice(0, TOP_IN_DAY);
+      const rest = d.byService.length - top.length;
       lines.push(
-        `    по услугам: ${d.byService
+        `    по услугам: ${top
           .map((x) => `${x.name} — ${x.arrived} приёмов (первичных ${x.first}), ${x.revenue} ₽`)
-          .join("; ")}`,
+          .join("; ")}${rest > 0 ? `; и ещё ${rest} услуг помельче` : ""}`,
       );
     }
     if (d.byStaff.length > 0) {
+      const top = d.byStaff.slice(0, TOP_IN_DAY);
+      const rest = d.byStaff.length - top.length;
       lines.push(
-        `    по специалистам: ${d.byStaff
+        `    по специалистам: ${top
           .map((x) => `${x.name} — ${x.arrived} приёмов (первичных ${x.first}), ${x.revenue} ₽`)
+          .join("; ")}${rest > 0 ? `; и ещё ${rest}` : ""}`,
+      );
+    }
+  }
+
+  /**
+   * Проданные курсы поимённо: когда, какой, за сколько и кто ведёт.
+   *
+   * На вопрос «какие курсы продавались 17–23 августа и кто их ведёт» аналитик
+   * отвечал, что таких данных нет, — были только суммы по дням. Между тем
+   * именно продажи курсов вынесли ту неделю вверх, и без названий разговор о
+   * причинах упирался в догадки.
+   *
+   * Имя пациента сюда не идёт: для разбора выручки оно не нужно, а лишние
+   * персональные данные в промпте — прямое нарушение §7.
+   */
+  const sales: CoursePurchaseRow[] = await coursePurchasesBetween(
+    companyId,
+    new Date(now.getTime() - 90 * 24 * 3600 * 1000),
+    now,
+  ).catch(() => []);
+  if (sales.length > 0) {
+    lines.push("");
+    lines.push("# Проданные курсы за 90 дней (деньги дня покупки)");
+    lines.push(
+      "Курс пробивается кассой, а не записью приёма: его сумма — выручка дня покупки, " +
+        "а сеансы в другие дни денег не дают. Специалист у продажи — тот, кто ведёт её сеансы.",
+    );
+    const byDay = new Map<string, CoursePurchaseRow[]>();
+    for (const p of sales) {
+      const key = clinicDateKey(p.at);
+      const list = byDay.get(key);
+      if (list) list.push(p);
+      else byDay.set(key, [p]);
+    }
+    for (const [key, list] of [...byDay].sort((a, b) => (a[0] < b[0] ? 1 : -1))) {
+      lines.push(
+        `- ${key}: ${list
+          .map(
+            (p) =>
+              `${p.serviceTitle}${p.sessionsTotal > 0 ? ` (${p.sessionsTotal} сеансов)` : ""} — ` +
+              `${money(p.amount)}${p.staffName ? `, ведёт ${p.staffName}` : ", специалист не определён"}`,
+          )
           .join("; ")}`,
       );
     }
@@ -328,13 +391,27 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     );
     lines.push(
       r.rate === null
-        ? `Повторные покупки: судить не по кому — закончивших давно нет (ждём ${r.tooEarly}).`
+        ? `Повторные покупки ЗА ПЕРИОД: судить не по кому — все закончили недавно (ждём ${r.tooEarly}).`
         : `Повторные покупки за ${r.windowDays} дней после конца курса: ${r.repurchased} из ` +
           `${r.cohort} (${Math.round(r.rate * 100)}%), ждём ещё ${r.tooEarly}` +
           (r.medianDaysToRepurchase === null
             ? "."
             : `; возвращаются через ${r.medianDaysToRepurchase} дн. (медиана).`),
     );
+    /**
+     * За всю историю — когда за период когорта пуста. Иначе на вопрос
+     * «возвращаются ли к нам за вторым курсом» ответить нечем, хотя ответ есть.
+     */
+    const all = courses.repurchaseAllTime;
+    if (all.rate !== null) {
+      lines.push(
+        `Повторные покупки ЗА ВСЮ ИСТОРИЮ: ${all.repurchased} из ${all.cohort} закончивших ` +
+          `купили ещё курс в течение ${all.windowDays} дней (${Math.round(all.rate * 100)}%)` +
+          (all.medianDaysToRepurchase === null
+            ? "."
+            : `; возвращаются через ${all.medianDaysToRepurchase} дн. (медиана).`),
+      );
+    }
     if (courses.rhythm.length) {
       lines.push(
         "Ритм сеансов: " +

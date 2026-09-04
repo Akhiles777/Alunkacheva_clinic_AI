@@ -22,7 +22,7 @@ import {
   type FirstResponseStats,
   type WorkingHours,
 } from "@/lib/metrics/response-time";
-import { agentSavings, type SavingsReport } from "@/lib/metrics/agent-savings";
+import { agentSavings, waitingSaved, type SavingsReport, type WaitingSaved } from "@/lib/metrics/agent-savings";
 import { confidentMatch, matchKnowledge, type KnowledgeRow } from "@/lib/agent/knowledge";
 import { looksLikeIntake } from "@/lib/agent/intake";
 import { BOOKING_WINDOW_MS } from "@/lib/metrics/agent";
@@ -44,6 +44,11 @@ export interface AgentStats {
   escalationAck: FirstResponseStats & { unacknowledged: number };
   responseTime: FirstResponseReport;
   savings: SavingsReport;
+  /**
+   * Снятое с пациентов ожидание — вторая мера пользы, считается из двух
+   * измеренных медиан без единой придуманной величины.
+   */
+  waiting: WaitingSaved;
   /**
    * Работа агента по реальной схеме: оформил заявку — передал — записали.
    * «Закрыл сам» отвечает на другой вопрос и остаётся рядом.
@@ -301,6 +306,13 @@ export async function getAgentStats(companyId: string, period: PeriodKey): Promi
     escalationAck,
     responseTime,
     savings,
+    waiting: waitingSaved({
+      agent: { medianMs: responseTime.agent.medianMs, count: responseTime.agent.count },
+      manualWorkingHours: {
+        medianMs: responseTime.staffWorkingHours.medianMs,
+        count: responseTime.staffWorkingHours.count,
+      },
+    }),
     assist,
     logSince: firstRun?.triggeredAt ?? null,
   };

@@ -101,7 +101,7 @@ function Speed({
 }
 
 export function AgentSection({ stats, periodLabel }: { stats: AgentStats; periodLabel: string }) {
-  const { reliability: rel, autonomy, savings, responseTime: rt, assist } = stats;
+  const { reliability: rel, autonomy, savings, responseTime: rt, assist, waiting } = stats;
 
   return (
     <section className="border-border bg-surface mt-4 rounded-xl border p-5">
@@ -297,9 +297,60 @@ export function AgentSection({ stats, periodLabel }: { stats: AgentStats; period
             </div>
           ) : null}
 
+          {/* ── снятое ожидание: работает без журнала тем */}
+          <div>
+            <h3 className="text-text-muted mb-2 text-2xs">Сколько пациенты не ждали</h3>
+            {/*
+              Вторая мера пользы, и она из двух измеренных медиан, без единой
+              придуманной величины: столько отвечает агент и столько ждали бы
+              человека в рабочие часы. Ночное ожидание в сравнение не берём —
+              агент работает круглосуточно, человек нет, и это завысило бы
+              пользу в разы. Оценка снизу, так и подписано.
+            */}
+            <div className="border-border bg-surface rounded-xl border px-4 py-4">
+              {!waiting.enough ? (
+                <p className="text-text-muted text-sm leading-relaxed">
+                  {waiting.answers === 0
+                    ? "Агент ещё ни разу не отвечал первым — считать нечего."
+                    : `Не с чем сравнить: ручных первых ответов в рабочие часы всего ${formatNumber(waiting.manualSamples)}, нужно хотя бы пять. Оценка на двух наблюдениях хуже честного «недостаточно данных».`}
+                </p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <Figure
+                      label="Снято ожидания"
+                      value={hours(waiting.savedMs)}
+                      hint={`по ${formatNumber(waiting.answers)} обращениям`}
+                      title="Разница между тем, сколько отвечает агент, и тем, сколько ждали бы человека в рабочие часы, умноженная на число обращений, где агент ответил первым."
+                    />
+                    <Figure
+                      label="Агент отвечает за"
+                      value={duration(waiting.medianAgentMs)}
+                      hint="медиана первого ответа"
+                    />
+                    <Figure
+                      label="Человека ждали бы"
+                      value={duration(waiting.medianManualMs)}
+                      hint={`медиана по ${formatNumber(waiting.manualSamples)} ответам в рабочие часы`}
+                    />
+                    <Figure
+                      label="На одно обращение"
+                      value={duration(waiting.perAnswerMs)}
+                      hint="настолько быстрее"
+                    />
+                  </div>
+                  <p className="text-text-subtle mt-2.5 text-2xs leading-relaxed">
+                    Оценка снизу: сравниваем с ответом человека в РАБОЧИЕ часы. Ночью и в
+                    выходные разница больше, но брать её в расчёт значило бы завысить пользу.
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+
           {/* ── экономия времени */}
           <div>
-            <h3 className="text-text-muted mb-2 text-2xs">Сэкономленное время</h3>
+            <h3 className="text-text-muted mb-2 text-2xs">Сэкономленное время администратора</h3>
             {savings.byTopic.length === 0 ? (
               <p className="text-text-muted text-sm">
                 Посчитать не по чему: ни по одной теме не набралось пяти ручных ответов

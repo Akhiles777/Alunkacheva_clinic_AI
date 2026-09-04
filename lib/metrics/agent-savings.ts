@@ -127,3 +127,69 @@ export function agentSavings(input: {
     escalationCostMs: input.escalationCostMs,
   };
 }
+
+/**
+ * Сколько ожидания агент снял с пациентов.
+ *
+ * Вторая мера пользы, и считается она иначе, чем «сэкономленное время
+ * администратора». Та отвечает на вопрос «сколько работы агент сделал за
+ * людей» и требует базы по темам: сравнивать вопрос про адрес с разбором
+ * жалобы нельзя, поэтому темы без пяти ручных ответов туда не идут вовсе.
+ *
+ * Эта отвечает на другой вопрос — «сколько человек НЕ ждал ответа», — и
+ * считается из двух измеренных величин, без единой придуманной:
+ *
+ *   — медиана первого ответа агента: сколько он отвечает на деле;
+ *   — медиана первого ответа человека В РАБОЧИЕ ЧАСЫ: сколько ждали бы, если
+ *     бы агента не было.
+ *
+ * Рабочие часы взяты намеренно: агент работает круглосуточно, человек — нет, и
+ * сравнение с ночным ожиданием завысило бы пользу в разы. Это оценка СНИЗУ, и
+ * так её и надо называть.
+ *
+ * Обе медианы — из своих данных клиники. Если ручных ответов меньше пяти,
+ * сравнивать не с чем, и число не показывается: «недостаточно данных» честнее
+ * красивой оценки.
+ */
+export interface WaitingSaved {
+  /** Обращений, на которые первым ответил агент. */
+  answers: number;
+  medianAgentMs: number | null;
+  medianManualMs: number | null;
+  /** Ручных ответов в базе сравнения. */
+  manualSamples: number;
+  /** Хватает ли наблюдений, чтобы называть число. */
+  enough: boolean;
+  /** Сколько ожидания снято суммарно. */
+  savedMs: number;
+  /** Насколько быстрее агента ждали бы человека — на одно обращение. */
+  perAnswerMs: number | null;
+}
+
+export function waitingSaved(input: {
+  agent: { medianMs: number | null; count: number };
+  manualWorkingHours: { medianMs: number | null; count: number };
+}): WaitingSaved {
+  const { agent, manualWorkingHours: manual } = input;
+  const enough = manual.count >= MIN_SAMPLES && manual.medianMs !== null && agent.count > 0;
+
+  /**
+   * Агент оказался медленнее человека — экономии нет, и отрицательной она не
+   * бывает. Такое случается на маленьких выборках, и рисовать минус значило бы
+   * пугать владельца шумом.
+   */
+  const perAnswerMs =
+    enough && agent.medianMs !== null
+      ? Math.max((manual.medianMs as number) - agent.medianMs, 0)
+      : null;
+
+  return {
+    answers: agent.count,
+    medianAgentMs: agent.medianMs,
+    medianManualMs: manual.medianMs,
+    manualSamples: manual.count,
+    enough,
+    savedMs: perAnswerMs === null ? 0 : perAnswerMs * agent.count,
+    perAnswerMs,
+  };
+}

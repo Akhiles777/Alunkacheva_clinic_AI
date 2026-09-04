@@ -39,6 +39,15 @@ export interface CourseEconomics {
   completion: CourseCompletion;
   outstanding: OutstandingCourses;
   repurchase: CourseRepurchase;
+  /**
+   * Повторные покупки за ВСЮ историю.
+   *
+   * За месяц когорта почти всегда пуста: курс кончается, и окно ожидания в 90
+   * дней ещё не прошло — экран показывает прочерк и «ждём 7». Число само по
+   * себе честное, но владельцу оно не отвечает ни на что. За всю историю
+   * когорта есть, и вопрос «возвращаются ли вообще» получает ответ.
+   */
+  repurchaseAllTime: CourseRepurchase;
   rhythm: ServiceRhythm[];
   /** Курсы вообще есть? Пусто — так и пишем, а не рисуем нули. */
   hasCourses: boolean;
@@ -138,6 +147,33 @@ export async function getCourseEconomics(
     laterPurchases: byPatient.get(c.patientId) ?? [],
   }));
 
+  /**
+   * Та же метрика за всю историю: покупки читаем по всем, кто когда-либо
+   * закончил курс. Одна функция на обе — иначе на экране окажутся два разных
+   * определения возврата.
+   */
+  const allPurchases = finished.length
+    ? await prisma.coursePurchase.findMany({
+        where: {
+          companyId,
+          isCourse: true,
+          patientId: { in: [...new Set(finished.map((c) => c.patientId))] },
+        },
+        select: { patientId: true, purchasedAt: true },
+      })
+    : [];
+  const allByPatient = new Map<string, Date[]>();
+  for (const p of allPurchases) {
+    const list = allByPatient.get(p.patientId);
+    if (list) list.push(p.purchasedAt);
+    else allByPatient.set(p.patientId, [p.purchasedAt]);
+  }
+  const repurchaseAll: RepurchaseInput[] = finished.map((c) => ({
+    patientId: c.patientId,
+    finishedAt: c.sessionDates[c.sessionDates.length - 1],
+    laterPurchases: allByPatient.get(c.patientId) ?? [],
+  }));
+
   /** Ритм по услугам: как часто на самом деле ходят на БОС и на капельницы. */
   const rhythmAcc = new Map<string, { gaps: number[]; courses: number }>();
   for (const c of facts) {
@@ -168,6 +204,7 @@ export async function getCourseEconomics(
     completion: courseCompletion(ofPeriod, now),
     outstanding,
     repurchase: courseRepurchase(repurchaseInput, now, REPURCHASE_WINDOW_DAYS),
+    repurchaseAllTime: courseRepurchase(repurchaseAll, now, REPURCHASE_WINDOW_DAYS),
     rhythm,
     hasCourses: facts.length > 0,
     periodLabel: periodLabel(period),

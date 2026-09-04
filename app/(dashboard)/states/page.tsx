@@ -75,6 +75,15 @@ const NO_RELIABILITY = {
 };
 
 const AGENT_EMPTY: AgentStats = {
+  waiting: {
+    answers: 0,
+    medianAgentMs: null,
+    medianManualMs: null,
+    manualSamples: 0,
+    enough: false,
+    savedMs: 0,
+    perAnswerMs: null,
+  },
   assist: { total: 0, prepared: 0, booked: 0, prepareRate: null, bookRate: null },
   logSince: null,
   hasData: false,
@@ -87,6 +96,15 @@ const AGENT_EMPTY: AgentStats = {
 };
 
 const AGENT_NO_BASE: AgentStats = {
+  waiting: {
+    answers: 12,
+    medianAgentMs: 9000,
+    medianManualMs: null,
+    manualSamples: 2,
+    enough: false,
+    savedMs: 0,
+    perAnswerMs: null,
+  },
   assist: { total: 40, prepared: 12, booked: 7, prepareRate: 0.3, bookRate: 7 / 12 },
   logSince: new Date("2026-09-04T10:00:00+03:00"),
   hasData: true,
@@ -131,6 +149,15 @@ const AGENT_NO_BASE: AgentStats = {
 };
 
 const AGENT_BIG: AgentStats = {
+  waiting: {
+    answers: 412,
+    medianAgentMs: 7000,
+    medianManualMs: 41 * 60 * 1000,
+    manualSamples: 186,
+    enough: true,
+    perAnswerMs: 41 * 60 * 1000 - 7000,
+    savedMs: (41 * 60 * 1000 - 7000) * 412,
+  },
   assist: { total: 412, prepared: 168, booked: 121, prepareRate: 168 / 412, bookRate: 121 / 168 },
   logSince: new Date("2026-06-05T10:00:00+03:00"),
   hasData: true,
@@ -366,6 +393,15 @@ const QUEUE_FULL: QueueData = {
  */
 const COURSES_EARLY: CourseEconomics = {
   hasCourses: true,
+  // За период судить рано, но за всю историю ответ есть — его и показываем.
+  repurchaseAllTime: {
+    cohort: 21,
+    repurchased: 6,
+    rate: 6 / 21,
+    tooEarly: 3,
+    medianDaysToRepurchase: 41,
+    windowDays: 90,
+  },
   periodLabel: "сентябрь",
   completion: {
     completed: 0,
@@ -398,6 +434,14 @@ const COURSES_EARLY: CourseEconomics = {
 /** Боевая картина квартала: четырёхзначные суммы и длинные названия услуг. */
 const COURSES_FULL: CourseEconomics = {
   hasCourses: true,
+  repurchaseAllTime: {
+    cohort: 64,
+    repurchased: 27,
+    rate: 27 / 64,
+    tooEarly: 4,
+    medianDaysToRepurchase: 38,
+    windowDays: 90,
+  },
   periodLabel: "квартал",
   completion: {
     completed: 14,

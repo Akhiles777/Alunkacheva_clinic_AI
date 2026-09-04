@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentSavings, manualMedians, MANUAL_CAP_MS, MIN_SAMPLES } from "./agent-savings";
+import { agentSavings, manualMedians, waitingSaved, MANUAL_CAP_MS, MIN_SAMPLES } from "./agent-savings";
 
 const MIN = 60 * 1000;
 
@@ -116,5 +116,55 @@ describe("сэкономленное время", () => {
       escalationCostMs: 0,
     });
     expect(r.byTopic[0].topic).toBe("часы");
+  });
+});
+
+describe("снятое ожидание пациентов", () => {
+  const MINUTE = 60 * 1000;
+
+  it("считает разницу медиан на число ответов агента", () => {
+    const r = waitingSaved({
+      agent: { medianMs: 8 * 1000, count: 40 },
+      manualWorkingHours: { medianMs: 30 * MINUTE, count: 60 },
+    });
+    expect(r.enough).toBe(true);
+    expect(r.perAnswerMs).toBe(30 * MINUTE - 8000);
+    expect(r.savedMs).toBe((30 * MINUTE - 8000) * 40);
+  });
+
+  /**
+   * Меньше пяти ручных ответов — сравнивать не с чем. Красивая оценка на
+   * двух наблюдениях хуже честного «недостаточно данных».
+   */
+  it("без базы сравнения число не называется", () => {
+    const r = waitingSaved({
+      agent: { medianMs: 8000, count: 40 },
+      manualWorkingHours: { medianMs: 30 * MINUTE, count: 3 },
+    });
+    expect(r.enough).toBe(false);
+    expect(r.savedMs).toBe(0);
+    expect(r.perAnswerMs).toBeNull();
+  });
+
+  it("агент не отвечал — экономии нет", () => {
+    const r = waitingSaved({
+      agent: { medianMs: null, count: 0 },
+      manualWorkingHours: { medianMs: 30 * MINUTE, count: 60 },
+    });
+    expect(r.enough).toBe(false);
+    expect(r.savedMs).toBe(0);
+  });
+
+  /**
+   * На маленькой выборке агент бывает медленнее человека. Минус здесь — шум,
+   * а не открытие: показывать его владельцу нельзя.
+   */
+  it("отрицательной экономия не бывает", () => {
+    const r = waitingSaved({
+      agent: { medianMs: 40 * MINUTE, count: 10 },
+      manualWorkingHours: { medianMs: 5 * MINUTE, count: 20 },
+    });
+    expect(r.perAnswerMs).toBe(0);
+    expect(r.savedMs).toBe(0);
   });
 });
