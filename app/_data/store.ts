@@ -915,7 +915,26 @@ export async function startDialog(input: {
    * считает, что написал, и больше не возвращается к этому пациенту.
    */
   if (res.ok && res.dialogId) {
-    commit({ ...db, dialogs: [{ ...dialog, id: res.dialogId }, ...db.dialogs] });
+    /**
+     * Сообщение могло лечь в УЖЕ существующую переписку — так и происходит,
+     * когда пишут из «Кому позвонить» тому, с кем клиника давно говорит.
+     * Тогда обновляем её, а не добавляем вторую строку с тем же
+     * идентификатором: две строки об одном диалоге — это и сломанный список,
+     * и два места, где искать ответ.
+     */
+    const id = res.dialogId;
+    const known = db.dialogs.find((d) => d.id === id);
+    const next: Dialog = known
+      ? {
+          ...known,
+          status: "human",
+          preview: input.message,
+          at: "сейчас",
+          unread: false,
+          messages: [...known.messages, { id: messageId, from: "staff", text: input.message, at: "сейчас", attachments: [] }],
+        }
+      : { ...dialog, id };
+    commit({ ...db, dialogs: [next, ...db.dialogs.filter((d) => d.id !== id)] });
   }
   return res;
 }

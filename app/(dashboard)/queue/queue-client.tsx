@@ -5,6 +5,7 @@ import Link from "next/link";
 import { formatMoney, formatNumber } from "@/lib/format";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { noteOutreach } from "./actions";
+import { writeFailed } from "@/app/_data/store";
 import type { CandidateKind } from "@/lib/metrics/callback-queue";
 
 /**
@@ -355,7 +356,14 @@ export function QueueClient({ data }: { data: QueueData }) {
               kind: writeTo.kind,
               basis: writeTo.basis,
               money: writeTo.money,
-            }).catch(() => {});
+            }).catch(
+              /**
+               * Сообщение уже ушло, а отметка не легла — молчать нельзя:
+               * без неё раздел недосчитается собственной работы, и «список
+               * ничего не даёт» окажется неправдой о нём самом.
+               */
+              writeFailed("отметка обращения из списка не сохранена"),
+            );
             setWritten((cur) => new Set(cur).add(writeTo.patientId));
           }}
         />
