@@ -244,28 +244,62 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-border flex flex-none items-center gap-3 border-b px-5 py-3.5 max-md:flex-wrap max-md:gap-y-1.5">
-        <button type="button" onClick={onBack} className="text-text-muted hover:text-text text-sm md:hidden">
-          ← Диалоги
-        </button>
-        <div className="min-w-0 max-md:order-3 max-md:w-full">
-          <div className="truncate text-sm font-medium">
-            {dialog.patientId ? (
-              <Link href={`/patients/${dialog.patientId}`} className="hover:underline">
-                {dialog.name}
-              </Link>
-            ) : (
-            dialog.name
-            )}
+      {/*
+        Шапка в две строки: имя и действия не спорят за место.
+
+        Кнопок стало три, и в одну строку они выдавливали то, ради чего сюда
+        смотрят в первую очередь, — имя собеседника. Имя, канал, статус и номер
+        занимают верхнюю строку целиком; действия переносятся под ними и
+        сворачиваются на узком экране сами. Порядок тот же, что важность:
+        сначала «кто это», потом «что с ним делать».
+      */}
+      <div className="border-border flex flex-none flex-col gap-2 border-b px-5 py-3 max-md:px-4">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="text-text-muted hover:text-text flex-none text-sm md:hidden"
+          >
+            ← Диалоги
+          </button>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">
+              {dialog.patientId ? (
+                <Link href={`/patients/${dialog.patientId}`} className="hover:underline">
+                  {dialog.name}
+                </Link>
+              ) : (
+                dialog.name
+              )}
+            </div>
+            <div className="text-text-subtle truncate text-2xs">
+              {CHANNEL_LABEL[dialog.channel]} · {DIALOG_STATUS_LABEL[dialog.status]}
+              {/*
+                Номер здесь не дублируем: строкой ниже он стоит ссылкой tel:,
+                по которой можно позвонить. Два одинаковых номера подряд
+                занимают место и ничего не добавляют.
+              */}
+              {/*
+                Причина эскалации — здесь, а не среди кнопок: это сведение о
+                диалоге, а не действие. И видно её теперь на телефоне тоже —
+                эскалации теряться не должны (§9).
+              */}
+              {dialog.status === "escalated" ? (
+                <>
+                  {" · "}
+                  <span className="text-accent-text font-medium">
+                    эскалация: {dialog.escalationReason}
+                  </span>
+                </>
+              ) : null}
+            </div>
           </div>
-          <div className="text-text-subtle text-2xs">
-            {CHANNEL_LABEL[dialog.channel]} · {DIALOG_STATUS_LABEL[dialog.status]}
-            {/* Номер, с которого пишет пациент: администратор набирает его,
-                не выходя из диалога, и по нему же узнаёт человека. */}
-            {dialog.phone ? <> · <span className="num">{dialog.phone}</span></> : null}
+          <div className="flex-none">
+            <WindowBadge dialog={dialog} />
           </div>
         </div>
-        <div className="ml-auto flex flex-none items-center gap-2.5">
+
+        <div className="flex flex-wrap items-center gap-2">
           {/*
             Позвать администратора к диалогу.
 
@@ -343,12 +377,6 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
               Вернуть агенту
             </button>
           ) : null}
-          {dialog.status === "escalated" ? (
-            <span className="text-accent-text flex-none text-2xs font-medium max-md:hidden">
-              эскалация: {dialog.escalationReason}
-            </span>
-          ) : null}
-          <WindowBadge dialog={dialog} />
         </div>
       </div>
 

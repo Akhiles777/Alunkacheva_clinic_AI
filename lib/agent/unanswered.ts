@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { handlePatientMessage, type AgentChannel } from "./clinic-agent";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
-import { lastSendError, sendText as sendTelegram } from "@/lib/integrations/telegram/client";
+import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS } from "./unanswered-rule";
 
 /**
@@ -89,9 +89,9 @@ async function deliver(
   }
   if (channel === "TELEGRAM") {
     const res = await sendTelegram(Number(externalUserId), reply.text, reply.buttons);
-    // Причину берём у клиента: «не принял сообщение» не отличает блокировку
-    // бота от оборванной связи, а действия по ним разные.
-    return res ? { ok: true } : { ok: false, error: lastSendError() ?? "Telegram не принял сообщение" };
+    // Причину клиент возвращает вместе с результатом: «не принял сообщение»
+    // не отличает блокировку бота от оборванной связи, а действия разные.
+    return res.ok ? { ok: true } : { ok: false, error: res.error ?? "Telegram не принял сообщение" };
   }
   // Instagram отвечает только внутри суточного окна — добором не пользуемся.
   return { ok: false, error: `канал ${channel} добор не поддерживает` };

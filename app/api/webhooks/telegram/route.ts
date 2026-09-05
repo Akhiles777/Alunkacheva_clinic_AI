@@ -7,7 +7,6 @@ import { markDelivery } from "@/lib/agent/unanswered";
 import {
   answerCallback,
   isTelegramConfigured,
-  lastSendError,
   removeKeyboard,
   requestPhone,
   sendText,
@@ -171,9 +170,9 @@ export async function POST(req: Request) {
          * лимит, оборвалась связь — это три разные проблемы и три разных
          * действия.
          */
-        const reason = sent ? null : lastSendError();
-        if (!sent) console.error(`[telegram] ответ не ушёл в чат ${chatId}: ${reason}`);
-        await markDelivery(company.id, reply.conversationId, reply.text, Boolean(sent), reason).catch(
+        const reason = sent.ok ? null : (sent.error ?? null);
+        if (!sent.ok) console.error(`[telegram] ответ не ушёл в чат ${chatId}: ${reason}`);
+        await markDelivery(company.id, reply.conversationId, reply.text, sent.ok, reason).catch(
           () => {},
         );
       }

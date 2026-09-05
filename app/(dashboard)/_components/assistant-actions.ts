@@ -22,6 +22,7 @@ import { can } from "@/lib/server/authz";
 import { buildClinicSnapshot } from "@/lib/assistant/server-context";
 import { personaFor } from "@/lib/assistant/personas";
 import { toPlainText } from "@/lib/assistant/plain-text";
+import { sanitizeError } from "@/lib/agent/run-log";
 
 /**
  * Ассистент говорит от роли вошедшего сотрудника. Роль берём из сессии, а не
@@ -135,8 +136,16 @@ export async function askAI(
        * лимит», «слишком длинный запрос» и «неверная модель», а действия по
        * ним разные. Владельцу показываем код, разработчику — причину.
        */
+      /**
+       * Тело чистим перед журналом.
+       *
+       * Провайдер иногда возвращает кусок запроса в описании ошибки, а в
+       * запросе — выжимка по клинике. Тела сообщений и данные пациентов в
+       * общие логи не попадают (§7), поэтому пропускаем через ту же чистку,
+       * что и журнал попыток агента.
+       */
       const body = await res.text().catch(() => "");
-      console.error(`[аналитик] провайдер ответил ${res.status}: ${body.slice(0, 400)}`);
+      console.error(`[аналитик] провайдер ответил ${res.status}: ${sanitizeError(body) ?? "без тела"}`);
       return { text: null, error: `http_${res.status}` };
     }
     const data = (await res.json()) as {
@@ -178,7 +187,10 @@ export async function askAI(
       e instanceof Error
         ? `${e.name}: ${e.message}${e.cause ? ` (причина: ${String((e.cause as Error)?.message ?? e.cause)})` : ""}`
         : String(e);
-    console.error(`[аналитик] запрос к модели упал — ${detail}; длина справки ${fullContext.length} знаков`);
+    console.error(
+      `[аналитик] запрос к модели упал — ${sanitizeError(detail) ?? "без причины"}; ` +
+        `длина справки ${fullContext.length} знаков`,
+    );
     return { text: null, error: name };
   } finally {
     clearTimeout(timeout);

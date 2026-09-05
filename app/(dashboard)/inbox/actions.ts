@@ -441,11 +441,13 @@ export async function sendMessageDb(
 
   if (conv.channel === "TELEGRAM") {
     const res = await sendTelegram(conv.externalUserId, body);
-    if (res) {
+    if (res.ok) {
       delivered = true;
-      externalId = res.externalId;
+      externalId = res.externalId ?? null;
     } else {
-      failure = "Telegram не принял сообщение. Проверьте настройки бота.";
+      // Причину показываем как есть: «bot was blocked» и «таймаут» требуют
+      // от администратора разных действий.
+      failure = res.error ?? "Telegram не принял сообщение. Проверьте настройки бота.";
     }
   } else if (conv.channel === "WHATSAPP") {
     const res = await sendWhatsapp(session.companyId, conv.externalUserId, body);

@@ -21,22 +21,19 @@ export interface InlineButton {
 }
 
 /**
- * Последняя причина отказа Telegram — для диагностики.
+ * Причина отказа возвращается вместе с результатом, а не через переменную
+ * модуля.
  *
- * Отправка возвращала `null` на любую неудачу, и причина исчезала: в базе
- * оставалось «FAILED» без объяснения. На боевом сервере это выглядело так,
- * будто бот молчит без причины, — а он отвечал, просто сообщения не уходили.
- * Разбираться было не с чем.
- *
- * Держим в переменной модуля намеренно: это диагностика последней попытки, а
- * не состояние разговора. Перепутать её между пациентами нельзя — она нигде
- * не решает, что отвечать, и читается сразу после вызова.
+ * Сначала она лежала в модульной переменной — и это была ошибка: бот отвечает
+ * нескольким пациентам одновременно, отправки разных чатов идут параллельно, и
+ * причина одного отказа приписалась бы другому. В диагностике это хуже
+ * молчания: она указала бы не туда.
  */
-let lastError: string | null = null;
-
-/** Почему не ушло последнее сообщение. Пусто — всё прошло. */
-export function lastSendError(): string | null {
-  return lastError;
+export interface SendResult {
+  ok: boolean;
+  externalId?: string;
+  /** Почему не ушло. Пусто — всё прошло. */
+  error?: string;
 }
 
 /**
@@ -51,12 +48,16 @@ export function lastSendError(): string | null {
 const ATTEMPTS = 2;
 const RETRY_DELAY_MS = 500;
 
-async function call<T>(method: string, body: unknown): Promise<T | null> {
+interface CallResult<T> {
+  value: T | null;
+  error?: string;
+}
+
+async function call<T>(method: string, body: unknown): Promise<CallResult<T>> {
   const t = token();
-  if (!t) {
-    lastError = "TELEGRAM_BOT_TOKEN не задан";
-    return null;
-  }
+  if (!t) return { value: null, error: "TELEGRAM_BOT_TOKEN не задан" };
+
+  let error: string | undefined;
 
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     try {
@@ -74,29 +75,25 @@ async function call<T>(method: string, body: unknown): Promise<T | null> {
          * blocked by the user», «Too Many Requests: retry after 30». Каждая
          * означает своё, и без текста они неразличимы.
          */
-        lastError = `Telegram ${res.status}: ${text.slice(0, 200)}`;
+        error = `Telegram ${res.status}: ${text.slice(0, 200)}`;
         // Отказ по сути (403, 400) повтором не лечится — только сетевой сбой.
-        if (res.status < 500 && res.status !== 429) return null;
+        if (res.status < 500 && res.status !== 429) return { value: null, error };
       } else {
         const json = JSON.parse(text) as { ok: boolean; result?: T; description?: string };
-        if (json.ok) {
-          lastError = null;
-          return json.result ?? null;
-        }
-        lastError = `Telegram отказал: ${json.description ?? "без объяснения"}`;
-        return null;
+        if (json.ok) return { value: json.result ?? null };
+        return { value: null, error: `Telegram отказал: ${json.description ?? "без объяснения"}` };
       }
     } catch (e) {
       /**
        * Сюда попадают обрыв связи и таймаут — то, ради чего и нужен повтор.
        * Имя ошибки говорит, что именно: TimeoutError, TypeError (fetch failed).
        */
-      lastError = `Связь с Telegram: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`;
+      error = `Связь с Telegram: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`;
     }
 
     if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
   }
-  return null;
+  return { value: null, error };
 }
 
 /**
@@ -111,8 +108,9 @@ export async function fileLink(fileId: string): Promise<string | null> {
   const t = token();
   if (!t) return null;
   const file = await call<{ file_path?: string }>("getFile", { file_id: fileId });
-  if (!file?.file_path) return null;
-  return `${API}/file/bot${t}/${file.file_path}`;
+  const path = file.value?.file_path;
+  if (!path) return null;
+  return `${API}/file/bot${t}/${path}`;
 }
 
 /** Разбивка кнопок по рядам: длинные подписи — по одной в ряд. */
@@ -132,19 +130,21 @@ export async function sendText(
   chatId: string | number,
   text: string,
   buttons?: InlineButton[],
-): Promise<{ externalId: string } | null> {
+): Promise<SendResult> {
   const res = await call<{ message_id: number }>("sendMessage", {
     chat_id: chatId,
     text,
     reply_markup: keyboard(buttons),
     disable_web_page_preview: true,
   });
-  return res ? { externalId: String(res.message_id) } : null;
+  return res.value
+    ? { ok: true, externalId: String(res.value.message_id) }
+    : { ok: false, error: res.error };
 }
 
 /** Запросить номер телефона кнопкой: надёжнее, чем разбирать текст. */
-export async function requestPhone(chatId: string | number, text: string): Promise<boolean> {
-  const res = await call("sendMessage", {
+export async function requestPhone(chatId: string | number, text: string): Promise<SendResult> {
+  const res = await call<{ message_id: number }>("sendMessage", {
     chat_id: chatId,
     text,
     reply_markup: {
@@ -153,13 +153,22 @@ export async function requestPhone(chatId: string | number, text: string): Promi
       one_time_keyboard: true,
     },
   });
-  // Исход отправки возвращаем: по нему ставится отметка доставки на сообщении.
-  return Boolean(res);
+  // Исход отправки возвращаем вместе с причиной: по ним ставится отметка
+  // доставки на сообщении, а причина объясняет отказ.
+  return res.value
+    ? { ok: true, externalId: String(res.value.message_id) }
+    : { ok: false, error: res.error };
 }
 
-export async function removeKeyboard(chatId: string | number, text: string): Promise<boolean> {
-  // Исход отправки возвращаем: по нему ставится отметка доставки на сообщении.
-  return Boolean(await call("sendMessage", { chat_id: chatId, text, reply_markup: { remove_keyboard: true } }));
+export async function removeKeyboard(chatId: string | number, text: string): Promise<SendResult> {
+  const res = await call<{ message_id: number }>("sendMessage", {
+    chat_id: chatId,
+    text,
+    reply_markup: { remove_keyboard: true },
+  });
+  return res.value
+    ? { ok: true, externalId: String(res.value.message_id) }
+    : { ok: false, error: res.error };
 }
 
 /** Убрать «часики» на нажатой кнопке. */
@@ -175,5 +184,5 @@ export async function setWebhook(url: string, secret: string): Promise<boolean> 
     allowed_updates: ["message", "callback_query"],
     drop_pending_updates: true,
   });
-  return res === true;
+  return res.value === true;
 }
