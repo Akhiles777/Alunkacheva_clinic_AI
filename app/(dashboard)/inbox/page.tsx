@@ -292,6 +292,17 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                   </span>
                 </>
               ) : null}
+              {/*
+                Состояние агента — в строке сведений, а не только в подписи
+                кнопки. «Я не знаю, работает бот или нет» — вопрос, на который
+                экран обязан отвечать сам, не заставляя нажимать.
+              */}
+              {dialog.agentDisabled ? (
+                <>
+                  {" · "}
+                  <span className="text-accent-text font-medium">агент выключен</span>
+                </>
+              ) : null}
             </div>
           </div>
           <div className="flex-none">

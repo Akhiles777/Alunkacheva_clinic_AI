@@ -493,6 +493,15 @@ export function hydrateDialogs(records: DialogRecord[]) {
       unread: r.unread,
       escalationReason: r.escalationReason ?? undefined,
       agentDraft: existing?.agentDraft,
+      /**
+       * Выключатель агента берём с сервера.
+       *
+       * Диалог здесь пересобирается по полям, и не перечисленное теряется.
+       * Поле забыли — и кнопка «Выключить агента» сама возвращалась в
+       * исходное через шесть секунд, на следующем обновлении списка. В базе
+       * при этом всё было записано верно: врал экран.
+       */
+      agentDisabled: r.agentDisabled,
       windowOpen: r.windowOpen,
       windowMinutesLeft: r.windowMinutesLeft,
       totalMessages: r.totalMessages,
