@@ -39,6 +39,14 @@ export async function handBackAndRemind(companyId: string): Promise<HandbackResu
       companyId,
       // Закрытые не трогаем: их закрыли намеренно.
       status: { in: ["HUMAN_TAKEOVER", "ESCALATED"] },
+      /**
+       * Выключенный агент не возвращается сам.
+       *
+       * Возврат через четыре часа — про паузу после перехвата. Выключатель
+       * ставит человек и снимает тоже человек: иначе кнопка «выключить» жила
+       * бы до вечера и переставала быть выключателем.
+       */
+      agentDisabled: false,
     },
     orderBy: { lastMessageAt: "asc" },
     take: BATCH,

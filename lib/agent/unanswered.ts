@@ -107,6 +107,8 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
       companyId,
       // Только там, где разговор ведёт агент: перебивать человека нельзя.
       status: "BOT_ACTIVE",
+      // Выключенный в диалоге агент не догоняет и старые сообщения тоже.
+      agentDisabled: false,
       lastMessageAt: { gte: notOlderThan, lte: quietBefore },
       escalations: { none: { status: { not: "RESOLVED" } } },
     },
@@ -142,7 +144,7 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
       direction: "OUT",
       status: "FAILED",
       createdAt: { gte: notOlderThan },
-      conversation: { status: "BOT_ACTIVE" },
+      conversation: { status: "BOT_ACTIVE", agentDisabled: false },
     },
     orderBy: { createdAt: "asc" },
     take: BATCH,

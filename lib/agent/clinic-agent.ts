@@ -726,7 +726,20 @@ export async function handlePatientMessage(
    */
   const askedForAdmin = personalTopic(input.text ?? "") || wantsHuman(input.text ?? "");
 
+  /**
+   * Агент выключен в этом диалоге насовсем — решением человека.
+   *
+   * В пациентский канал пишут и сотрудники клиники между собой: «придёт
+   * Гулбарият, взять ОАК, оплату не брать». Агент отвечает им как пациенту и
+   * не может понять, что разговор не о нём. Отличить сотрудника от пациента
+   * ему нечем, а человеку есть — поэтому выключатель отдан человеку, и срок у
+   * него не истекает, в отличие от паузы после перехвата.
+   *
+   * Сообщения при этом сохраняются и уведомления уходят как обычно: выключен
+   * ответ агента, а не переписка.
+   */
   const paused =
+    conversation.agentDisabled ||
     (conversation.status === "HUMAN_TAKEOVER" &&
       conversation.botPausedUntil !== null &&
       conversation.botPausedUntil > new Date()) ||

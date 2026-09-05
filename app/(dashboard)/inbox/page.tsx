@@ -15,6 +15,7 @@ import {
   hydrateDialogs,
   markDialogRead,
   returnToBot,
+  setAgentEnabled,
   sendMessage,
   useDb,
   type Dialog,
@@ -306,7 +307,32 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           >
             {pinging ? "Зовём…" : "Позвать админа"}
           </button>
-          {dialog.status !== "bot" ? (
+          {/*
+            Выключатель агента — насовсем, а не на четыре часа.
+
+            В пациентский канал пишут и сотрудники клиники между собой:
+            «придёт Гулбарият, взять ОАК, оплату не брать». Агент отвечает им
+            как пациенту и понять этого не может — отличить сотрудника от
+            пациента ему нечем. Человеку есть, поэтому решение за ним, и срок
+            у него не истекает.
+          */}
+          <button
+            type="button"
+            onClick={() => setAgentEnabled(dialog.id, Boolean(dialog.agentDisabled))}
+            title={
+              dialog.agentDisabled
+                ? "Включить агента в этом диалоге — дальше всё работает как раньше"
+                : "Выключить агента в этом диалоге навсегда: он не ответит ни сейчас, ни через четыре часа"
+            }
+            className={`flex-none rounded-md border px-2.5 py-1 text-2xs ${
+              dialog.agentDisabled
+                ? "border-accent text-accent-text hover:bg-accent-tint"
+                : "border-border text-text-muted hover:bg-hover"
+            }`}
+          >
+            {dialog.agentDisabled ? "Агент выключен" : "Выключить агента"}
+          </button>
+          {dialog.status !== "bot" && !dialog.agentDisabled ? (
             <button
               type="button"
               onClick={() => returnToBot(dialog.id)}

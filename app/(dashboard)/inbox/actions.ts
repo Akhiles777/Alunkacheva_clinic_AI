@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { isNewInquiryWaiting } from "@/lib/inbox/needs-reply";
 import { getSession } from "@/lib/server/session";
-import { can } from "@/lib/server/authz";
+import { can, requirePermission } from "@/lib/server/authz";
 import { escalationRecipients, inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { phoneFromChatId } from "@/lib/integrations/whatsapp/chat-id";
@@ -384,6 +384,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
       status: STATUS_MAP[c.status],
       unread,
       escalationReason: c.escalations[0] ? ESCALATION_LABEL[c.escalations[0].reason] ?? null : null,
+      agentDisabled: c.agentDisabled,
       windowOpen: c.channel !== "INSTAGRAM" || windowLeftMs === null || windowLeftMs > 0,
       windowMinutesLeft:
         c.channel === "INSTAGRAM" && windowLeftMs !== null && windowLeftMs > 0
@@ -633,6 +634,44 @@ export async function returnToBotDb(conversationId: string): Promise<{ ok: true 
     where: { conversationId, status: { not: "RESOLVED" } },
     data: { status: "RESOLVED", resolvedAt: new Date(), resolvedById: session.userId },
   });
+  return { ok: true };
+}
+
+/**
+ * Выключить или включить агента в одном диалоге — насовсем.
+ *
+ * Пауза после перехвата истекает сама, и это правильно: пациент, которому не
+ * ответили, дождётся хотя бы бота. Но в пациентский канал пишут и сотрудники
+ * клиники между собой — «придёт Гулбарият, взять ОАК, оплату не брать», — и
+ * агент отвечает им как пациенту, ничего не понимая. Отличить сотрудника от
+ * пациента ему нечем, а человеку есть.
+ *
+ * Поэтому выключатель ставит человек, и срок у него не истекает: ни через
+ * четыре часа, ни ночью. Включить обратно — той же кнопкой, и дальше всё
+ * работает как раньше.
+ */
+export async function setAgentEnabledDb(
+  conversationId: string,
+  enabled: boolean,
+): Promise<{ ok: true }> {
+  const session = await getSession();
+  await requirePermission(session, "MESSAGE_PATIENTS");
+  await prisma.conversation.updateMany({
+    where: { id: conversationId, companyId: session.companyId },
+    data: enabled
+      ? /**
+         * Включаем — снимаем и паузу: администратор нажал кнопку осознанно,
+         * заставлять его ждать ещё четыре часа незачем.
+         */
+        { agentDisabled: false, status: "BOT_ACTIVE", botPausedUntil: null }
+      : { agentDisabled: true },
+  });
+  if (enabled) {
+    await prisma.escalation.updateMany({
+      where: { conversationId, status: { not: "RESOLVED" } },
+      data: { status: "RESOLVED", resolvedAt: new Date(), resolvedById: session.userId },
+    });
+  }
   return { ok: true };
 }
 

@@ -29,6 +29,7 @@ import {
 } from "@/app/(dashboard)/patients/actions";
 import {
   returnToBotDb,
+  setAgentEnabledDb,
   markDialogReadDb,
   sendMessageDb,
   startDialogDb,
@@ -272,6 +273,11 @@ export interface Dialog {
   agentDraft?: string;
   messages: Message[];
   /** Окно ответа: открыто — можно свободным текстом; закрыто — только шаблон. */
+  /**
+   * Агент выключен в этом диалоге насовсем — решением человека. Не пауза:
+   * срок не истекает, включает обратно тоже человек.
+   */
+  agentDisabled?: boolean;
   windowOpen: boolean;
   /** Сколько минут до закрытия окна, если открыто. null — окно без таймера. */
   windowMinutesLeft: number | null;
@@ -848,6 +854,26 @@ export function sendMessage(dialogId: string, text: string): Promise<{ ok: boole
 }
 
 /** Вернуть диалог агенту: снять паузу и закрыть эскалацию. */
+/**
+ * Выключить или включить агента в диалоге — насовсем.
+ *
+ * Не пауза: срок у выключателя не истекает. Нужен там, где в пациентский
+ * канал пишут сотрудники клиники между собой и агент отвечает им как
+ * пациенту, ничего не понимая.
+ */
+export function setAgentEnabled(dialogId: string, enabled: boolean) {
+  replaceDialog(dialogId, (d) => ({
+    ...d,
+    agentDisabled: !enabled,
+    // Включили — разговор снова ведёт агент; выключили — статус не трогаем,
+    // им распоряжается сама переписка.
+    status: enabled ? "bot" : d.status,
+  }));
+  void setAgentEnabledDb(dialogId, enabled).catch(
+    writeFailed(enabled ? "не удалось включить агента" : "не удалось выключить агента"),
+  );
+}
+
 export function returnToBot(dialogId: string) {
   replaceDialog(dialogId, (d) => ({ ...d, status: "bot", escalationReason: undefined }));
   void returnToBotDb(dialogId).catch(writeFailed("не удалось вернуть диалог агенту"));
