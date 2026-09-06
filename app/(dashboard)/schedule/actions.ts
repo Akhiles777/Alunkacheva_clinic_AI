@@ -8,6 +8,7 @@ import type { AppointmentStatus } from "@/generated/prisma/enums";
 import { todayRangeMoscow } from "@/lib/schedule";
 import { clinicDayFor } from "@/lib/server/clinic-day";
 import { pushAppointment, pushCancel, pushReschedule } from "@/lib/integrations/yclients/write-back";
+import { requireId } from "@/lib/server/require-id";
 
 /**
  * Расписание/«Сегодня» из ЕДИНОГО источника — проекции Appointment в БД (та же,
@@ -293,6 +294,7 @@ export async function getScheduleWeek(): Promise<WeekDay[]> {
  * владельца — поэтому текст живёт на визите, а не в свободном чате.
  */
 export async function setApptNoteDb(id: string, note: string): Promise<void> {
+  requireId(id, "визит");
   const session = await getSession();
   await prisma.appointment.updateMany({
     where: { id, companyId: session.companyId },
@@ -311,6 +313,7 @@ export async function setApptNoteDb(id: string, note: string): Promise<void> {
  * Неявка и отмена обнуляют выручку: денег по ним нет.
  */
 export async function setApptStatusDb(id: string, status: Appt["status"]): Promise<void> {
+  requireId(id, "визит");
   const session = await getSession();
   const row = await prisma.appointment.findFirst({
     where: { id, companyId: session.companyId },
@@ -351,6 +354,7 @@ export async function cancelApptDb(id: string): Promise<void> {
 }
 
 export async function rescheduleApptDb(id: string, startMinute: number): Promise<void> {
+  requireId(id, "визит");
   const session = await getSession();
   const row = await prisma.appointment.findFirst({ where: { id, companyId: session.companyId }, select: { durationMin: true } });
   if (!row) return;
@@ -750,6 +754,7 @@ export async function getSourceOptions(): Promise<{ code: string; title: string 
  * закрепить «звонок» или «пришёл сам», их выбирают явно.
  */
 export async function setApptSourceDb(id: string, code: string | null): Promise<void> {
+  requireId(id, "визит");
   const session = await getSession();
   const source = code
     ? await prisma.source.findFirst({

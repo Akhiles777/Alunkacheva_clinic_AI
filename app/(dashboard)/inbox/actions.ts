@@ -14,6 +14,7 @@ import { chatIdFromPhone } from "@/lib/integrations/whatsapp/chat-id";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 import { KIND_LABEL, type AttachmentKind } from "@/lib/agent/attachments";
+import { requireId } from "@/lib/server/require-id";
 
 /**
  * Утверждённые WhatsApp-шаблоны для инбокса — из сохранённых настроек (раздел
@@ -636,6 +637,7 @@ export async function callAdminsDb(
  */
 export async function returnToBotDb(conversationId: string): Promise<{ ok: true }> {
   const session = await getSession();
+  requireId(conversationId, "диалог");
   await prisma.conversation.updateMany({
     where: { id: conversationId, companyId: session.companyId },
     data: { status: "BOT_ACTIVE", botPausedUntil: null },
@@ -666,6 +668,14 @@ export async function setAgentEnabledDb(
 ): Promise<{ ok: true }> {
   const session = await getSession();
   await requirePermission(session, "MESSAGE_PATIENTS");
+  /**
+   * Без идентификатора условие вырождается в «вся клиника».
+   *
+   * Выключение агента в одном диалоге погасило его во всех: фильтр был
+   * написан верно, но `id: undefined` в Prisma не сужает выборку, а снимает
+   * условие. Падение с внятной ошибкой лучше молчаливой правки всего.
+   */
+  requireId(conversationId, "диалог");
   await prisma.conversation.updateMany({
     where: { id: conversationId, companyId: session.companyId },
     data: enabled

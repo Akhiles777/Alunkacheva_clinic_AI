@@ -4,6 +4,7 @@ import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
 import { recordOutreach } from "@/lib/server/callback-queue";
 import type { CandidateKind } from "@/lib/metrics/callback-queue";
+import { requireId } from "@/lib/server/require-id";
 
 /**
  * Отметить, что пациенту из очереди написали.
@@ -23,6 +24,9 @@ export async function noteOutreach(input: {
 }): Promise<void> {
   const session = await getSession();
   await requirePermission(session, "MESSAGE_PATIENTS");
+  // Идентификатор пациента приходит снаружи: без него запись обращения ушла
+  // бы в никуда, а отчёт «что дал список» посчитал бы его.
+  requireId(input.patientId, "пациент");
   await recordOutreach({
     companyId: session.companyId,
     patientId: input.patientId,

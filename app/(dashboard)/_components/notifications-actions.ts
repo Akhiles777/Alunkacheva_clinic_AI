@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { notifyStaff } from "@/lib/server/notify";
+import { requireId } from "@/lib/server/require-id";
 
 /**
  * Колокольчик: реальные события из таблицы Notification, а не пересчитанные
@@ -49,6 +50,7 @@ export async function getNotifications(): Promise<NotificationItem[]> {
 
 /** Пометить одно уведомление прочитанным. */
 export async function markNotificationRead(id: string): Promise<NotificationItem[]> {
+  requireId(id, "уведомление");
   const session = await getSession();
   if (!session.userId) return [];
   await prisma.notification.updateMany({

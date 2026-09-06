@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { titleFrom } from "@/lib/assistant/chat-title";
+import { requireId } from "@/lib/server/require-id";
 
 /**
  * Сохранённые разговоры владельца с ИИ-аналитиком.
@@ -65,6 +66,7 @@ export async function listAiChats(): Promise<AiChatSummary[]> {
 }
 
 export async function getAiChat(chatId: string): Promise<AiChatTurn[]> {
+  requireId(chatId, "разбор");
   const { companyId, userId } = await ownerSession();
   const chat = await prisma.aiChat.findFirst({
     where: { id: chatId, companyId, userId, deletedAt: null },
@@ -125,6 +127,7 @@ export async function appendAiTurn(input: {
 }
 
 export async function renameAiChat(chatId: string, title: string): Promise<void> {
+  requireId(chatId, "разбор");
   const { companyId, userId } = await ownerSession();
   const clean = title.trim().slice(0, 120);
   if (clean.length === 0) return;
@@ -136,6 +139,7 @@ export async function renameAiChat(chatId: string, title: string): Promise<void>
 
 /** Мягкое удаление: разбор мог понадобиться в разговоре с клиентом. */
 export async function deleteAiChat(chatId: string): Promise<void> {
+  requireId(chatId, "разбор");
   const { companyId, userId } = await ownerSession();
   await prisma.aiChat.updateMany({
     where: { id: chatId, companyId, userId, deletedAt: null },

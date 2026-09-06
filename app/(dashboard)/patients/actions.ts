@@ -9,6 +9,7 @@ import { normalizePhone } from "@/lib/phone";
 import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/enums";
 import { getPatientDossier } from "@/lib/server/patient-profile";
 import type { PatientProfile } from "@/lib/metrics/patient-profile";
+import { requireId } from "@/lib/server/require-id";
 
 /**
  * Пациенты в БД (§4): идентичность, телефоны (E.164), заметки, родственные связи.
@@ -416,6 +417,7 @@ export async function createPatient(input: {
 }
 
 export async function updatePatientDb(id: string, patch: { name?: string; source?: string | null }): Promise<void> {
+  requireId(id, "пациент");
   const session = await getSession();
   const data: { name?: string; sourceId?: string | null } = {};
   if (patch.name !== undefined) data.name = patch.name.trim();
@@ -443,6 +445,7 @@ export async function updatePatientDb(id: string, patch: { name?: string; source
  * карточке. Номер — не медицинская тайна и не история визитов; освобождаем.
  */
 export async function softDeletePatient(id: string): Promise<void> {
+  requireId(id, "пациент");
   const session = await getSession();
   await prisma.$transaction([
     prisma.patient.updateMany({
@@ -498,6 +501,7 @@ export async function addPhoneDb(input: {
 }
 
 export async function removePhoneDb(phoneId: string, newPrimaryId: string | null): Promise<void> {
+  requireId(phoneId, "номер");
   const session = await getSession();
   await prisma.patientPhone.deleteMany({ where: { id: phoneId, companyId: session.companyId } });
   if (newPrimaryId) {
@@ -509,6 +513,7 @@ export async function removePhoneDb(phoneId: string, newPrimaryId: string | null
 }
 
 export async function setPrimaryPhoneDb(patientId: string, phoneId: string): Promise<void> {
+  requireId(phoneId, "номер");
   const session = await getSession();
   await prisma.$transaction([
     prisma.patientPhone.updateMany({
@@ -523,6 +528,7 @@ export async function setPrimaryPhoneDb(patientId: string, phoneId: string): Pro
 }
 
 export async function toggleWhatsappDb(phoneId: string, value: boolean): Promise<void> {
+  requireId(phoneId, "номер");
   const session = await getSession();
   await prisma.patientPhone.updateMany({
     where: { id: phoneId, companyId: session.companyId },
@@ -549,6 +555,7 @@ export async function addNoteDb(input: {
 }
 
 export async function resolveNoteDb(noteId: string): Promise<void> {
+  requireId(noteId, "отметка");
   const session = await getSession();
   await prisma.patientNote.updateMany({
     where: { id: noteId, companyId: session.companyId },
@@ -583,6 +590,7 @@ export async function addRelationDb(input: {
 }
 
 export async function removeRelationDb(relationId: string): Promise<void> {
+  requireId(relationId, "связь");
   const session = await getSession();
   await prisma.patientRelation.deleteMany({ where: { id: relationId, companyId: session.companyId } });
 }
