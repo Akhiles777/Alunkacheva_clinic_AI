@@ -161,6 +161,15 @@ export interface DialogRecord {
    * кнопка возвращается в исходное сама, хотя в базе всё записано верно.
    */
   agentDisabled: boolean;
+  /**
+   * До какого времени агент молчит после ответа сотрудника — «12:40».
+   *
+   * Пауза сама по себе правильная: бот не перебивает администратора. Но со
+   * стороны она неотличима от поломки — владелец писал в диалог и делал
+   * вывод, что бот не работает вовсе. Состояние должно быть видно на экране,
+   * а не выясняться скриптом.
+   */
+  agentPausedUntil: string | null;
   windowOpen: boolean;
   /** Сколько минут осталось до закрытия окна; null — окно без таймера. */
   windowMinutesLeft: number | null;
@@ -394,6 +403,10 @@ export async function getConversations(): Promise<DialogRecord[]> {
       unread,
       escalationReason: c.escalations[0] ? ESCALATION_LABEL[c.escalations[0].reason] ?? null : null,
       agentDisabled: c.agentDisabled,
+      agentPausedUntil:
+        c.botPausedUntil && c.botPausedUntil > new Date()
+          ? timeFmt.format(c.botPausedUntil)
+          : null,
       windowOpen: c.channel !== "INSTAGRAM" || windowLeftMs === null || windowLeftMs > 0,
       windowMinutesLeft:
         c.channel === "INSTAGRAM" && windowLeftMs !== null && windowLeftMs > 0

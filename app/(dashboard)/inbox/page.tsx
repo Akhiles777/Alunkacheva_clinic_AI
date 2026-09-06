@@ -302,6 +302,19 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                   {" · "}
                   <span className="text-accent-text font-medium">агент выключен</span>
                 </>
+              ) : dialog.agentPausedUntil ? (
+                /*
+                  Пауза после ответа сотрудника правильная: бот не перебивает
+                  администратора. Но со стороны она неотличима от поломки —
+                  человек пишет в диалог, ответа нет, и вывод один: «бот не
+                  работает». Состояние должно быть на экране, а не в скрипте.
+                */
+                <>
+                  {" · "}
+                  <span className="text-accent-text font-medium">
+                    агент молчит до {dialog.agentPausedUntil}
+                  </span>
+                </>
               ) : null}
             </div>
           </div>

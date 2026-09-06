@@ -738,12 +738,25 @@ export async function handlePatientMessage(
    * Сообщения при этом сохраняются и уведомления уходят как обычно: выключен
    * ответ агента, а не переписка.
    */
-  const paused =
-    conversation.agentDisabled ||
-    (conversation.status === "HUMAN_TAKEOVER" &&
-      conversation.botPausedUntil !== null &&
-      conversation.botPausedUntil > new Date()) ||
-    (openEscalation !== null && askedForAdmin);
+  /**
+   * ПОЧЕМУ молчим — записываем словами.
+   *
+   * «SUPPRESSED 29» в журнале не отвечает ни на один вопрос: у молчания три
+   * разные причины, и лечатся они по-разному. Владелец смотрел на это число и
+   * видел «бот не работает», хотя двадцать девять раз бот молчал правильно —
+   * в диалогах, которые вели администраторы.
+   */
+  const silence: string | null = conversation.agentDisabled
+    ? "агент выключен в диалоге человеком"
+    : conversation.status === "HUMAN_TAKEOVER" &&
+        conversation.botPausedUntil !== null &&
+        conversation.botPausedUntil > new Date()
+      ? `пауза после ответа сотрудника до ${conversation.botPausedUntil.toISOString().slice(11, 16)} UTC`
+      : openEscalation !== null && askedForAdmin
+        ? "открытая эскалация и просьба позвать человека"
+        : null;
+
+  const paused = silence !== null;
   if (paused) {
     /**
      * Молчание намеренное: диалог ведёт человек. В надёжности агента такие
@@ -753,6 +766,9 @@ export async function handlePatientMessage(
       companyId: ctx.companyId,
       conversationId: conversation.id,
       outcome: "SUPPRESSED",
+      // Причина молчания — в том же поле, что и причина сбоя: это ответ на
+      // вопрос «почему бот не ответил», а он один и тот же по сути.
+      error: silence,
     });
     const pausedBody = messageBody(input.text ?? "", attachments);
     if (pausedBody) {

@@ -278,6 +278,8 @@ export interface Dialog {
    * срок не истекает, включает обратно тоже человек.
    */
   agentDisabled?: boolean;
+  /** До какого времени агент молчит после ответа сотрудника: «12:40». */
+  agentPausedUntil?: string | null;
   windowOpen: boolean;
   /** Сколько минут до закрытия окна, если открыто. null — окно без таймера. */
   windowMinutesLeft: number | null;
@@ -502,6 +504,7 @@ export function hydrateDialogs(records: DialogRecord[]) {
        * при этом всё было записано верно: врал экран.
        */
       agentDisabled: r.agentDisabled,
+      agentPausedUntil: r.agentPausedUntil,
       windowOpen: r.windowOpen,
       windowMinutesLeft: r.windowMinutesLeft,
       totalMessages: r.totalMessages,

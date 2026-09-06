@@ -81,6 +81,26 @@ async function main() {
       console.log(`  ${r.outcome.padEnd(16)} ${String(r._count._all).padStart(4)}${hint}`);
     }
   }
+  /**
+   * Из чего складывается молчание.
+   *
+   * «SUPPRESSED 29» не отвечает ни на один вопрос: у молчания три разные
+   * причины и три разных действия. Пауза после ответа сотрудника — штатная
+   * работа, выключенный агент — решение человека, а вот их смесь с чем-то
+   * третьим уже повод разбираться.
+   */
+  const suppressed = await prisma.agentRun.groupBy({
+    by: ["errorText"],
+    where: { companyId: company.id, outcome: "SUPPRESSED", triggeredAt: { gte: since } },
+    _count: { _all: true },
+  });
+  if (suppressed.length > 0) {
+    console.log("\n  почему молчал:");
+    for (const r of suppressed.sort((a, b) => b._count._all - a._count._all)) {
+      console.log(`    ${String(r._count._all).padStart(4)} — ${r.errorText ?? "причина не записана (до этого обновления)"}`);
+    }
+  }
+
   const lastRun = await prisma.agentRun.findFirst({
     where: { companyId: company.id },
     orderBy: { triggeredAt: "desc" },
@@ -184,8 +204,19 @@ async function main() {
   } else if (sent === 0 && failedCount > 0) {
     console.log("  Агент отвечает, но канал не принимает отправку: дело в связи с провайдером,");
     console.log("  а не в самом агенте. Причины — в шаге 4.");
+  } else if (sent === 0 && runs.some((r) => r.outcome === "SUPPRESSED")) {
+    console.log("  Агент молчал намеренно — во всех разговорах, где были сообщения.");
+    console.log("  Смотрите «почему молчал» выше: пауза после ответа сотрудника — штатная");
+    console.log("  работа, а не поломка. Снять её в конкретном диалоге — кнопка «Вернуть агенту».");
   } else {
     console.log(`  Агент отвечает: доставлено ${sent}, не доставлено ${failedCount}.`);
+    const suppressedCount = runs.find((r) => r.outcome === "SUPPRESSED")?._count._all ?? 0;
+    if (suppressedCount > sent) {
+      console.log(
+        `  Молчал он при этом чаще, чем отвечал (${suppressedCount} против ${sent}) — это нормально,`,
+      );
+      console.log("  если администраторы ведут разговоры сами. Разбивка причин — выше.");
+    }
   }
 }
 
