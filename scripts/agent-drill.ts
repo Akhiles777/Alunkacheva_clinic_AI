@@ -441,9 +441,30 @@ async function main() {
    * местной проверке рядом стоит песочница (scripts/agent-sandbox-seed.ts), и
    * прогон должен идти по ней: `--sandbox`.
    */
-  const company = process.argv.includes("--sandbox")
+  const sandbox = process.argv.includes("--sandbox");
+  const company = sandbox
     ? await prisma.company.findFirstOrThrow({ where: { yclientsId: SANDBOX_YCLIENTS_ID } })
     : await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
+
+  /**
+   * На боевой базе прогон не идёт.
+   *
+   * Он создаёт десятки диалогов, сообщений и эскалаций — а это метрики
+   * клиники и вызовы администраторов. Раньше это было допустимо: сценариев
+   * было мало и своей базы у прогона не было. Теперь есть песочница, и
+   * запускать разговоры на живой клинике незачем.
+   */
+  if (!sandbox) {
+    const visits = await prisma.appointment.count({ where: { companyId: company.id } });
+    if (visits > 0 && process.env.DRILL_ON_LIVE !== "1") {
+      log(`Это боевая база: клиника «${company.name}», визитов ${visits}.`);
+      log("Прогон создаёт диалоги, сообщения и эскалации — здесь он их создавать не будет.");
+      log("Проверка идёт на песочнице разработчика:");
+      log("  npx tsx scripts/agent-sandbox-seed.ts");
+      log("  AGENT_DRILL=1 npx tsx scripts/agent-drill.ts --sandbox --only=30-44");
+      return;
+    }
+  }
 
   const [services, knowledge, staff] = await Promise.all([
     prisma.service.count({ where: { companyId: company.id } }),
