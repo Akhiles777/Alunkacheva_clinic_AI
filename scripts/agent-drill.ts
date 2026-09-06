@@ -30,6 +30,7 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { prisma } from "../lib/db";
 import { handlePatientMessage } from "../lib/agent/clinic-agent";
+import { SANDBOX_YCLIENTS_ID } from "./sandbox-id";
 
 process.env.AGENT_DRILL = "1";
 
@@ -357,7 +358,7 @@ async function main() {
    * прогон должен идти по ней: `--sandbox`.
    */
   const company = process.argv.includes("--sandbox")
-    ? await prisma.company.findFirstOrThrow({ where: { yclientsId: 999_001 } })
+    ? await prisma.company.findFirstOrThrow({ where: { yclientsId: SANDBOX_YCLIENTS_ID } })
     : await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
 
   const [services, knowledge, staff] = await Promise.all([

@@ -12,23 +12,46 @@
  * пациенткой оборвался на просьбе записать племянника), та же инструкция из
  * «Настройки → Ассистент».
  *
- * Работает ТОЛЬКО с локальной базой. Проверка на localhost стоит первой и
- * снимается только руками: скрипт создаёт и удаляет данные, и запуск его на
- * боевом сервере испортил бы настоящую клинику.
+ * Разворачивается ТОЛЬКО там, где нет работающей клиники.
+ *
+ * Первая версия проверяла, что база на localhost, — и это была ошибка: на
+ * сервере боевой Postgres тоже localhost, песочница развернулась прямо в
+ * рабочей базе, и её выдуманная клиника попала в круг выгрузки. Правильная
+ * проверка не про адрес базы, а про её содержимое: есть ли здесь настоящая
+ * клиника. Убрать последствия — scripts/agent-sandbox-drop.ts.
  *
  *   npx tsx scripts/agent-sandbox-seed.ts
  */
 import "dotenv/config";
 import { prisma } from "../lib/db";
 
-const SANDBOX_YCLIENTS_ID = 999_001;
+import { SANDBOX_YCLIENTS_ID } from "./sandbox-id";
 
-function assertLocal() {
-  const url = process.env.DATABASE_URL ?? "";
-  const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
-  if (!local) {
-    console.error("DATABASE_URL смотрит не на localhost — песочницу здесь не разворачиваем.");
-    console.error("Скрипт создаёт клинику, пациентов и записи; на боевой базе это мусор.");
+/**
+ * Есть ли в этой базе работающая клиника.
+ *
+ * Проверяем по содержимому, а не по адресу базы: адрес на боевом сервере
+ * ничем не отличается от локального. Настоящая клиника — та, у которой есть
+ * номер филиала YCLIENTS и хоть один визит.
+ */
+async function assertNoLiveClinic() {
+  const live = await prisma.company.findFirst({
+    where: { yclientsId: { gte: 100 } },
+    select: { id: true, name: true, yclientsId: true },
+  });
+  if (!live) return;
+
+  const visits = await prisma.appointment.count({ where: { companyId: live.id } });
+  if (visits === 0 && process.env.SANDBOX_FORCE !== "1") {
+    console.error(`В базе есть клиника «${live.name}» (филиал ${live.yclientsId}), но без визитов.`);
+    console.error("Если это всё же тестовая копия — SANDBOX_FORCE=1 npx tsx scripts/agent-sandbox-seed.ts");
+    process.exit(1);
+  }
+  if (visits > 0) {
+    console.error(`ЭТО БОЕВАЯ БАЗА: клиника «${live.name}», визитов ${visits}.`);
+    console.error("Песочницу здесь не разворачиваем — она создаёт выдуманных пациентов и записи.");
+    console.error("Прогон ассистента идёт на местной базе разработчика.");
+    console.error("Если песочница уже сюда попала: npx tsx scripts/agent-sandbox-drop.ts --apply");
     process.exit(1);
   }
 }
@@ -110,7 +133,7 @@ const CLINIC_PROMPT = [
 ].join("\n");
 
 async function main() {
-  assertLocal();
+  await assertNoLiveClinic();
 
   const company = await prisma.company.upsert({
     where: { yclientsId: SANDBOX_YCLIENTS_ID },
