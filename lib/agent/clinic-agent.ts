@@ -1115,17 +1115,21 @@ async function referenceAnswer(companyId: string, text: string): Promise<string 
    * Не нашли конкретную услугу — показываем прайс: человек спросил цену, и
    * список цен ему полезнее, чем режим работы.
    */
-  const aboutPrice = /(?<!\p{L})(?:сколько\s+стоит|цена|цены|стоимость|прайс|почём|почем)(?!\p{L})/iu.test(text);
-  const priced = matchServices(text, services, 3, aboutPrice ? 0.3 : 0.5);
+  const priced = matchServices(text, services, 3, 0.5);
   if (priced.length > 0) {
     return priced
       .map((p) => `${p.title} — ${p.price} ₽${p.durationMin > 0 ? `, ${p.durationMin} мин` : ""}`)
       .join("\n");
   }
-  if (aboutPrice) {
-    const list = priceListText(patientServices(services));
-    if (list) return list;
-  }
+  /**
+   * Не нашли услугу — молчим, а не выкладываем прайс целиком.
+   *
+   * Здесь стоял запасной ход «спросили про цену, покажем всё». На вопрос
+   * «Здравствуйте сколько стоит остеопатия?» новый пациент получил двадцать
+   * пять строк прайса подряд — от забора крови до инфузий, — и следом стену
+   * согласия. Прямой вопрос, вместо ответа простыня: так теряют человека с первого
+   * сообщения. Лучше не сказать ничего, чем сказать всё сразу.
+   */
 
   const rows = await prisma.knowledgeEntry.findMany({
     where: usableKnowledgeWhere(companyId),

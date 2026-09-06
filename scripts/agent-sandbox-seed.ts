@@ -56,13 +56,45 @@ async function assertNoLiveClinic() {
   }
 }
 
-/** Услуги — с настоящими названиями клиники: на них проверяются цены и дубли. */
+/**
+ * Услуги — настоящий прайс клиники, а не пять строк «для примера».
+ *
+ * Короткий список прощал ошибки подбора: на пяти услугах почти любой вопрос
+ * находил нужную. На боевом прайсе из четырёх десятков — с кавычками, скобками
+ * и дублями — «Здравствуйте сколько стоит остеопатия?» не нашло НИЧЕГО, и
+ * пациенту ушёл весь прайс подряд. Проверять подбор надо на том списке, что
+ * стоит у клиники.
+ */
 const SERVICES = [
   { title: "Взрослый прием - остеопатия", price: 8000, durationMin: 45, yclientsServiceId: 1 },
   { title: "Детский прием до 10 л - остеопатия", price: 5000, durationMin: 40, yclientsServiceId: 2 },
-  { title: "БОС-терапия, сеанс", price: 2800, durationMin: 40, yclientsServiceId: 3, isCourse: true, defaultSessions: 10 },
-  { title: "Консультация", price: 3000, durationMin: 30, yclientsServiceId: 4 },
-  { title: "Внутривенное капельное введение растворов", price: 2500, durationMin: 60, yclientsServiceId: 5 },
+  { title: "БОС-терапия", price: 2800, durationMin: 40, yclientsServiceId: 3, isCourse: true, defaultSessions: 10 },
+  { title: "Консультация", price: 1000, durationMin: 30, yclientsServiceId: 4 },
+  { title: "Внутривенное капельное введение растворов", price: 500, durationMin: 60, yclientsServiceId: 5 },
+  { title: "Анкета - Экспертный аудит и назначение IV-протокола", price: 3000, durationMin: 30, yclientsServiceId: 6 },
+  { title: 'БОС + "BRAINBI"', price: 2800, durationMin: 40, yclientsServiceId: 7 },
+  { title: "БОС-терапия, курс", price: 28000, durationMin: 40, yclientsServiceId: 8, isCourse: true, defaultSessions: 10 },
+  // Дубль настоящий: в справочнике клиники две строки одной услуги.
+  { title: "Внутривенное капельное введение растворов (IV-терапия)", price: 500, durationMin: 60, yclientsServiceId: 9 },
+  { title: "Внутримышечный укол", price: 300, durationMin: 10, yclientsServiceId: 10 },
+  { title: "Диагностика/консультация на БОС-терапию", price: 1000, durationMin: 30, yclientsServiceId: 11 },
+  { title: "Забор крови", price: 200, durationMin: 15, yclientsServiceId: 12 },
+  { title: 'Инфузия "NAD+Био-Генезис" (Молекула молодости)', price: 9500, durationMin: 60, yclientsServiceId: 13 },
+  { title: 'Инфузия "Абсолютный ресурс"', price: 9000, durationMin: 60, yclientsServiceId: 14 },
+  { title: 'Инфузия "Аллерго-Контроль" (Свободное дыхание)', price: 2500, durationMin: 60, yclientsServiceId: 15 },
+  { title: 'Инфузия "Амино-Архитектура" (Белковое восстановление)', price: 8500, durationMin: 60, yclientsServiceId: 16 },
+  { title: 'Инфузия "Анти-Спазм"', price: 6500, durationMin: 55, yclientsServiceId: 17 },
+  { title: 'Инфузия "Био-Ресурс"', price: 1000, durationMin: 40, yclientsServiceId: 18 },
+  { title: 'Инфузия "Гепато-Ресурс" (Защита печени)', price: 6000, durationMin: 60, yclientsServiceId: 19 },
+  { title: 'Инфузия "Интеллект-Актив" (Ясный ум)', price: 3500, durationMin: 60, yclientsServiceId: 20 },
+  { title: 'Инфузия "Кардио-Генезис" (Спорт и выносливость)', price: 8000, durationMin: 60, yclientsServiceId: 21 },
+  { title: 'Инфузия "Клеточный баланс" (Иммунитет и антистресс)', price: 7000, durationMin: 60, yclientsServiceId: 22 },
+  { title: 'Инфузия "Мета-Контур" (Турбо-метаболизм)', price: 4500, durationMin: 60, yclientsServiceId: 23 },
+  { title: 'Инфузия "Мета-Очищение" (Глобальный детокс и энергия)', price: 7000, durationMin: 60, yclientsServiceId: 24 },
+  { title: 'Инфузия "Точка покоя" (Глубокий релакс)', price: 4000, durationMin: 60, yclientsServiceId: 25 },
+  { title: 'Инфузия "Ферро-Баланс" (Энергия крови)', price: 5500, durationMin: 60, yclientsServiceId: 26 },
+  { title: "Остеопатия для беременных", price: 8000, durationMin: 45, yclientsServiceId: 27 },
+  { title: "Массаж классический", price: 3000, durationMin: 60, yclientsServiceId: 28 },
 ];
 
 const STAFF = [
