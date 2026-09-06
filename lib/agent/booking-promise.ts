@@ -31,9 +31,30 @@ const PROMISE_PATTERNS: RegExp[] = [
   phraseRe("жд[её]м", "вас", "\\d{1,2}[:.]\\d{2}"),
 ];
 
+/**
+ * «Вы записаны» — обещание только тогда, когда записи мы не видим.
+ *
+ * Пациентка спросила «а к кому я записана?». Агент ответил верно — «Вы
+ * записаны к Ирине Алилгаджиевне на 8 сентября, 09:00», — и эта фраза была
+ * вырезана как обещание записать. От ответа осталось меньше строки, и человек
+ * получил «записью занимается администратор» на вопрос, ответ на который
+ * лежал в базе и был только что назван.
+ *
+ * Разница простая: если записи пациента есть в справке, «вы записаны» — это
+ * пересказ факта, а выдуманное время всё равно не пройдёт проверку чисел
+ * (lib/agent/grounding). Если записей в справке нет, взяться такой фразе
+ * неоткуда, и она остаётся обещанием.
+ */
+const REPORTS_EXISTING = phraseRe("вы", "записаны");
+
 /** Какая именно фраза обещает распорядиться расписанием. null — обещания нет. */
-export function bookingPromiseFound(text: string): string | null {
+export function bookingPromiseFound(
+  text: string,
+  /** Знаем ли мы записи этого пациента: тогда рассказ о них — не обещание. */
+  knowsBookings = false,
+): string | null {
   for (const re of PROMISE_PATTERNS) {
+    if (knowsBookings && re.source === REPORTS_EXISTING.source) continue;
     const m = re.exec(text);
     if (m) return m[0];
   }
@@ -52,15 +73,15 @@ export function bookingPromiseFound(text: string): string | null {
  * Если после чистки не осталось ничего содержательного — значит весь ответ и
  * был обещанием, и тогда передаём человеку.
  */
-export function withoutBookingPromise(text: string): string {
+export function withoutBookingPromise(text: string, knowsBookings = false): string {
   const sentences = text.split(/(?<=[.!?])\s+/);
-  const kept = sentences.filter((s) => !promisesBooking(s));
+  const kept = sentences.filter((s) => bookingPromiseFound(s, knowsBookings) === null);
   return kept.join(" ").replace(/\s{2,}/g, " ").trim();
 }
 
 /** Есть ли в ответе обещание записать, перенести или подобрать время. */
-export function promisesBooking(text: string): boolean {
-  return PROMISE_PATTERNS.some((re) => re.test(text));
+export function promisesBooking(text: string, knowsBookings = false): boolean {
+  return bookingPromiseFound(text, knowsBookings) !== null;
 }
 
 /**

@@ -19,7 +19,7 @@ function knowledgeIdOf(row: { id?: string }): string[] {
 import { confidentMatch, matchKnowledge, usableKnowledgeWhere } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { focusLine, focusOf, searchText } from "./focus";
-import { patientVisitsContext, upcomingBookingLine } from "./patient-visits";
+import { patientVisitsContext, upcomingBookingLines } from "./patient-visits";
 import { HANDBACK_HOURS } from "./handback-rule";
 import {
   HANDOVER_REPLY,
@@ -43,6 +43,7 @@ import {
   runningLate,
   scheduleTopic,
   statesOwnBooking,
+  wantsToBook,
   wantsHuman,
   wantsReschedule,
 } from "./triggers";
@@ -69,7 +70,7 @@ import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
 import { focusedAnswer } from "./focused-answer";
 import { matchServices, whomFor } from "./service-match";
-import { hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
+import { asksForIntake, hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
 import { withoutQuote } from "./quoted";
@@ -832,7 +833,18 @@ export async function handlePatientMessage(
    * единственный надёжный ключ пациента (§4).
    */
   if (input.knownPhone && !conversation.patientId) {
-    await linkByPhone(ctx, conversation.id, input.knownPhone).catch(() => {});
+    /**
+     * Привязали — значит знаем, уже в этом сообщении.
+     *
+     * Карточка обновлялась в базе, а объект диалога в памяти оставался с
+     * пустым patientId — и всё, что дальше зависит от «знаем ли мы человека»,
+     * работало как с незнакомцем. На первом же сообщении: «Записана на 8
+     * сентября» получало «уточню у администратора», хотя запись лежала в базе;
+     * согласие спрашивалось у пациентки с визитами. Со второго сообщения всё
+     * налаживалось само — и потому дефект не был виден в разборах.
+     */
+    const linked = await linkByPhone(ctx, conversation.id, input.knownPhone).catch(() => null);
+    if (linked) conversation.patientId = linked;
   }
 
   const text = (input.text ?? "").trim();
@@ -883,8 +895,19 @@ export async function handlePatientMessage(
    */
   const consent = await consentRequestFor(ctx.companyId, conversation.id);
   if (consent) {
+    /**
+     * Ответ на вопрос идёт вместе с запросом согласия, а не вместо него.
+     *
+     * Человек написал «сколько стоит приём?» и получал юридическую стену —
+     * первое, что он слышит от клиники. Цена, адрес и часы работы публичны, и
+     * назвать их можно, ничего не обрабатывая. Согласие при этом спрашиваем
+     * тем же сообщением и без него дальше не идём.
+     */
+    const known = await referenceAnswer(ctx.companyId, own).catch(() => null);
     return respond(ctx, conversation.id, {
-      text: consent.text + consentHint(ctx.channel),
+      text: known
+        ? `${known}\n\n${consent.text}${consentHint(ctx.channel)}`
+        : consent.text + consentHint(ctx.channel),
       buttons: consent.buttons,
     });
   }
@@ -928,9 +951,15 @@ export async function handlePatientMessage(
           direction: "OUT",
           deletedAt: null,
           isDraft: false,
-          body: { startsWith: "Нужно ваше согласие" },
+          /**
+           * Ищем вхождение, а не начало строки: вместе со стеной теперь
+           * уходит ответ на вопрос пациента, и «начинается с» перестало
+           * совпадать — стена повторялась бы вечно.
+           */
+          body: { contains: "Нужно ваше согласие" },
         },
       });
+      const known = await referenceAnswer(ctx.companyId, own).catch(() => null);
       if (asked >= 1) {
         await escalate(
           ctx.companyId,
@@ -939,11 +968,15 @@ export async function handlePatientMessage(
           "Пациент пишет по делу, не отвечая на запрос согласия",
         ).catch(() => {});
         return respond(ctx, conversation.id, {
-          text: "Передал(а) администратору — он ответит здесь же.",
+          text: known
+            ? `${known}\n\nОстальное подскажет администратор — передал(а) ему ваш вопрос.`
+            : "Передал(а) администратору — он ответит здесь же.",
         });
       }
       return respond(ctx, conversation.id, {
-        text: `Нужно ваше согласие на обработку персональных данных.${consentHint(ctx.channel)}`,
+        text:
+          (known ? `${known}\n\n` : "") +
+          `Нужно ваше согласие на обработку персональных данных.${consentHint(ctx.channel)}`,
         buttons: consentButtons(),
       });
     }
@@ -982,6 +1015,76 @@ export async function handlePatientMessage(
 
   return replyToQuestion(ctx, conversation, text);
 }
+
+/**
+ * Короткий ответ из справки — без модели и без эскалации.
+ *
+ * Нужен там, где отвечать полноценно ещё нельзя: пациент только написал, и мы
+ * просим у него согласие на обработку данных (§7). Прежде вместе с запросом
+ * согласия уходила ТОЛЬКО юридическая стена: человек спрашивал «сколько стоит
+ * приём?», а получал форму. Второй такой вопрос — ту же форму, третий — «передал
+ * администратору». За три реплики новый пациент не услышал ни одной цены.
+ *
+ * Часы работы, адрес и прайс — сведения публичные: чтобы их назвать, ничьи
+ * персональные данные обрабатывать не нужно. Согласие мы при этом всё равно
+ * просим и без него дальше переписку не ведём.
+ *
+ * Модель здесь не спрашиваем намеренно: до согласия в неё не уходит ничего.
+ */
+async function referenceAnswer(companyId: string, text: string): Promise<string | null> {
+  if (text.trim().length < 4) return null;
+
+  /**
+   * Прайс спрашиваем ПЕРВЫМ.
+   *
+   * Справочник отвечает по пересечению слов, и «Сколько стоит приём?» уверенно
+   * находило запись «Часы работы» — там в вопросе стоит «часы приёма». Человек
+   * спросил цену, а услышал график. У услуги совпадение точнее: она называется
+   * ровно тем словом, которое он написал.
+   */
+  const services = await getServices(companyId).catch(() => []);
+  /**
+   * «Сколько стоит приём?» — вопрос про цену, и порог совпадения здесь ниже.
+   *
+   * Доля считается от всех значимых слов вопроса, а их три: «сколько»,
+   * «стоит», «приём». В название услуги попадает одно, доля выходит 0,33 — и
+   * прямой вопрос о цене не находил ни одной услуги, зато справочник уверенно
+   * отвечал графиком работы: там в вопросе записано «часы приёма».
+   *
+   * Не нашли конкретную услугу — показываем прайс: человек спросил цену, и
+   * список цен ему полезнее, чем режим работы.
+   */
+  const aboutPrice = /(?<!\p{L})(?:сколько\s+стоит|цена|цены|стоимость|прайс|почём|почем)(?!\p{L})/iu.test(text);
+  const priced = matchServices(text, services, 3, aboutPrice ? 0.3 : 0.5);
+  if (priced.length > 0) {
+    return priced
+      .map((p) => `${p.title} — ${p.price} ₽${p.durationMin > 0 ? `, ${p.durationMin} мин` : ""}`)
+      .join("\n");
+  }
+  if (aboutPrice) {
+    const list = priceListText(patientServices(services));
+    if (list) return list;
+  }
+
+  const rows = await prisma.knowledgeEntry.findMany({
+    where: usableKnowledgeWhere(companyId),
+    select: { id: true, topic: true, question: true, answer: true },
+  });
+  const match = matchKnowledge(text, rows);
+  if (confidentMatch(match)) return match!.row.answer.trim();
+  return null;
+}
+
+/**
+ * Что просим прислать, когда запись только начинается.
+ *
+ * Заказчик просил прямо: «он бы просто оформил клиента как нужно». Данные
+ * администратору всё равно понадобятся, и спросить их лучше сейчас, пока
+ * человек в переписке, чем заставлять его отвечать на те же вопросы завтра.
+ */
+const INTAKE_REQUEST =
+  "Время подберёт администратор — передал(а) ему вашу просьбу. Чтобы не терять время, " +
+  "пришлите, пожалуйста, одним сообщением: ФИО, возраст и кратко причину обращения.";
 
 /**
  * Названа ли уже услуга — в этом сообщении или раньше в разговоре.
@@ -1341,12 +1444,43 @@ async function replyToQuestion(
      * только потому, что так написал человек, — значит подтверждать неизвестно
      * что. Записи не видим — так и говорим и передаём администратору.
      */
-    if (statesOwnBooking(own)) {
-      const mine = await upcomingBookingLine(ctx.companyId, conversation.patientId);
+    if (statesOwnBooking(own) || asksAboutOwnBooking(own)) {
+      const mine = await upcomingBookingLines(ctx.companyId, conversation.patientId, 3);
+      const asked = asksAboutOwnBooking(own);
+      if (mine.length === 0) {
+        return respond(ctx, conversation.id, {
+          text: "Записи впереди я у вас не вижу — уточню у администратора, он ответит здесь же.",
+        });
+      }
+      /**
+       * Второй раз то же самое не зачитываем.
+       *
+       * «Когда у меня запись?» и следом «А к кому я записана?» — один и тот же
+       * ответ дословно дважды подряд. Формально верно, а читается как
+       * автоответчик, который не слышит вопроса.
+       */
+      const toldAlready = said.some(
+        (t) => t.role === "assistant" && mine.some((l) => t.content.includes(l)),
+      );
+      if (toldAlready) {
+        return respond(ctx, conversation.id, {
+          text: `Как и писал(а) выше: ${mine.join("; ")}. Изменить время может только администратор — передам ему, если нужно.`,
+        });
+      }
+      const list = mine.length === 1 ? mine[0] : mine.map((l) => `• ${l}`).join("\n");
+      const head = asked
+        ? mine.length === 1
+          ? "Ваша запись:"
+          : "Ваши ближайшие записи:"
+        : mine.length === 1
+          ? "Да, вижу вашу запись:"
+          : "Да, вижу ваши записи:";
       return respond(ctx, conversation.id, {
-        text: mine
-          ? `Да, вижу вашу запись: ${mine}. Если появятся вопросы — я здесь.`
-          : "Уточню у администратора — он подтвердит запись и напишет здесь же.",
+        text:
+          `${head} ${mine.length === 1 ? list : `\n${list}`}\n\n` +
+          (asked
+            ? "Если нужно что-то изменить — напишите, передам администратору."
+            : "Если появятся вопросы — я здесь."),
       });
     }
   }
@@ -1456,9 +1590,14 @@ async function replyToQuestion(
    * по делу — отправляем его, добавив, кто ставит время. Не осталось ничего —
    * значит весь ответ и был обещанием, тогда зовём человека.
    */
-  const promise = answer ? bookingPromiseFound(answer) : null;
+  /**
+   * Записи пациента у нас перед глазами — значит «вы записаны» это пересказ
+   * факта, а не обещание записать (lib/agent/booking-promise).
+   */
+  const knowsBookings = visits.length > 0;
+  const promise = answer ? bookingPromiseFound(answer, knowsBookings) : null;
   if (answer && promise) {
-    const cleaned = withoutBookingPromise(answer);
+    const cleaned = withoutBookingPromise(answer, knowsBookings);
     console.warn(`[agent] убрано обещание записать: «${promise}»`);
     if (cleaned.length >= MEANINGFUL_ANSWER_CHARS) {
       return respond(ctx, conversation.id, {
@@ -1467,6 +1606,14 @@ async function replyToQuestion(
       });
     }
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
+    /**
+     * Весь ответ оказался обещанием — но разговор о записи не должен на этом
+     * кончаться. «Запишите племянника» получало «записью занимается
+     * администратор», и данные ребёнка администратор потом собирал сам.
+     */
+    if (wantsToBook(own) && !inIntakeFlow(said)) {
+      return respond(ctx, conversation.id, { text: INTAKE_REQUEST });
+    }
     return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
   }
 
@@ -1519,6 +1666,18 @@ async function replyToQuestion(
    */
   if (answer && admitsInability(answer)) {
     await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Вопрос вне возможностей ассистента").catch(() => {});
+    /**
+     * Речь шла о записи — собираем данные, а не обрываем разговор.
+     *
+     * Заказчик просил прямо: «он бы просто оформил клиента как нужно». На
+     * просьбе «запишите племянника» модель ответила рассказом о том, чего она
+     * не может, — и пациентке ушло «передал(а) администратору». Данные
+     * ребёнка администратору всё равно понадобятся, и спросить их можно
+     * сейчас, пока человек в переписке.
+     */
+    if (wantsToBook(own) && !inIntakeFlow(said)) {
+      return respond(ctx, conversation.id, { text: INTAKE_REQUEST });
+    }
     return respond(ctx, conversation.id, {
       text: "Передал(а) администратору — он ответит здесь же.",
     });
@@ -1536,9 +1695,28 @@ async function replyToQuestion(
     if (promisesHuman(answer)) {
       await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ассистент обещал позвать человека").catch(() => {});
     }
+
+    /**
+     * Разговор о записи не кончается словами «передал администратору».
+     *
+     * Модель уходит в передачу вместо того, чтобы спросить данные, — и
+     * администратор начинает разговор заново: как зовут, сколько лет, с чем
+     * идёте. Просьбами в промпте это лечится не всегда, поэтому вопрос
+     * дописываем сами, если в ответе его нет.
+     *
+     * Только для НОВОЙ записи: у переноса и отмены данные уже есть, и просить
+     * их там — значит показать, что предыдущий разговор забыт.
+     */
+    const needsData =
+      wantsToBook(own) && !intakeSent && !inIntakeFlow(said) && !asksForIntake(answer);
+
     return respond(ctx, conversation.id, {
       // Приветствие добавит respond — одно место на все ветки.
-      text: intakeSent ? `${answer}\n\n${INTAKE_ACCEPTED}` : answer,
+      text: intakeSent
+        ? `${answer}\n\n${INTAKE_ACCEPTED}`
+        : needsData
+          ? `${answer}\n\nЧтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ФИО того, кто придёт на приём, возраст и кратко причину обращения.`
+          : answer,
       buttons: mainMenu(),
     });
   }
@@ -1859,7 +2037,18 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
       });
       const answer = conv ? await replyToQuestion(ctx, conv, pending) : null;
       if (answer) {
-        return { ...answer, text: `${withoutOffer(hello)}\n\n${answer.text}` };
+        /**
+         * Здороваемся один раз.
+         *
+         * Приветствие клиники и ответ модели, начинающийся с «Здравствуйте,
+         * Гульбара!», давали два приветствия подряд в одном сообщении: «Это
+         * клиника Алункачевой. / Здравствуйте, …! Нет, в воскресенье мы не
+         * работаем». Со стороны это два разных собеседника в одном ответе.
+         */
+        const text = startsWithGreeting(answer.text)
+          ? answer.text
+          : `${withoutOffer(hello)}\n\n${answer.text}`;
+        return { ...answer, text };
       }
     }
 

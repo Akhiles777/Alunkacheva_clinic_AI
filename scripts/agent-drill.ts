@@ -31,6 +31,19 @@ interface Scenario {
   /** Что проверяем: по этому судим, хорош ли ответ. */
   expect: string;
   turns: string[];
+  /**
+   * Канал разговора. По умолчанию Telegram: такие диалоги не показываются в
+   * инбоксе, и прогон не засоряет рабочий экран администратора. WhatsApp
+   * нужен там, где проверяется именно он — цитата ответом свайпом приходит
+   * только оттуда.
+   */
+  channel?: "TELEGRAM" | "WHATSAPP";
+  /**
+   * Номер, известный из канала: так карточка пациента привязывается к диалогу
+   * с первого сообщения, как в настоящем WhatsApp. Без него агент не знает ни
+   * визитов человека, ни его записей — а половина жалоб именно об этом.
+   */
+  knownPhone?: string;
 }
 
 /**
@@ -195,13 +208,150 @@ const SCENARIOS: Scenario[] = [
   },
 ];
 
+/**
+ * Десять разговоров целиком — на песочнице (scripts/agent-sandbox-seed.ts).
+ *
+ * Не десять сообщений, а десять диалогов: почти все дефекты ассистента живут
+ * не в первой реплике, а во второй и третьей, когда он забывает, о чём шла
+ * речь, переспрашивает уже сказанное или отвечает на цитату собеседника.
+ *
+ * Пациентка Гульбара Магомедова (+79280000001) в песочнице ходит в клинику:
+ * визит три недели назад и запись на 8 сентября 09:00 — детский приём у Ирины
+ * Алилгаджиевны. На ней проверяется то, из-за чего жаловался владелец: у
+ * своего человека не спрашивают согласие заново, а на «когда моя запись»
+ * отвечают по базе.
+ */
+const DIALOGS: Scenario[] = [
+  {
+    title: "Записывают племянника — ответом на сообщение клиники",
+    expect:
+      "не срывается на стоп-слово «окошко» из ЦИТАТЫ, спрашивает данные ребёнка и передаёт администратору",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000005",
+    turns: [
+      "В ответ на: «Окошко на завтра к Ирине Алилгаджиевне ✅ 09:40 (детский)»\nЗапишите пожалуйста племянника моего",
+      "Ему 6 лет",
+      "Магомедов Ислам Русланович, 6 лет, часто плачет по ночам",
+    ],
+  },
+  {
+    title: "«Когда моя запись?» — постоянная пациентка",
+    expect: "называет свою запись по базе: 8 сентября, 09:00, детский приём, Ирина Алилгаджиевна",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000001",
+    turns: ["Здравствуйте", "Подскажите, когда у меня запись?", "А к кому я записана?"],
+  },
+  {
+    title: "«Записана на 8 сентября» — утверждение, а не просьба записать",
+    expect: "подтверждает существующую запись, НЕ начинает оформление с нуля",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000002",
+    turns: ["Записана на 8 сентября", "Хорошо, спасибо"],
+  },
+  {
+    title: "Перенос ответом на напоминание и уточнение времени",
+    expect:
+      "не пересказывает просьбу своими словами и не переворачивает её: «в 9:00 реабилитация» — это «в девять не могу»",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000003",
+    turns: [
+      "В ответ на: «Вы записаны на услугу Детский прием до 10 л - остеопатия к специалисту Ирина Алилгаджиевна на 8 сентября 2026 в 09:00.»\nМожете перенести нашу запись",
+      "В 9:00 у нас реабилитация",
+      "После обеда было бы удобно",
+    ],
+  },
+  {
+    title: "Мама записывает себя и ребёнка",
+    expect: "различает взрослую и детскую услугу и называет обе цены, не смешивая",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте! Хочу записаться сама и сына привести",
+      "Мне 34, сыну 7",
+      "Сколько это выйдет за двоих?",
+    ],
+  },
+  {
+    title: "Запись, а в анкете — жалоба на здоровье",
+    expect:
+      "принимает анкету и передаёт администратору; на прямой медицинский вопрос зовёт врача, а не рассуждает",
+    channel: "WHATSAPP",
+    turns: [
+      "Хочу записаться к остеопату",
+      "Взрослому",
+      "Магомедова Патимат, 41 год, боли в шее и головокружение",
+      "А это опасно? Может это давление?",
+    ],
+  },
+  {
+    title: "Цены, сравнение и «что даёт процедура»",
+    expect: "цены дословно из справки; про пользу БОС-терапии ничего не выдумывает",
+    channel: "WHATSAPP",
+    turns: ["Сколько стоит приём?", "А детский?", "А БОС-терапия что даёт?", "Понятно, спасибо"],
+  },
+  {
+    title: "Опаздывает, потом думает отменить",
+    expect: "коротко передаёт администратору, не советует звонить и не распоряжается записью",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000004",
+    turns: ["Здравствуйте, я записана на сегодня", "Я опаздываю минут на 20", "Или лучше отменить?"],
+  },
+  {
+    title: "Первый контакт: согласие и сразу вопрос",
+    expect: "спрашивает согласие один раз, а после «да» отвечает на заданный вопрос, а не «чем помочь»",
+    channel: "WHATSAPP",
+    turns: ["Здравствуйте, вы работаете в воскресенье?", "Да", "А где вы находитесь?", "Спасибо"],
+  },
+  {
+    title: "Чужие врачи, услуги которых нет, и просьба позвать человека",
+    expect: "не подменяет специалиста, не выдумывает услугу и парковку, зовёт администратора",
+    channel: "WHATSAPP",
+    turns: [
+      "Разият Ризвановна принимает взрослых?",
+      "А иглоукалывание делаете?",
+      "У вас есть парковка?",
+      "Тогда позовите администратора",
+    ],
+  },
+];
+
+SCENARIOS.push(...DIALOGS);
+
 function log(line = "") {
   process.stdout.write(`${line}\n`);
 }
 
 async function main() {
   const keep = process.argv.includes("--keep");
-  const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
+  /**
+   * `--only=30-39` или `--only=2,5` — прогнать названные сценарии.
+   *
+   * Каждая реплика, дошедшая до модели, стоит денег, и гонять все тридцать
+   * девять ради одной правки незачем.
+   */
+  const only = process.argv.find((a) => a.startsWith("--only="))?.slice(7);
+  const wanted = new Set<number>();
+  for (const part of only?.split(",") ?? []) {
+    const range = part.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      for (let i = Number(range[1]); i <= Number(range[2]); i += 1) wanted.add(i);
+    } else if (part.trim()) {
+      wanted.add(Number(part));
+    }
+  }
+  const chosen = wanted.size > 0 ? SCENARIOS.filter((_, i) => wanted.has(i + 1)) : SCENARIOS;
+  if (process.argv.includes("--list")) {
+    SCENARIOS.forEach((s, i) => log(`${i + 1}. ${s.title}`));
+    return;
+  }
+
+  /**
+   * Клиника берётся первой по дате создания — на боевом сервере она одна. На
+   * местной проверке рядом стоит песочница (scripts/agent-sandbox-seed.ts), и
+   * прогон должен идти по ней: `--sandbox`.
+   */
+  const company = process.argv.includes("--sandbox")
+    ? await prisma.company.findFirstOrThrow({ where: { yclientsId: 999_001 } })
+    : await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
 
   const [services, knowledge, staff] = await Promise.all([
     prisma.service.count({ where: { companyId: company.id } }),
@@ -228,9 +378,10 @@ async function main() {
   let escalatedCount = 0;
   let silentCount = 0;
 
-  for (const [i, scenario] of SCENARIOS.entries()) {
+  for (const [i, scenario] of chosen.entries()) {
+    const channel = scenario.channel ?? "TELEGRAM";
     const externalUserId = `drill-${randomUUID()}`;
-    log(`[${i + 1}/${SCENARIOS.length}] ${scenario.title}`);
+    log(`[${i + 1}/${chosen.length}] ${scenario.title}`);
 
     out.push(`## ${i + 1}. ${scenario.title}`);
     out.push("");
@@ -244,13 +395,17 @@ async function main() {
         reply = await handlePatientMessage(
           {
             companyId: company.id,
-            // Telegram: такие диалоги не показываются в списке инбокса, значит
-            // проверка не засоряет рабочий экран администратора.
-            channel: "TELEGRAM",
+            // Telegram по умолчанию: такие диалоги не показываются в списке
+            // инбокса, значит проверка не засоряет рабочий экран администратора.
+            channel,
             externalUserId,
             displayName: "Проверка ассистента",
           },
-          { text: turn, externalId: `drill-${randomUUID()}` },
+          {
+            text: turn,
+            externalId: `drill-${randomUUID()}`,
+            knownPhone: scenario.knownPhone ?? null,
+          },
         );
       } catch (e) {
         out.push("");
@@ -270,7 +425,7 @@ async function main() {
     }
 
     const conv = await prisma.conversation.findFirst({
-      where: { companyId: company.id, channel: "TELEGRAM", externalUserId },
+      where: { companyId: company.id, channel, externalUserId },
       select: { id: true, status: true },
     });
     if (conv) {
@@ -290,14 +445,14 @@ async function main() {
   out.splice(
     4,
     0,
-    `Сценариев: ${SCENARIOS.length}. Позвал человека в ${escalatedCount}. ` +
+    `Сценариев: ${chosen.length}. Позвал человека в ${escalatedCount}. ` +
       `Промолчал ${silentCount} раз.`,
     "",
   );
 
   writeFileSync("data/agent-drill.md", out.join("\n"), "utf8");
   log("");
-  log(`готово: data/agent-drill.md — сценариев ${SCENARIOS.length}, эскалаций ${escalatedCount}`);
+  log(`готово: data/agent-drill.md — сценариев ${chosen.length}, эскалаций ${escalatedCount}`);
 
   if (!keep && createdConversations.length > 0) {
     await prisma.escalation.deleteMany({ where: { conversationId: { in: createdConversations } } });

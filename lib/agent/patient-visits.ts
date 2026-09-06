@@ -135,6 +135,42 @@ export async function patientVisitsContext(
  * услуг — мать записывает себя и ребёнка одной, — и назвать пациенту только
  * первую значит сказать ему неправду о его же визите (§8).
  */
+export async function upcomingBookingLines(
+  companyId: string,
+  patientId: string | null,
+  limit = 3,
+  now: Date = new Date(),
+): Promise<string[]> {
+  if (!patientId) return [];
+  const rows = await prisma.appointment.findMany({
+    where: {
+      companyId,
+      patientId,
+      deletedAt: null,
+      status: { notIn: ["CANCELLED", "NO_SHOW"] },
+      startAt: { gte: now },
+    },
+    orderBy: { startAt: "asc" },
+    take: limit,
+    select: {
+      startAt: true,
+      staff: { select: { name: true } },
+      primaryService: { select: { title: true } },
+      services: { select: { service: { select: { title: true } } } },
+    },
+  });
+  return rows.map(
+    (a) =>
+      `${when.format(a.startAt)} — ` +
+      visitTitle(
+        a.services.map((s) => ({ title: s.service.title })),
+        a.primaryService?.title ?? "приём",
+      ) +
+      `${a.staff?.name ? `, ${a.staff.name}` : ""}`,
+  );
+}
+
+/** Ближайшая запись одной строкой. */
 export async function upcomingBookingLine(
   companyId: string,
   patientId: string | null,
