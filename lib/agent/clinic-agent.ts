@@ -893,6 +893,51 @@ export async function handlePatientMessage(
    * Согласие на обработку ПДн — до всего остального (§7). Спрашиваем один раз
    * за диалог; пока клиника не завела текст согласия, вопрос не задаётся.
    */
+  /**
+   * Серьёзное первое сообщение не тонет в стене согласия.
+   *
+   * Мама написала «У сына ДЦП, 4 года. Остеопатия ему поможет?» — и получила
+   * только юридический текст. Эскалации не завелось, администратор о вопросе
+   * не узнал: до проверки медицинских тем дело не доходило, согласие стоит
+   * раньше. То же с фотографией направления — вложение агент прочитать не
+   * может и обязан позвать человека, а звал только с третьего сообщения.
+   *
+   * Ответ пациенту при этом остаётся прежним: без согласия переписку мы не
+   * ведём (§7). Но человека зовём сразу — эскалация это внутренняя пометка,
+   * ничьих персональных данных она не обрабатывает.
+   */
+  const needsHumanNow = await (async (): Promise<boolean> => {
+    const conv = await prisma.conversation.findUnique({
+      where: { id: conversation.id },
+      select: { consentGrantedAt: true },
+    });
+    if (conv?.consentGrantedAt) return false;
+
+    if (attachments.length > 0 && needsHuman(attachments)) {
+      await escalate(
+        ctx.companyId,
+        conversation.id,
+        "PATIENT_REQUEST",
+        `Пациент прислал ${attachments.map((a) => a.label).join(", ")}`,
+      ).catch(() => {});
+      return true;
+    }
+    if (medical(own)) {
+      await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос до согласия").catch(() => {});
+      return true;
+    }
+    if (personalTopic(own) || wantsHuman(own)) {
+      await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба до согласия").catch(() => {});
+      return true;
+    }
+    return false;
+  })();
+
+  /** Строка, которой говорим, что человека уже позвали. */
+  const alreadyWithHuman = needsHumanNow
+    ? "\n\nВаш вопрос уже у администратора — он ответит здесь же."
+    : "";
+
   const consent = await consentRequestFor(ctx.companyId, conversation.id);
   if (consent) {
     /**
@@ -905,9 +950,10 @@ export async function handlePatientMessage(
      */
     const known = await referenceAnswer(ctx.companyId, own).catch(() => null);
     return respond(ctx, conversation.id, {
-      text: known
-        ? `${known}\n\n${consent.text}${consentHint(ctx.channel)}`
-        : consent.text + consentHint(ctx.channel),
+      text:
+        (known
+          ? `${known}\n\n${consent.text}${consentHint(ctx.channel)}`
+          : consent.text + consentHint(ctx.channel)) + alreadyWithHuman,
       buttons: consent.buttons,
     });
   }
@@ -976,7 +1022,8 @@ export async function handlePatientMessage(
       return respond(ctx, conversation.id, {
         text:
           (known ? `${known}\n\n` : "") +
-          `Нужно ваше согласие на обработку персональных данных.${consentHint(ctx.channel)}`,
+          `Нужно ваше согласие на обработку персональных данных.${consentHint(ctx.channel)}` +
+          alreadyWithHuman,
         buttons: consentButtons(),
       });
     }

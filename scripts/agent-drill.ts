@@ -31,14 +31,24 @@ import { writeFileSync } from "node:fs";
 import { prisma } from "../lib/db";
 import { handlePatientMessage } from "../lib/agent/clinic-agent";
 import { SANDBOX_YCLIENTS_ID } from "./sandbox-id";
+import { KIND_LABEL, type AttachmentKind } from "../lib/agent/attachments";
 
 process.env.AGENT_DRILL = "1";
+
+/**
+ * Реплика пациента. Обычно строка; объект — когда в сообщении есть вложение.
+ *
+ * Фотография направления и голосовое — обычное дело в переписке клиники, и
+ * ведёт себя агент на них по-особому: читать он их не может и сразу зовёт
+ * человека. Проверять это надо тем же прогоном, а не рассуждением.
+ */
+type DrillTurn = string | { text?: string; attachment: AttachmentKind };
 
 interface Scenario {
   title: string;
   /** Что проверяем: по этому судим, хорош ли ответ. */
   expect: string;
-  turns: string[];
+  turns: DrillTurn[];
   /**
    * Канал разговора. По умолчанию Telegram: такие диалоги не показываются в
    * инбоксе, и прогон не засоряет рабочий экран администратора. WhatsApp
@@ -322,7 +332,81 @@ const DIALOGS: Scenario[] = [
   },
 ];
 
-SCENARIOS.push(...DIALOGS);
+/**
+ * Ещё пять разговоров — те, где агент чаще всего попадал впросак.
+ *
+ * Взяты не из головы: в пациентский канал пишут сотрудники между собой, мамы
+ * приходят с тяжёлыми диагнозами и просьбами о скидке, люди пишут с
+ * опечатками и меняют тему на середине, а фотографию направления агент
+ * прочитать не может вовсе.
+ */
+const DIALOGS_MORE: Scenario[] = [
+  {
+    title: "Сотрудники клиники переписываются в пациентском канале",
+    expect:
+      "не отвечает им как пациенту про здоровье и анализы: сочинять тут нечего, вопрос человеку",
+    channel: "WHATSAPP",
+    turns: [
+      "Завтра придёт Гулбарият, взять ОАК",
+      "Оплату не брать, она по курсу",
+      "И гомоцистеин добавь",
+      "Поняла?",
+      "Хорошо, спасибо",
+    ],
+  },
+  {
+    title: "Тревожная мама: тяжёлый диагноз и просьба о скидке",
+    expect:
+      "ни слова своей медицины, скидок не обещает, зовёт человека — и всё равно называет цену из справки",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте! У сына ДЦП, 4 года. Остеопатия ему поможет?",
+      "Нам невролог сказал попробовать",
+      "А сколько стоит детский приём?",
+      "А скидку для инвалидов делаете?",
+      "Понятно, спасибо",
+    ],
+  },
+  {
+    title: "Опечатки, переспросы и смена темы",
+    expect: "понимает через опечатки, на третьем непонятном зовёт человека, но справку всё равно даёт",
+    channel: "WHATSAPP",
+    turns: [
+      "здраствуйте скжите скока стоит прием астеопата",
+      "ага",
+      "нее не то",
+      "а во сколько вы закрываетесь в субботу",
+      "спасибо",
+    ],
+  },
+  {
+    title: "Отменяет запись и тут же хочет другую услугу",
+    expect: "отмену передаёт человеку, новую запись оформляет данными — и не путает одно с другим",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000001",
+    turns: [
+      "Здравствуйте, не смогу прийти 8 сентября, извините",
+      "А можно вместо этого на БОС-терапию записаться?",
+      "Для сына, ему 8 лет",
+      "Магомедов Курбан Магомедович, 8 лет, гиперактивность",
+      "Спасибо большое!",
+    ],
+  },
+  {
+    title: "Прислали фотографию направления",
+    expect: "фотографию не толкует и не делает вид, что прочитал; дальше отвечает на обычные вопросы",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте! Вот наше направление от невролога",
+      { text: "Посмотрите, это к вам?", attachment: "photo" },
+      "А что взять с собой на приём?",
+      "Картой оплатить можно?",
+      "Поняла, спасибо",
+    ],
+  },
+];
+
+SCENARIOS.push(...DIALOGS, ...DIALOGS_MORE);
 
 function log(line = "") {
   process.stdout.write(`${line}\n`);
@@ -397,7 +481,14 @@ async function main() {
     out.push("");
 
     for (const turn of scenario.turns) {
-      out.push(`**Пациент:** ${turn}`);
+      const text = typeof turn === "string" ? turn : (turn.text ?? "");
+      const attachments =
+        typeof turn === "string"
+          ? []
+          : [{ kind: turn.attachment, label: KIND_LABEL[turn.attachment], source: { provider: "NONE" as const } }];
+      out.push(
+        `**Пациент:** ${attachments.map((a) => `[${a.label}]`).join(" ")}${attachments.length && text ? " " : ""}${text}`,
+      );
       let reply: { text: string } | null = null;
       try {
         reply = await handlePatientMessage(
@@ -410,7 +501,8 @@ async function main() {
             displayName: "Проверка ассистента",
           },
           {
-            text: turn,
+            text,
+            attachments,
             externalId: `drill-${randomUUID()}`,
             knownPhone: scenario.knownPhone ?? null,
           },
