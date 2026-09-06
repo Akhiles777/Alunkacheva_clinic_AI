@@ -17,6 +17,13 @@
  *
  *   AGENT_DRILL=1 npx tsx scripts/agent-drill.ts
  *   AGENT_DRILL=1 npx tsx scripts/agent-drill.ts --keep   (не удалять диалоги)
+ *   AGENT_DRILL=1 npx tsx scripts/agent-drill.ts --sandbox --only=30-39
+ *   npx tsx scripts/agent-drill.ts --list                 (список сценариев)
+ *
+ * `--sandbox` — местная клиника из scripts/agent-sandbox-seed.ts. На ней и
+ * проверяем: прогон пишет сообщения и эскалации, а на боевой базе они идут в
+ * метрики и будят администраторов. `--only` — потому что каждая реплика,
+ * дошедшая до модели, стоит денег.
  */
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
