@@ -3,7 +3,7 @@ import { normalizePhone } from "@/lib/phone";
 import { notifyStaff, escalationRecipients } from "@/lib/server/notify";
 import { CLINIC_NAME } from "@/lib/brand";
 import { getServices } from "./booking";
-import { patientServices, priceLine, priceListText } from "./price-list";
+import { dedupeServices, patientServices, priceLine, priceListText } from "./price-list";
 import { logAgentRun } from "./run-log";
 
 /**
@@ -68,6 +68,7 @@ import {
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { forMessenger } from "./messenger-text";
 import { ungroundedNumbers } from "./grounding";
+import { inventedIndication } from "./indications";
 import { focusedAnswer } from "./focused-answer";
 import { matchServices, whomFor } from "./service-match";
 import { asksForIntake, hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
@@ -1115,7 +1116,7 @@ async function referenceAnswer(companyId: string, text: string): Promise<string 
    * Не нашли конкретную услугу — показываем прайс: человек спросил цену, и
    * список цен ему полезнее, чем режим работы.
    */
-  const priced = matchServices(text, services, 3, 0.5);
+  const priced = dedupeServices(matchServices(text, services, 3, 0.5));
   if (priced.length > 0) {
     return priced
       .map((p) => `${p.title} — ${p.price} ₽${p.durationMin > 0 ? `, ${p.durationMin} мин` : ""}`)
@@ -1357,14 +1358,48 @@ async function replyToQuestion(
    * Лечить агент от этого не начинает: советовать по жалобам ему запрещено
    * промптом, а его дело здесь — записать сказанное и довести до администратора.
    */
-  if (medical(own) && !inIntakeFlow(said)) {
+  /**
+   * Оформление записи не отменяет медицинское правило — оно отменяет только
+   * чтение АНКЕТЫ как медицинского текста.
+   *
+   * Исключение появилось потому, что агент сам спрашивает жалобу, а потом
+   * пугается собственного вопроса: «взрослая женщина, головная боль» —
+   * медицинский текст по словам. Но под него попало и всё остальное: стоило
+   * агенту попросить ФИО, и любой следующий вопрос переставал быть
+   * медицинским. «А какая капельница мне подойдёт?» ушло в модель, и та
+   * назначила инфузию по самочувствию.
+   *
+   * Анкета — это ответ, а не вопрос. Вопросительный знак исключение снимает.
+   */
+  if (medical(own) && !(inIntakeFlow(said) && !hasQuestion(own))) {
     const match = matchKnowledge(text, knowledgeRows);
     if (!confidentMatch(match)) {
       await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос без готового ответа").catch(() => {});
+      /**
+       * Спросили цену — цену и называем, даже если рядом жалоба.
+       *
+       * «Сколько стоит капельница от усталости?» — вопрос про деньги, а не про
+       * лечение. Из-за слова «усталость» он попадал сюда и получал «уточните у
+       * специалиста»: человек спросил цену четыре раза подряд и ни разу её не
+       * услышал. Какая именно капельница нужна, решает врач — это остаётся за
+       * ним; сказать, сколько стоит названная услуга, мы можем и обязаны.
+       */
+      const asksPrice =
+        /(?<!\p{L})(?:сколько\s+стоит|сколько\s+будет|цена|цены|стоимость|прайс|почём|почем)(?!\p{L})/iu.test(
+          own,
+        );
+      const priced = asksPrice
+        ? dedupeServices(matchServices(own, await getServices(ctx.companyId).catch(() => []), 3, 0.5))
+        : [];
+      const prices = priced
+        .map((p) => `${p.title} — ${p.price} ₽${p.durationMin > 0 ? `, ${p.durationMin} мин` : ""}`)
+        .join("\n");
       return respond(ctx, conversation.id, {
-        text:
-          "Этот вопрос лучше уточнить у специалиста — передал(а) администратору клиники. " +
-          "Могу пока рассказать про услуги, цены, адрес и часы работы.",
+        text: prices
+          ? `${prices}\n\nКакая именно подойдёт в вашем случае, скажет специалист — ` +
+            "передал(а) администратору клиники."
+          : "Этот вопрос лучше уточнить у специалиста — передал(а) администратору клиники. " +
+            "Могу пока рассказать про услуги, цены, адрес и часы работы.",
         buttons: mainMenu(),
       });
     }
@@ -1707,6 +1742,33 @@ async function replyToQuestion(
   }
 
   /**
+   * Придуманное показание — ответ не отправляем вовсе.
+   *
+   * «При постоянной усталости часто подбирают инфузию „Био-Ресурс“» — в
+   * справке нет ни слова о том, при чём какая инфузия. Это назначение от
+   * имени клиники, и цена ошибки здесь не в формулировке (§6, правило 1).
+   *
+   * Сверяем со справкой, а НЕ со словами пациента: то, что человек назвал
+   * свою усталость, не даёт права утверждать, что от неё помогает капельница.
+   */
+  const madeUp = answer ? inventedIndication(answer, reference) : null;
+  if (madeUp) {
+    console.error(`[agent] ответ отклонён: показание не из справки — «${madeUp}»`);
+    await escalate(
+      ctx.companyId,
+      conversation.id,
+      "MEDICAL_QUESTION",
+      "Ассистент связал услугу с состоянием, которого нет в справке",
+    ).catch(() => {});
+    return respond(ctx, conversation.id, {
+      text:
+        "Что именно подойдёт в вашем случае, скажет специалист — передал(а) администратору клиники. " +
+        "Могу пока рассказать про услуги, цены, адрес и часы работы.",
+      buttons: mainMenu(),
+    });
+  }
+
+  /**
    * Разговор не двигается: агент переспрашивает третий раз подряд (§6).
    *
    * Правило было в требованиях и не жило нигде. На прогоне пациент трижды
@@ -1876,7 +1938,7 @@ async function replyToQuestion(
    * вопроса должна попасть в название: тогда это вопрос про услугу, а не
    * случайное пересечение.
    */
-  const priced = matchServices(query, await getServices(ctx.companyId), 3, 0.5);
+  const priced = dedupeServices(matchServices(query, await getServices(ctx.companyId), 3, 0.5));
   if (priced.length > 0) {
     const list = priced
       .map((s) => `${s.title} — ${s.price} ₽${s.durationMin > 0 ? `, ${s.durationMin} мин` : ""}`)

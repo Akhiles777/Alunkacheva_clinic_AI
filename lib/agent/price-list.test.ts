@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { patientServices, priceLine, priceListText, PRICE_LIST_LIMIT } from "./price-list";
+import { patientServices, priceLine, priceListText, PRICE_LIST_LIMIT, dedupeServices } from "./price-list";
 
 const s = (title: string, price: number, durationMin = 0) => ({ title, price, durationMin });
 
@@ -49,5 +49,37 @@ describe("ответ на «услуги и цены»", () => {
 
   it("цен нет вовсе — не отправляем пустое сообщение", () => {
     expect(priceListText([s("Название", 0)])).toBeNull();
+  });
+});
+
+/**
+ * Настоящие дубли справочника клиники: та же услуга, та же цена, разное
+ * написание. Пациент видит две одинаковые строки подряд и решает, что
+ * платформа сломалась.
+ */
+describe("дубли услуг пациенту не показываем", () => {
+  it("слипаются одинаковые по цене названия-близнецы", () => {
+    const out = dedupeServices([
+      { title: "Внутривенное капельное введение растворов", price: 500, durationMin: 60 },
+      { title: "Внутривенное капельное введение растворов (IV-терапия)", price: 500, durationMin: 60 },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].title).toBe("Внутривенное капельное введение растворов");
+  });
+
+  it("сеанс и курс — разные услуги, их не слить", () => {
+    const out = dedupeServices([
+      { title: "БОС-терапия", price: 2800, durationMin: 40 },
+      { title: "БОС-терапия, курс", price: 28000, durationMin: 40 },
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it("разные услуги с одинаковой ценой остаются обе", () => {
+    const out = dedupeServices([
+      { title: "Взрослый прием - остеопатия", price: 8000, durationMin: 45 },
+      { title: "Остеопатия для беременных", price: 8000, durationMin: 45 },
+    ]);
+    expect(out).toHaveLength(2);
   });
 });

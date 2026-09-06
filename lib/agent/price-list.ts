@@ -48,6 +48,40 @@ export function patientServices<T extends PriceListItem>(services: T[]): T[] {
   return services.filter((s) => isRealPrice(s.price) && !isStaffOnly(s.title));
 }
 
+/**
+ * Одна и та же услуга дважды — не ответ, а вид поломки.
+ *
+ * В справочнике клиники есть настоящие дубли: «Внутривенное капельное введение
+ * растворов» и «Внутривенное капельное введение растворов (IV-терапия)», обе
+ * по 500 ₽. Пациент видит две одинаковые строки подряд и решает, что платформа
+ * сломалась. Сливать дубли в справочнике — работа клиники (§8), но показывать
+ * их человеку незачем.
+ *
+ * Признак дубля жёсткий: та же цена И одно название — начало другого. Так
+ * «БОС-терапия» за 2800 и «БОС-терапия, курс» за 28000 остаются разными, а
+ * они и есть разные.
+ */
+const bare = (t: string) =>
+  t.toLowerCase().replace(/ё/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+export function dedupeServices<T extends PriceListItem>(list: T[]): T[] {
+  const out: T[] = [];
+  for (const s of list) {
+    const key = bare(s.title);
+    const twin = out.find((x) => {
+      if (Number(x.price) !== Number(s.price)) return false;
+      const other = bare(x.title);
+      /**
+       * Совпадать должно ЦЕЛОЕ слово, а не начало строки: «Услуга 1» и
+       * «Услуга 10» — разные услуги, хоть одна и начинается с другой.
+       */
+      return other === key || other.startsWith(`${key} `) || key.startsWith(`${other} `);
+    });
+    if (!twin) out.push(s);
+  }
+  return out;
+}
+
 /** Строка прайса: «Остеопатия, приём Ирины — 8 000 ₽, 45 мин». */
 export function priceLine(s: PriceListItem): string {
   // Длительность печатаем, только если она заведена: «0 мин» — это не факт
@@ -63,7 +97,7 @@ export function priceLine(s: PriceListItem): string {
  * говорим об этом, а не отправляем пациенту пустое сообщение.
  */
 export function priceListText(services: PriceListItem[], limit = PRICE_LIST_LIMIT): string | null {
-  const shown = patientServices(services);
+  const shown = dedupeServices(patientServices(services));
   if (shown.length === 0) return null;
 
   const head = shown.slice(0, limit).map(priceLine);
