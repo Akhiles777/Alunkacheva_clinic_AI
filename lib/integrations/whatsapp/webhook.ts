@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isGroupChat, phoneFromChatId } from "./chat-id";
 import { KIND_LABEL, type AttachmentKind, type IncomingAttachment } from "@/lib/agent/attachments";
+import { quoteOfKind, quoteOfText } from "@/lib/agent/quoted";
 
 /**
  * Разбор вебхуков Green API.
@@ -197,27 +198,22 @@ function parseOutgoing(e: GreenWebhook): ParsedEvent {
 /** Типы, у которых есть собственный текст: вложением их считать нельзя. */
 const TEXT_TYPES = new Set(["textMessage", "extendedTextMessage", "quotedMessage"]);
 
-/** Сколько знаков цитаты показываем: она подсказка, а не сообщение. */
-const QUOTE_LIMIT = 120;
-
 /**
  * Строка «В ответ на: …», если пациент отвечал на конкретное сообщение.
  *
- * У цитаты может не быть текста — отвечали на фотографию или голосовое. Тогда
- * называем тип: понять, к чему относится ответ, всё равно важнее, чем ничего.
+ * Сам формат строки живёт в lib/agent/quoted: там же её и снимают, прежде чем
+ * разбирать слова пациента правилами агента. Два описания одного формата
+ * разъедутся, и тогда цитата снова попадёт под стоп-слова.
  */
 function quotedText(e: GreenWebhook): string | null {
   const q = e.messageData?.quotedMessage;
   if (!q) return null;
 
   const text = (q.textMessage ?? q.caption ?? "").trim();
-  if (text) {
-    const short = text.length > QUOTE_LIMIT ? `${text.slice(0, QUOTE_LIMIT)}…` : text;
-    return `В ответ на: «${short}»`;
-  }
+  if (text) return quoteOfText(text);
 
   const kind = q.typeMessage ? KIND_BY_TYPE[q.typeMessage] : undefined;
-  return kind ? `В ответ на: ${KIND_LABEL[kind]}` : "В ответ на сообщение";
+  return quoteOfKind(kind ? KIND_LABEL[kind] : null);
 }
 
 function parseMessage(e: GreenWebhook): ParsedEvent {

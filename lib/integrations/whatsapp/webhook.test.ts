@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseWebhook, verifyWebhookSecret } from "./webhook";
+import { withoutQuote } from "@/lib/agent/quoted";
 import { chatIdFromPhone, isGroupChat, phoneFromChatId } from "./chat-id";
 
 /**
@@ -251,6 +252,42 @@ describe("ответ на конкретное сообщение", () => {
     if (e.kind !== "message") throw new Error("ожидалось сообщение");
     expect(e.text.length).toBeLessThan(200);
     expect(e.text).toContain("…");
+  });
+
+  /**
+   * Главное свойство цитаты: её можно снять обратно.
+   *
+   * Правила агента должны читать только слова пациента — иначе стоп-слово из
+   * сообщения САМОЙ клиники обрывает разговор. Проверяем сцепку двух файлов:
+   * вебхук цитату дописывает, lib/agent/quoted её снимает. Разъедутся форматы
+   * — этот тест упадёт раньше, чем упадёт живой диалог.
+   */
+  it("цитата снимается обратно — остаются слова пациента", () => {
+    const e = parseWebhook(
+      quoted({
+        typeMessage: "quotedMessage",
+        extendedTextMessageData: { text: "Запишите пожалуйста племянника моего" },
+        quotedMessage: {
+          typeMessage: "textMessage",
+          textMessage: "Окошко на завтра к Ирине Алилгаджиевне ✅ 09:40 (детский)",
+        },
+      }),
+    );
+    if (e.kind !== "message") throw new Error("ожидалось сообщение");
+    expect(e.text).toContain("Окошко");
+    expect(withoutQuote(e.text)).toBe("Запишите пожалуйста племянника моего");
+  });
+
+  it("цитата-вложение снимается так же", () => {
+    const e = parseWebhook(
+      quoted({
+        typeMessage: "quotedMessage",
+        extendedTextMessageData: { text: "Это моё направление" },
+        quotedMessage: { typeMessage: "imageMessage" },
+      }),
+    );
+    if (e.kind !== "message") throw new Error("ожидалось сообщение");
+    expect(withoutQuote(e.text)).toBe("Это моё направление");
   });
 
   it("ответ на фотографию называет тип", () => {

@@ -19,7 +19,7 @@ function knowledgeIdOf(row: { id?: string }): string[] {
 import { confidentMatch, matchKnowledge, usableKnowledgeWhere } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
 import { focusLine, focusOf, searchText } from "./focus";
-import { patientVisitsContext } from "./patient-visits";
+import { patientVisitsContext, upcomingBookingLine } from "./patient-visits";
 import { HANDBACK_HOURS } from "./handback-rule";
 import {
   HANDOVER_REPLY,
@@ -42,6 +42,7 @@ import {
   personalTopic,
   runningLate,
   scheduleTopic,
+  statesOwnBooking,
   wantsHuman,
   wantsReschedule,
 } from "./triggers";
@@ -71,6 +72,8 @@ import { matchServices, whomFor } from "./service-match";
 import { hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
+import { withoutQuote } from "./quoted";
+import { inHandoverFlow, timeDetail } from "./handover-flow";
 
 /**
  * Агент пациентского канала.
@@ -724,7 +727,12 @@ export async function handlePatientMessage(
    * дальше — назвать услугу, цену и собрать данные. Времени он всё равно не
    * называет, так что помешать администратору нечем.
    */
-  const askedForAdmin = personalTopic(input.text ?? "") || wantsHuman(input.text ?? "");
+  /**
+   * Смотрим на слова пациента, без цитаты: она принадлежит собеседнику, и
+   * жалоба в процитированном тексте — не жалоба этого сообщения (lib/agent/quoted).
+   */
+  const askedByPatient = withoutQuote(input.text ?? "");
+  const askedForAdmin = personalTopic(askedByPatient) || wantsHuman(askedByPatient);
 
   /**
    * Агент выключен в этом диалоге насовсем — решением человека.
@@ -828,9 +836,18 @@ export async function handlePatientMessage(
   }
 
   const text = (input.text ?? "").trim();
+  /**
+   * Слова самого пациента — без цитаты, на которую он отвечал.
+   *
+   * Решения принимаем по ним: «Запишите пожалуйста племянника моего» в ответ
+   * на сообщение клиники «Окошко на завтра к Ирине Алилгаджиевне…» — это
+   * просьба записать ребёнка, а не стоп-слово «окошко». Модели уходит текст
+   * целиком: там цитата помогает понять, о какой услуге речь.
+   */
+  const own = withoutQuote(text);
   // Дальше все ответы проходят через respond, а он добавит приветствие, если
   // человек поздоровался. Одно место на все ветки.
-  ctx.incomingText = text;
+  ctx.incomingText = own;
   /**
    * Тело сообщения складывается из подписи пациента и пометок о вложениях.
    * Пустым оно бывает только у по-настоящему пустого update — раньше сюда же
@@ -885,13 +902,13 @@ export async function handlePatientMessage(
    * значит что угодно, и засчитать его за согласие было бы подлогом.
    */
   if (conversation.consentAskedAt && !conversation.consentGrantedAt) {
-    const answer = consentFromText(text);
+    const answer = consentFromText(own);
     if (answer) return handleCallback(ctx, conversation.id, answer);
 
     // Не поняли ответ. Просьбу позвать человека пропускаем: запирать пациента
     // в вопросе о согласии, когда он просит администратора, — жестоко и
     // бессмысленно, человек и возьмёт согласие голосом.
-    if (!wantsHuman(text)) {
+    if (!wantsHuman(own)) {
       /**
        * Вторая попытка — последняя.
        *
@@ -936,7 +953,7 @@ export async function handlePatientMessage(
    * Пункт меню, набранный текстом. В канале без кнопок подсказки уходят
    * строками, и пациент отвечает на них словами — «цены», «адрес».
    */
-  const menu = menuActionFromText(text);
+  const menu = menuActionFromText(own);
   if (menu) return handleCallback(ctx, conversation.id, menu);
 
   /**
@@ -995,6 +1012,18 @@ async function replyToQuestion(
   text: string,
 ): Promise<AgentReply | null> {
   const settings = await assistantMode(ctx.companyId);
+  /**
+   * Слова самого пациента, без цитаты (lib/agent/quoted).
+   *
+   * По ним принимаются все решения: стоп-слова, медицинские правила, тема
+   * разговора. Цитата — это текст собеседника, и судить по нему о намерении
+   * пациента нельзя: стоп-слово «окошко» из сообщения КЛИНИКИ обрывало
+   * просьбу записать ребёнка на полуслове.
+   *
+   * Модели и поиску по справочнику уходит текст целиком: там цитата — полезный
+   * контекст, из неё видно, о какой услуге и о каком враче речь.
+   */
+  const own = withoutQuote(text);
 
   // Режим «выключен»: агент молчит полностью, диалог ведёт человек.
   if (settings.mode === "off") {
@@ -1003,7 +1032,7 @@ async function replyToQuestion(
   }
 
   // Стоп-слова из настроек: клиника сама решает, о чём агент не говорит.
-  if (hitsStopWord(text, settings.stopWords)) {
+  if (hitsStopWord(own, settings.stopWords)) {
     await escalate(ctx.companyId, conversation.id, "KEYWORD", "Стоп-слово из настроек").catch(() => {});
     return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
@@ -1027,7 +1056,7 @@ async function replyToQuestion(
    *
    * Жалобы, деньги и анализы это исключение не затрагивает.
    */
-  if (!asksAboutOwnBooking(text) && (personalTopic(text) || wantsHuman(text))) {
+  if (!asksAboutOwnBooking(own) && (personalTopic(own) || wantsHuman(own))) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба").catch(() => {});
     return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
@@ -1046,7 +1075,7 @@ async function replyToQuestion(
    * вежливость.
    */
   if (!inIntakeFlow(said)) {
-    const polite = smallTalkReply(text);
+    const polite = smallTalkReply(own);
     if (polite) return respond(ctx, conversation.id, { text: polite });
   }
 
@@ -1061,7 +1090,7 @@ async function replyToQuestion(
    * Отвечаем коротко и зовём администратора: дальше нужно поставить время, а
    * это его работа. Сами данные уже в переписке, повторять их незачем.
    */
-  const intakeSent = looksLikeIntake(text);
+  const intakeSent = looksLikeIntake(own);
   if (intakeSent) {
     /**
      * Имя из анкеты запоминаем сразу.
@@ -1071,7 +1100,7 @@ async function replyToQuestion(
      * сообщения, и всё, что дальше, для агента не существует. В карточке оно
      * нужно и администратору — диалог перестаёт быть безымянным.
      */
-    await rememberName(ctx.companyId, conversation.id, nameFromIntake(text)).catch(() => {});
+    await rememberName(ctx.companyId, conversation.id, nameFromIntake(own)).catch(() => {});
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент прислал данные для записи").catch(() => {});
 
     /**
@@ -1083,7 +1112,7 @@ async function replyToQuestion(
      * считалось анкетой, а на анкету заготовлена фраза. Если вопрос есть —
      * отвечаем на него обычным путём, а про переданные данные скажем в конце.
      */
-    if (!hasQuestion(text)) {
+    if (!hasQuestion(own)) {
       return respond(ctx, conversation.id, {
         text: "Спасибо, записал(а). Администратор подберёт ближайшее удобное время и напишет здесь же.",
       });
@@ -1096,7 +1125,7 @@ async function replyToQuestion(
    * день» отвечал тем, что придумает модель. Здороваться клиника хочет своими
    * словами — это первое, что видит пациент.
    */
-  if (/^\/start\b/.test(text) || isGreeting(text)) {
+  if (/^\/start\b/.test(own) || isGreeting(own)) {
     /**
      * Отвечаем тем же приветствием, каким поздоровался пациент: на «доброе
      * утро» — «доброе утро», на «салам алейкум» — ответный салам. Одна и та же
@@ -1118,7 +1147,7 @@ async function replyToQuestion(
      */
     const met = (await spokeWithin(conversation.id, MET_WINDOW_MS)) || alreadyGreeted(said, settings.greeting);
     const hello = greetingText({
-      incoming: text,
+      incoming: own,
       configured: settings.greeting,
       repeat: met,
     });
@@ -1160,7 +1189,7 @@ async function replyToQuestion(
    * Лечить агент от этого не начинает: советовать по жалобам ему запрещено
    * промптом, а его дело здесь — записать сказанное и довести до администратора.
    */
-  if (medical(text) && !inIntakeFlow(said)) {
+  if (medical(own) && !inIntakeFlow(said)) {
     const match = matchKnowledge(text, knowledgeRows);
     if (!confidentMatch(match)) {
       await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос без готового ответа").catch(() => {});
@@ -1227,14 +1256,14 @@ async function replyToQuestion(
    * Проверяется до расписания: «опаздываю на приём» иначе разбиралось бы как
    * вопрос о записи и получало бы рассуждение вместо ответа.
    */
-  if (runningLate(text)) {
+  if (runningLate(own)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент опаздывает").catch(() => {});
     return respond(ctx, conversation.id, {
       text: "Передал(а) администратору — он ответит здесь же.",
     });
   }
 
-  if (scheduleTopic(text)) {
+  if (scheduleTopic(own)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
 
     /**
@@ -1245,7 +1274,7 @@ async function replyToQuestion(
      * названием услуги и врача — и услышала «на какую услугу и для кого». Всё
      * это было прямо в её сообщении, а ответить всё равно мог только человек.
      */
-    if (asksForSlot(text)) {
+    if (asksForSlot(own)) {
       /**
        * Время подберёт человек — но разговор на этом не заканчивается.
        *
@@ -1276,7 +1305,7 @@ async function replyToQuestion(
      * значит показать, что предыдущий разговор забыт. Времени агент не
      * называет: это администратор, и он же видит саму запись.
      */
-    if (wantsReschedule(text) && !asksAboutOwnBooking(text)) {
+    if (wantsReschedule(own) && !asksAboutOwnBooking(own)) {
       return respond(ctx, conversation.id, {
         text:
           "Поняла, передал(а) администратору — он подберёт время из тех, что вы просите, " +
@@ -1292,13 +1321,72 @@ async function replyToQuestion(
      * названные симптомы и уходит рассуждать о здоровье вместо простого
      * «поняла, передал(а)». Ровно так и вышло в живой переписке.
      */
-    if (cantCome(text)) {
+    if (cantCome(own)) {
       return respond(ctx, conversation.id, {
         text:
           "Поняла, спасибо, что предупредили. Передал(а) администратору — он отменит или перенесёт " +
           "запись, как вам удобно, и напишет здесь же. Выздоравливайте!",
       });
     }
+
+    /**
+     * Пациент СКАЗАЛ, что записан, — а не попросил записать.
+     *
+     * «Записана на 8 сентября» — утверждение. В ответ агент начинал оформление
+     * с нуля: «на какую услугу вы хотите записаться и для кого». То есть не
+     * увидел записи, о которой ему только что сказали, и заставил человека
+     * повторять. Правильный ответ короткий: подтвердить запись, назвав её.
+     *
+     * Запись берём из базы, а не из слов пациента: подтверждать «да, 8-го»
+     * только потому, что так написал человек, — значит подтверждать неизвестно
+     * что. Записи не видим — так и говорим и передаём администратору.
+     */
+    if (statesOwnBooking(own)) {
+      const mine = await upcomingBookingLine(ctx.companyId, conversation.patientId);
+      return respond(ctx, conversation.id, {
+        text: mine
+          ? `Да, вижу вашу запись: ${mine}. Если появятся вопросы — я здесь.`
+          : "Уточню у администратора — он подтвердит запись и напишет здесь же.",
+      });
+    }
+  }
+
+  /**
+   * Уточнение по времени, когда вопрос уже у администратора.
+   *
+   * «В 9:00 у нас реабилитация» — это «в девять не могу», сказанное человеком.
+   * Агент пересказал: «передаю администратору, что вам нужно перенести запись
+   * НА 8 сентября в 09:00» — и перевернул смысл на обратный. Пересказ здесь не
+   * нужен вовсе: администратор видит переписку целиком, а цена ошибки в
+   * пересказе — время приёма.
+   *
+   * Поэтому отвечаем коротко и без единой цифры от себя. Справочные вопросы
+   * это не задевает: у них есть вопросительный знак или нет разговора о
+   * времени, и они идут обычным путём (lib/agent/handover-flow).
+   */
+  if (inHandoverFlow(said) && timeDetail(own) && !hasQuestion(own)) {
+    await escalate(
+      ctx.companyId,
+      conversation.id,
+      "PATIENT_REQUEST",
+      "Уточнение по времени — вопрос у администратора",
+    ).catch(() => {});
+    const ack = "Поняла, передал(а) администратору — он учтёт это и напишет здесь же.";
+    /**
+     * Второй раз то же самое не пишем. «Передал администратору» на каждую
+     * реплику — шум, из-за которого перестают читать и настоящие сообщения;
+     * вопрос уже у человека, и добавить агенту нечего.
+     */
+    if (alreadySaid(said, ack)) {
+      await logAgentRun({
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        outcome: "SUPPRESSED",
+        error: "уточнение по времени: вопрос уже у администратора, повторять нечего",
+      });
+      return null;
+    }
+    return respond(ctx, conversation.id, { text: ack });
   }
 
   /**
@@ -1414,7 +1502,7 @@ async function replyToQuestion(
    * человека не позвал никто. Живой администратор на третьей реплике уже
    * ответил бы голосом.
    */
-  if (stuckInMisunderstanding(said, text)) {
+  if (stuckInMisunderstanding(said, own)) {
     await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Агент трижды не понял запрос").catch(() => {});
     return respond(ctx, conversation.id, {
       text: "Давайте я позову администратора — он разберётся быстрее. Он ответит здесь же.",
@@ -1517,7 +1605,7 @@ async function replyToQuestion(
 
   // Модель недоступна и подходящей справки нет. Про запись отвечаем по делу,
   // остальное честно передаём человеку.
-  if (scheduleTopic(text)) {
+  if (scheduleTopic(own)) {
     return respond(ctx, conversation.id, {
       text:
         "Время приёма подбирает администратор — передал(а) ему ваш вопрос, он ответит здесь же. " +

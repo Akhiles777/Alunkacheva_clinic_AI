@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { visitTitle } from "@/lib/visit-title";
 
 /**
  * Что агент знает о записях пациента.
@@ -58,6 +59,7 @@ export async function patientVisitsContext(
         status: true,
         staff: { select: { name: true } },
         primaryService: { select: { title: true } },
+        services: { select: { service: { select: { title: true } } } },
       },
     }),
     prisma.appointment.findMany({
@@ -74,30 +76,41 @@ export async function patientVisitsContext(
         startAt: true,
         staff: { select: { name: true } },
         primaryService: { select: { title: true } },
+        services: { select: { service: { select: { title: true } } } },
       },
     }),
   ]);
 
   if (upcoming.length === 0 && past.length === 0) return "";
 
+  /**
+   * Имя визита — это его состав (§8, lib/visit-title).
+   *
+   * Мать записывает себя и ребёнка одной записью. Назвать ей только первую
+   * услугу — сказать неправду о её же визите: она придёт вдвоём, а услышала
+   * про один приём.
+   */
+  const line = (a: {
+    startAt: Date;
+    staff: { name: string } | null;
+    primaryService: { title: string } | null;
+    services: { service: { title: string } }[];
+  }) =>
+    `• ${when.format(a.startAt)} — ` +
+    visitTitle(
+      a.services.map((s) => ({ title: s.service.title })),
+      a.primaryService?.title ?? "приём",
+    ) +
+    `${a.staff?.name ? `, ${a.staff.name}` : ""}`;
+
   const lines: string[] = [];
   if (upcoming.length > 0) {
     lines.push("ЗАПИСИ ЭТОГО ПАЦИЕНТА (о них можно рассказать, если спросит):");
-    for (const a of upcoming) {
-      lines.push(
-        `• ${when.format(a.startAt)} — ${a.primaryService?.title ?? "приём"}` +
-          `${a.staff?.name ? `, ${a.staff.name}` : ""}`,
-      );
-    }
+    for (const a of upcoming) lines.push(line(a));
   }
   if (past.length > 0) {
     lines.push("Был у нас:");
-    for (const a of past) {
-      lines.push(
-        `• ${when.format(a.startAt)} — ${a.primaryService?.title ?? "приём"}` +
-          `${a.staff?.name ? `, ${a.staff.name}` : ""}`,
-      );
-    }
+    for (const a of past) lines.push(line(a));
   }
   /**
    * Прямое ограничение рядом с данными, а не в общем промпте: соблазн
@@ -109,4 +122,45 @@ export async function patientVisitsContext(
       "Про запись только рассказываешь.",
   );
   return lines.join("\n");
+}
+
+/**
+ * Ближайшая запись пациента человеческой строкой.
+ *
+ * Нужна, когда пациент сам говорит о своей записи: «Записана на 8 сентября».
+ * Отвечать на это оформлением с нуля — «на какую услугу вы хотите записаться»
+ * — значит показать, что записи мы не видим, хотя она у нас перед глазами.
+ *
+ * Имя визита берём общей функцией (`visitTitle`): у записи бывает несколько
+ * услуг — мать записывает себя и ребёнка одной, — и назвать пациенту только
+ * первую значит сказать ему неправду о его же визите (§8).
+ */
+export async function upcomingBookingLine(
+  companyId: string,
+  patientId: string | null,
+  now: Date = new Date(),
+): Promise<string | null> {
+  if (!patientId) return null;
+  const next = await prisma.appointment.findFirst({
+    where: {
+      companyId,
+      patientId,
+      deletedAt: null,
+      status: { notIn: ["CANCELLED", "NO_SHOW"] },
+      startAt: { gte: now },
+    },
+    orderBy: { startAt: "asc" },
+    select: {
+      startAt: true,
+      staff: { select: { name: true } },
+      primaryService: { select: { title: true } },
+      services: { select: { service: { select: { title: true } } } },
+    },
+  });
+  if (!next) return null;
+  const title = visitTitle(
+    next.services.map((s) => ({ title: s.service.title })),
+    next.primaryService?.title ?? "приём",
+  );
+  return `${when.format(next.startAt)} — ${title}${next.staff?.name ? `, ${next.staff.name}` : ""}`;
 }
