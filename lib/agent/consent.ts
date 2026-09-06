@@ -36,7 +36,36 @@ export async function consentRequestFor(
     where: { id: conversationId },
     select: { consentAskedAt: true, consentGrantedAt: true, patientId: true },
   });
-  if (!conv || conv.consentGrantedAt || conv.consentAskedAt) return null;
+  if (!conv || conv.consentGrantedAt) return null;
+
+  /**
+   * Клиника уже знает этого человека — проверяем ДО всего остального.
+   *
+   * Раньше здесь стоял выход по `consentAskedAt`: спросили один раз — больше
+   * не спрашиваем. Выглядело разумно, а на деле запирало диалог навсегда.
+   * Пациентка ходит в клинику с июля, переписывается с администратором, была
+   * на приёме — и получила запрос согласия. Не ответила «да» (она писала
+   * благодарность врачу, а не заполняла форму), и с тех пор КАЖДОЕ её
+   * сообщение упиралось в одну и ту же стену: «нужно ваше согласие». Через
+   * три недели она спросила про свободное окно — и снова получила стену.
+   *
+   * Проверка «клиника её знает» стояла ниже и до неё дело не доходило.
+   * Теперь она первая: у человека с визитами и месяцем переписки согласие
+   * взято на приёме, и требовать его в мессенджере — значит не узнавать
+   * своего пациента.
+   */
+  if (await knownToClinic(companyId, conversationId, conv.patientId)) {
+    const now = new Date();
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { consentGrantedAt: now, consentAskedAt: conv.consentAskedAt ?? now },
+    });
+    if (conv.patientId) await materializeConsent(companyId, conv.patientId, conversationId);
+    return null;
+  }
+
+  // Спросили и ждём ответа — второй раз не спрашиваем.
+  if (conv.consentAskedAt) return null;
 
   /**
    * Согласие принадлежит пациенту, а не переписке.
@@ -61,30 +90,6 @@ export async function consentRequestFor(
       });
       return null;
     }
-  }
-
-  /**
-   * Пациент, которого клиника уже знает.
-   *
-   * Требовать согласие у человека, который ходит в клинику годами и только что
-   * переписывался с администратором, — решение заказчика отменить, и оно
-   * разумное: в переписке это выглядит как «здравствуйте, вы кто?» на десятом
-   * визите. Основание считать согласие полученным есть: пациент с визитами
-   * подписал бумажную форму на первом приёме, а с тем, с кем клиника ведёт
-   * переписку, отношения уже начаты — обе стороны это подтверждают самим
-   * фактом разговора.
-   *
-   * Что считаем признаком: визиты в карточке или переписка, которая была до
-   * сегодняшнего обращения (в том числе выкачанная из WhatsApp).
-   */
-  if (await knownToClinic(companyId, conversationId, conv.patientId)) {
-    const now = new Date();
-    await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { consentGrantedAt: now, consentAskedAt: now },
-    });
-    if (conv.patientId) await materializeConsent(companyId, conv.patientId, conversationId);
-    return null;
   }
 
   const doc = await prisma.consentDocument.findFirst({
