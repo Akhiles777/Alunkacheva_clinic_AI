@@ -31,6 +31,17 @@ export interface ConsentRequest {
 export async function consentRequestFor(
   companyId: string,
   conversationId: string,
+  /**
+   * Спрашивать ли согласие, если его ещё нет.
+   *
+   * `false` — только разобраться с уже данным: узнать своего пациента и
+   * перенести отметку из карточки. Нужно потому, что согласие спрашивается не
+   * при первом «здравствуйте», а перед запросом персональных данных (решение
+   * заказчика, сентябрь 2026, — так написано и в его инструкции ассистенту).
+   * Раньше вопрос стоял стеной на входе: человек спрашивал цену и первым, что
+   * слышал от клиники, был юридический текст.
+   */
+  ask = true,
 ): Promise<ConsentRequest | null> {
   const conv = await prisma.conversation.findUnique({
     where: { id: conversationId },
@@ -63,6 +74,9 @@ export async function consentRequestFor(
     if (conv.patientId) await materializeConsent(companyId, conv.patientId, conversationId);
     return null;
   }
+
+  // Спрашивать не просили — значит только проверяли, есть ли согласие.
+  if (!ask) return null;
 
   // Спросили и ждём ответа — второй раз не спрашиваем.
   if (conv.consentAskedAt) return null;

@@ -71,7 +71,16 @@ import { ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
 import { focusedAnswer } from "./focused-answer";
 import { matchServices, whomFor } from "./service-match";
-import { asksForIntake, hasQuestion, inIntakeFlow, intakePrompt, looksLikeIntake, nameFromIntake } from "./intake";
+import {
+  asksForIntake,
+  asksForPersonalData,
+  hasQuestion,
+  inIntakeFlow,
+  intakePrompt,
+  looksLikeIntake,
+  nameFromIntake,
+  withoutPersonalDataRequest,
+} from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
 import { withoutQuote } from "./quoted";
@@ -611,11 +620,79 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
  * пациенту, но не сохраняла его: в инбоксе диалог выглядел как молчание бота,
  * а администратор не понимал, что уже было сказано.
  */
+/** Кнопки ответа на вопрос о согласии. */
+function consentButtons() {
+  return [
+    { text: "Да, согласен(на)", data: CONSENT_ACCEPT },
+    { text: "Нет", data: CONSENT_DECLINE },
+  ];
+}
+
+/**
+ * Короткое напоминание вместо полного текста согласия.
+ *
+ * Полную формулировку с ссылкой человек уже видел; повторять её целиком на
+ * каждую просьбу о данных — та самая стена, из-за которой разговоры и
+ * запирались.
+ */
+const CONSENT_REMINDER =
+  "Чтобы передать данные администратору, нужно ваше согласие на обработку персональных данных — " +
+  "ответьте, пожалуйста, «Да» или «Нет».";
+
 async function respond(
   ctx: AgentContext,
   conversationId: string,
   reply: AgentReply,
 ): Promise<AgentReply> {
+  /**
+   * Согласие — перед запросом персональных данных, и ни минутой раньше (§7).
+   *
+   * Так написано в инструкции клиники: сначала определить услугу, назвать цену
+   * и длительность, потом взять согласие, и только потом просить ФИО, возраст
+   * и жалобу. Стена на входе была нашей самодеятельностью: человек спрашивал
+   * «сколько стоит остеопатия?» и первым, что слышал от клиники, был
+   * юридический текст.
+   *
+   * Проверка стоит здесь, а не в ветках, потому что здесь ЕДИНСТВЕННЫЙ выход
+   * наружу: сколько бы веток ни появилось потом, ни одна не сможет попросить
+   * данные, минуя согласие. Просьбу вырезаем, остальное — услугу, цену,
+   * длительность — оставляем: она человеку полезна.
+   */
+  if (asksForPersonalData(reply.text)) {
+    /**
+     * Спросили один раз — и замолчали: так данные собирались БЕЗ согласия.
+     *
+     * `consentRequestFor` возвращает вопрос только в первый раз; дальше он
+     * молчит, потому что второй раз спрашивать незачем. На этом молчании
+     * просьба прислать ФИО проходила насквозь: мама получила запрос согласия,
+     * не ответила на него, а через две реплики прислала имена и возраст обоих
+     * детей — и они были приняты.
+     *
+     * Поэтому решает не наличие вопроса, а факт согласия. Нет согласия —
+     * просьбу вырезаем всегда, а сам вопрос задаём либо целиком (в первый
+     * раз), либо коротким напоминанием.
+     */
+    const granted = await prisma.conversation
+      .findUnique({ where: { id: conversationId }, select: { consentGrantedAt: true } })
+      .catch(() => null);
+    if (granted && !granted.consentGrantedAt) {
+      const request = await consentRequestFor(ctx.companyId, conversationId).catch(() => null);
+      // Свой пациент: согласие могло проставиться прямо сейчас — перечитываем.
+      const after = await prisma.conversation
+        .findUnique({ where: { id: conversationId }, select: { consentGrantedAt: true } })
+        .catch(() => null);
+      if (!after?.consentGrantedAt) {
+        const kept = withoutPersonalDataRequest(reply.text);
+        const ask = request ? request.text + consentHint(ctx.channel) : CONSENT_REMINDER;
+        reply = {
+          ...reply,
+          text: kept ? `${kept}\n\n${ask}` : ask,
+          buttons: request?.buttons ?? consentButtons(),
+        };
+      }
+    }
+  }
+
   /**
    * Поздоровались с нами — здороваемся в ответ. Одно место на все ветки.
    *
@@ -940,7 +1017,18 @@ export async function handlePatientMessage(
    * Согласие на обработку ПДн — до всего остального (§7). Спрашиваем один раз
    * за диалог; пока клиника не завела текст согласия, вопрос не задаётся.
    */
-  const consent = await consentRequestFor(ctx.companyId, conversation.id);
+  /**
+   * Согласие на входе больше не спрашиваем.
+   *
+   * Спрашиваем его перед запросом персональных данных — этим занимается
+   * respond, через который уходит любой ответ. Здесь остаётся один случай:
+   * человек прислал ФИО и жалобу САМ, не дожидаясь вопроса. Обрабатывать это
+   * без согласия нельзя, поэтому спрашиваем сразу.
+   *
+   * Вызов с `ask = false` не молчаливый: он узнаёт своего пациента и
+   * переносит согласие из карточки на диалог, как раньше.
+   */
+  const consent = await consentRequestFor(ctx.companyId, conversation.id, looksLikeIntake(own));
   if (consent) {
     const alreadyWithHuman = await callHumanWhileWaitingConsent(
       ctx,
@@ -969,79 +1057,22 @@ export async function handlePatientMessage(
   /**
    * Ответ на вопрос о согласии словами.
    *
-   * В WhatsApp кнопок нет, и до этой ветки согласие там нельзя было дать
-   * вообще: вопрос задавался, ответить на него было нечем, а следующее
-   * сообщение шло дальше как ни в чём не бывало. То есть переписка с
-   * медицинской клиникой велась без зафиксированного согласия — прямое
-   * нарушение §7.
+   * В WhatsApp кнопок нет, и без этой ветки согласие там нельзя было дать
+   * вообще: вопрос задавался, ответить на него было нечем.
    *
    * Слова принимаем только пока согласие ждём. Вне этого «да» в переписке
    * значит что угодно, и засчитать его за согласие было бы подлогом.
+   *
+   * А вот СТЕНЫ здесь больше нет. Пока согласие гатило всю переписку, каждое
+   * следующее сообщение упиралось в «нужно ваше согласие», и разговор был
+   * заперт: пациентка писала благодарность врачу и получала форму, через три
+   * недели спрашивала про окошко — и получала её же. Теперь согласие гатит
+   * только запрос персональных данных (respond), а на вопросы агент отвечает
+   * как обычно: спросил один раз — и ведёт разговор дальше.
    */
   if (conversation.consentAskedAt && !conversation.consentGrantedAt) {
     const answer = consentFromText(own);
     if (answer) return handleCallback(ctx, conversation.id, answer);
-
-    // Не поняли ответ. Просьбу позвать человека пропускаем: запирать пациента
-    // в вопросе о согласии, когда он просит администратора, — жестоко и
-    // бессмысленно, человек и возьмёт согласие голосом.
-    if (!wantsHuman(own)) {
-      /**
-       * Вторая попытка — последняя.
-       *
-       * Стена «нужно ваше согласие» повторялась на КАЖДОЕ сообщение и без
-       * ответа «да» держалась вечно. Пациентка писала благодарность врачу и
-       * получала запрос согласия; через три недели спросила про свободное
-       * окошко — и получила его снова. Разговор был заперт, и разрулил его
-       * администратор вручную.
-       *
-       * Человек, который дважды написал что-то другое, не заполняет форму —
-       * он пришёл с делом. Дальше это работа администратора: он и согласие
-       * возьмёт, и на вопрос ответит.
-       */
-      const asked = await prisma.message.count({
-        where: {
-          conversationId: conversation.id,
-          direction: "OUT",
-          deletedAt: null,
-          isDraft: false,
-          /**
-           * Ищем вхождение, а не начало строки: вместе со стеной теперь
-           * уходит ответ на вопрос пациента, и «начинается с» перестало
-           * совпадать — стена повторялась бы вечно.
-           */
-          body: { contains: "Нужно ваше согласие" },
-        },
-      });
-      const known = await referenceAnswer(ctx.companyId, own).catch(() => null);
-      const alreadyWithHuman = await callHumanWhileWaitingConsent(
-        ctx,
-        conversation.id,
-        own,
-        attachments,
-      );
-      if (asked >= 1) {
-        await escalate(
-          ctx.companyId,
-          conversation.id,
-          "PATIENT_REQUEST",
-          "Пациент пишет по делу, не отвечая на запрос согласия",
-        ).catch(() => {});
-        return respond(ctx, conversation.id, {
-          text: known
-            ? `${known}\n\nОстальное подскажет администратор — передал(а) ему ваш вопрос.`
-            : "Передал(а) администратору — он ответит здесь же.",
-        });
-        /* alreadyWithHuman здесь не нужен: про администратора уже сказано. */
-      }
-      return respond(ctx, conversation.id, {
-        text:
-          (known ? `${known}\n\n` : "") +
-          `Нужно ваше согласие на обработку персональных данных.${consentHint(ctx.channel)}` +
-          alreadyWithHuman,
-        buttons: consentButtons(),
-      });
-    }
   }
 
   /**
@@ -1261,6 +1292,34 @@ async function replyToQuestion(
    */
   const intakeSent = looksLikeIntake(own);
   if (intakeSent) {
+    /**
+     * Данные прислали, а согласия нет — принимать их нельзя (§7).
+     *
+     * Мама прислала ФИО и возраст обоих детей, не ответив на запрос согласия,
+     * и получила «спасибо, передала администратору». То есть персональные
+     * данные были собраны и переданы дальше без согласия — ровно то, ради
+     * чего весь этот механизм и существует.
+     *
+     * Имя в карточку не запоминаем и «спасибо, записал(а)» не говорим.
+     * Администратора зовём: он возьмёт согласие голосом и доведёт запись.
+     */
+    const consentOk = await prisma.conversation
+      .findUnique({ where: { id: conversation.id }, select: { consentGrantedAt: true } })
+      .catch(() => null);
+    if (consentOk && !consentOk.consentGrantedAt) {
+      await escalate(
+        ctx.companyId,
+        conversation.id,
+        "PATIENT_REQUEST",
+        "Пациент прислал данные для записи до согласия на обработку",
+      ).catch(() => {});
+      const request = await consentRequestFor(ctx.companyId, conversation.id).catch(() => null);
+      return respond(ctx, conversation.id, {
+        text: request ? request.text + consentHint(ctx.channel) : CONSENT_REMINDER,
+        buttons: request?.buttons ?? consentButtons(),
+      });
+    }
+
     /**
      * Имя из анкеты запоминаем сразу.
      *
@@ -1964,12 +2023,6 @@ function consentHint(channel: AgentChannel): string {
   return supportsButtons(channel) ? "" : "\nОтветьте «Да» или «Нет».";
 }
 
-function consentButtons() {
-  return [
-    { text: "Согласен(на)", data: CONSENT_ACCEPT },
-    { text: "Не сейчас", data: CONSENT_DECLINE },
-  ];
-}
 
 /**
  * Запомнить имя, которым представился пациент.
