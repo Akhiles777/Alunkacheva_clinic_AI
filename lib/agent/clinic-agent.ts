@@ -89,7 +89,7 @@ import { withoutQuote } from "./quoted";
 import { inHandoverFlow, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames } from "./specialist";
 import { complexMedical, managementTopic } from "./specialist-rules";
-import { WEEKDAY_WHEN, daysAsked, staffAsked, whoWorks } from "./workdays";
+import { WEEKDAY_WHEN, daysAsked, staffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
 /**
  * Агент пациентского канала.
@@ -1194,6 +1194,58 @@ function questionForDoctor(own: string, said: { role: string; content: string }[
 }
 
 /**
+ * Что мы точно знаем про названные дни: работает ли клиника и кто принимает.
+ *
+ * Дописывается к ответу модели, когда она про день не сказала. Факты берём из
+ * базы: график клиники и дни врачей. Если график не заведён — молчим, а не
+ * гадаем.
+ */
+async function workdayFacts(companyId: string, days: number[]): Promise<string | null> {
+  const [schedule, doctors] = await Promise.all([
+    prisma.clinicSchedule.findMany({
+      where: { companyId },
+      select: { weekday: true, startMinute: true, endMinute: true },
+    }),
+    prisma.staff.findMany({
+      where: { companyId, isActive: true, deletedAt: null },
+      orderBy: { name: "asc" },
+      select: { name: true, specialty: true, workdays: true },
+    }),
+  ]);
+  if (schedule.length === 0) return null;
+
+  const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const lines = days.map((d) => {
+    const open = schedule.find((x) => x.weekday === d);
+    if (!open) return `${WEEKDAY_WHEN[d]} у нас выходной`;
+    const works = whoWorks(doctors, [d]).works;
+    const who = works.length
+      ? ` Принимают: ${works.map((w) => `${w.name}${w.specialty ? ` — ${w.specialty}` : ""}`).join("; ")}.`
+      : "";
+    return `${WEEKDAY_WHEN[d]} работаем с ${hhmm(open.startMinute)} до ${hhmm(open.endMinute)}.${who}`;
+  });
+  const text = lines.join(" ");
+  return `${text[0].toUpperCase()}${text.slice(1)}`;
+}
+
+/**
+ * Кто ведёт эту услугу — по состоявшимся визитам.
+ *
+ * Справочник знает это сам и точнее любой настройки: «в субботу есть
+ * БОС-терапия?» — вопрос про того, кто её проводит, а не про остеопатов.
+ */
+async function staffForService(companyId: string, serviceId: string): Promise<string[]> {
+  const rows = await prisma.appointment.groupBy({
+    by: ["staffId"],
+    where: { companyId, deletedAt: null, services: { some: { serviceId } } },
+    _count: { _all: true },
+    orderBy: { _count: { staffId: "desc" } },
+    take: 5,
+  });
+  return rows.map((r) => r.staffId);
+}
+
+/**
  * Какая услуга обсуждается — чтобы вопрос ушёл тому, кто её ведёт.
  *
  * Вопрос про БОС-терапию не должен идти остеопату: кто что ведёт, знает
@@ -1724,11 +1776,42 @@ async function replyToQuestion(
     const doctors = await prisma.staff.findMany({
       where: { companyId: ctx.companyId, isActive: true, deletedAt: null },
       orderBy: { name: "asc" },
-      select: { name: true, specialty: true, workdays: true },
+      select: { id: true, name: true, specialty: true, workdays: true },
     });
     const named = staffAsked(own, doctors);
 
-    if (named && named.workdays.length > 0) {
+    /**
+     * Про врачей отвечаем, только когда спросили про врача или про услугу.
+     *
+     * «Работаете ли вы в выходные?» — вопрос про КЛИНИКУ, а не про остеопатов.
+     * Первая версия отвечала на него списком врачей, и получалось, что в
+     * субботу в клинике только остеопатия: ни БОС-терапии, ни процедурного
+     * кабинета, ни забора крови — как будто их нет. Ответ был верен про одного
+     * врача и неверен про клинику.
+     *
+     * Названа услуга — смотрим тех, кто её ведёт: «в субботу есть БОС?» это
+     * вопрос про специалиста по БОС, а не про всех.
+     */
+    const serviceId = named ? null : await serviceInTalk(ctx.companyId, withoutDays(own), said);
+    const runBy = serviceId ? await staffForService(ctx.companyId, serviceId) : [];
+    const scope = named
+      ? doctors.filter((d) => d.id === named.id)
+      : doctors.filter((d) => runBy.includes(d.id));
+
+    /**
+     * Второй вопрос в том же сообщении отдаём модели.
+     *
+     * «Работаете ли вы в выходные дни? И сколько у вас стоит приём?» — здесь
+     * два вопроса, и короткий ответ про дни съедал второй. Отвечать на всё
+     * сразу умеет модель; наше дело — дать ей точные дни (они в справке) и
+     * проверить ответ (wrongWorkday).
+     */
+    const alsoAsksPrice =
+      /(?<!\p{L})(?:сколько\s+стоит|сколько\s+будет|цена|цены|стоимость|прайс|почём|почем|сколько\s+у\s+вас\s+стоит)(?!\p{L})/iu.test(
+        own,
+      );
+
+    if (named && named.workdays.length > 0 && !alsoAsksPrice) {
       /** Спросили про конкретного врача — отвечаем про него, коротко и точно. */
       const yes = askedDays.filter((d) => named.workdays.includes(d));
       const no = askedDays.filter((d) => !named.workdays.includes(d));
@@ -1750,10 +1833,18 @@ async function replyToQuestion(
        */
       const other = no
         .map((d) => {
-          const works = whoWorks(doctors, [d]).works;
+          /**
+           * Кто вместо него — только та же специальность. «Ирина
+           * Алилгаджиевна в субботу не принимает, принимает Ирина Омарова»
+           * сбивает с толку: спрашивали про остеопата, а названа БОС-терапия.
+           */
+          const sameKind = whoWorks(
+            doctors.filter((x) => (x.specialty ?? "") === (named.specialty ?? "")),
+            [d],
+          ).works;
           const line =
-            works.length > 0
-              ? `${WEEKDAY_WHEN[d]} принимает ${works.map((w) => w.name).join(", ")}`
+            sameKind.length > 0
+              ? `${WEEKDAY_WHEN[d]} принимает ${sameKind.map((w) => w.name).join(", ")}`
               : `${WEEKDAY_WHEN[d]} приёма нет`;
           return `${line[0].toUpperCase()}${line.slice(1)}`;
         })
@@ -1765,7 +1856,7 @@ async function replyToQuestion(
       });
     }
 
-    if (!named && doctors.some((d) => d.workdays.length > 0)) {
+    if (!named && !alsoAsksPrice && scope.length > 0 && scope.some((d) => d.workdays.length > 0)) {
       /**
        * Врача не назвали — говорим по каждому дню, кто принимает.
        *
@@ -1775,7 +1866,7 @@ async function replyToQuestion(
       await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
       const capitalize = (t: string) => `${t[0].toUpperCase()}${t.slice(1)}`;
       const byDay = askedDays.map((d) => {
-        const works = whoWorks(doctors, [d]).works;
+        const works = whoWorks(scope, [d]).works;
         return capitalize(
           works.length > 0
             ? `${WEEKDAY_WHEN[d]} принимает ${works
@@ -1784,7 +1875,7 @@ async function replyToQuestion(
             : `${WEEKDAY_WHEN[d]} приёма нет`,
         );
       });
-      const anyDay = askedDays.some((d) => whoWorks(doctors, [d]).works.length > 0);
+      const anyDay = askedDays.some((d) => whoWorks(scope, [d]).works.length > 0);
       return respond(ctx, conversation.id, {
         text:
           `${byDay.join(". ")}. ` +
@@ -2081,6 +2172,31 @@ async function replyToQuestion(
    * Сверяем со справкой, а НЕ со словами пациента: то, что человек назвал
    * свою усталость, не даёт права утверждать, что от неё помогает капельница.
    */
+  /**
+   * Ответ утверждает, что врач принимает в день, когда он не принимает.
+   *
+   * Генерацию оставляем модели — она умеет ответить сразу на два вопроса
+   * («работаете в выходные и сколько стоит»), а код ловит единственную
+   * ошибку, из-за которой человек приезжает зря.
+   */
+  const wrongDay = answer
+    ? wrongWorkday(
+        answer,
+        await prisma.staff.findMany({
+          where: { companyId: ctx.companyId, isActive: true, deletedAt: null },
+          select: { name: true, workdays: true },
+        }),
+      )
+    : null;
+  if (wrongDay) {
+    console.error(`[agent] ответ отклонён: врач в этот день не принимает — ${wrongDay}`);
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по расписанию врача").catch(() => {});
+    return respond(ctx, conversation.id, {
+      text: "Уточню у администратора, кто принимает в этот день, — он напишет здесь же.",
+      buttons: mainMenu(),
+    });
+  }
+
   const madeUp = answer ? inventedIndication(answer, reference) : null;
   if (madeUp) {
     console.error(`[agent] ответ отклонён: показание не из справки — «${madeUp}»`);
@@ -2165,6 +2281,18 @@ async function replyToQuestion(
     });
   }
 
+  /**
+   * Модель не ответила про названный день — дописываем факт.
+   *
+   * «Работаете ли вы в выходные дни? И сколько у вас стоит приём?» получило
+   * ответ только про цены: про выходные не было ни слова. Дописываем, а не
+   * подменяем — то, что модель сказала про цены, остаётся целиком.
+   */
+  const dayTail =
+    answer && askedDays.length > 0 && !daysAnswered(answer, askedDays)
+      ? await workdayFacts(ctx.companyId, askedDays)
+      : null;
+
   if (answer && invented.length === 0 && !alreadySaid(said, answer)) {
 
     /**
@@ -2230,7 +2358,9 @@ async function replyToQuestion(
       // Приветствие добавит respond — одно место на все ветки.
       text: intakeSent
         ? `${answer}\n\n${INTAKE_ACCEPTED}`
-        : needsData
+        : dayTail
+          ? `${answer}\n\n${dayTail}`
+          : needsData
           ? `${answer}\n\nЧтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ФИО того, кто придёт на приём, возраст и кратко причину обращения.`
           : answer,
       buttons: mainMenu(),

@@ -100,3 +100,60 @@ export function staffAsked<T extends { name: string }>(text: string, staff: T[])
     ) ?? null
   );
 }
+
+/**
+ * Вопрос без слов о днях недели — для поиска услуги.
+ *
+ * «А в воскресенье можно на остеопатию?» не находило услугу: слово
+ * «воскресенье» длинное и перевешивало «остеопатию» в доле совпадения.
+ * Услугу ищем по тому, что осталось после дня.
+ */
+export function withoutDays(text: string): string {
+  let out = text;
+  for (const { re } of WEEKDAY_WORDS) out = out.replace(new RegExp(re.source, "giu"), " ");
+  return out.replace(/(?<!\p{L})выходн\p{L}*(?!\p{L})/giu, " ").replace(/\s{2,}/g, " ").trim();
+}
+
+/**
+ * Ответ утверждает, что врач принимает в день, когда он не принимает.
+ *
+ * Проверка, а не генерация: отвечает по-прежнему модель — она умеет ответить
+ * сразу на два вопроса («работаете в выходные и сколько стоит»), — а код
+ * ловит единственную ошибку, из-за которой человек приезжает зря.
+ *
+ * Смотрим по предложениям: врач и день должны стоять рядом. Отрицание
+ * («не принимает», «выходной») снимает подозрение — это и есть верный ответ.
+ */
+export function wrongWorkday(answer: string, staff: StaffDays[]): string | null {
+  const known = staff.filter((s) => s.workdays.length > 0);
+  if (known.length === 0) return null;
+
+  for (const sentence of answer.split(/(?<=[.!?\n])/)) {
+    if (/(?:не\s+принима|не\s+работа|выходн|не\s+веду|не\s+ведёт|не\s+ведет)/iu.test(sentence)) continue;
+    const days = daysAsked(sentence);
+    if (days.length === 0) continue;
+    const named = staffAsked(sentence, known);
+    if (!named) continue;
+    const bad = days.filter((d) => !named.workdays.includes(d));
+    if (bad.length > 0) {
+      return `${named.name} — ${bad.map((d) => WEEKDAY_NAMES[d]).join(", ")}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Ответила ли модель про названный день.
+ *
+ * «Работаете ли вы в выходные дни? И сколько у вас стоит приём?» — модель
+ * ответила только про цены, а про выходные не сказала ничего. Просьба в
+ * промпте «ответь на каждую часть вопроса» помогает не всегда, и человек
+ * остаётся без ответа на свой первый вопрос.
+ *
+ * Поэтому проверяем и дописываем факт, а не подменяем ответ: то, что модель
+ * сказала про цены, остаётся целиком.
+ */
+export function daysAnswered(answer: string, days: number[]): boolean {
+  const said = daysAsked(answer);
+  return days.every((d) => said.includes(d));
+}

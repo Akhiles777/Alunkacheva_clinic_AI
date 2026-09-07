@@ -107,6 +107,9 @@ const SERVICES = [
 const STAFF = [
   { name: "Ирина Алилгаджиевна", specialty: "Остеопат", yclientsStaffId: 1, workdays: [1, 2, 3, 4] },
   { name: "Разият Ризвановна", specialty: "Остеопат", yclientsStaffId: 2, workdays: [1, 2, 3, 4, 5, 6] },
+  // БОС-терапию ведёт другой человек: «в субботу есть БОС?» — вопрос к ней,
+  // а не к остеопатам. Из-за этого и появилось разделение по услуге.
+  { name: "Ирина Омарова", specialty: "БОС-терапия", yclientsStaffId: 3, workdays: [1, 2, 3, 4, 5, 6] },
 ];
 
 /**
@@ -303,6 +306,24 @@ async function main() {
     },
   });
 
+  /**
+   * График клиники: пн–сб 09:00–21:00, воскресенье выходное. Без него агент не
+   * может ответить, работает ли клиника в названный день, — а именно с этого
+   * вопроса начинается половина обращений.
+   */
+  await prisma.clinicSchedule.deleteMany({ where: { companyId: company.id } });
+  for (const weekday of [1, 2, 3, 4, 5, 6]) {
+    await prisma.clinicSchedule.create({
+      data: {
+        companyId: company.id,
+        weekday,
+        startMinute: 9 * 60,
+        endMinute: 21 * 60,
+        validFrom: new Date("2026-01-01"),
+      },
+    });
+  }
+
   await prisma.consentDocument.upsert({
     where: { companyId_version: { companyId: company.id, version: "1" } },
     update: { isActive: true },
@@ -401,6 +422,45 @@ async function main() {
     });
     console.log(`пациент: ${p.name} ${p.phone} — визит в прошлом и запись 8 сентября 09:00`);
   }
+
+  /**
+   * Кто ведёт БОС-терапию, платформа узнаёт из визитов, а не из настройки.
+   * Без истории визитов вопрос «в субботу есть БОС?» не с чем связать.
+   */
+  const bos = await prisma.service.findFirstOrThrow({
+    where: { companyId: company.id, yclientsServiceId: 3 },
+  });
+  const bosStaff = await prisma.staff.findFirstOrThrow({
+    where: { companyId: company.id, yclientsStaffId: 3 },
+  });
+  const bosPatient = await prisma.patient.findFirstOrThrow({
+    where: { companyId: company.id, phones: { some: { phone: "+79280000001" } } },
+  });
+  await prisma.appointment.deleteMany({
+    where: { companyId: company.id, staffId: bosStaff.id },
+  });
+  for (let i = 1; i <= 3; i += 1) {
+    const at = new Date(Date.now() - (10 + i) * 86_400_000);
+    await prisma.appointment.create({
+      data: {
+        companyId: company.id,
+        patientId: bosPatient.id,
+        staffId: bosStaff.id,
+        primaryServiceId: bos.id,
+        startAt: at,
+        endAt: new Date(at.getTime() + 40 * 60_000),
+        createdAtYclients: at,
+        updatedAtYclients: at,
+        durationMin: 40,
+        status: "ARRIVED",
+        revenue: 2800,
+        services: {
+          create: { companyId: company.id, serviceId: bos.id, priceCharged: 2800, durationMin: 40 },
+        },
+      },
+    });
+  }
+  console.log(`БОС-терапию ведёт ${bosStaff.name} — 3 визита в истории`);
 
   /**
    * Врач и руководитель клиники — тот, кому ассистент задаёт вопросы.
