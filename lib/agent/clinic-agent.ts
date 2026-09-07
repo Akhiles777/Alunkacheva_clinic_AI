@@ -74,7 +74,7 @@ import { keepOneQuestion } from "./one-question";
 import { ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
 import { focusedAnswer } from "./focused-answer";
-import { matchServices, whomFor } from "./service-match";
+import { matchServices, whomFor, type Whom } from "./service-match";
 import {
   asksForIntake,
   asksForPersonalData,
@@ -1407,9 +1407,31 @@ async function referenceAnswer(companyId: string, text: string): Promise<string 
  * администратору всё равно понадобятся, и спросить их лучше сейчас, пока
  * человек в переписке, чем заставлять его отвечать на те же вопросы завтра.
  */
-const INTAKE_REQUEST =
-  "Время подберёт администратор — передал(а) ему вашу просьбу. Чтобы не терять время, " +
-  "пришлите, пожалуйста, одним сообщением: ФИО, возраст и кратко причину обращения.";
+/** Для кого приём — по словам пациента во всём разговоре, а не в одной реплике. */
+function whomInTalk(own: string, said: { role: string; content: string }[]): Whom {
+  return whomFor(
+    searchText(
+      own,
+      said.filter((t) => t.role === "user").map((t) => t.content),
+    ),
+  );
+}
+
+function intakeAsk(whom: Whom): string {
+  /**
+   * Ребёнка записывают на имя родителя.
+   *
+   * «Имя ребёнка, его возраст и кратко причина» — этого администратору мало:
+   * договариваться о времени и звонить он будет родителю, и в записи нужен
+   * тот, кто приведёт. Спрашиваем обоих сразу, одним сообщением, — иначе
+   * получается второй заход за тем же.
+   */
+  const who =
+    whom === "child"
+      ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
+      : "ФИО, возраст и кратко причину обращения";
+  return `Время подберёт администратор — передал(а) ему вашу просьбу. Чтобы не терять время, пришлите, пожалуйста, одним сообщением: ${who}.`;
+}
 
 /**
  * Названа ли уже услуга — в этом сообщении или раньше в разговоре.
@@ -2222,7 +2244,9 @@ async function replyToQuestion(
      * администратор», и данные ребёнка администратор потом собирал сам.
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
-      return respond(ctx, conversation.id, { text: INTAKE_REQUEST });
+      return respond(ctx, conversation.id, {
+        text: intakeAsk(whomInTalk(own, said)),
+      });
     }
     return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
   }
@@ -2375,7 +2399,9 @@ async function replyToQuestion(
      * сейчас, пока человек в переписке.
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
-      return respond(ctx, conversation.id, { text: INTAKE_REQUEST });
+      return respond(ctx, conversation.id, {
+        text: intakeAsk(whomInTalk(own, said)),
+      });
     }
     return respond(ctx, conversation.id, {
       text: "Передал(а) администратору — он ответит здесь же.",
@@ -2462,7 +2488,11 @@ async function replyToQuestion(
         : dayTail
           ? `${answer}\n\n${dayTail}`
           : needsData
-          ? `${answer}\n\nЧтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ФИО того, кто придёт на приём, возраст и кратко причину обращения.`
+          ? `${answer}\n\nЧтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ${
+              whomFor(query) === "child"
+                ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
+                : "ФИО того, кто придёт на приём, возраст и кратко причину обращения"
+            }.`
           : answer,
       buttons: mainMenu(),
     });
@@ -2543,7 +2573,11 @@ async function replyToQuestion(
          * причина. Вес и город здесь были зашиты и уходили каждому: вес
          * нужен не всякой услуге, а город при записи не нужен вовсе.
          */
-        "Чтобы ускорить, пришлите одним сообщением: ФИО, возраст и кратко причину обращения.",
+        `Чтобы ускорить, пришлите одним сообщением: ${
+          whomFor(query) === "child"
+            ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
+            : "ФИО, возраст и кратко причину обращения"
+        }.`,
       buttons: mainMenu(),
     });
   }
