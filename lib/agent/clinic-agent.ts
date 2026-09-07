@@ -55,6 +55,7 @@ import {
   consentRequestFor,
   grantConsent,
   materializeConsent,
+  withoutConsentRequest,
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 import { consentFromText, greetingUsed, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
@@ -69,6 +70,7 @@ import {
 } from "./greeting";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { forMessenger } from "./messenger-text";
+import { keepOneQuestion } from "./one-question";
 import { ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
 import { focusedAnswer } from "./focused-answer";
@@ -489,6 +491,30 @@ async function clinicContext(
   if (matched.length > 0) {
     lines.push("", "ПОДХОДИТ ПОД ВОПРОС (цену и длительность бери только отсюда):");
     for (const s of patientServices(matched)) lines.push(priceLine(s));
+
+    /**
+     * Кто ведёт эти услуги — чтобы агент не спрашивал о том, что знает.
+     *
+     * Пациентка написала «ребёнку 6 лет, хотела записаться на консультацию», а
+     * получила встречный вопрос: «к какому специалисту хотели бы попасть —
+     * например, к БОС-терапевту Ирине Омаровой?». БОС-терапию в клинике ведёт
+     * один человек, спрашивать не о чем. Кто что ведёт, видно по визитам, и
+     * это надёжнее любой настройки.
+     */
+    const runners = await Promise.all(
+      patientServices(matched).map(async (s) => ({
+        title: s.title,
+        staff: await staffNamesForService(companyId, s.id),
+      })),
+    );
+    const known = runners.filter((r) => r.staff.length > 0);
+    if (known.length > 0) {
+      lines.push("", "Кто ведёт эти услуги:");
+      for (const r of known) lines.push(`• ${r.title}: ${r.staff.join(", ")}`);
+      lines.push(
+        "Если услугу ведёт один специалист, не спрашивай, к кому записать, — просто назови его.",
+      );
+    }
   }
 
   /**
@@ -689,6 +715,23 @@ async function respond(
    * данные, минуя согласие. Просьбу вырезаем, остальное — услугу, цену,
    * длительность — оставляем: она человеку полезна.
    */
+  /**
+   * Согласие уже есть — просьбу о нём вырезаем.
+   *
+   * Модель повторяет её за нами: пациент ответил «Да», получил приветствие и
+   * следом «теперь мне нужно ваше согласие… согласны ли вы?». Разговор
+   * закольцевался на том, что уже сделано.
+   */
+  const consentDone = await prisma.conversation
+    .findUnique({ where: { id: conversationId }, select: { consentGrantedAt: true } })
+    .catch(() => null);
+  if (consentDone?.consentGrantedAt) {
+    const cleaned = withoutConsentRequest(reply.text);
+    if (cleaned.length >= 20 && cleaned !== reply.text) {
+      reply = { ...reply, text: cleaned };
+    }
+  }
+
   if (asksForPersonalData(reply.text)) {
     /**
      * Спросили один раз — и замолчали: так данные собирались БЕЗ согласия.
@@ -745,7 +788,14 @@ async function respond(
       ? stripLeadingGreeting(reply.text)
       : greetIfNeeded(ctx.incomingText, reply.text, "")
     : reply.text;
-  const text = forMessenger(withHello);
+  /**
+   * Один уточняющий вопрос за раз — правило клиники, и оно нарушалось.
+   *
+   * Просьбами в промпте не лечится: модель задавала два вопроса подряд, и
+   * первый бывал про то, что пациент уже сказал. Режем здесь, в единственном
+   * выходе наружу, — текст от этого только сокращается.
+   */
+  const text = forMessenger(keepOneQuestion(withHello));
   /**
    * Ответ агента сохраняем как «в очереди», а не «отправлено».
    *
@@ -1226,6 +1276,29 @@ async function workdayFacts(companyId: string, days: number[]): Promise<string |
   });
   const text = lines.join(" ");
   return `${text[0].toUpperCase()}${text.slice(1)}`;
+}
+
+/**
+ * Имена тех, кто ведёт услугу, — по состоявшимся визитам.
+ *
+ * Нужно справке: агент не должен спрашивать «к какому специалисту», когда
+ * специалист один. Берём из визитов, а не из настройки: справочник знает это
+ * сам и не расходится с действительностью.
+ */
+async function staffNamesForService(companyId: string, serviceId: string): Promise<string[]> {
+  const rows = await prisma.appointment.groupBy({
+    by: ["staffId"],
+    where: { companyId, deletedAt: null, services: { some: { serviceId } } },
+    _count: { _all: true },
+    orderBy: { _count: { staffId: "desc" } },
+    take: 3,
+  });
+  if (rows.length === 0) return [];
+  const staff = await prisma.staff.findMany({
+    where: { id: { in: rows.map((r) => r.staffId) }, isActive: true, deletedAt: null },
+    select: { id: true, name: true },
+  });
+  return rows.map((r) => staff.find((x) => x.id === r.staffId)?.name).filter((n): n is string => Boolean(n));
 }
 
 /**
@@ -2465,7 +2538,12 @@ async function replyToQuestion(
     return respond(ctx, conversation.id, {
       text:
         "Время приёма подбирает администратор — передал(а) ему ваш вопрос, он ответит здесь же. " +
-        "Чтобы ускорить, пришлите одним сообщением: ФИО, возраст, вес, жалобу и город.",
+        /**
+         * Что просим прислать — по инструкции клиники: ФИО, возраст, кратко
+         * причина. Вес и город здесь были зашиты и уходили каждому: вес
+         * нужен не всякой услуге, а город при записи не нужен вовсе.
+         */
+        "Чтобы ускорить, пришлите одним сообщением: ФИО, возраст и кратко причину обращения.",
       buttons: mainMenu(),
     });
   }
