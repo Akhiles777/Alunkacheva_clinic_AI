@@ -390,6 +390,79 @@ export async function answerLLM(
 }
 
 /**
+ * Пересказать пациенту ответ врача.
+ *
+ * Отдельный вызов, а не общий `answerLLM`: там базовый промпт запрещает
+ * обсуждать симптомы и лечение, и на ответ врача про головные боли модель
+ * ответила бы отказом. Здесь задача другая и узкая — переложить чужие слова на
+ * человеческий язык, ничего не добавив.
+ *
+ * Смысл не меняется ни на грамм: числа и показания сверяются с текстом врача
+ * кодом (lib/agent/grounding, lib/agent/indications), и при любом расхождении
+ * пациенту уходит её текст дословно. Красивее — не важнее, чем верно.
+ */
+export async function relayDoctorAnswer(input: {
+  question: string;
+  doctorAnswer: string;
+  doctorName: string;
+  patientName?: string | null;
+}): Promise<string | null> {
+  const key = process.env.ROUTER_AI;
+  if (!key) return null;
+
+  const rules = [
+    `Ты — администратор клиники «${CLINIC_NAME}» в мессенджере.`,
+    `Врач ${input.doctorName} ответила на вопрос пациента. Передай её ответ пациенту.`,
+    "Твоя задача — только переложить её слова на человеческий язык, обращаясь на «вы».",
+    "НИЧЕГО не добавляй: ни причин, ни показаний, ни сроков, ни чисел, которых нет в её ответе.",
+    "Ничего не убирай по смыслу и не смягчай: если врач сказала «нельзя», так и передай.",
+    "Не ставь диагнозов и не делай выводов от себя. Ты не врач, ты передаёшь ответ.",
+    "Не пиши «врач сказала, что...» — просто передай ответ, начав со слов о том, что ты уточнила.",
+    "Не обещай запись, время и свободные окна: этим занимается администратор.",
+    "Не используй разметку. Обычный текст, 1–4 предложения.",
+    input.patientName?.trim() ? `Пациента зовут ${input.patientName.trim()}.` : "",
+    "\nОтвет пациенту начни со строки «ОТВЕТ:». Всё, что напишешь до неё, пациент не увидит.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  try {
+    const res = await fetch(`${BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: MODEL,
+        temperature: 0.2,
+        max_tokens: 700,
+        messages: [
+          { role: "system", content: rules },
+          {
+            role: "user",
+            content: `Вопрос пациента:\n${input.question}\n\nОтвет врача:\n${input.doctorAnswer}`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.error(`[specialist] пересказ не получился: RouterAI ${res.status}`);
+      return null;
+    }
+    const json = (await res.json()) as {
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
+    };
+    const choice = json.choices?.[0];
+    let text = stripPreamble(toPlainText(choice?.message?.content?.trim() ?? ""));
+    if (text && choice?.finish_reason === "length") text = trimToSentence(text);
+    if (!text || offCharacter(text)) return null;
+    return text;
+  } catch (e) {
+    console.error("[specialist] пересказ не получился:", (e as Error)?.message ?? e);
+    return null;
+  }
+}
+
+/**
  * Чем кончилась одна попытка.
  *
  * Возвращаем объектом, а не строкой: журналу нужны причина, расход токенов и

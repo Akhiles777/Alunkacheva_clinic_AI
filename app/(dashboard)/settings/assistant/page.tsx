@@ -7,6 +7,7 @@ import { AssistantClient, type AssistantData } from "./assistant-client";
 import { getSession } from "@/lib/server/session";
 import { getKnowledgeGaps, GAP_WINDOW_DAYS } from "@/lib/server/knowledge-gaps";
 import type { GapsData } from "./gaps-block";
+import { getSpecialists } from "./specialists-actions";
 
 export default async function AssistantSettingsPage() {
   // Конфигурация — из JSON-настройки, база знаний — из доменной таблицы, той
@@ -26,6 +27,8 @@ export default async function AssistantSettingsPage() {
 
   // Опции услуг для привязки записей базы знаний — из доменной таблицы Service.
   const { services } = await getServices();
+  // Кому ассистент пересылает вопросы: доменная таблица, не JSON-настройка.
+  const specialists = await getSpecialists();
   const serviceOptions = services.map((s) => ({ id: s.id, title: s.title }));
 
   /**
@@ -85,6 +88,7 @@ export default async function AssistantSettingsPage() {
           usage={usage}
           usageSince={usageSince}
           canApprove={canApprove}
+          specialists={specialists}
         />
       </div>
     </>

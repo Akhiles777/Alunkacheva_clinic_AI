@@ -32,6 +32,7 @@ import { prisma } from "../lib/db";
 import { handlePatientMessage } from "../lib/agent/clinic-agent";
 import { SANDBOX_YCLIENTS_ID } from "./sandbox-id";
 import { KIND_LABEL, type AttachmentKind } from "../lib/agent/attachments";
+import { handleSpecialistReply } from "../lib/agent/specialist";
 
 process.env.AGENT_DRILL = "1";
 
@@ -42,7 +43,15 @@ process.env.AGENT_DRILL = "1";
  * ведёт себя агент на них по-особому: читать он их не может и сразу зовёт
  * человека. Проверять это надо тем же прогоном, а не рассуждением.
  */
-type DrillTurn = string | { text?: string; attachment: AttachmentKind };
+type DrillTurn =
+  | string
+  | { text?: string; attachment: AttachmentKind }
+  /**
+   * Реплика ВРАЧА, а не пациента: она приходит с её номера и разбирается
+   * отдельным путём (lib/agent/specialist). Так проверяется вся цепочка —
+   * вопрос ушёл, ответ вернулся, пациент его получил.
+   */
+  | { specialist: string };
 
 interface Scenario {
   title: string;
@@ -525,13 +534,161 @@ const DIALOGS_REAL: Scenario[] = [
   },
 ];
 
+/**
+ * Вопрос врачу и руководству — двенадцать разговоров.
+ *
+ * Проверяем не одну удачную дорожку, а границы: что пересылается, что нет, как
+ * ответ возвращается пациенту и что бывает, когда врач отвечать не хочет.
+ * Врач в песочнице выдуманная, отправки нет (AGENT_DRILL) — живого человека
+ * прогон не трогает.
+ */
+const DIALOGS_SPECIALIST: Scenario[] = [
+  {
+    title: "Головные боли после приёма — вопрос врачу и её ответ",
+    expect: "пересылает врачу, дожидается ответа и пересказывает его пациентке",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте Дадашева Пахай я была на приеме у Ирины",
+      "Она говорила отписаться по поводу головных болей, у меня пошли месячные и голова болела как раньше",
+      { specialist: "Это нормально, в цикл боли усиливаются. Пусть придёт через две недели на повторный приём." },
+      "Хорошо спасибо",
+    ],
+  },
+  {
+    title: "Врач просит не отвечать — она сама",
+    expect: "пациенту НИЧЕГО не уходит, служебная реплика врача не пересказывается",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте, после остеопатии у ребёнка поднялась температура, это нормально?",
+      { specialist: "Не отправляй ничего, я сама ей позвоню" },
+      "Есть новости?",
+    ],
+  },
+  {
+    title: "Ответ есть в базе — врача не трогаем",
+    expect: "отвечает справкой клиники сам, вопрос врачу не уходит",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте! А со скольки лет вы принимаете детей?",
+      "А новорождённого двухнедельного можно?",
+    ],
+  },
+  {
+    title: "Хотят устроиться на работу",
+    expect: "передаёт руководству, а не «уточните у специалиста»",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте! Можно ли у вас устроиться массажистом? Опыт 5 лет",
+      { specialist: "Пусть пришлёт резюме на этот номер, посмотрю" },
+      "Спасибо!",
+    ],
+  },
+  {
+    title: "Предлагают рекламу",
+    expect: "передаёт руководству, врача не беспокоит",
+    channel: "WHATSAPP",
+    turns: [
+      "Добрый день! Я блогер из Махачкалы, 40 тысяч подписчиков. Интересно сотрудничество по бартеру?",
+      { specialist: "Не интересует, спасибо" },
+      "Понятно",
+    ],
+  },
+  {
+    title: "Продолжать ли ребёнку борьбу после приёма",
+    expect: "вопрос уходит врачу целиком, включая уточнения пациентки",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте, мы 28 августа были на приеме у Ирины, она сказала что есть проблема с черепом",
+      "Возможно ли уточнить у нее можно ли сыну продолжать занятия борьбой",
+      "На борьбе бывает головой может стукнуться, поэтому уточняю",
+      { specialist: "Борьбу пока отложить на месяц, потом посмотрим на повторном приёме." },
+      "Спасибо большое",
+    ],
+  },
+  {
+    title: "Жалоба на клинику",
+    expect: "передаёт и администратору, и руководству; пациенту без обещаний",
+    channel: "WHATSAPP",
+    turns: [
+      "Я записывалась на 10:00, меня приняли в 11:20. Хочу вернуть деньги",
+      { specialist: "Извинись за задержку, приглашаю на повторный приём бесплатно" },
+      "Хорошо, спасибо",
+    ],
+  },
+  {
+    title: "Второй вопрос, пока первый без ответа",
+    expect: "второе сообщение врачу не уходит — она не должна получать по письму на реплику",
+    channel: "WHATSAPP",
+    turns: [
+      "После капельницы кружится голова, это нормально?",
+      "И ещё слабость какая-то",
+      "Может мне отменить следующую?",
+      { specialist: "Слабость после инфузии бывает, пусть отдохнёт. Следующую не отменяйте." },
+      "Поняла, спасибо",
+    ],
+  },
+  {
+    title: "Врач отвечает не по адресу — открыто несколько вопросов",
+    expect: "не гадает, к какому вопросу ответ, а просит ответить на нужное сообщение",
+    channel: "WHATSAPP",
+    turns: [{ specialist: "Да, можно" }],
+  },
+  {
+    title: "Цена рядом с жалобой — врача не трогаем",
+    expect: "называет цену, вопрос врачу не уходит: это не к ней",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте! Сколько стоит капельница от усталости?",
+      "А приём остеопата?",
+    ],
+  },
+  {
+    title: "Просят позвать администратора — это не к врачу",
+    expect: "зовёт администратора, руководителя не беспокоит",
+    channel: "WHATSAPP",
+    turns: ["Можно с живым человеком поговорить?", "Мне нужно перенести запись"],
+  },
+  {
+    title: "Врач ответила подробно — пересказ не должен ничего добавить",
+    expect: "числа и сроки в ответе пациенту совпадают с тем, что написала врач",
+    channel: "WHATSAPP",
+    turns: [
+      "Здравствуйте! Через сколько после родов можно на остеопатию?",
+      { specialist: "Через 6 недель после естественных родов, после кесарева — через 8, если шов зажил." },
+      "Спасибо",
+    ],
+  },
+];
+
 SCENARIOS.push(
+  ...DIALOGS_SPECIALIST,
   ...DIALOGS,
   ...DIALOGS_MORE,
   ...DIALOGS_KNOWLEDGE,
   ...DIALOGS_FIRST_TOUCH,
   ...DIALOGS_REAL,
 );
+
+/**
+ * Последний ответ, ушедший пациенту.
+ *
+ * Нужен, чтобы проверить не слова, а факт: ответ врача обязан появиться в
+ * переписке. «Передал пациенту» без строки в переписке — это ровно тот случай,
+ * когда система уверенно врёт о выполненной работе.
+ */
+async function lastPatientMessage(companyId: string, externalUserId: string): Promise<string | null> {
+  const row = await prisma.message.findFirst({
+    where: {
+      companyId,
+      direction: "OUT",
+      deletedAt: null,
+      conversation: { externalUserId },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { body: true },
+  });
+  return row?.body ?? null;
+}
 
 function log(line = "") {
   process.stdout.write(`${line}\n`);
@@ -612,6 +769,16 @@ async function main() {
   );
   out.push("");
 
+  /**
+   * Кому агент задаёт вопросы. В песочнице он один; на боевой базе прогон не
+   * идёт вовсе, так что живого врача проверка не потревожит.
+   */
+  const specialist = await prisma.clinicSpecialist.findFirst({
+    where: { companyId: company.id, isActive: true },
+    select: { id: true, name: true },
+  });
+  const specialistName = specialist?.name ?? "Специалист";
+
   const createdConversations: string[] = [];
   let escalatedCount = 0;
   let silentCount = 0;
@@ -627,9 +794,39 @@ async function main() {
     out.push("");
 
     for (const turn of scenario.turns) {
+      /** Ответ специалиста идёт своим путём — пациентского агента он не касается. */
+      if (typeof turn !== "string" && "specialist" in turn) {
+        out.push(`**${specialistName}:** ${turn.specialist}`);
+        out.push("");
+        const before = await lastPatientMessage(company.id, externalUserId);
+        const outcome = specialist
+          ? await handleSpecialistReply({
+              companyId: company.id,
+              specialist,
+              raw: turn.specialist,
+            })
+          : { kind: "ignored" as const, reason: "специалист не заведён в песочнице" };
+        if (outcome.kind === "relayed") {
+          out.push(`**Агент → пациенту:** ${outcome.text}`);
+        } else if (outcome.kind === "declined") {
+          out.push("**Агент → пациенту:** _(ничего — специалист ответит сам)_");
+        } else if (outcome.kind === "ambiguous") {
+          out.push(`**Агент → специалисту:** _(уточнил, к какому вопросу ответ: ${outcome.refs.join(", ")})_`);
+        } else {
+          out.push(`**Агент:** _(ответ специалиста не разобран: ${outcome.reason})_`);
+        }
+        const after = await lastPatientMessage(company.id, externalUserId);
+        if (outcome.kind === "relayed" && before === after) {
+          out.push("");
+          out.push("> ВНИМАНИЕ: ответ не попал в переписку пациента");
+        }
+        out.push("");
+        continue;
+      }
+
       const text = typeof turn === "string" ? turn : (turn.text ?? "");
       const attachments =
-        typeof turn === "string"
+        typeof turn === "string" || !("attachment" in turn)
           ? []
           : [{ kind: turn.attachment, label: KIND_LABEL[turn.attachment], source: { provider: "NONE" as const } }];
       out.push(

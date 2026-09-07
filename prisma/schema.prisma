@@ -290,6 +290,8 @@ model Company {
   patientNotes             PatientNote[]
   callLogs                 CallLog[]
   messageTemplates         MessageTemplate[]
+  clinicSpecialists        ClinicSpecialist[]
+  specialistQueries        SpecialistQuery[]
   knowledgeEntries         KnowledgeEntry[]
   callbackOutreaches       CallbackOutreach[]
   settings                 Setting[]
@@ -353,6 +355,7 @@ model Patient {
   notes              PatientNote[]
   callLogs           CallLog[]
   consents           PatientConsent[]
+  specialistQueries  SpecialistQuery[]
 
   @@unique([companyId, yclientsId])
   @@index([companyId, firstSeenAt])
@@ -444,6 +447,7 @@ model Conversation {
   escalations  Escalation[]
   appointments Appointment[]
   agentRuns    AgentRun[]
+  specialistQueries SpecialistQuery[]
 
   @@unique([companyId, channel, externalUserId])
   @@index([companyId, status, lastMessageAt])
@@ -1912,4 +1916,100 @@ model UserPermission {
   @@unique([staffUserId, permission])
   @@index([companyId])
   @@map("user_permissions")
+}
+
+// ─────────────────────────────────────────────────── вопрос врачу и руководству
+
+/// Кому агент пересылает то, на что не имеет права отвечать сам.
+///
+/// Медицинский вопрос без готового ответа в справочнике агент по §6 обязан
+/// отдать человеку. До сих пор он отдавал его администратору, а тот пересылал
+/// врачу руками, получал ответ голосом и писал пациенту сам — три пересадки на
+/// каждый вопрос про голову после приёма.
+///
+/// Специалист — не пациент. Его сообщения не заводят переписку в инбоксе и не
+/// участвуют ни в одной метрике обращений: развилка по номеру стоит до всего
+/// остального (app/api/webhooks/whatsapp).
+model ClinicSpecialist {
+  id        String  @id @default(cuid())
+  companyId String
+  name      String
+  /// E.164 — по нему узнаём входящее сообщение специалиста.
+  phone     String
+  /// Медицинские вопросы: жалобы, состояние, «можно ли мне».
+  isDoctor  Boolean @default(false)
+  /// Деловые: работа, реклама, сотрудничество, претензии к клинике.
+  isManager Boolean @default(false)
+  isActive  Boolean @default(true)
+  /// Кто это в клинике: показывается администратору, пациенту не уходит.
+  role      String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  queries SpecialistQuery[]
+
+  /// Номер принадлежит одному специалисту: по нему идёт вся маршрутизация.
+  @@unique([companyId, phone])
+  @@index([companyId, isActive])
+  @@map("clinic_specialists")
+}
+
+enum SpecialistQueryKind {
+  /// Здоровье: жалобы, состояние, «можно ли мне такую процедуру».
+  MEDICAL
+  /// Клиника как организация: работа, реклама, сотрудничество, претензия.
+  MANAGEMENT
+}
+
+enum SpecialistQueryStatus {
+  /// Отправлен специалисту, ответа ещё нет.
+  SENT
+  /// Ответ получен и передан пациенту.
+  ANSWERED
+  /// Специалист попросил не отвечать — разбирается сам.
+  DECLINED
+  /// Ответа не дождались; вопрос остаётся у администратора.
+  STALE
+}
+
+/// Вопрос, отправленный специалисту, и его ответ.
+///
+/// Отдельная сущность, а не поле у Escalation: эскалация — это «диалог передан
+/// человеку», она закрывается администратором и живёт своей жизнью. Вопрос
+/// врачу — переписка с третьим лицом, у неё свой ответ, своё состояние и своя
+/// доставка обратно пациенту.
+model SpecialistQuery {
+  id             String                @id @default(cuid())
+  companyId      String
+  conversationId String
+  patientId      String?
+  specialistId   String
+  kind           SpecialistQueryKind
+  status         SpecialistQueryStatus @default(SENT)
+
+  /// Короткий номер вопроса: он стоит в сообщении специалисту и по нему
+  /// узнаётся ответ, если специалист отвечает свайпом с цитатой.
+  ref       Int
+  /// Текст, отправленный специалисту: собран из сообщений пациента.
+  question  String
+  /// Что ответил специалист, дословно.
+  answer    String?
+  /// Что ушло пациенту после переформулировки.
+  relayed   String?
+
+  askedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  answeredAt DateTime? @db.Timestamptz(3)
+  relayedAt  DateTime? @db.Timestamptz(3)
+
+  company      Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  patient      Patient?         @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  specialist   ClinicSpecialist @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, ref])
+  @@index([companyId, status])
+  @@index([conversationId, askedAt])
+  @@map("specialist_queries")
 }

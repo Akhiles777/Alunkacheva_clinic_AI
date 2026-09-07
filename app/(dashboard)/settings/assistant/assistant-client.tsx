@@ -17,6 +17,8 @@ import { approveKnowledge, deleteKnowledge, revokeKnowledgeApproval, saveKnowled
 import { mergeKeepingOrder } from "@/lib/merge-list";
 import { DEFAULT_INTAKE_PROMPT } from "@/lib/agent/intake";
 import { GapsBlock, type GapDraft, type GapsData } from "./gaps-block";
+import { SpecialistsBlock } from "./specialists-block";
+import type { SpecialistItem } from "./specialists-actions";
 
 type AssistantConfig = typeof settingsStore.assistant;
 
@@ -198,10 +200,13 @@ export function AssistantClient({
   usage,
   usageSince,
   canApprove,
+  specialists,
 }: {
   initial: AssistantData;
   serviceOptions: { id: string; title: string }[];
   gaps: GapsData;
+  /** Кому ассистент пересылает вопросы, на которые не отвечает сам. */
+  specialists: SpecialistItem[];
   /** Сколько ответов составила каждая запись за срок разбора пробелов. */
   usage: Record<string, number>;
   /** С какого момента журнал ведётся: до него счёт был нулевым у всех. */
@@ -451,6 +456,8 @@ export function AssistantClient({
         редактор, куда падает черновик. Кнопка в этом блоке ничего не
         сохраняет — она добавляет строку ниже, и её надо прочитать.
       */}
+      <SpecialistsBlock initial={specialists} />
+
       <GapsBlock
         data={gaps}
         onDraft={(draft) => {

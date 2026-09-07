@@ -25,8 +25,10 @@ import {
   HANDOVER_REPLY,
   admitsInability,
   bookingPromiseFound,
+  defersToDoctor,
   promisesHuman,
   withoutBookingPromise,
+  withoutHandoverPromise,
 } from "./booking-promise";
 
 /**
@@ -85,6 +87,8 @@ import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
 import { withoutQuote } from "./quoted";
 import { inHandoverFlow, timeDetail } from "./handover-flow";
+import { askSpecialist, specialistNames } from "./specialist";
+import { managementTopic } from "./specialist-rules";
 
 /**
  * Агент пациентского канала.
@@ -639,6 +643,11 @@ const CONSENT_REMINDER =
   "Чтобы передать данные администратору, нужно ваше согласие на обработку персональных данных — " +
   "ответьте, пожалуйста, «Да» или «Нет».";
 
+/** Как называется канал в тексте для человека. */
+function channelLabel(channel: AgentChannel): string {
+  return channel === "WHATSAPP" ? "WhatsApp" : channel === "INSTAGRAM" ? "Instagram" : "Telegram";
+}
+
 async function respond(
   ctx: AgentContext,
   conversationId: string,
@@ -805,8 +814,7 @@ export async function handlePatientMessage(
 ): Promise<AgentReply | null> {
   const conversation = await loadConversation(ctx);
   const attachments = input.attachments ?? [];
-  const channelName =
-    ctx.channel === "WHATSAPP" ? "WhatsApp" : ctx.channel === "INSTAGRAM" ? "Instagram" : "Telegram";
+  const channelName = channelLabel(ctx.channel);
 
   /**
    * Когда агент молчит.
@@ -1247,6 +1255,31 @@ async function replyToQuestion(
   }
 
   /**
+   * Работа, реклама, сотрудничество — вопрос к клинике как к организации.
+   *
+   * Такие письма приходят в тот же пациентский чат, и «этот вопрос лучше
+   * уточнить у специалиста» на них звучит глупо: человек не лечиться пришёл.
+   * Отвечает на них руководство, ему и передаём — вместе с эскалацией
+   * администратору, чтобы вопрос не потерялся, если руководитель занят.
+   */
+  if (managementTopic(own)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос к руководству клиники").catch(() => {});
+    const asked = await askSpecialist({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      patientId: conversation.patientId,
+      kind: "MANAGEMENT",
+      patientName: await patientNameFor(conversation.id),
+      channelLabel: channelLabel(ctx.channel),
+    }).catch(() => ({ sent: false as const, reason: "сбой отправки" }));
+    return respond(ctx, conversation.id, {
+      text: asked.sent
+        ? (asked.reply ?? "Передал(а) ваш вопрос руководству клиники — ответим здесь же.")
+        : "Передал(а) ваш вопрос руководству клиники — ответим здесь же.",
+    });
+  }
+
+  /**
    * Вопрос о своей записи агент отвечает сам.
    *
    * «К какому специалисту я записана?» — это не жалоба и не просьба перенести:
@@ -1258,6 +1291,26 @@ async function replyToQuestion(
    */
   if (!asksAboutOwnBooking(own) && (personalTopic(own) || wantsHuman(own))) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба").catch(() => {});
+
+    /**
+     * Жалобу видит руководство, а не только администратор.
+     *
+     * Претензия к клинике — решение руководителя: вернуть деньги, извиниться,
+     * разобрать случай. Администратор всё равно позовёт его, только на день
+     * позже. Просьба «позовите человека» сюда не входит: это работа
+     * администратора, и беспокоить руководителя незачем.
+     */
+    const complaint = /жалоб|жалова|претенз|вернуть деньги|возврат|юрист|врач ошибс/i.test(own);
+    if (complaint) {
+      await askSpecialist({
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        patientId: conversation.patientId,
+        kind: "MANAGEMENT",
+        patientName: await patientNameFor(conversation.id),
+        channelLabel: channelLabel(ctx.channel),
+      }).catch(() => ({ sent: false as const }));
+    }
     return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
 
@@ -1453,12 +1506,36 @@ async function replyToQuestion(
       const prices = priced
         .map((p) => `${p.title} — ${p.price} ₽${p.durationMin > 0 ? `, ${p.durationMin} мин` : ""}`)
         .join("\n");
+      /**
+       * Спрашиваем врача — если есть кого и если это не вопрос про цену.
+       *
+       * Живой случай: «Она говорила отписаться по поводу головных болей, у меня
+       * пошли месячные и голова болела как раньше». Ответ на такое знает один
+       * человек в клинике, и до сих пор администратор пересылал вопрос ей
+       * руками, получал ответ голосом и писал пациентке сам.
+       *
+       * Врача не трогаем, когда ответ уже нашёлся в справочнике (сюда мы тогда
+       * не попадаем вовсе) и когда спрашивают цену: это не к ней.
+       */
+      const askedDoctor: { reply?: string } = prices
+        ? {}
+        : await askSpecialist({
+            companyId: ctx.companyId,
+            conversationId: conversation.id,
+            patientId: conversation.patientId,
+            kind: "MEDICAL",
+            patientName: await patientNameFor(conversation.id),
+            channelLabel: channelLabel(ctx.channel),
+          }).catch(() => ({ sent: false as const, reply: undefined }));
+
       return respond(ctx, conversation.id, {
         text: prices
           ? `${prices}\n\nКакая именно подойдёт в вашем случае, скажет специалист — ` +
             "передал(а) администратору клиники."
-          : "Этот вопрос лучше уточнить у специалиста — передал(а) администратору клиники. " +
-            "Могу пока рассказать про услуги, цены, адрес и часы работы.",
+          : askedDoctor.reply
+            ? askedDoctor.reply
+            : "Этот вопрос лучше уточнить у специалиста — передал(а) администратору клиники. " +
+              "Могу пока рассказать про услуги, цены, адрес и часы работы.",
         buttons: mainMenu(),
       });
     }
@@ -1853,6 +1930,27 @@ async function replyToQuestion(
   if (answer && admitsInability(answer)) {
     await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Вопрос вне возможностей ассистента").catch(() => {});
     /**
+     * Модель сама сказала «это к специалисту» — значит вопрос к врачу.
+     *
+     * Списком слов медицинский вопрос ловится не всегда. «Возможно ли уточнить
+     * у неё, можно ли сыну продолжать занятия борьбой» не совпало ни с одним
+     * правилом, зато модель ответила верно: «это вопрос к специалисту, который
+     * видел вашего сына». Она поняла, код — нет, и врача никто не спросил.
+     */
+    if (defersToDoctor(answer, await specialistNames(ctx.companyId).catch(() => []))) {
+      const asked = await askSpecialist({
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        patientId: conversation.patientId,
+        kind: "MEDICAL",
+        patientName: await patientNameFor(conversation.id),
+        channelLabel: channelLabel(ctx.channel),
+      }).catch(() => ({ sent: false as const, reply: undefined }));
+      if (asked.reply) {
+        return respond(ctx, conversation.id, { text: asked.reply });
+      }
+    }
+    /**
      * Речь шла о записи — собираем данные, а не обрываем разговор.
      *
      * Заказчик просил прямо: «он бы просто оформил клиента как нужно». На
@@ -1880,6 +1978,36 @@ async function replyToQuestion(
      */
     if (promisesHuman(answer)) {
       await escalate(ctx.companyId, conversation.id, "AGENT_REQUEST", "Ассистент обещал позвать человека").catch(() => {});
+    }
+
+    /**
+     * Ответ отсылает к врачу — врача и спрашиваем.
+     *
+     * Тот же вывод модели, что и веткой выше, только здесь ответ прошёл все
+     * проверки и уходит пациенту. Вопрос врачу при этом всё равно нужен:
+     * «расскажет специалист» без заданного вопроса — это тупик, из которого
+     * пациента вытаскивает администратор.
+     */
+    if (defersToDoctor(answer, await specialistNames(ctx.companyId).catch(() => []))) {
+      const asked = await askSpecialist({
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        patientId: conversation.patientId,
+        kind: "MEDICAL",
+        patientName: await patientNameFor(conversation.id),
+        channelLabel: channelLabel(ctx.channel),
+      }).catch(() => ({ sent: false as const, reply: undefined }));
+      if (asked.reply) {
+        /**
+         * Собственное обещание модели вырезаем: иначе в одном сообщении два
+         * разных — «передам администратору» и наше «уточню у врача».
+         */
+        const kept = withoutHandoverPromise(withoutPersonalDataRequest(answer));
+        return respond(ctx, conversation.id, {
+          text: kept.length >= MEANINGFUL_ANSWER_CHARS ? `${kept}\n\n${asked.reply}` : asked.reply,
+          buttons: mainMenu(),
+        });
+      }
     }
 
     /**

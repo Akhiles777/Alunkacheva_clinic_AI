@@ -8,6 +8,7 @@ import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { messageBody } from "@/lib/agent/attachments";
 import { runSerial } from "@/lib/server/background";
 import { importWhatsappHistory } from "@/lib/integrations/whatsapp/history";
+import { handleSpecialistReply, specialistForChat } from "@/lib/agent/specialist";
 
 /**
  * Вебхук WhatsApp (Green API).
@@ -181,6 +182,31 @@ export async function POST(req: Request) {
       },
     });
     return NextResponse.json({ ok: true, kind: "outgoing", takeover: true });
+  }
+
+  /**
+   * Сообщение от врача или руководителя клиники — не от пациента.
+   *
+   * Развилка стоит ДО всего остального намеренно. Специалист пишет с обычного
+   * номера в тот же WhatsApp клиники, и без этой проверки её ответ завёл бы
+   * диалог в инбоксе, попал бы в воронку обращений и получил бы от агента
+   * «здравствуйте, чем могу помочь». Она — не пациент, и ни в одной метрике
+   * обращений ей места нет.
+   */
+  const specialist = await specialistForChat(companyId, {
+    phone: event.phoneE164,
+    chatId: event.chatId,
+  });
+  if (specialist) {
+    runSerial(`whatsapp:specialist:${event.chatId}`, async () => {
+      const outcome = await handleSpecialistReply({
+        companyId,
+        specialist,
+        raw: event.text,
+      });
+      console.log(`[whatsapp] ответ специалиста: ${outcome.kind}`);
+    });
+    return NextResponse.json({ ok: true, specialist: true });
   }
 
   /**
