@@ -17,6 +17,7 @@ import {
   returnToBot,
   setAgentEnabled,
   sendMessage,
+  sendTemplate,
   useDb,
   type Dialog,
 } from "@/app/_data/store";
@@ -548,7 +549,19 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                 <button
                   key={t.id}
                   type="button"
-                  onClick={() => sendMessage(dialog.id, t.body)}
+                  onClick={() =>
+                    void sendTemplate(dialog.id, t.id, t.title).then((res) => {
+                      /**
+                       * Шаблон мог не уйти: не хватило данных для переменных
+                       * или канал не принял. Молчать об этом нельзя —
+                       * администратор уверен, что написал, а пациент ничего не
+                       * получил.
+                       */
+                      if (!res.ok) {
+                        setPing({ dialogId: dialog.id, text: res.error ?? "Шаблон не отправлен" });
+                      }
+                    })
+                  }
                   className="border-accent-border bg-accent-tint text-accent-text hover:bg-accent hover:text-accent-contrast rounded-md border px-3 py-1.5 text-sm font-medium"
                 >
                   {t.title}

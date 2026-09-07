@@ -11,7 +11,9 @@ import { phoneFromChatId } from "@/lib/integrations/whatsapp/chat-id";
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
 import { chatIdFromPhone } from "@/lib/integrations/whatsapp/chat-id";
-import { settingsStore, type TemplateItem } from "@/app/_data/settings";
+import { fillTemplate, missingLabel } from "@/lib/message-template";
+import { visitTitle } from "@/lib/visit-title";
+import { listTemplates } from "@/lib/server/message-templates";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 import { KIND_LABEL, type AttachmentKind } from "@/lib/agent/attachments";
 import { requireId } from "@/lib/server/require-id";
@@ -48,11 +50,20 @@ export interface InboxTemplates {
  */
 export async function getInboxTemplates(): Promise<InboxTemplates> {
   const session = await getSession();
+
+  /**
+   * Шаблоны — из доменной таблицы, той же, что и в разделе настроек.
+   *
+   * Раньше инбокс читал их из JSON-настройки, а таблица под них пустовала:
+   * добавить шаблон было нельзя вовсе. Быстрые ответы остаются настройкой —
+   * они не про провайдера, а про поле ввода администратора.
+   */
+  const templates = await listTemplates(session.companyId);
+
   const row = await prisma.setting.findUnique({
     where: { companyId_key: { companyId: session.companyId, key: "templates" } },
   });
-  const stored = row?.value as { templates?: TemplateItem[]; quickReplies?: string[] } | null;
-  const templates = stored?.templates ?? settingsStore.templates;
+  const stored = row?.value as { quickReplies?: string[] } | null;
   const quick = stored?.quickReplies?.filter((q) => q.trim().length > 0);
 
   return {
@@ -62,6 +73,94 @@ export async function getInboxTemplates(): Promise<InboxTemplates> {
     quickReplies: quick && quick.length > 0 ? quick : DEFAULT_QUICK_REPLIES,
   };
 }
+
+/**
+ * Отправить пациенту шаблон.
+ *
+ * Отдельным действием, а не «отправить текст шаблона»: в шаблоне переменные, и
+ * подставлять их надо на сервере, где есть карточка пациента и его запись.
+ * Пока подстановки не было, кнопка отправляла текст как есть — пациент
+ * получал «Здравствуйте, {{name}}! Напоминаем о визите {{date}} в {{time}}».
+ *
+ * Нечем заполнить — не отправляем вовсе и говорим, чего не хватает. Шаблон с
+ * дырой хуже, чем не отправленный: он показывает, что клиника пишет роботом.
+ */
+export async function sendTemplateDb(
+  conversationId: string,
+  messageId: string,
+  templateId: string,
+): Promise<SendResult> {
+  const session = await getSession();
+
+  const template = await prisma.messageTemplate.findFirst({
+    where: { id: templateId, companyId: session.companyId },
+    select: { bodyTemplate: true, status: true, title: true },
+  });
+  if (!template) return { ok: false, error: "Шаблон не найден" };
+  if (template.status !== "APPROVED") {
+    return { ok: false, error: `Шаблон «${template.title}» не согласован у провайдера` };
+  }
+
+  const conv = await prisma.conversation.findFirst({
+    where: { id: conversationId, companyId: session.companyId },
+    select: {
+      patient: {
+        select: {
+          name: true,
+          appointments: {
+            where: { deletedAt: null, status: { notIn: ["CANCELLED", "NO_SHOW"] }, startAt: { gte: new Date() } },
+            orderBy: { startAt: "asc" },
+            take: 1,
+            select: {
+              startAt: true,
+              staff: { select: { name: true } },
+              primaryService: { select: { title: true } },
+              services: { select: { service: { select: { title: true } } } },
+            },
+          },
+        },
+      },
+      contactName: true,
+      company: { select: { name: true } },
+    },
+  });
+  if (!conv) return { ok: false, error: "Диалог не найден" };
+
+  const next = conv.patient?.appointments[0];
+  const filled = fillTemplate(template.bodyTemplate, {
+    name: conv.patient?.name ?? conv.contactName,
+    date: next ? DATE_FMT.format(next.startAt) : null,
+    time: next ? TIME_FMT.format(next.startAt) : null,
+    service: next
+      ? visitTitle(
+          next.services.map((x) => ({ title: x.service.title })),
+          next.primaryService?.title ?? "приём",
+        )
+      : null,
+    staff: next?.staff?.name ?? null,
+    clinic: conv.company.name,
+  });
+
+  if (!filled.ok) {
+    return {
+      ok: false,
+      error: `Не хватает данных для шаблона: ${missingLabel(filled.missing)}. Заполните их в карточке пациента или выберите другой шаблон.`,
+    };
+  }
+
+  return sendMessageDb(conversationId, messageId, filled.text);
+}
+
+const DATE_FMT = new Intl.DateTimeFormat("ru-RU", {
+  timeZone: "Europe/Moscow",
+  day: "numeric",
+  month: "long",
+});
+const TIME_FMT = new Intl.DateTimeFormat("ru-RU", {
+  timeZone: "Europe/Moscow",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 /**
  * Диалоги инбокса — из доменных таблиц Conversation + Message.

@@ -1,87 +1,184 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import type { TemplateItem } from "@/app/_data/settings";
 import { Group, SaveBar, Textarea, TextInput } from "../_components/ui";
 import { saveSection } from "../blob-actions";
+import { deleteTemplate, saveTemplate } from "./actions";
+import type { TemplateRow } from "@/lib/server/message-templates";
+import { VARIABLE_LABEL, fillTemplate } from "@/lib/message-template";
 
 export interface TemplatesData {
-  templates: TemplateItem[];
+  templates: TemplateRow[];
   quickReplies: string[];
 }
 
-const STATUS_LABEL: Record<TemplateItem["status"], { text: string; attention: boolean }> = {
+type Status = TemplateRow["status"];
+
+const STATUS_LABEL: Record<Status, { text: string; attention: boolean }> = {
   approved: { text: "согласован", attention: false },
   pending: { text: "на согласовании", attention: true },
   rejected: { text: "отклонён", attention: true },
   draft: { text: "черновик", attention: false },
 };
 
-const SAMPLE: Record<string, string> = { name: "Ирина", date: "24 июля", time: "18:30" };
+const STATUS_ORDER: Status[] = ["draft", "pending", "approved", "rejected"];
 
-function fillPreview(body: string): string {
-  return body.replace(/\{\{(\w+)\}\}/g, (_, key) => SAMPLE[key] ?? `{{${key}}}`);
-}
-function variables(body: string): string[] {
-  return [...new Set([...body.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]))];
+/** Пример подстановки: администратор должен видеть, что придёт пациенту. */
+const SAMPLE: Record<string, string> = {
+  name: "Гульбара",
+  date: "8 сентября",
+  time: "09:00",
+  service: "Детский приём — остеопатия",
+  staff: "Ирина Алилгаджиевна",
+  clinic: "Алункачева клиник",
+};
+
+function preview(body: string): string {
+  const filled = fillTemplate(body, SAMPLE);
+  return filled.ok ? filled.text : body;
 }
 
+/**
+ * Шаблоны WhatsApp.
+ *
+ * Раздел был декорацией: добавить или удалить шаблон было нельзя, статус не
+ * менялся, а переменные никто не подставлял — кнопка в инбоксе отправляла
+ * пациенту «Здравствуйте, {{name}}!». Теперь шаблоны живут в той же таблице,
+ * из которой их берёт инбокс, а подстановка идёт на сервере.
+ */
 export function TemplatesClient({ initial }: { initial: TemplatesData }) {
-  const [templates, setTemplates] = useState<TemplateItem[]>(() =>
-    structuredClone(initial.templates),
-  );
+  const [rows, setRows] = useState<TemplateRow[]>(initial.templates);
   const [quickReplies, setQuickReplies] = useState<string[]>(() => [...initial.quickReplies]);
+  const [draft, setDraft] = useState<{ id?: string; title: string; body: string; status: Status }>({
+    title: "",
+    body: "",
+    status: "draft",
+  });
+  const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const error = templates.some((t) => t.body.trim().length === 0)
-    ? "У шаблона не может быть пустого текста"
-    : null;
-
-  function patch(id: string, next: Partial<TemplateItem>) {
-    setTemplates((ts) => ts.map((t) => (t.id === id ? { ...t, ...next } : t)));
+  function submit() {
+    setError(null);
+    startTransition(async () => {
+      const res = await saveTemplate(draft);
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setRows((list) =>
+        list.some((r) => r.id === res.row.id)
+          ? list.map((r) => (r.id === res.row.id ? res.row : r))
+          : [...list, res.row],
+      );
+      setDraft({ title: "", body: "", status: "draft" });
+    });
   }
 
   return (
     <div className="flex max-w-[820px] flex-col gap-5">
-      <Group title="Шаблоны WhatsApp" hint="переменные в двойных фигурных скобках, напр. {{name}}">
-        <ul className="flex flex-col gap-3">
-          {templates.map((t) => {
-            const status = STATUS_LABEL[t.status];
-            return (
-              <li key={t.id} className="border-border-soft rounded-lg border p-3">
-                <div className="flex items-center gap-3">
-                  <TextInput
-                    value={t.title}
-                    onChange={(e) => patch(t.id, { title: e.target.value })}
-                    className="max-w-[280px] py-1.5 font-medium"
-                  />
-                  <span className="num text-text-subtle text-xs">{t.code}</span>
-                  <span
-                    className={`ml-auto text-xs ${status.attention ? "text-accent-text font-medium" : "text-text-muted"}`}
-                  >
-                    {status.text}
-                  </span>
-                </div>
-                <Textarea
-                  value={t.body}
-                  onChange={(e) => patch(t.id, { body: e.target.value })}
-                  rows={2}
-                  className="mt-2"
-                />
-                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                  {variables(t.body).map((v) => (
-                    <span key={v} className="num bg-hover text-text-muted rounded-sm px-1.5 py-0.5 text-2xs">
-                      {`{{${v}}}`}
+      <Group
+        title="Шаблоны WhatsApp"
+        hint="переменные в двойных фигурных скобках — подставляются при отправке"
+      >
+        <p className="text-text-muted text-xs">
+          Доступны: {Object.entries(VARIABLE_LABEL).map(([k, v]) => `{{${k}}} — ${v}`).join("; ")}.
+          Если данных для переменной нет, шаблон не отправится, а администратор увидит, чего не
+          хватает: сообщение с дырой хуже неотправленного.
+        </p>
+
+        {rows.length === 0 ? (
+          <p className="text-text-subtle mt-3 text-sm">Шаблонов пока нет.</p>
+        ) : (
+          <ul className="mt-3 flex flex-col gap-3">
+            {rows.map((t) => {
+              const status = STATUS_LABEL[t.status];
+              return (
+                <li key={t.id} className="border-border-soft rounded-lg border p-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="font-medium">{t.title}</span>
+                    <span className="num text-text-subtle text-xs">{t.code}</span>
+                    <span
+                      className={`text-xs ${status.attention ? "text-accent-text font-medium" : "text-text-muted"}`}
+                    >
+                      {status.text}
                     </span>
-                  ))}
-                  <span className="text-text-subtle text-xs">
-                    превью: {fillPreview(t.body)}
-                  </span>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                    <button
+                      type="button"
+                      onClick={() => setDraft({ id: t.id, title: t.title, body: t.body, status: t.status })}
+                      className="border-border text-text-muted hover:bg-hover ml-auto rounded-md border px-2 py-1 text-xs"
+                    >
+                      Изменить
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        startTransition(async () => {
+                          await deleteTemplate(t.id);
+                          setRows((list) => list.filter((r) => r.id !== t.id));
+                        })
+                      }
+                      className="text-text-subtle hover:text-danger-text px-1 text-xs"
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                  <p className="text-text-muted mt-1.5 text-sm">{t.body}</p>
+                  {t.variables.length > 0 ? (
+                    <p className="text-text-subtle mt-1 text-2xs">пациент увидит: {preview(t.body)}</p>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <div className="border-border-soft mt-4 flex flex-col gap-3 rounded-lg border p-3">
+          <TextInput
+            value={draft.title}
+            onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+            placeholder="Название — его видит администратор на кнопке"
+          />
+          <Textarea
+            value={draft.body}
+            onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+            rows={2}
+            placeholder="Здравствуйте, {{name}}! Напоминаем о визите {{date}} в {{time}}."
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={draft.status}
+              onChange={(e) => setDraft({ ...draft, status: e.target.value as Status })}
+              className="border-border-input bg-surface rounded-md border px-2 py-1.5 text-sm"
+            >
+              {STATUS_ORDER.map((s) => (
+                <option key={s} value={s}>
+                  {STATUS_LABEL[s].text}
+                </option>
+              ))}
+            </select>
+            <span className="text-text-subtle text-2xs">
+              вне 24-часового окна отправляются только согласованные
+            </span>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={isPending}
+              className="bg-accent text-accent-contrast hover:bg-accent-hover ml-auto rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
+            >
+              {draft.id ? "Сохранить" : "Добавить шаблон"}
+            </button>
+            {draft.id ? (
+              <button
+                type="button"
+                onClick={() => setDraft({ title: "", body: "", status: "draft" })}
+                className="text-text-muted hover:text-text text-sm"
+              >
+                Отмена
+              </button>
+            ) : null}
+          </div>
+          {error ? <p className="text-danger-text text-sm">{error}</p> : null}
+        </div>
       </Group>
 
       <Group title="Быстрые ответы" hint="для администратора, вставляются в поле ввода">
@@ -113,19 +210,14 @@ export function TemplatesClient({ initial }: { initial: TemplatesData }) {
         >
           + Добавить ответ
         </button>
-      </Group>
-
-      <div className="flex items-center gap-3">
         <SaveBar
-          error={error}
           onSave={() => {
             startTransition(async () => {
-              await saveSection("templates", { templates, quickReplies });
+              await saveSection("templates", { quickReplies });
             });
           }}
         />
-        {isPending ? <span className="text-text-subtle text-sm">сохраняем…</span> : null}
-      </div>
+      </Group>
     </div>
   );
 }

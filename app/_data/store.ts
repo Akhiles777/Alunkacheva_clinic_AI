@@ -32,6 +32,7 @@ import {
   setAgentEnabledDb,
   markDialogReadDb,
   sendMessageDb,
+  sendTemplateDb,
   startDialogDb,
   type DialogRecord,
 } from "@/app/(dashboard)/inbox/actions";
@@ -863,6 +864,62 @@ export function sendMessage(dialogId: string, text: string): Promise<{ ok: boole
     ok: false,
     error: "Не удалось связаться с сервером",
   }));
+}
+
+/**
+ * Отправить шаблон.
+ *
+ * Отдельно от sendMessage, потому что текст шаблона — заготовка с
+ * переменными, и подставляет их сервер: у него есть карточка пациента и его
+ * запись. Пока подстановки не было, пациент получал «Здравствуйте, {{name}}!».
+ *
+ * В переписку сразу кладём заготовку с пометкой — сервер вернёт настоящий
+ * текст только после отправки. Если данных не хватило, отправки не будет и
+ * администратор увидит, чего именно недостаёт.
+ */
+export function sendTemplate(
+  dialogId: string,
+  templateId: string,
+  title: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const msg: Message = {
+    id: uid("m"),
+    from: "staff",
+    text: `Шаблон «${title}»…`,
+    at: "сейчас",
+    attachments: [],
+  };
+  replaceDialog(dialogId, (d) => ({
+    ...d,
+    messages: [...d.messages, msg],
+    status: "human",
+    unread: false,
+    preview: msg.text,
+    agentDraft: undefined,
+  }));
+  return sendTemplateDb(dialogId, msg.id, templateId)
+    .then((res) => {
+      /**
+       * Не ушло — убираем заготовку из переписки.
+       *
+       * Иначе в диалоге остаётся «Шаблон „…“…», которого пациент не получал.
+       * Сообщение, которое не ушло, не показывается как отправленное.
+       */
+      if (!res.ok) {
+        replaceDialog(dialogId, (d) => ({
+          ...d,
+          messages: d.messages.filter((m) => m.id !== msg.id),
+        }));
+      }
+      return res;
+    })
+    .catch(() => {
+      replaceDialog(dialogId, (d) => ({
+        ...d,
+        messages: d.messages.filter((m) => m.id !== msg.id),
+      }));
+      return { ok: false, error: "Не удалось связаться с сервером" };
+    });
 }
 
 /** Вернуть диалог агенту: снять паузу и закрыть эскалацию. */
