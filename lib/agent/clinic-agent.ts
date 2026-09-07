@@ -89,6 +89,7 @@ import { withoutQuote } from "./quoted";
 import { inHandoverFlow, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames } from "./specialist";
 import { complexMedical, managementTopic } from "./specialist-rules";
+import { WEEKDAY_WHEN, daysAsked, staffAsked, whoWorks } from "./workdays";
 
 /**
  * Агент пациентского канала.
@@ -464,7 +465,7 @@ async function clinicContext(
     prisma.staff.findMany({
       where: { companyId, isActive: true, deletedAt: null },
       orderBy: { name: "asc" },
-      select: { name: true, specialty: true },
+      select: { name: true, specialty: true, workdays: true },
     }),
   ]);
 
@@ -516,7 +517,28 @@ async function clinicContext(
   if (closed.length) lines.push(`Выходной: ${closed.map((w) => days[w]).join(", ")}`);
   if (staff.length) {
     lines.push("", "Принимают:");
-    for (const p of staff) lines.push(`• ${p.name}${p.specialty ? ` — ${p.specialty}` : ""}`);
+    for (const p of staff) {
+      /**
+       * Дни приёма врача — рядом с его именем.
+       *
+       * График клиники и график врача — разные вещи. Пациентка спросила
+       * «работаете ли в выходные и сколько стоит приём» и получила цены обоих
+       * остеопатов, хотя в субботу принимает только один. Ответ был верен про
+       * клинику и неверен про врача, и администратору пришлось поправлять.
+       *
+       * Дни не заданы — не пишем ничего: пустая настройка не значит «не
+       * работает», и говорить об этом пациенту нельзя.
+       */
+      const when = p.workdays.length
+        ? `, принимает: ${p.workdays.slice().sort((a, b) => a - b).map((w) => days[w]).join(", ")}`
+        : "";
+      lines.push(`• ${p.name}${p.specialty ? ` — ${p.specialty}` : ""}${when}`);
+    }
+    if (staff.some((p) => p.workdays.length)) {
+      lines.push(
+        "Дни приёма у врачей разные: прежде чем называть врача на конкретный день, сверься с этим списком.",
+      );
+    }
   }
   const usable = consentGranted
     ? knowledge.filter((k) => !aboutConsent(k.topic) && !aboutConsent(k.question))
@@ -1683,6 +1705,95 @@ async function replyToQuestion(
     return respond(ctx, conversation.id, {
       text: "Передал(а) администратору — он ответит здесь же.",
     });
+  }
+
+  /**
+   * Прямой вопрос про день недели: кто из врачей принимает.
+   *
+   * Отвечаем кодом, а не моделью. «Работаете ли вы в выходные дни? И сколько
+   * стоит приём?» получило верный ответ про клинику и цены ОБОИХ остеопатов —
+   * при том что в субботу принимает только одна. Администратору пришлось
+   * писать вслед за ботом. Имя врача и день приёма — то, из-за чего человек
+   * приезжает не в тот день, и гадать здесь нельзя.
+   *
+   * Отвечаем только когда дни у врачей заданы. Не заданы — молчим об этом
+   * вовсе и идём обычной дорогой: пустая настройка не значит «не работает».
+   */
+  const askedDays = daysAsked(own);
+  if (askedDays.length > 0) {
+    const doctors = await prisma.staff.findMany({
+      where: { companyId: ctx.companyId, isActive: true, deletedAt: null },
+      orderBy: { name: "asc" },
+      select: { name: true, specialty: true, workdays: true },
+    });
+    const named = staffAsked(own, doctors);
+
+    if (named && named.workdays.length > 0) {
+      /** Спросили про конкретного врача — отвечаем про него, коротко и точно. */
+      const yes = askedDays.filter((d) => named.workdays.includes(d));
+      const no = askedDays.filter((d) => !named.workdays.includes(d));
+      await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
+
+      if (yes.length > 0) {
+        return respond(ctx, conversation.id, {
+          text:
+            `Да, ${named.name} принимает ${yes.map((d) => WEEKDAY_WHEN[d]).join(" и ")}. ` +
+            "Время подберёт администратор — он напишет здесь же.",
+        });
+      }
+      /**
+       * Не принимает — говорим по каждому дню отдельно.
+       *
+       * Склеенное «в субботу и воскресенье принимает Разият» было неправдой:
+       * в воскресенье не принимает никто. Один общий список на несколько дней
+       * всегда врёт про какой-нибудь из них.
+       */
+      const other = no
+        .map((d) => {
+          const works = whoWorks(doctors, [d]).works;
+          const line =
+            works.length > 0
+              ? `${WEEKDAY_WHEN[d]} принимает ${works.map((w) => w.name).join(", ")}`
+              : `${WEEKDAY_WHEN[d]} приёма нет`;
+          return `${line[0].toUpperCase()}${line.slice(1)}`;
+        })
+        .join(". ");
+      return respond(ctx, conversation.id, {
+        text:
+          `${named.name} ${no.map((d) => WEEKDAY_WHEN[d]).join(" и ")} не принимает. ` +
+          `${other}. Передал(а) администратору — он подберёт время.`,
+      });
+    }
+
+    if (!named && doctors.some((d) => d.workdays.length > 0)) {
+      /**
+       * Врача не назвали — говорим по каждому дню, кто принимает.
+       *
+       * «В субботу и воскресенье принимает Разият Ризвановна» — ложь про
+       * воскресенье: там выходной. День и врач связаны, и разделять их нельзя.
+       */
+      await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
+      const capitalize = (t: string) => `${t[0].toUpperCase()}${t.slice(1)}`;
+      const byDay = askedDays.map((d) => {
+        const works = whoWorks(doctors, [d]).works;
+        return capitalize(
+          works.length > 0
+            ? `${WEEKDAY_WHEN[d]} принимает ${works
+                .map((w) => `${w.name}${w.specialty ? ` — ${w.specialty}` : ""}`)
+                .join("; ")}`
+            : `${WEEKDAY_WHEN[d]} приёма нет`,
+        );
+      });
+      const anyDay = askedDays.some((d) => whoWorks(doctors, [d]).works.length > 0);
+      return respond(ctx, conversation.id, {
+        text:
+          `${byDay.join(". ")}. ` +
+          (anyDay
+            ? "Время подберёт администратор — он напишет здесь же."
+            : "Передал(а) администратору — он подскажет ближайший день."),
+        buttons: mainMenu(),
+      });
+    }
   }
 
   if (scheduleTopic(own)) {

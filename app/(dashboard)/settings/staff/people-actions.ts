@@ -38,6 +38,14 @@ export interface AccountRow {
   specialty: string;
   /** Кабинет врача по умолчанию. */
   defaultRoomId: string | null;
+  /**
+   * В какие дни недели принимает: 1 = понедельник … 7 = воскресенье.
+   *
+   * Пусто — «не заполнено», а не «не работает»: пока дни не заданы, ассистент
+   * о них молчит. График клиники и график врача — разные вещи, и путать их
+   * дороже всего в ответе про конкретный день.
+   */
+  workdays: number[];
   /** Только для записи: пароль нового сотрудника или сброс пароля. Наружу не отдаётся. */
   password?: string;
   /** Есть ли у учётки заданный пароль (для UI). */
@@ -98,7 +106,11 @@ export async function getStaffPeople(): Promise<StaffPeople> {
     prisma.staffUser.findMany({
       where: { companyId: session.companyId, deletedAt: null },
       orderBy: { createdAt: "asc" },
-      include: { staff: { select: { id: true, specialty: true, defaultRoomId: true, deletedAt: true } } },
+      include: {
+        staff: {
+          select: { id: true, specialty: true, defaultRoomId: true, deletedAt: true, workdays: true },
+        },
+      },
     }),
     prisma.room.findMany({
       where: { companyId: session.companyId },
@@ -112,6 +124,7 @@ export async function getStaffPeople(): Promise<StaffPeople> {
         id: true,
         name: true,
         specialty: true,
+        workdays: true,
         defaultRoomId: true,
         isActive: true,
         _count: { select: { appointments: true } },
@@ -132,6 +145,7 @@ export async function getStaffPeople(): Promise<StaffPeople> {
       isActive: a.isActive,
       staffId: staff?.id ?? null,
       specialty: staff?.specialty ?? "",
+      workdays: staff?.workdays ?? [],
       defaultRoomId: staff?.defaultRoomId ?? null,
       hasPassword: a.passwordHash !== INVITE_PENDING && a.passwordHash.length > 0,
       hasLogin: true,
@@ -151,6 +165,7 @@ export async function getStaffPeople(): Promise<StaffPeople> {
       isActive: s.isActive,
       staffId: s.id,
       specialty: s.specialty ?? "",
+      workdays: s.workdays ?? [],
       defaultRoomId: s.defaultRoomId,
       hasPassword: false,
       hasLogin: false,
@@ -307,6 +322,7 @@ export async function saveAccounts(rows: AccountRow[]): Promise<StaffPeople> {
         name,
         specialty: r.specialty.trim() || null,
         defaultRoomId: r.defaultRoomId || null,
+        workdays: [...new Set(r.workdays ?? [])].filter((d) => d >= 1 && d <= 7).sort(),
         isActive: r.isActive,
         deletedAt: null,
         sortOrder: i + 1,

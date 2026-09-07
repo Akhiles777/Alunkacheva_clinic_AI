@@ -97,9 +97,16 @@ const SERVICES = [
   { title: "Массаж классический", price: 3000, durationMin: 60, yclientsServiceId: 28 },
 ];
 
+/**
+ * Дни приёма — 1 = понедельник … 7 = воскресенье.
+ *
+ * Так у клиники: по пятницам и субботам из остеопатов принимает только Разият
+ * Ризвановна, воскресенье — выходной. Из-за отсутствия этих данных агент
+ * назвал цены обоих врачей на вопрос «работаете ли в выходные».
+ */
 const STAFF = [
-  { name: "Ирина Алилгаджиевна", specialty: "Остеопат", yclientsStaffId: 1 },
-  { name: "Разият Ризвановна", specialty: "Невролог", yclientsStaffId: 2 },
+  { name: "Ирина Алилгаджиевна", specialty: "Остеопат", yclientsStaffId: 1, workdays: [1, 2, 3, 4] },
+  { name: "Разият Ризвановна", specialty: "Остеопат", yclientsStaffId: 2, workdays: [1, 2, 3, 4, 5, 6] },
 ];
 
 /**
@@ -262,7 +269,7 @@ async function main() {
   for (const s of STAFF) {
     await prisma.staff.upsert({
       where: { companyId_yclientsStaffId: { companyId: company.id, yclientsStaffId: s.yclientsStaffId } },
-      update: { name: s.name },
+      update: { name: s.name, specialty: s.specialty, workdays: s.workdays },
       create: { companyId: company.id, ...s },
     });
   }

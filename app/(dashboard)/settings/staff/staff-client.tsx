@@ -24,6 +24,9 @@ const PERMISSION_LABEL: Record<Permission, string> = {
 };
 const PERMISSIONS = Object.keys(PERMISSION_LABEL) as Permission[];
 
+/** Пн…Вс: ISO-нумерация, как в графике клиники. */
+const WEEKDAYS_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+
 export function StaffClient({
   initialMatrix,
   initialPeople,
@@ -57,6 +60,7 @@ export function StaffClient({
       {
         id: `new-${Date.now()}`,
         name: "",
+        workdays: [],
         login: "",
         role: "ADMIN",
         isActive: true,
@@ -230,6 +234,42 @@ export function StaffClient({
                         </option>
                       ))}
                     </select>
+                    {/*
+                      Дни приёма врача — не то же самое, что часы клиники.
+                      Клиника работает в субботу, а из остеопатов принимает
+                      только одна: пациентка спросила «работаете ли в выходные
+                      и сколько стоит приём» и получила цены обоих врачей.
+                      Пусто — ассистент об этом молчит, а не считает, что врач
+                      не работает.
+                    */}
+                    <div className="col-span-full flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                      <span className="text-text-muted text-xs">Принимает:</span>
+                      {WEEKDAYS_SHORT.map((label, i) => {
+                        const day = i + 1;
+                        const on = acc.workdays.includes(day);
+                        return (
+                          <label key={day} className="flex items-center gap-1 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              onChange={() =>
+                                patchAcc(acc.id, {
+                                  workdays: on
+                                    ? acc.workdays.filter((d) => d !== day)
+                                    : [...acc.workdays, day].sort((a, b) => a - b),
+                                })
+                              }
+                            />
+                            {label}
+                          </label>
+                        );
+                      })}
+                      {acc.workdays.length === 0 ? (
+                        <span className="text-text-subtle text-2xs">
+                          не заполнено — ассистент о днях приёма не говорит
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 ) : null}
               </li>
