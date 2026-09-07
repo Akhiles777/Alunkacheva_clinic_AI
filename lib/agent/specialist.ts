@@ -52,9 +52,11 @@ async function deliver(
   companyId: string,
   to: string,
   text: string,
+  /** Кому пишем — только для журнала прогона: «специалисту» или «пациенту». */
+  who: "специалисту" | "пациенту" = "специалисту",
 ): Promise<{ ok: boolean; error?: string }> {
   if (process.env.AGENT_DRILL === "1") {
-    console.log(`[drill] специалисту ${to}:\n${text}`);
+    console.log(`[drill] ${who} ${to}:\n${text}`);
     return { ok: true };
   }
   return sendWhatsapp(companyId, to, text);
@@ -390,7 +392,13 @@ async function relayToPatient(input: {
 }): Promise<string> {
   const conv = await prisma.conversation.findUniqueOrThrow({
     where: { id: input.query.conversationId },
-    select: { id: true, channel: true, externalUserId: true, patient: { select: { name: true } } },
+    select: {
+      id: true,
+      channel: true,
+      externalUserId: true,
+      contactName: true,
+      patient: { select: { name: true } },
+    },
   });
 
   const verbatim = `Уточнила у врача. ${input.doctorAnswer}`;
@@ -417,7 +425,7 @@ async function relayToPatient(input: {
   const body = forMessenger(text);
   const sent =
     conv.channel === "WHATSAPP"
-      ? await deliver(input.companyId, conv.externalUserId, body)
+      ? await deliver(input.companyId, conv.externalUserId, body, "пациенту")
       : { ok: false, error: `канал ${conv.channel} для передачи ответа не поддержан` };
 
   await prisma.message.create({
@@ -459,7 +467,7 @@ async function relayToPatient(input: {
   await deliver(
     input.companyId,
     input.doctorPhone,
-    `Передала ваш ответ пациенту (${conv.patient?.name ?? "без имени"}, ${refMark(input.query.ref)}).`,
+    `Передала ваш ответ пациенту (${conv.patient?.name ?? conv.contactName ?? "без имени"}, ${refMark(input.query.ref)}).`,
   ).catch(() => {});
 
   await notifyStaff({
