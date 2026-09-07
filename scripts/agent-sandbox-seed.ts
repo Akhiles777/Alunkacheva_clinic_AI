@@ -107,9 +107,14 @@ const SERVICES = [
 const STAFF = [
   { name: "Ирина Алилгаджиевна", specialty: "Остеопат", yclientsStaffId: 1, workdays: [1, 2, 3, 4] },
   { name: "Разият Ризвановна", specialty: "Остеопат", yclientsStaffId: 2, workdays: [1, 2, 3, 4, 5, 6] },
-  // БОС-терапию ведёт другой человек: «в субботу есть БОС?» — вопрос к ней,
-  // а не к остеопатам. Из-за этого и появилось разделение по услуге.
-  { name: "Ирина Омарова", specialty: "БОС-терапия", yclientsStaffId: 3, workdays: [1, 2, 3, 4, 5, 6] },
+  /**
+   * Дни приёма заданы ТОЛЬКО у остеопатов — это всё, что клиника сообщила.
+   *
+   * Здесь был выдуманный БОС-специалист с выдуманными днями, и он полез в
+   * ответы: пациенту, спросившему про остеопата, называли БОС-терапевта.
+   * Данные, которых клиника не давала, в песочнице заводить нельзя — они
+   * выглядят как настоящие и проверяют не систему, а мою фантазию.
+   */
 ];
 
 /**
@@ -138,9 +143,15 @@ const KNOWLEDGE = [
     question:
       "сколько стоит остеопат/ цена остеопата/ стоимость приема/ сколько стоит прием/ " +
       "сколько длится прием/ сколько по времени приём",
+    /**
+     * Без имени врача: кто принимает — зависит от дня, а справка статична.
+     * Здесь стояло «Приём ведёт Ирина Алилгаджиевна», и на вопрос про выходные
+     * эта запись уходила дословно — вместе с врачом, который в выходные не
+     * принимает.
+     */
     answer:
       "Взрослый приём остеопата — 8000 ₽, длится 45 минут. Детский приём до 10 лет — 5000 ₽, " +
-      "40 минут. Приём ведёт Ирина Алилгаджиевна.",
+      "40 минут.",
   },
   {
     topic: "Подготовка к приёму",
@@ -423,44 +434,6 @@ async function main() {
     console.log(`пациент: ${p.name} ${p.phone} — визит в прошлом и запись 8 сентября 09:00`);
   }
 
-  /**
-   * Кто ведёт БОС-терапию, платформа узнаёт из визитов, а не из настройки.
-   * Без истории визитов вопрос «в субботу есть БОС?» не с чем связать.
-   */
-  const bos = await prisma.service.findFirstOrThrow({
-    where: { companyId: company.id, yclientsServiceId: 3 },
-  });
-  const bosStaff = await prisma.staff.findFirstOrThrow({
-    where: { companyId: company.id, yclientsStaffId: 3 },
-  });
-  const bosPatient = await prisma.patient.findFirstOrThrow({
-    where: { companyId: company.id, phones: { some: { phone: "+79280000001" } } },
-  });
-  await prisma.appointment.deleteMany({
-    where: { companyId: company.id, staffId: bosStaff.id },
-  });
-  for (let i = 1; i <= 3; i += 1) {
-    const at = new Date(Date.now() - (10 + i) * 86_400_000);
-    await prisma.appointment.create({
-      data: {
-        companyId: company.id,
-        patientId: bosPatient.id,
-        staffId: bosStaff.id,
-        primaryServiceId: bos.id,
-        startAt: at,
-        endAt: new Date(at.getTime() + 40 * 60_000),
-        createdAtYclients: at,
-        updatedAtYclients: at,
-        durationMin: 40,
-        status: "ARRIVED",
-        revenue: 2800,
-        services: {
-          create: { companyId: company.id, serviceId: bos.id, priceCharged: 2800, durationMin: 40 },
-        },
-      },
-    });
-  }
-  console.log(`БОС-терапию ведёт ${bosStaff.name} — 3 визита в истории`);
 
   /**
    * Врач и руководитель клиники — тот, кому ассистент задаёт вопросы.

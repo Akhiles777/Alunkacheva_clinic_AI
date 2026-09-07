@@ -1778,7 +1778,23 @@ async function replyToQuestion(
       orderBy: { name: "asc" },
       select: { id: true, name: true, specialty: true, workdays: true },
     });
-    const named = staffAsked(own, doctors);
+    /**
+     * Врача помним из разговора, а не только из последней реплики.
+     *
+     * «Можно в субботу к Ирине Алилгаджиевне?» — «А в пятницу?»: во второй
+     * реплике имени нет, но речь по-прежнему о ней. Без памяти агент терял
+     * собеседницу и отвечал «уточню у администратора» на простой вопрос.
+     */
+    const named =
+      staffAsked(own, doctors) ??
+      staffAsked(
+        said
+          .filter((t) => t.role === "user")
+          .slice(-3)
+          .map((t) => t.content)
+          .join("\n"),
+        doctors,
+      );
 
     /**
      * Про врачей отвечаем, только когда спросили про врача или про услугу.
@@ -2179,23 +2195,35 @@ async function replyToQuestion(
    * («работаете в выходные и сколько стоит»), а код ловит единственную
    * ошибку, из-за которой человек приезжает зря.
    */
-  const wrongDay = answer
-    ? wrongWorkday(
-        answer,
-        await prisma.staff.findMany({
+  /**
+   * Проверяем ЛЮБОЙ ответ, а не только сочинённый моделью.
+   *
+   * Первый раз проверка стояла только на ответе модели — и её обошла
+   * дословная справка: в записи клиники было «Приём ведёт Ирина
+   * Алилгаджиевна», и на вопрос про выходные она уходила как есть. Справка
+   * статична, а кто принимает — зависит от дня, поэтому проверять надо всё,
+   * что уходит пациенту.
+   */
+  const doctorsOnDuty =
+    askedDays.length > 0
+      ? await prisma.staff.findMany({
           where: { companyId: ctx.companyId, isActive: true, deletedAt: null },
           select: { name: true, workdays: true },
-        }),
-      )
-    : null;
-  if (wrongDay) {
-    console.error(`[agent] ответ отклонён: врач в этот день не принимает — ${wrongDay}`);
+        })
+      : [];
+  const wrongDayIn = (text: string) =>
+    doctorsOnDuty.length > 0 ? wrongWorkday(text, doctorsOnDuty, askedDays) : null;
+  const handOverWrongDay = async (reason: string) => {
+    console.error(`[agent] ответ отклонён: врач в этот день не принимает — ${reason}`);
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по расписанию врача").catch(() => {});
     return respond(ctx, conversation.id, {
       text: "Уточню у администратора, кто принимает в этот день, — он напишет здесь же.",
       buttons: mainMenu(),
     });
-  }
+  };
+
+  const wrongDay = answer ? wrongDayIn(answer) : null;
+  if (wrongDay) return handOverWrongDay(wrongDay);
 
   const madeUp = answer ? inventedIndication(answer, reference) : null;
   if (madeUp) {
@@ -2379,6 +2407,8 @@ async function replyToQuestion(
   const staffNames = await staffNamesOf(ctx.companyId);
   if (confidentMatch(exact)) {
     const trimmed = focusedAnswer(exact!.row.answer, asked, staffNames);
+    const badDay = wrongDayIn(trimmed);
+    if (badDay) return handOverWrongDay(badDay);
     if (!alreadySaid(said, trimmed)) {
       /**
        * Ответ дословно из справочника — запись сработала.
@@ -2416,6 +2446,8 @@ async function replyToQuestion(
   const meaningful = best && (best.hits >= 2 || (best.specificCoverage ?? 0) >= 0.5);
   if (best && meaningful) {
     const trimmed = focusedAnswer(best.row.answer, asked, staffNames);
+    const badDay = wrongDayIn(trimmed);
+    if (badDay) return handOverWrongDay(badDay);
     if (!alreadySaid(said, trimmed)) {
       await logAgentRun({
         companyId: ctx.companyId,

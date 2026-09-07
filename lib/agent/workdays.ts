@@ -124,9 +124,33 @@ export function withoutDays(text: string): string {
  * Смотрим по предложениям: врач и день должны стоять рядом. Отрицание
  * («не принимает», «выходной») снимает подозрение — это и есть верный ответ.
  */
-export function wrongWorkday(answer: string, staff: StaffDays[]): string | null {
+export function wrongWorkday(
+  answer: string,
+  staff: StaffDays[],
+  /**
+   * Дни из ВОПРОСА пациента.
+   *
+   * Спросили «работаете ли в выходные и сколько стоит приём?» — и ответ
+   * «взрослый приём 8000 ₽, ведёт Ирина Алилгаджиевна» неверен целиком: в
+   * субботу она не принимает. Дня недели в этом предложении нет, и разбор по
+   * предложениям такую ошибку не видит — а пациент запомнит имя.
+   */
+  askedDays: number[] = [],
+): string | null {
   const known = staff.filter((s) => s.workdays.length > 0);
   if (known.length === 0) return null;
+
+  if (askedDays.length > 0) {
+    for (const sentence of answer.split(/(?<=[.!?\n])/)) {
+      if (/(?:не\s+принима|не\s+работа|выходн|не\s+веду|не\s+ведёт|не\s+ведет)/iu.test(sentence)) continue;
+      const named = staffAsked(sentence, known);
+      if (!named) continue;
+      const bad = askedDays.filter((d) => !named.workdays.includes(d));
+      if (bad.length === askedDays.length) {
+        return `${named.name} — ${bad.map((d) => WEEKDAY_NAMES[d]).join(", ")}`;
+      }
+    }
+  }
 
   for (const sentence of answer.split(/(?<=[.!?\n])/)) {
     if (/(?:не\s+принима|не\s+работа|выходн|не\s+веду|не\s+ведёт|не\s+ведет)/iu.test(sentence)) continue;
