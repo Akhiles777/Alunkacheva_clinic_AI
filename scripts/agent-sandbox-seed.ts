@@ -402,20 +402,21 @@ async function main() {
    * (AGENT_DRILL), но если кто-то запустит без него, письмо не должно уйти
    * живому человеку.
    */
+  const doctor = await prisma.staff.findFirstOrThrow({
+    where: { companyId: company.id, yclientsStaffId: 1 },
+  });
   await prisma.clinicSpecialist.upsert({
     where: { companyId_phone: { companyId: company.id, phone: "+79000000001" } },
-    update: { isDoctor: true, isManager: true, isActive: true },
+    update: { isActive: true, staffId: doctor.id },
     create: {
       companyId: company.id,
-      name: "Ирина Алилгаджиевна",
+      staffId: doctor.id,
+      name: doctor.name,
       phone: "+79000000001",
-      role: "остеопат, руководитель клиники",
-      isDoctor: true,
-      isManager: true,
       isActive: true,
     },
   });
-  console.log("специалист: Ирина Алилгаджиевна +79000000001 — медицинские и деловые вопросы");
+  console.log(`специалист: ${doctor.name} +79000000001`);
 
   console.log("\nпесочница готова. Прогон: npx tsx scripts/agent-drill.ts");
 }

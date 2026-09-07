@@ -880,6 +880,7 @@ model Staff {
   user         StaffUser?
   rate         StaffRate?
   payouts      PayrollPayout[]
+  specialist   ClinicSpecialist[]
 
   @@unique([companyId, yclientsStaffId])
   @@index([companyId, isActive])
@@ -1933,26 +1934,29 @@ model UserPermission {
 model ClinicSpecialist {
   id        String  @id @default(cuid())
   companyId String
+  /**
+   * Кто это в клинике. Ссылка на справочник сотрудников, а не отдельно
+   * заполненные галочки: кто какие услуги ведёт, уже записано в визитах, и
+   * дублировать это в настройках значит однажды получить две разные правды.
+   */
+  staffId   String?
+  /// Имя для писем и уведомлений. Берётся у сотрудника, но переживает его удаление.
   name      String
   /// E.164 — по нему узнаём входящее сообщение специалиста.
   phone     String
-  /// Медицинские вопросы: жалобы, состояние, «можно ли мне».
-  isDoctor  Boolean @default(false)
-  /// Деловые: работа, реклама, сотрудничество, претензии к клинике.
-  isManager Boolean @default(false)
   isActive  Boolean @default(true)
-  /// Кто это в клинике: показывается администратору, пациенту не уходит.
-  role      String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  staff   Staff?            @relation(fields: [staffId], references: [id], onDelete: SetNull)
   queries SpecialistQuery[]
 
   /// Номер принадлежит одному специалисту: по нему идёт вся маршрутизация.
   @@unique([companyId, phone])
   @@index([companyId, isActive])
+  @@index([staffId])
   @@map("clinic_specialists")
 }
 

@@ -15,12 +15,10 @@ import { normalizePhone } from "@/lib/phone";
  */
 export interface SpecialistItem {
   id: string;
+  /** Сотрудник из справочника: кто это в клинике и что ведёт — знает он. */
+  staffId: string | null;
   name: string;
   phone: string;
-  role: string;
-  isDoctor: boolean;
-  isManager: boolean;
-  isActive: boolean;
   /** Сколько вопросов ему уходило и на сколько он ответил — видно пользу. */
   asked: number;
   answered: number;
@@ -29,7 +27,7 @@ export interface SpecialistItem {
 export async function getSpecialists(): Promise<SpecialistItem[]> {
   const session = await getSession();
   const rows = await prisma.clinicSpecialist.findMany({
-    where: { companyId: session.companyId },
+    where: { companyId: session.companyId, isActive: true },
     orderBy: { createdAt: "asc" },
     include: { _count: { select: { queries: true } } },
   });
@@ -43,35 +41,43 @@ export async function getSpecialists(): Promise<SpecialistItem[]> {
 
   return rows.map((r) => ({
     id: r.id,
+    staffId: r.staffId,
     name: r.name,
     phone: r.phone,
-    role: r.role ?? "",
-    isDoctor: r.isDoctor,
-    isManager: r.isManager,
-    isActive: r.isActive,
     asked: r._count.queries,
     answered: answeredBy.get(r.id) ?? 0,
   }));
 }
 
+/** Сотрудники, из которых выбирают: имя уже заведено в справочнике. */
+export async function getStaffOptions(): Promise<{ id: string; name: string; specialty: string }[]> {
+  const session = await getSession();
+  const rows = await prisma.staff.findMany({
+    where: { companyId: session.companyId, isActive: true, deletedAt: null },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true, specialty: true },
+  });
+  return rows.map((r) => ({ id: r.id, name: r.name, specialty: r.specialty ?? "" }));
+}
+
 export interface SpecialistDraft {
   id?: string;
-  name: string;
+  /** Кого выбрали в справочнике сотрудников. */
+  staffId: string;
   phone: string;
-  role?: string;
-  isDoctor: boolean;
-  isManager: boolean;
-  isActive: boolean;
 }
 
 export async function saveSpecialist(
   draft: SpecialistDraft,
-): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; row: SpecialistItem } | { ok: false; error: string }> {
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
 
-  const name = draft.name.trim();
-  if (!name) return { ok: false, error: "Без имени нельзя: его увидит администратор в уведомлении" };
+  const staff = await prisma.staff.findFirst({
+    where: { id: draft.staffId, companyId: session.companyId },
+    select: { id: true, name: true },
+  });
+  if (!staff) return { ok: false, error: "Выберите сотрудника из справочника" };
 
   /**
    * Телефон нормализуется в E.164 на входе, всегда (§4).
@@ -83,31 +89,16 @@ export async function saveSpecialist(
   const phone = normalizePhone(draft.phone);
   if (!phone) return { ok: false, error: "Не разобрали номер. Формат: +7 929 874-17-78" };
 
-  if (!draft.isDoctor && !draft.isManager) {
-    return { ok: false, error: "Отметьте, какие вопросы пересылать: медицинские, деловые или оба" };
-  }
-
   const twin = await prisma.clinicSpecialist.findFirst({
     where: { companyId: session.companyId, phone, ...(draft.id ? { NOT: { id: draft.id } } : {}) },
     select: { name: true },
   });
   if (twin) return { ok: false, error: `Этот номер уже записан за «${twin.name}»` };
 
-  const data = {
-    name,
-    phone,
-    role: draft.role?.trim() || null,
-    isDoctor: draft.isDoctor,
-    isManager: draft.isManager,
-    isActive: draft.isActive,
-  };
-
+  const data = { staffId: staff.id, name: staff.name, phone, isActive: true };
   const saved = draft.id
-    ? await prisma.clinicSpecialist.update({ where: { id: draft.id }, data, select: { id: true } })
-    : await prisma.clinicSpecialist.create({
-        data: { companyId: session.companyId, ...data },
-        select: { id: true },
-      });
+    ? await prisma.clinicSpecialist.update({ where: { id: draft.id }, data })
+    : await prisma.clinicSpecialist.create({ data: { companyId: session.companyId, ...data } });
 
   await writeAudit({
     companyId: session.companyId,
@@ -116,7 +107,17 @@ export async function saveSpecialist(
     entityType: "clinic_specialist",
     entityId: saved.id,
   });
-  return { ok: true, id: saved.id };
+  return {
+    ok: true,
+    row: {
+      id: saved.id,
+      staffId: saved.staffId,
+      name: saved.name,
+      phone: saved.phone,
+      asked: 0,
+      answered: 0,
+    },
+  };
 }
 
 /**

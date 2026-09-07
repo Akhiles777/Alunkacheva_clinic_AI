@@ -88,7 +88,7 @@ import { stuckInMisunderstanding } from "./confusion";
 import { withoutQuote } from "./quoted";
 import { inHandoverFlow, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames } from "./specialist";
-import { managementTopic } from "./specialist-rules";
+import { complexMedical, managementTopic } from "./specialist-rules";
 
 /**
  * Агент пациентского канала.
@@ -943,6 +943,45 @@ export async function handlePatientMessage(
         url: "/inbox",
         entityId: conversation.id,
       });
+
+      /**
+       * Выключенный агент всё равно доносит СЛОЖНЫЙ вопрос до врача.
+       *
+       * Выключатель нужен там, где в пациентском канале переписываются
+       * сотрудники: агент им мешал и тратил модель впустую. Но человек с
+       * настоящим вопросом о здоровье не должен из-за этого остаться без
+       * ответа — а он остаётся: администратор увидит сообщение и всё равно
+       * пойдёт к врачу.
+       *
+       * Отвечать пациенту агент по-прежнему не будет; ответ придёт словами
+       * врача, когда она ответит. Мелочи не пересылаются: служебное «взять
+       * ОАК, оплату не брать» под сложный вопрос не подпадает, и врача из-за
+       * него не побеспокоят.
+       *
+       * Только для выключателя. Пауза после ответа сотрудника — другое дело:
+       * там администратор уже в разговоре и сам решит, звать ли врача.
+       */
+      if (conversation.agentDisabled) {
+        const own = withoutQuote(input.text ?? "");
+        const said = await recentTurns(conversation.id);
+        const asked = questionForDoctor(own, said);
+        const kind = managementTopic(own)
+          ? ("MANAGEMENT" as const)
+          : medical(own) && complexMedical(asked)
+            ? ("MEDICAL" as const)
+            : null;
+        if (kind) {
+          await askSpecialist({
+            companyId: ctx.companyId,
+            conversationId: conversation.id,
+            patientId: conversation.patientId,
+            kind,
+            patientName: await patientNameFor(conversation.id),
+            channelLabel: channelName,
+            serviceId: kind === "MEDICAL" ? await serviceInTalk(ctx.companyId, own, said) : null,
+          }).catch(() => ({ sent: false }));
+        }
+      }
     }
     return null;
   }
@@ -1115,6 +1154,40 @@ export async function handlePatientMessage(
   }
 
   return replyToQuestion(ctx, conversation, text);
+}
+
+/**
+ * О чём разговор: вопрос для врача — вместе с предыдущими репликами пациента.
+ *
+ * Человек пишет ситуацию несколькими сообщениями: «у меня ДЦП» — «мне 33
+ * года» — «думала просто консультация». Судить о сложности по последней
+ * реплике значит не увидеть вопроса вовсе.
+ */
+function questionForDoctor(own: string, said: { role: string; content: string }[]): string {
+  const mine = said
+    .filter((t) => t.role === "user")
+    .slice(-4)
+    .map((t) => t.content);
+  return [...mine, own].join("\n");
+}
+
+/**
+ * Какая услуга обсуждается — чтобы вопрос ушёл тому, кто её ведёт.
+ *
+ * Вопрос про БОС-терапию не должен идти остеопату: кто что ведёт, знает
+ * справочник визитов, и настройке это дублировать незачем.
+ */
+async function serviceInTalk(
+  companyId: string,
+  own: string,
+  said: { role: string; content: string }[],
+): Promise<string | null> {
+  const query = searchText(
+    own,
+    said.filter((t) => t.role === "user").map((t) => t.content),
+  );
+  const found = matchServices(query, await getServices(companyId).catch(() => []), 1, 0.5);
+  return found[0]?.id ?? null;
 }
 
 /**
@@ -1517,7 +1590,17 @@ async function replyToQuestion(
        * Врача не трогаем, когда ответ уже нашёлся в справочнике (сюда мы тогда
        * не попадаем вовсе) и когда спрашивают цену: это не к ней.
        */
-      const askedDoctor: { reply?: string } = prices
+      /**
+       * Врача зовём только на СЛОЖНОЕ.
+       *
+       * «А это больно?» и «сколько длится приём» — мелочи, на которые
+       * администратор ответит быстрее. Письма по пустякам перестают читать, а
+       * вместе с ними перестают читать и настоящие. Сложное — это названное
+       * состояние, просьба о тактике или разговор после приёма
+       * (lib/agent/specialist-rules).
+       */
+      const askedDoctor: { reply?: string } =
+        prices || !complexMedical(questionForDoctor(own, said))
         ? {}
         : await askSpecialist({
             companyId: ctx.companyId,
@@ -1937,7 +2020,10 @@ async function replyToQuestion(
      * правилом, зато модель ответила верно: «это вопрос к специалисту, который
      * видел вашего сына». Она поняла, код — нет, и врача никто не спросил.
      */
-    if (defersToDoctor(answer, await specialistNames(ctx.companyId).catch(() => []))) {
+    if (
+      complexMedical(questionForDoctor(own, said)) &&
+      defersToDoctor(answer, await specialistNames(ctx.companyId).catch(() => []))
+    ) {
       const asked = await askSpecialist({
         companyId: ctx.companyId,
         conversationId: conversation.id,
@@ -1945,6 +2031,7 @@ async function replyToQuestion(
         kind: "MEDICAL",
         patientName: await patientNameFor(conversation.id),
         channelLabel: channelLabel(ctx.channel),
+        serviceId: await serviceInTalk(ctx.companyId, own, said),
       }).catch(() => ({ sent: false as const, reply: undefined }));
       if (asked.reply) {
         return respond(ctx, conversation.id, { text: asked.reply });
@@ -1988,7 +2075,10 @@ async function replyToQuestion(
      * «расскажет специалист» без заданного вопроса — это тупик, из которого
      * пациента вытаскивает администратор.
      */
-    if (defersToDoctor(answer, await specialistNames(ctx.companyId).catch(() => []))) {
+    if (
+      complexMedical(questionForDoctor(own, said)) &&
+      defersToDoctor(answer, await specialistNames(ctx.companyId).catch(() => []))
+    ) {
       const asked = await askSpecialist({
         companyId: ctx.companyId,
         conversationId: conversation.id,
@@ -1996,6 +2086,7 @@ async function replyToQuestion(
         kind: "MEDICAL",
         patientName: await patientNameFor(conversation.id),
         channelLabel: channelLabel(ctx.channel),
+        serviceId: await serviceInTalk(ctx.companyId, own, said),
       }).catch(() => ({ sent: false as const, reply: undefined }));
       if (asked.reply) {
         /**

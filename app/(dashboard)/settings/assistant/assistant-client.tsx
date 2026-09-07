@@ -201,12 +201,15 @@ export function AssistantClient({
   usageSince,
   canApprove,
   specialists,
+  staffOptions,
 }: {
   initial: AssistantData;
   serviceOptions: { id: string; title: string }[];
   gaps: GapsData;
   /** Кому ассистент пересылает вопросы, на которые не отвечает сам. */
   specialists: SpecialistItem[];
+  /** Сотрудники клиники: из них выбирают адресата. */
+  staffOptions: { id: string; name: string; specialty: string }[];
   /** Сколько ответов составила каждая запись за срок разбора пробелов. */
   usage: Record<string, number>;
   /** С какого момента журнал ведётся: до него счёт был нулевым у всех. */
@@ -456,7 +459,7 @@ export function AssistantClient({
         редактор, куда падает черновик. Кнопка в этом блоке ничего не
         сохраняет — она добавляет строку ниже, и её надо прочитать.
       */}
-      <SpecialistsBlock initial={specialists} />
+      <SpecialistsBlock initial={specialists} staffOptions={staffOptions} />
 
       <GapsBlock
         data={gaps}

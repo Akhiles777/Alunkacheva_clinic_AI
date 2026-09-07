@@ -67,16 +67,48 @@ function addressee(kind: QueryKind): string {
   return kind === "MEDICAL" ? "врачу" : "руководству клиники";
 }
 
-/** Кому пересылать вопрос этого рода. */
-export async function specialistFor(companyId: string, kind: QueryKind) {
-  return prisma.clinicSpecialist.findFirst({
-    where: {
-      companyId,
-      isActive: true,
-      ...(kind === "MEDICAL" ? { isDoctor: true } : { isManager: true }),
-    },
+/**
+ * Кому пересылать вопрос.
+ *
+ * Раньше это задавали галочки «медицинские» и «деловые» у каждого контакта.
+ * Заказчик справедливо спросил, зачем заполнять то, что уже есть: кто какую
+ * услугу ведёт, записано в визитах, а кто в клинике главный — в справочнике
+ * сотрудников. Две правды об одном рано или поздно разойдутся.
+ *
+ * Поэтому выбираем по делу. Медицинский вопрос про конкретную услугу идёт
+ * тому, кто её ведёт: вопрос про БОС — не остеопату. Понять услугу не
+ * удалось или вопрос деловой — первому в списке: его заводят первым, и это
+ * руководитель.
+ */
+export async function specialistFor(
+  companyId: string,
+  kind: QueryKind,
+  /** Услуга, о которой идёт речь, — если её удалось понять из разговора. */
+  serviceId?: string | null,
+) {
+  const active = await prisma.clinicSpecialist.findMany({
+    where: { companyId, isActive: true },
     orderBy: { createdAt: "asc" },
   });
+  if (active.length === 0) return null;
+  if (kind !== "MEDICAL" || !serviceId || active.length === 1) return active[0];
+
+  /**
+   * Кто ведёт эту услугу — по состоявшимся визитам, а не по настройке.
+   * Справочник знает это сам, и знает точнее любой галочки.
+   */
+  const byStaff = await prisma.appointment.groupBy({
+    by: ["staffId"],
+    where: { companyId, deletedAt: null, services: { some: { serviceId } } },
+    _count: { _all: true },
+    orderBy: { _count: { staffId: "desc" } },
+    take: 5,
+  });
+  for (const row of byStaff) {
+    const match = active.find((a) => a.staffId === row.staffId);
+    if (match) return match;
+  }
+  return active[0];
 }
 
 /**
@@ -182,11 +214,13 @@ export async function askSpecialist(input: {
   /** Имя пациента для письма специалисту: ей нужно понимать, о ком речь. */
   patientName?: string | null;
   channelLabel?: string;
+  /** Услуга, о которой речь: по ней выбирается специалист. */
+  serviceId?: string | null;
   now?: Date;
 }): Promise<AskResult> {
   const now = input.now ?? new Date();
 
-  const specialist = await specialistFor(input.companyId, input.kind);
+  const specialist = await specialistFor(input.companyId, input.kind, input.serviceId);
   if (!specialist) return { sent: false, reason: "специалист не заведён в настройках" };
 
   /**
