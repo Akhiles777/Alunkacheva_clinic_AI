@@ -9,6 +9,9 @@ import { getAgentStats } from "@/lib/server/agent-stats";
 import { getCourseEconomics } from "@/lib/server/course-economics";
 import { logTimings, timed } from "@/lib/server/timing";
 import { CourseEconomicsBlock } from "../_components/course-economics";
+import { getAgentSales } from "@/lib/server/agent-sales";
+import { periodBounds } from "@/lib/server/analytics";
+import { AgentSales } from "./agent-sales";
 
 export const metadata = { title: "Владелец" };
 
@@ -57,6 +60,15 @@ export default async function OwnerPage() {
      * Одна метрика — одна функция (§8).
      */
     timed("курсы", () => getCourseEconomics(session.companyId, "month")),
+    /**
+     * Что ассистент довёл до записи — тем же периодом, что и остальной
+     * кабинет. Продажей считается доведённая до администратора заявка, а не
+     * любая запись из переписки (lib/metrics/agent-sales.ts).
+     */
+    timed("продажи ассистента", () => {
+      const { from, to } = periodBounds("month");
+      return getAgentSales(session.companyId, from, to);
+    }),
   ] as const);
   logTimings("кабинет владельца", [...parts]);
 
@@ -64,6 +76,7 @@ export default async function OwnerPage() {
   const weekly = parts[1].value;
   const agent = parts[2].value;
   const courses = parts[3].value;
+  const sales = parts[4].value;
 
   return (
     <>
@@ -239,6 +252,8 @@ export default async function OwnerPage() {
             </table>
           </div>
         </section>
+
+        <AgentSales report={sales} periodLabel={`за ${report.period.days} дней`} />
 
         <AgentSection
           stats={agent}

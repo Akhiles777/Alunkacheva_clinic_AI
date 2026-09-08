@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db";
+import { countInquiriesFromDb } from "@/lib/metrics/inquiries";
+import { getAgentSales } from "@/lib/server/agent-sales";
 import { getCallbackQueue } from "@/lib/server/callback-queue";
 import { getCourseEconomics } from "@/lib/server/course-economics";
 import { coursePurchasesBetween, type CoursePurchaseRow } from "@/lib/server/course-revenue";
@@ -34,7 +36,6 @@ function money(v: number): string {
 }
 
 export async function buildClinicSnapshot(companyId: string, now = new Date()): Promise<string> {
-  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const monthAgo = new Date(now.getTime() - 30 * DAY);
   const quarterAgo = new Date(now.getTime() - 90 * DAY);
   const yearAgo = new Date(now.getTime() - 365 * DAY);
@@ -51,14 +52,12 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     arrivedQuarter,
     plannedAhead,
     revenueYear,
-    revenueMonth,
     firstVisits,
     dialogs,
     openEscalations,
     topServices,
     topStaff,
     coursesYearAgg,
-    coursesMonthAgg,
     sources,
     gaps,
   ] = await Promise.all([
@@ -84,10 +83,6 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     }),
     prisma.appointment.aggregate({
       where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: yearAgo } },
-      _sum: { revenue: true },
-    }),
-    prisma.appointment.aggregate({
-      where: { companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: startOfMonth } },
       _sum: { revenue: true },
     }),
     prisma.appointment.count({ where: { companyId, deletedAt: null, isFirstVisit: true } }),
@@ -126,10 +121,6 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
     // Продажи в кассе: оплата курса записью уже в выручке визита.
     prisma.coursePurchase.aggregate({
       where: { companyId, isCourse: true, purchasedAt: { gte: yearAgo } },
-      _sum: { amount: true },
-    }),
-    prisma.coursePurchase.aggregate({
-      where: { companyId, isCourse: true, purchasedAt: { gte: startOfMonth } },
       _sum: { amount: true },
     }),
     prisma.patient.groupBy({
@@ -191,8 +182,22 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   );
   lines.push("");
   lines.push("# База клиники (все данные, не только сегодня)");
+  /**
+   * «Обратились сегодня» и «новых пациентов сегодня» — разные вещи.
+   *
+   * Здесь стояло число новых КАРТОЧЕК под словом «обратились», и аналитик
+   * отвечал им на вопрос про обращения. Обращение по §8 — сообщение пациента
+   * после суточной паузы, и постоянный пациент, написавший в тот же чат,
+   * новой карточки не создаёт. Два разных числа под одним словом — ровно та
+   * ошибка, из-за которой владелец перестаёт доверять отчёту.
+   */
+  const inquiriesToday = await countInquiriesFromDb(companyId, startOfToday, now).catch(() => null);
   lines.push(
-    `Пациентов всего: ${patients}; с визитами: ${withVisits}; обратились сегодня: ${newToday}.`,
+    `Пациентов всего: ${patients}; с визитами: ${withVisits}; ` +
+      `новых пациентов сегодня (первое появление телефона в базе): ${newToday}` +
+      (inquiriesToday
+        ? `; обращений сегодня (сообщений после суточной паузы): ${inquiriesToday.total}.`
+        : "."),
   );
   const avg = gaps[0]?.avg;
   if (typeof avg === "number" && Number.isFinite(avg)) {
@@ -232,7 +237,7 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   const todayKey = daily[daily.length - 1]?.date;
   const yesterdayKey = daily[daily.length - 2]?.date;
   lines.push("");
-  lines.push("# Выручка по дням (последние 14 дней)");
+  lines.push(`# Выручка по дням (последние ${daily.length} дней)`);
   /**
    * Сеансы курса называем прямо. Иначе день «восемь приёмов, 12 000 ₽»
    * выглядит как провал или как потерянные данные, и объяснять это владельцу
@@ -440,7 +445,6 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   }
 
   const coursesYear = Number(coursesYearAgg._sum.amount ?? 0);
-  const coursesMonth = Number(coursesMonthAgg._sum.amount ?? 0);
 
   lines.push("");
   lines.push("# Визиты");
@@ -457,9 +461,31 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
    */
   lines.push(
     `Выручка за 12 месяцев: ${money(Number(revenueYear._sum.revenue ?? 0) + coursesYear)}; ` +
-      `с начала текущего месяца: ${money(Number(revenueMonth._sum.revenue ?? 0) + coursesMonth)}. ` +
-      `Из них курсами: за год ${money(coursesYear)}, за месяц ${money(coursesMonth)}.`,
+      `из них курсами ${money(coursesYear)}.`,
   );
+
+  /**
+   * Месяц берём той же функцией, что рисует отчёт (§8: одна метрика — одна
+   * функция).
+   *
+   * Здесь считалась своя сумма по визитам плюс курсы, и границы месяца были
+   * свои. Владелец видел в отчётах одно число, а от аналитика слышал другое —
+   * и верил тому, которое удобнее. Расхождение обнаруживается в разговоре с
+   * клиентом, а не в коде.
+   */
+  const monthly = await getDashboardMetricsDb(companyId, "month").catch(() => null);
+  if (monthly) {
+    lines.push(
+      `Выручка за ${monthly.period.label}: ${money(monthly.money.revenue)}; ` +
+        `из них курсовыми сеансами ${money(monthly.money.courseRevenue)}. ` +
+        `Средний чек: ${money(monthly.money.avgCheck)}. ` +
+        `Новых пациентов: ${monthly.money.newPatients}. ` +
+        `Продано курсов: ${monthly.money.coursesSold} на ${money(monthly.money.coursesAmount)}.`,
+    );
+    lines.push(
+      "Это те же числа, что в отчётах владельца. Своей арифметикой их не пересчитывай.",
+    );
+  }
 
   lines.push("");
   lines.push("# Услуги за 90 дней (по числу состоявшихся визитов)");
@@ -481,6 +507,20 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
         `${row._count._all} визитов, ${money(Number(row._sum.revenue ?? 0))}`,
     );
   }
+  /**
+   * Деньги курсов без специалиста — отдельной строкой.
+   *
+   * Они есть в выручке, но в разрез по людям попасть не могут: услугу ведут
+   * двое, а сеансов у курса ещё не было. Без этой строки сумма по
+   * специалистам меньше итога, и разница выглядит как пропавшие деньги — а
+   * аналитик объясняет её как умеет.
+   */
+  if (monthly && monthly.money.coursesWithoutStaff > 0) {
+    lines.push(
+      `- курсы без специалиста (${monthly.period.label}): ${money(monthly.money.coursesWithoutStaff)} — ` +
+        "эти деньги есть в выручке, но по людям не разносятся.",
+    );
+  }
 
   lines.push("");
   lines.push("# Источники пациентов");
@@ -491,6 +531,33 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
 
   lines.push("");
   lines.push(`# Переписка\nДиалогов: ${dialogs}; открытых эскалаций: ${openEscalations}.`);
+
+  /**
+   * Что ассистент довёл до записи — та же функция, что и в кабинете владельца.
+   *
+   * Продажей считается доведённая до администратора заявка: ассистент сам
+   * собрал данные, человеку осталось поставить время. Запись, которую от
+   * начала до конца оформил администратор, сюда не идёт — иначе число
+   * приписывает себе весь поток клиники.
+   */
+  const salesMonth = await getAgentSales(companyId, monthAgo, now).catch(() => null);
+  if (salesMonth) {
+    lines.push("");
+    lines.push("# Что ассистент довёл до записи (30 дней)");
+    lines.push(
+      `Заявок собрал: ${salesMonth.bookings}; из них состоялось: ${salesMonth.arrived}; ` +
+        `деньги состоявшихся: ${money(salesMonth.revenue)}.`,
+    );
+    lines.push(
+      "Продажей считается только та запись, где данные собрал сам ассистент. Назначенный " +
+        "приём — план, а не выручка: деньги считаем у состоявшихся визитов.",
+    );
+    for (const row of salesMonth.byService.slice(0, 8)) {
+      lines.push(
+        `- ${row.title}: заявок ${row.bookings}, пришли ${row.arrived}, ${money(row.revenue)}`,
+      );
+    }
+  }
 
   /**
    * Экономика курсов — теми же функциями, что вкладка отчётов и кабинет
