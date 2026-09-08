@@ -35,6 +35,16 @@ const CHILD_WORDS =
 const ADULT_WORDS =
   /(?<!\p{L})(?:взросл\p{L}*|муж\p{L}*|жен[еуы]|себя|для меня|(?:мне|маме|папе)(?!\p{L}))/iu;
 
+/**
+ * «Записаться» — про себя, «записать» — про кого-то.
+ *
+ * Пациентка написала «хочу записаться на приём к остеопату», и агент
+ * переспросил, для взрослого или для ребёнка. Она не говорила про ребёнка:
+ * возвратный глагол означает «себя», и переспрашивать тут нечего. Детские
+ * слова правило отменяют — «хочу записаться с ребёнком» решает не оно.
+ */
+const SELF_BOOKING = /(?<!\p{L})(?:записаться|запишите\s+меня|записать\s+себя|хочу\s+к\s+)/iu;
+
 export function whomFor(text: string): Whom {
   const t = norm(text);
   const child = CHILD_WORDS.test(t);
@@ -43,6 +53,7 @@ export function whomFor(text: string): Whom {
   if (child && adult) return "unknown";
   if (child) return "child";
   if (adult) return "adult";
+  if (SELF_BOOKING.test(t)) return "adult";
   return "unknown";
 }
 

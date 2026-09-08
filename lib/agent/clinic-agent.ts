@@ -1417,7 +1417,28 @@ function whomInTalk(own: string, said: { role: string; content: string }[]): Who
   );
 }
 
-function intakeAsk(whom: Whom): string {
+/**
+ * Нужен ли вес: он спрашивается только там, где действительно нужен.
+ *
+ * Заказчик назвал этот случай прямо — остеопатия. Спрашивать вес у всех
+ * подряд его инструкция запрещает: «Не запрашивай вес автоматически для всех
+ * пациентов».
+ */
+async function osteopathyInTalk(
+  companyId: string,
+  own: string,
+  said: { role: string; content: string }[],
+): Promise<boolean> {
+  const query = searchText(
+    own,
+    said.filter((t) => t.role === "user").map((t) => t.content),
+  );
+  if (/остеопат/i.test(query)) return true;
+  const found = matchServices(query, await getServices(companyId).catch(() => []), 1, 0.5);
+  return /остеопат/i.test(found[0]?.title ?? "");
+}
+
+function intakeAsk(whom: Whom, needsWeight = false): string {
   /**
    * Ребёнка записывают на имя родителя.
    *
@@ -1426,10 +1447,11 @@ function intakeAsk(whom: Whom): string {
    * тот, кто приведёт. Спрашиваем обоих сразу, одним сообщением, — иначе
    * получается второй заход за тем же.
    */
+  const weight = needsWeight ? ", вес" : "";
   const who =
     whom === "child"
-      ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
-      : "ФИО, возраст и кратко причину обращения";
+      ? `ФИО ребёнка, его возраст${weight}, имя родителя и кратко причину обращения`
+      : `ФИО, возраст${weight} и кратко причину обращения`;
   return `Время подберёт администратор — передал(а) ему вашу просьбу. Чтобы не терять время, пришлите, пожалуйста, одним сообщением: ${who}.`;
 }
 
@@ -2245,7 +2267,7 @@ async function replyToQuestion(
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
       return respond(ctx, conversation.id, {
-        text: intakeAsk(whomInTalk(own, said)),
+        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said)),
       });
     }
     return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
@@ -2400,7 +2422,7 @@ async function replyToQuestion(
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
       return respond(ctx, conversation.id, {
-        text: intakeAsk(whomInTalk(own, said)),
+        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said)),
       });
     }
     return respond(ctx, conversation.id, {
@@ -2814,6 +2836,33 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
      * «чем могу помочь» из приветствия убираем — отвечать есть на что.
      */
     const pending = await pendingQuestion(conversationId);
+    /**
+     * После согласия продолжаем запись, а не начинаем разговор заново.
+     *
+     * Согласие теперь спрашивается ровно там, где мы просим персональные
+     * данные (§7). Значит «Да» — это разрешение их прислать, и следующий шаг
+     * один: попросить данные.
+     *
+     * Живой диалог, из-за которого это правило появилось. Пациентка сказала,
+     * что хочет к Ирине, ответила «взрослого», получила цену, ответила «Да» —
+     * и в ответ пришёл весь блок справочника про двух остеопатов. Всё уже было
+     * выяснено, оставалось записать данные; вместо этого разговор откатился к
+     * началу, и человек прочитал то, что ему уже говорили.
+     *
+     * Исключение — присланная анкета: там данные уже у нас, и отвечать надо
+     * на них, а не просить снова.
+     */
+    if (pending && !looksLikeIntake(pending)) {
+      const said = await recentTurns(conversationId);
+      const mine = said.filter((t) => t.role === "user").map((t) => t.content);
+      if (mine.some((t) => wantsToBook(t) || scheduleTopic(t))) {
+        const whom = whomInTalk(pending, said);
+        return respond(ctx, conversationId, {
+          text: intakeAsk(whom, await osteopathyInTalk(ctx.companyId, pending, said)),
+        });
+      }
+    }
+
     if (pending) {
       const conv = await prisma.conversation.findUnique({
         where: { id: conversationId },
