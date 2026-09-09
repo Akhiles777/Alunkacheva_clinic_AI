@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { HANDBACK_HOURS } from "@/lib/agent/handback-rule";
+import { reportMaybeStale } from "@/lib/client/stale-build";
 import {
   CHANNEL_LABEL,
   DIALOG_FILTERS,
@@ -14,6 +15,7 @@ import {
   findPatient,
   hydrateDialogs,
   markDialogRead,
+  flushReadMarks,
   returnToBot,
   setAgentEnabled,
   sendMessage,
@@ -42,6 +44,42 @@ import { PatientCardBody } from "../_components/patient-card";
  * Файлы идут через /api/media: прямая ссылка провайдера открыта любому, кто
  * её увидел, а голосовое пациента — сведения о факте обращения за помощью.
  */
+/**
+ * Фотография с честным запасным путём.
+ *
+ * Не открылась — браузер рисует сломанный значок и молчит, а администратор
+ * видит пустой квадрат там, где пациент прислал направление, и не знает, у
+ * кого поломка: у него, у нас или у пациента. Показываем ссылку словами —
+ * файл чаще всего открывается по ней, а если нет, то ясно, что делать.
+ */
+function Photo({ href, label }: { href: string; label: string }) {
+  const [broken, setBroken] = useState(false);
+  if (broken) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="text-accent-text text-2xs underline decoration-dotted"
+      >
+        Фотография не открылась — скачать файл
+      </a>
+    );
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={href}
+        alt={label}
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className="border-border max-h-56 rounded-lg border object-cover"
+      />
+    </a>
+  );
+}
+
 function Attachment({ a }: { a: DialogAttachmentRecord }) {
   // Файла нет — геопозиция или контакт. Осталась подпись, и это правильно:
   // пустое место выглядело бы как несработавшая загрузка.
@@ -77,17 +115,7 @@ function Attachment({ a }: { a: DialogAttachmentRecord }) {
   }
 
   if (a.kind === "photo") {
-    return (
-      <a href={a.href} target="_blank" rel="noreferrer">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={a.href}
-          alt={a.label}
-          loading="lazy"
-          className="border-border max-h-56 rounded-lg border object-cover"
-        />
-      </a>
-    );
+    return <Photo href={a.href} label={a.label} />;
   }
 
   if (a.kind === "video") {
@@ -222,11 +250,15 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
     let alive = true;
     // Шаблоны и быстрые ответы приходят из раздела «Шаблоны»: раньше быстрые
     // ответы были зашиты в этом файле и настройки на них не влияли.
-    getInboxTemplates().then((t) => {
-      if (!alive) return;
-      setApprovedTemplates(t.approved);
-      setQuickReplies(t.quickReplies);
-    });
+    getInboxTemplates()
+      .then((t) => {
+        if (!alive) return;
+        setApprovedTemplates(t.approved);
+        setQuickReplies(t.quickReplies);
+      })
+      // Шаблоны не пришли — молча: без них поле ввода работает как обычно, а
+      // говорить об этом человеку нечего, делать он всё равно ничего не станет.
+      .catch(reportMaybeStale);
     return () => {
       alive = false;
     };
@@ -236,8 +268,22 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
     if (dialog.windowOpen && text.trim()) {
       // Показываем результат доставки: молчаливый «успех» при неотправленном
       // сообщении — худший исход, администратор будет ждать ответа зря.
-      void sendMessage(dialog.id, text).then((res) => {
-        setSendError(res.ok ? null : (res.error ?? "Сообщение не отправлено"));
+      const sent = text;
+      void sendMessage(dialog.id, sent).then((res) => {
+        if (res.ok) {
+          setSendError(null);
+          return;
+        }
+        setSendError(res.error ?? "Сообщение не отправлено");
+        /**
+         * Возвращаем текст в поле.
+         *
+         * Сообщение не ушло и из переписки убрано — а поле уже очищено, и
+         * набранное пропадало вместе с ним. Человеку оставалось «повторите
+         * действие» с пустого места: он перепечатывал ответ заново или, чаще,
+         * брал телефон. Ошибка без того, чем её исправить, хуже молчания.
+         */
+        setText((cur) => (cur ? cur : sent));
       });
       setText("");
     }
@@ -357,7 +403,11 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                   }),
                 )
                 .catch(() =>
-                  setPing({ dialogId: dialog.id, text: "Не удалось связаться с сервером" }),
+                  setPing({
+                    dialogId: dialog.id,
+                    // Что произошло и что делать: одного «не удалось» мало.
+                    text: "Не дозвались до сервера — администраторов не позвали. Нажмите ещё раз.",
+                  }),
                 )
                 .finally(() => setPinging(false));
             }}
@@ -587,15 +637,33 @@ export default function InboxPage() {
    */
   const refresh = useCallback(() => {
     setSyncing(true);
+    // Тем же кругом повторяем отметки прочтения, которые не легли в базу:
+    // сеть моргнула или приложение перезапускалось — человека это не касается.
+    flushReadMarks();
     getConversations()
       .then(hydrateDialogs)
-      .catch(() => {})
+      .catch((e: unknown) => {
+        // Список не пришёл — молча: следующий круг через шесть секунд. Но если
+        // вкладка на старой сборке, круги не помогут, и сторож это заметит.
+        reportMaybeStale(e);
+      })
       .finally(() => setSyncing(false));
   }, []);
 
   useEffect(() => {
     const timer = setInterval(refresh, 6000);
-    return () => clearInterval(timer);
+    // Вернулись в приложение или починилась сеть — обновляемся сразу, не ожидая
+    // круга: заодно уходят отметки прочтения, накопившиеся, пока связи не было.
+    const onBack = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onBack);
+    window.addEventListener("online", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onBack);
+      window.removeEventListener("online", refresh);
+    };
   }, [refresh]);
   // Ничего не выбрано по умолчанию: раньше здесь стоял id выдуманного диалога,
   // и при пустом инбоксе экран пытался открыть несуществующую переписку.

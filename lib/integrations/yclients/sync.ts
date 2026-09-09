@@ -8,6 +8,7 @@ import {
   backfillFirstSeen,
   backfillRooms,
   recomputeAppointmentSources,
+  recomputePatientSources,
   recomputeVisitKinds,
 } from "@/lib/metrics/recompute";
 import { loadLookups, primePage, type SyncLookups } from "./lookups";
@@ -49,7 +50,7 @@ import type {
  */
 export interface SyncResult {
   skipped: boolean;
-  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "sources" | "courseSessions" | "courseSessionsRepriced", number>>;
+  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "sources" | "patientSources" | "courseSessions" | "courseSessionsRepriced", number>>;
   errors: string[];
 }
 
@@ -100,6 +101,20 @@ export async function syncAll(companyId: string, options: SyncOptions = {}): Pro
      * этого шага разрез по источникам показывает одну строку «не указан».
      */
     counts.sources = (await recomputeAppointmentSources(companyId)).derived;
+    /**
+     * И источник самого пациента — «откуда пришёл». Вопрос другой, чем у
+     * визита, поэтому и функция другая: у карточки нет окна вокруг записи,
+     * есть самое раннее касание за всю историю. Заполняется только пустое,
+     * ручная отметка неприкосновенна.
+     *
+     * Кругом идут только свежие: те, кто писал или завёлся за последние сутки.
+     * Всю базу перебирать здесь нельзя — на сервере 1.9 ГБ и рядом второй
+     * проект, а история разбирается один раз скриптом
+     * `scripts/backfill-patient-sources.ts`.
+     */
+    counts.patientSources = (await recomputePatientSources(companyId, {
+      patientIds: await recentlyTouchedPatients(companyId),
+    })).derived;
     /**
      * Курсы собираются из записей — после них, а не до: разбор опирается на
      * стоимость визитов, которую только что записала выгрузка.
@@ -347,6 +362,32 @@ export async function syncStaff(companyId: string, client: YclientsClientHandle)
     });
   }
   return dtos.length;
+}
+
+/**
+ * Кого затронуло за последние сутки: писал в переписке или только завёлся.
+ * Список нужен, чтобы пересчёт источника карточки не перебирал всю базу
+ * каждые пятнадцать минут.
+ */
+const RECENT_TOUCH_HOURS = 24;
+
+async function recentlyTouchedPatients(companyId: string): Promise<string[]> {
+  const since = new Date(Date.now() - RECENT_TOUCH_HOURS * 3600 * 1000);
+  const [dialogs, fresh] = await Promise.all([
+    prisma.conversation.findMany({
+      where: { companyId, deletedAt: null, patientId: { not: null }, lastMessageAt: { gte: since } },
+      select: { patientId: true },
+      distinct: ["patientId"],
+    }),
+    prisma.patient.findMany({
+      where: { companyId, deletedAt: null, sourceId: null, createdAt: { gte: since } },
+      select: { id: true },
+    }),
+  ]);
+  const ids = new Set<string>();
+  for (const d of dialogs) if (d.patientId) ids.add(d.patientId);
+  for (const p of fresh) ids.add(p.id);
+  return [...ids];
 }
 
 export async function syncResources(companyId: string, client: YclientsClientHandle): Promise<number> {

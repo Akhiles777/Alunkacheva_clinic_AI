@@ -36,7 +36,21 @@ export interface PatientDossier extends PatientProfile {
   };
   /** Источник обращения и насколько он известен (§8). */
   source: { title: string | null; confidence: string } | null;
+  /**
+   * Части, которые не прочитались.
+   *
+   * Дело собирается из трёх независимых чтений, и раньше падение любого из них
+   * роняло весь раздел: человек видел «Личное дело не собралось… обновите
+   * страницу» вместо визитов, которые прочитались прекрасно. Теперь отдаётся
+   * то, что есть, а несобравшееся названо словами — и не выдаётся за ноль
+   * («визитов не было» там, где визиты просто не прочитались, — ложь про
+   * пациента).
+   */
+  missing: DossierPart[];
 }
+
+/** Части дела, каждая со своим чтением. */
+export type DossierPart = "visits" | "messages" | "courses";
 
 export async function getPatientDossier(
   companyId: string,
@@ -48,7 +62,7 @@ export async function getPatientDossier(
   });
   if (!patient) return null;
 
-  const [appts, conversations, courses] = await Promise.all([
+  const [apptsRes, conversationsRes, coursesRes] = await Promise.allSettled([
     prisma.appointment.findMany({
       where: { companyId, patientId, deletedAt: null },
       select: {
@@ -96,6 +110,22 @@ export async function getPatientDossier(
       orderBy: { purchasedAt: "desc" },
     }),
   ]);
+
+  /**
+   * Чтения разбираются порознь: упавшее не отменяет прочитанное.
+   * Причина уходит в лог сервера, а не пациенту на экран — там от неё пользы
+   * нет, а имя и телефон в неё попасть не должны (§7).
+   */
+  const missing: DossierPart[] = [];
+  function taken<T>(res: PromiseSettledResult<T>, part: DossierPart, fallback: T): T {
+    if (res.status === "fulfilled") return res.value;
+    console.error(`[личное дело] ${part}: ${(res.reason as Error)?.message ?? String(res.reason)}`);
+    missing.push(part);
+    return fallback;
+  }
+  const appts = taken(apptsRes, "visits", []);
+  const conversations = taken(conversationsRes, "messages", []);
+  const courses = taken(coursesRes, "courses", []);
 
   const visits: ProfileVisit[] = appts.map((a) => ({
     at: a.startAt,
@@ -155,5 +185,6 @@ export async function getPatientDossier(
     source: withSource
       ? { title: withSource.source?.title ?? null, confidence: withSource.sourceConfidence }
       : null,
+    missing,
   };
 }

@@ -35,6 +35,18 @@ const CONFIDENCE_LABEL: Record<string, string> = {
   UNKNOWN: "",
 };
 
+/** Как называется несобравшаяся часть — первой в строке и следом за ней. */
+const MISSING_LABEL: Record<string, string> = {
+  visits: "Визиты",
+  messages: "Переписка",
+  courses: "Курсы",
+};
+const MISSING_SHORT: Record<string, string> = {
+  visits: "визиты",
+  messages: "переписка",
+  courses: "курсы",
+};
+
 const day = new Intl.DateTimeFormat("ru-RU", {
   day: "numeric",
   month: "long",
@@ -57,6 +69,12 @@ function rhythmLabel(days: number | null): string {
   return `раз в ${Math.round(days)} дн.`;
 }
 
+/**
+ * Повторы: сеть моргнула или приложение на сервере перезапускалось. Человека
+ * это не касается — он просто открыл карточку.
+ */
+const RELOAD_DELAYS = [800, 3000, 12_000];
+
 export function PatientDossier({ patientId }: { patientId: string }) {
   /**
    * Результат хранится вместе с идентификатором, для которого он получен.
@@ -67,17 +85,57 @@ export function PatientDossier({ patientId }: { patientId: string }) {
   const [loaded, setLoaded] = useState<{ id: string; data: DossierView | null; failed: boolean } | null>(
     null,
   );
+  /** Ручной повтор: увеличиваем — эффект перезапускается. */
+  const [attempt, setAttempt] = useState(0);
 
+  /**
+   * Догрузка вместо «обновите страницу».
+   *
+   * Раньше любая неудача — упавшее чтение, перезапуск приложения, моргнувшая
+   * сеть — давала одну строку «Личное дело не собралось… обновите страницу»,
+   * и работа перекладывалась на человека. Теперь повторяем сами: сначала
+   * быстро, потом реже. Дело собирается из трёх независимых чтений, поэтому
+   * повторяем и тогда, когда пришла только часть (`missing`) — остальное
+   * догружается фоном, а показано уже то, что есть.
+   */
   useEffect(() => {
     let alive = true;
-    getPatientDossierAction(patientId).then(
-      (d) => alive && setLoaded({ id: patientId, data: d, failed: false }),
-      () => alive && setLoaded({ id: patientId, data: null, failed: true }),
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const load = (tries: number) => {
+      getPatientDossierAction(patientId).then(
+        (d) => {
+          if (!alive) return;
+          setLoaded((prev) => {
+            const better =
+              prev?.id === patientId &&
+              prev.data &&
+              d &&
+              d.missing.length > prev.data.missing.length;
+            // Худший ответ не подменяет лучший: часть уже показана.
+            return better ? prev : { id: patientId, data: d, failed: false };
+          });
+          const wait = d && d.missing.length > 0 ? RELOAD_DELAYS[tries] : undefined;
+          if (wait !== undefined) timer = setTimeout(() => load(tries + 1), wait);
+        },
+        () => {
+          if (!alive) return;
+          const wait = RELOAD_DELAYS[tries];
+          if (wait !== undefined) {
+            timer = setTimeout(() => load(tries + 1), wait);
+            return;
+          }
+          setLoaded({ id: patientId, data: null, failed: true });
+        },
+      );
+    };
+    load(0);
+
     return () => {
       alive = false;
+      if (timer) clearTimeout(timer);
     };
-  }, [patientId]);
+  }, [patientId, attempt]);
 
   const ready = loaded?.id === patientId ? loaded : null;
   if (!ready) {
@@ -85,10 +143,27 @@ export function PatientDossier({ patientId }: { patientId: string }) {
   }
   const data = ready.data;
   if (ready.failed || !data) {
+    /**
+     * Сюда доходим, только исчерпав повторы. Никаких «обновите страницу»:
+     * страница ни при чём, а кнопка делает ровно то, что человек всё равно
+     * попытался бы сделать руками.
+     */
     return (
-      <p className="text-text-muted text-xs">
-        Личное дело не собралось. Данные пациента при этом не пострадали — обновите страницу.
-      </p>
+      <div className="flex items-baseline gap-2">
+        <p className="text-text-muted text-xs">
+          Личное дело не читается — остальная карточка в порядке.
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            setLoaded(null);
+            setAttempt((n) => n + 1);
+          }}
+          className="text-accent-text text-xs hover:underline"
+        >
+          Повторить
+        </button>
+      </div>
     );
   }
 
@@ -101,7 +176,18 @@ export function PatientDossier({ patientId }: { patientId: string }) {
  */
 export function DossierBody({ data }: { data: DossierView }) {
   const { visits: v, style: s, money, rhythm } = data;
-  const nothing = v.total === 0 && s.messages === 0;
+  /**
+   * Непрочитанная часть — не ноль.
+   *
+   * «Визитов не было» там, где визиты просто не пришли из базы, — утверждение
+   * о пациенте, которого мы не делали (правило «структурный ноль не выдаётся
+   * за данные»). Поэтому несобравшееся называется словами, а выводы, которые
+   * из него следуют, не показываются вовсе.
+   */
+  const noVisits = data.missing.includes("visits");
+  const noMessages = data.missing.includes("messages");
+  const noCourses = data.missing.includes("courses");
+  const nothing = !noVisits && !noMessages && v.total === 0 && s.messages === 0;
 
   if (nothing) {
     return (
@@ -114,8 +200,23 @@ export function DossierBody({ data }: { data: DossierView }) {
 
   return (
     <div className="flex flex-col gap-3.5">
+      {data.missing.length > 0 ? (
+        <p className="text-text-subtle text-2xs leading-relaxed">
+          {MISSING_LABEL[data.missing[0]]}
+          {data.missing.length > 1
+            ? ` и ${data.missing
+                .slice(1)
+                .map((m) => MISSING_SHORT[m])
+                .join(", ")}`
+            : ""}{" "}
+          не прочитались — догружаем. Остальное показано.
+        </p>
+      ) : null}
+
       {/* ── что берёт */}
       <div className="flex flex-col gap-1">
+        {noVisits ? null : (
+          <>
         <Line
           label="Визиты"
           value={
@@ -163,12 +264,15 @@ export function DossierBody({ data }: { data: DossierView }) {
                 } по ${formatNumber(money.paidVisits)} оплаченным`
           }
         />
-        {data.source ? (
+          </>
+        )}
+        {noVisits || !data.source ? null : (
           <Line
             label="Источник"
             value={`${data.source.title ?? "неизвестен"}${CONFIDENCE_LABEL[data.source.confidence] ?? ""}`}
           />
-        ) : null}
+        )}
+        {noMessages ? null : (
         <Line
           label="Связь"
           value={
@@ -180,10 +284,11 @@ export function DossierBody({ data }: { data: DossierView }) {
               : "переписки нет"
           }
         />
+        )}
       </div>
 
       {/* ── услуги */}
-      {data.services.length > 0 ? (
+      {!noVisits && data.services.length > 0 ? (
         <div>
           <div className="text-text-subtle mb-1 text-2xs">Что берёт чаще</div>
           <ul className="flex flex-col gap-0.5">
@@ -205,7 +310,7 @@ export function DossierBody({ data }: { data: DossierView }) {
       ) : null}
 
       {/* ── курсы */}
-      {data.courses.length > 0 ? (
+      {!noCourses && data.courses.length > 0 ? (
         <div>
           <div className="text-text-subtle mb-1 text-2xs">Курсы</div>
           <ul className="flex flex-col gap-0.5">
@@ -225,7 +330,11 @@ export function DossierBody({ data }: { data: DossierView }) {
       {/* ── как общается */}
       <div>
         <div className="text-text-subtle mb-1 text-2xs">Как общается</div>
-        {!s.enough ? (
+        {noMessages ? (
+          <p className="text-text-muted text-xs leading-relaxed">
+            Переписка не прочиталась — догружаем. Судить о манере пока не по чему.
+          </p>
+        ) : !s.enough ? (
           <p className="text-text-muted text-xs leading-relaxed">
             Сообщений слишком мало ({formatNumber(s.messages)}), чтобы судить о манере. Выводы
             появятся сами — по одному-двум сообщениям их делать нельзя.
@@ -276,7 +385,7 @@ export function DossierBody({ data }: { data: DossierView }) {
       </div>
 
       {/* ── что учесть в разговоре */}
-      {data.advice.length > 0 ? (
+      {data.missing.length === 0 && data.advice.length > 0 ? (
         <div>
           <div className="text-text-subtle mb-1 text-2xs">Что учесть в разговоре</div>
           <ul className="flex flex-col gap-1">

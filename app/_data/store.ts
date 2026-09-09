@@ -13,6 +13,7 @@
 import { useSyncExternalStore } from "react";
 import { normalizePhone, formatPhone } from "@/lib/phone";
 import { reportMaybeStale } from "@/lib/client/stale-build";
+import { createReadMarks } from "@/lib/client/read-marks";
 import {
   addNoteDb,
   addPhoneDb,
@@ -247,6 +248,8 @@ export interface Patient {
   /** Где пациент в своём пути: ещё не приходил / первичный / повторный. */
   visitStage?: "new" | "primary" | "repeat";
   source: string;
+  /** Источник выведен нами, а не проставлен человеком: подписывается отдельно. */
+  sourceDerived?: boolean;
   channel: Channel;
   phones: Phone[];
   notes: Note[];
@@ -431,6 +434,7 @@ export function hydratePatients(records: PatientRecord[]) {
         visitStage: r.visitStage ?? existing.visitStage,
         name: r.name || existing.name,
         source: r.source ?? existing.source,
+        sourceDerived: r.sourceDerived,
         phones,
         notes,
         relations,
@@ -445,6 +449,7 @@ export function hydratePatients(records: PatientRecord[]) {
       firstSeenAt: r.firstSeenAt,
       visitStage: r.visitStage,
       source: r.source ?? "—",
+      sourceDerived: r.sourceDerived,
       channel: "phone",
       phones,
       notes,
@@ -491,9 +496,15 @@ export function hydrateDialogs(records: DialogRecord[]) {
       status: r.status,
       preview: r.preview,
       at: r.at,
-      // Состояние берём с сервера: раньше оно бралось из мока и для диалогов
-      // из базы всегда было пустым — фильтр «Нужен ответ» не находил ничего.
-      unread: r.unread,
+      /**
+       * Состояние берём с сервера: раньше оно бралось из мока и для диалогов
+       * из базы всегда было пустым — фильтр «Нужен ответ» не находил ничего.
+       *
+       * Пока отметка прочтения не легла в базу, держим её своей: список
+       * тянется каждые шесть секунд и приносит снимок, сделанный до записи.
+       * Точка гасла на мгновение и загоралась снова.
+       */
+      unread: readMarks.staysRead(r.id, messages[messages.length - 1]?.id ?? null) ? false : r.unread,
       escalationReason: r.escalationReason ?? undefined,
       agentDraft: existing?.agentDraft,
       /**
@@ -612,6 +623,40 @@ export function writeFailed(action: string): (e: unknown) => void {
       window.dispatchEvent(new CustomEvent("clinic:write-failed", { detail: { action, reason } }));
     }
   };
+}
+
+/**
+ * Записать с одной тихой повторной попыткой.
+ *
+ * Между экраном и базой лежит сеть и приложение, которое иногда
+ * перезапускается: часть неудач проходит сама через секунду. Показывать их
+ * человеку незачем — он не может «повторить действие» лучше, чем это сделаем
+ * мы. Не прошло и со второго раза — тогда говорим, и говорим, что теперь
+ * делать (`hint`), а не «повторите действие».
+ *
+ * **Повторяем только то, что можно повторить без последствий**: установку
+ * значения, снятие пометки, переключатель. Создание — заметку, номер, карточку,
+ * сообщение — не повторяем никогда: первый запрос мог дойти, и человек получит
+ * два. Такие вызовы остаются на `writeFailed`.
+ */
+const RETRY_WRITE_MS = 1200;
+
+export function persist(action: string, run: () => Promise<unknown>, hint?: string) {
+  void run().catch((first: unknown) => {
+    reportMaybeStale(first);
+    setTimeout(() => {
+      void run().catch((e: unknown) => {
+        const reason = (e as Error)?.message ?? String(e);
+        console.error(`[запись] ${action}: ${reason}`);
+        reportMaybeStale(e);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("clinic:write-failed", { detail: { action, reason, hint } }),
+          );
+        }
+      });
+    }, RETRY_WRITE_MS);
+  });
 }
 
 function replacePatient(id: string, fn: (p: Patient) => Patient) {
@@ -938,15 +983,37 @@ export function setAgentEnabled(dialogId: string, enabled: boolean) {
     // им распоряжается сама переписка.
     status: enabled ? "bot" : d.status,
   }));
-  void setAgentEnabledDb(dialogId, enabled).catch(
-    writeFailed(enabled ? "не удалось включить агента" : "не удалось выключить агента"),
+  persist(
+    enabled ? "Агент не включился" : "Агент не выключился",
+    () => setAgentEnabledDb(dialogId, enabled),
+    "Он остался как был — нажмите кнопку ещё раз.",
   );
 }
 
 export function returnToBot(dialogId: string) {
   replaceDialog(dialogId, (d) => ({ ...d, status: "bot", escalationReason: undefined }));
-  void returnToBotDb(dialogId).catch(writeFailed("не удалось вернуть диалог агенту"));
+  persist(
+    "Диалог не вернулся агенту",
+    () => returnToBotDb(dialogId),
+    "Разговор остался за вами — нажмите «Вернуть агенту» ещё раз.",
+  );
 }
+
+/**
+ * Очередь отметок прочтения.
+ *
+ * Единственное действие в инбоксе, которого человек не совершал: он просто
+ * открыл переписку. Поэтому его неудача не идёт в `writeFailed` — просить
+ * «повторите действие» тут нечего, повторяем сами (`lib/client/read-marks`).
+ */
+const readMarks = createReadMarks({
+  send: (id) => markDialogReadDb(id),
+  onFailed: (_id, reason) => {
+    console.error(`[запись] отметка прочтения: ${(reason as Error)?.message ?? String(reason)}`);
+    // Старая сборка — отдельный случай: там поможет только перезагрузка вкладки.
+    reportMaybeStale(reason);
+  },
+});
 
 /**
  * Диалог прочитан.
@@ -957,8 +1024,19 @@ export function returnToBot(dialogId: string) {
  * перестал на неё смотреть.
  */
 export function markDialogRead(dialogId: string) {
+  const last = db.dialogs.find((d) => d.id === dialogId)?.messages.slice(-1)[0]?.id ?? null;
   replaceDialog(dialogId, (d) => ({ ...d, unread: false }));
-  void markDialogReadDb(dialogId).catch(writeFailed("не удалось отметить диалог прочитанным"));
+  readMarks.mark(dialogId, last);
+}
+
+/**
+ * Повторить отметки, которые не легли в базу.
+ *
+ * Зовётся с круга опроса инбокса и при возвращении в приложение: сеть моргнула
+ * или сервер перезапускался — повторим сами, человека это не касается.
+ */
+export function flushReadMarks() {
+  readMarks.flush();
 }
 
 /** Начать диалог. Если окно закрыто, первым сообщением идёт только шаблон. */

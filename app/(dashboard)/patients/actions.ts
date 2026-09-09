@@ -7,7 +7,7 @@ import { can } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
 import { normalizePhone } from "@/lib/phone";
 import type { PatientNoteKind, PatientRelationKind } from "@/generated/prisma/enums";
-import { getPatientDossier } from "@/lib/server/patient-profile";
+import { getPatientDossier, type DossierPart } from "@/lib/server/patient-profile";
 import type { PatientProfile } from "@/lib/metrics/patient-profile";
 import { requireId } from "@/lib/server/require-id";
 
@@ -61,6 +61,14 @@ export interface PatientRecord {
   id: string;
   name: string;
   source: string | null;
+  /**
+   * Источник выведен нами, а не проставлен человеком.
+   *
+   * Подписывается на экране отдельно — «WhatsApp · из переписки». Ровно как у
+   * визита (§8): администратор должен видеть, правит он догадку системы или
+   * чужой ответ.
+   */
+  sourceDerived: boolean;
   firstSeenToday: boolean;
   /** Дата первого обращения. В карточке показывается дата, а не только «ранее». */
   firstSeenAt: string;
@@ -163,6 +171,7 @@ export async function getPatientRecords(): Promise<PatientRecord[]> {
     id: p.id,
     name: p.name ?? "",
     source: p.source?.title ?? null,
+    sourceDerived: p.sourceConfidence === "DERIVED",
     firstSeenToday: p.firstSeenAt >= startOfToday,
     firstSeenAt: p.firstSeenAt.toISOString(),
     visitStage: stageOf(p._count.appointments),
@@ -261,6 +270,7 @@ export async function getPatientRecord(id: string): Promise<PatientRecord | null
     id: p.id,
     name: p.name ?? "",
     source: p.source?.title ?? null,
+    sourceDerived: p.sourceConfidence === "DERIVED",
     firstSeenToday: p.firstSeenAt >= startOfToday,
     firstSeenAt: p.firstSeenAt.toISOString(),
     visitStage: stageOf(p._count.appointments),
@@ -408,6 +418,8 @@ export async function createPatient(input: {
       name: input.name.trim(),
       firstSeenAt: new Date(),
       sourceId,
+      // Источник указал человек — пересчёт такую отметку не трогает (§8).
+      sourceConfidence: sourceId ? "MANUAL" : "UNKNOWN",
       phones:
         phoneE164 && input.phoneId
           ? { create: { id: input.phoneId, companyId: session.companyId, phone: phoneE164, isPrimary: true } }
@@ -419,9 +431,24 @@ export async function createPatient(input: {
 export async function updatePatientDb(id: string, patch: { name?: string; source?: string | null }): Promise<void> {
   requireId(id, "пациент");
   const session = await getSession();
-  const data: { name?: string; sourceId?: string | null } = {};
+  const data: {
+    name?: string;
+    sourceId?: string | null;
+    sourceConfidence?: "MANUAL" | "UNKNOWN";
+    sourceDerivedAt?: null;
+  } = {};
   if (patch.name !== undefined) data.name = patch.name.trim();
-  if (patch.source !== undefined) data.sourceId = await sourceIdByTitle(session.companyId, patch.source);
+  if (patch.source !== undefined) {
+    data.sourceId = await sourceIdByTitle(session.companyId, patch.source);
+    /**
+     * Источник проставил администратор: он говорил с человеком и знает больше
+     * пересчёта. С этой минуты автоматика к полю не прикасается (§8). Снял
+     * источник совсем — отметка тоже снимается, иначе пустое поле осталось бы
+     * «ручным» и его никогда бы не заполнили.
+     */
+    data.sourceConfidence = data.sourceId ? "MANUAL" : "UNKNOWN";
+    data.sourceDerivedAt = null;
+  }
   await prisma.patient.updateMany({ where: { id, companyId: session.companyId }, data });
 }
 
@@ -742,6 +769,8 @@ export interface DossierView
   courses: { title: string; used: number; total: number; booked: number; status: string }[];
   contact: { channel: string | null; lastInboundAt: string | null; dialogs: number };
   source: { title: string | null; confidence: string } | null;
+  /** Части дела, которые не прочитались: показываем остальное, эти — догружаем. */
+  missing: DossierPart[];
 }
 
 /**
@@ -783,5 +812,6 @@ export async function getPatientDossierAction(id: string): Promise<DossierView |
       lastInboundAt: d.contact.lastInboundAt?.toISOString() ?? null,
     },
     source: d.source,
+    missing: d.missing,
   };
 }

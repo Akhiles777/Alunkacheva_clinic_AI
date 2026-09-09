@@ -6,6 +6,7 @@ import {
   LOOKBACK_DAYS,
   type DialogTouch,
 } from "./source-attribution";
+import { firstContactSource, type ContactTouch } from "./patient-source";
 
 /**
  * Пересчёт производных полей визита: первичный он или повторный.
@@ -347,6 +348,175 @@ export async function recomputeAppointmentSources(
         sourceId: verdict.sourceId,
         sourceConfidence: verdict.confidence,
         sourceDerivedAt: verdict.confidence === "DERIVED" ? now : null,
+      },
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Источник первого обращения — у диалогов и у карточек пациентов.
+ *
+ * Дополнение к пересчёту выше, а не его замена: там отвечают на вопрос «какой
+ * разговор привёл к этой записи», здесь — «откуда взялся этот человек». Оба
+ * числа стоят рядом на одном экране, и пустота во втором рядом с заполненным
+ * первым выглядит поломкой платформы: «Первое обращение: 6 сентября,
+ * источник: —» и тут же «WhatsApp · из переписки» у визита.
+ *
+ * Порядок важен: сначала диалогам проставляется источник по каналу (у старых
+ * переписок он пуст, а канал известен всегда), потом по этим диалогам и
+ * занесённым звонкам выводится источник карточки.
+ *
+ * Ничего не переписываем: заполняем только пустое. Ручная отметка
+ * администратора неприкосновенна, а свой прежний вывод менять не на что —
+ * первое обращение уже случилось и другим не станет.
+ */
+export interface PatientSourceRecomputeResult {
+  /** Диалогов, которым проставили источник по каналу. */
+  dialogsFilled: number;
+  /** Карточек рассмотрено (у которых источник пуст). */
+  scanned: number;
+  /** Карточек получили источник. */
+  derived: number;
+  /** Осталось без источника: касаний нет — выдумывать нечего. */
+  unknown: number;
+  /** Карточек с уже проставленным источником — их не трогали. */
+  kept: number;
+}
+
+export async function recomputePatientSources(
+  companyId: string,
+  options: { patientIds?: string[]; apply?: boolean } = {},
+): Promise<PatientSourceRecomputeResult & { plan: { patientId: string; from: null; to: string; basis: string }[] }> {
+  const { patientIds, apply = true } = options;
+  const result: PatientSourceRecomputeResult & {
+    plan: { patientId: string; from: null; to: string; basis: string }[];
+  } = { dialogsFilled: 0, scanned: 0, derived: 0, unknown: 0, kept: 0, plan: [] };
+  if (patientIds && patientIds.length === 0) return result;
+
+  const sources = await prisma.source.findMany({
+    where: { companyId },
+    select: { id: true, code: true, title: true },
+  });
+  const sourceByCode = new Map(sources.map((s) => [s.code, s.id]));
+  const titleById = new Map(sources.map((s) => [s.id, s.title]));
+
+  /**
+   * Диалог без источника — это не «источник неизвестен», а незаполненное поле:
+   * канал переписки известен всегда, и он же есть источник. Кода нет в
+   * справочнике — оставляем пустым, выдумывать не из чего.
+   */
+  const dialogsNoSource = await prisma.conversation.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      sourceId: null,
+      ...(patientIds ? { patientId: { in: patientIds } } : {}),
+    },
+    select: { id: true, channel: true },
+  });
+  for (const c of dialogsNoSource) {
+    const sourceId = sourceByCode.get(c.channel.toLowerCase());
+    if (!sourceId) continue;
+    result.dialogsFilled += 1;
+    if (apply) await prisma.conversation.update({ where: { id: c.id }, data: { sourceId } });
+  }
+
+  const scope = {
+    companyId,
+    deletedAt: null,
+    ...(patientIds ? { id: { in: patientIds } } : {}),
+  } as const;
+
+  result.kept = await prisma.patient.count({ where: { ...scope, sourceId: { not: null } } });
+
+  const patients = await prisma.patient.findMany({
+    where: { ...scope, sourceId: null },
+    select: { id: true },
+  });
+  if (patients.length === 0) return result;
+  result.scanned = patients.length;
+
+  const ids = patients.map((p) => p.id);
+
+  /**
+   * Самое раннее входящее сообщение по каждому диалогу. Группировкой, а не
+   * выборкой всех сообщений: их полторы тысячи и растёт, и тянуть их в
+   * приложение ради одной даты незачем (правило памяти — на сервере 1.9 ГБ).
+   */
+  const dialogs = await prisma.conversation.findMany({
+    where: { companyId, deletedAt: null, patientId: { in: ids } },
+    select: { id: true, patientId: true, channel: true, sourceId: true },
+  });
+  const touchesByPatient = new Map<string, ContactTouch[]>();
+  const push = (patientId: string, touch: ContactTouch) => {
+    const list = touchesByPatient.get(patientId);
+    if (list) list.push(touch);
+    else touchesByPatient.set(patientId, [touch]);
+  };
+
+  if (dialogs.length > 0) {
+    const firstIn = await prisma.message.groupBy({
+      by: ["conversationId"],
+      where: {
+        conversationId: { in: dialogs.map((d) => d.id) },
+        direction: "IN",
+        deletedAt: null,
+        isDraft: false,
+      },
+      _min: { createdAt: true },
+    });
+    const atByDialog = new Map(firstIn.map((r) => [r.conversationId, r._min.createdAt]));
+    for (const d of dialogs) {
+      const at = atByDialog.get(d.id);
+      const sourceId = d.sourceId ?? sourceByCode.get(d.channel.toLowerCase()) ?? null;
+      if (!at || !sourceId || !d.patientId) continue;
+      push(d.patientId, { at, sourceId, kind: "message" });
+    }
+  }
+
+  /**
+   * Звонок как первое обращение (§3.4). Источник берём тот, что занёс
+   * администратор; не заполнил — код «call», а его нет в справочнике —
+   * звонок в вывод не идёт.
+   */
+  const calls = await prisma.callLog.groupBy({
+    by: ["patientId", "sourceId"],
+    where: { companyId, patientId: { in: ids } },
+    _min: { createdAt: true },
+  });
+  for (const c of calls) {
+    const at = c._min.createdAt;
+    const sourceId = c.sourceId ?? sourceByCode.get("call") ?? null;
+    if (!at || !sourceId || !c.patientId) continue;
+    push(c.patientId, { at, sourceId, kind: "call" });
+  }
+
+  const now = new Date();
+  for (const p of patients) {
+    const verdict = firstContactSource({
+      current: { sourceId: null, confidence: "UNKNOWN" },
+      touches: touchesByPatient.get(p.id) ?? [],
+    });
+    if (!verdict.changed || !verdict.sourceId) {
+      result.unknown += 1;
+      continue;
+    }
+    result.derived += 1;
+    result.plan.push({
+      patientId: p.id,
+      from: null,
+      to: titleById.get(verdict.sourceId) ?? verdict.sourceId,
+      basis: verdict.basis?.kind === "call" ? "звонок" : "переписка",
+    });
+    if (!apply) continue;
+    await prisma.patient.update({
+      where: { id: p.id },
+      data: {
+        sourceId: verdict.sourceId,
+        sourceConfidence: "DERIVED",
+        sourceDerivedAt: now,
       },
     });
   }

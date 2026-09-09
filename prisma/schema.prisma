@@ -331,7 +331,15 @@ model Patient {
   firstSeenExact Boolean   @default(true)
   firstVisitAt   DateTime? @db.Timestamptz(3)
   lastVisitAt    DateTime? @db.Timestamptz(3)
+  /// Откуда пришёл человек — источник его ПЕРВОГО обращения.
   sourceId       String?
+  /// Кто это решил: администратор руками (MANUAL), вывод из переписки или
+  /// звонка (DERIVED) или никто (UNKNOWN). Ровно как у визита (§8): «Instagram»
+  /// и «Instagram · из переписки» — разные утверждения, и ручную отметку
+  /// пересчёт не трогает ни при каких условиях.
+  sourceConfidence SourceConfidence @default(UNKNOWN)
+  /// Когда вывод сделан. У ручной отметки пуст.
+  sourceDerivedAt  DateTime?        @db.Timestamptz(3)
 
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
@@ -513,6 +521,12 @@ model Inquiry {
   messageCount   Int            @default(1)
   outcome        InquiryOutcome @default(PENDING)
   firstMessageId String?
+  /// Откуда известен источник обращения. Колонки в базе есть с самого начала,
+  /// а в схеме их не было — и каждая новая миграция норовила их удалить.
+  /// Объявлены здесь именно поэтому: расхождение схемы с базой само по себе
+  /// дефект, по нему планируют работу.
+  sourceConfidence SourceConfidence @default(UNKNOWN)
+  sourceDerivedAt  DateTime?        @db.Timestamptz(3)
   /// Атрибуция: запись, к которой привело обращение.
   appointmentId  String?
   bookedAt       DateTime?      @db.Timestamptz(3)
@@ -878,7 +892,7 @@ model Staff {
    * работает в субботу, а из остеопатов в этот день принимает только одна, и
    * пациентка спрашивала именно про это.
    */
-  workdays        Int[]
+  workdays        Int[]            @default([])
   isActive        Boolean @default(true)
   sortOrder       Int     @default(0)
 
@@ -1017,6 +1031,9 @@ model CoursePurchase {
 
   @@unique([companyId, yclientsSaleId])
   @@index([companyId, purchasedAt])
+  /// Индекс в базе есть, а в схеме его не было: каждая новая миграция
+  /// собиралась его удалить. Объявлен здесь по той же причине, что поля выше.
+  @@index([serviceId])
   @@map("course_purchases")
 }
 

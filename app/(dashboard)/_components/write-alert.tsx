@@ -11,15 +11,27 @@ import { useEffect, useState } from "react";
  * закрывает разрыв между тем, что показано, и тем, что записано.
  */
 export function WriteAlert() {
-  const [items, setItems] = useState<{ id: number; text: string }[]>([]);
+  const [items, setItems] = useState<{ id: number; text: string; hint: string }[]>([]);
 
   useEffect(() => {
     let seq = 0;
     const onFail = (e: Event) => {
-      const detail = (e as CustomEvent<{ action: string; reason: string }>).detail;
+      const detail = (e as CustomEvent<{ action: string; reason: string; hint?: string }>).detail;
       if (!detail) return;
       const id = ++seq;
-      setItems((prev) => [...prev.slice(-2), { id, text: detail.action }]);
+      setItems((prev) => [
+        ...prev.slice(-2),
+        {
+          id,
+          text: detail.action,
+          /**
+           * Что человеку СДЕЛАТЬ. «Повторите действие» — это работа,
+           * переложенная на него: она годится там, где повтор и правда
+           * единственный выход, и не годится там, где мы можем сказать точнее.
+           */
+          hint: detail.hint ?? "Изменение не записано — повторите действие.",
+        },
+      ]);
       // Через полминуты убираем: сообщение напоминает проверить, а не висит вечно.
       setTimeout(() => setItems((prev) => prev.filter((x) => x.id !== id)), 30_000);
     };
@@ -37,7 +49,7 @@ export function WriteAlert() {
           role="status"
           className="border-accent-border bg-accent-tint text-accent-text pointer-events-auto max-w-[520px] rounded-lg border px-4 py-2.5 text-sm shadow-sm"
         >
-          {it.text}. Изменение не записано — повторите действие.
+          {it.text}. {it.hint}
         </div>
       ))}
     </div>

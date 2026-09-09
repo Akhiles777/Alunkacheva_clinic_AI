@@ -20,6 +20,23 @@ const jetbrains = JetBrains_Mono({
 export const metadata: Metadata = {
   title: { default: CLINIC_NAME, template: `%s — ${CLINIC_NAME}` },
   description: `CRM: ${CLINIC_TAGLINE} «${CLINIC_NAME}»`,
+  /**
+   * Иконки называем явно.
+   *
+   * Значок не появлялся ни во вкладке, ни на телефоне, и причина была простая:
+   * `favicon.ico` лежал в корне репозитория, откуда Next его не отдаёт — он
+   * ищет `app/favicon.ico` либо `public/`. Файл был на месте, ссылки на него
+   * не было ни одной. iOS до манифеста не читает вовсе: домашнему экрану нужен
+   * apple-touch-icon, иначе там окажется снимок страницы.
+   */
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
+      { url: "/icon-512.png", type: "image/png", sizes: "512x512" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180" }],
+  },
 };
 
 /**

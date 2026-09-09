@@ -2995,7 +2995,11 @@ async function linkByPhone(
         companyId: ctx.companyId,
         name: ctx.displayName ?? null,
         firstSeenAt: new Date(),
+        // Карточка заводится из переписки: канал и есть источник первого
+        // обращения. Это вывод, а не слова администратора — потому DERIVED.
         sourceId: source?.id ?? null,
+        sourceConfidence: source ? "DERIVED" : "UNKNOWN",
+        sourceDerivedAt: source ? new Date() : null,
       },
       select: { id: true },
     });

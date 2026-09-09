@@ -1,4 +1,5 @@
 import { CabinetCard } from "../_components/cabinet-card";
+import { SourceCases, GapsCase } from "./source-cases";
 import { FreeWindows } from "../_components/free-windows";
 import { AttentionList, InquiryList } from "../_components/today-lists";
 import { notFound } from "next/navigation";
@@ -6,8 +7,7 @@ import { getToday, type CabinetNow, type FreeWindowRow } from "@/app/_data/today
 import { AgentSection } from "../owner/agent-section";
 import type { AgentStats } from "@/lib/server/agent-stats";
 import type { SourceStat } from "@/lib/metrics/types";
-import { SourcePicker } from "../_components/visit-source";
-import { GapsBlock, type GapsData } from "../settings/assistant/gaps-block";
+import { type GapsData } from "../settings/assistant/gaps-block";
 import { QueueClient, type QueueData } from "../queue/queue-client";
 import { CourseEconomicsBlock } from "../_components/course-economics";
 import { DossierBody } from "../_components/patient-dossier";
@@ -503,6 +503,7 @@ const DOSSIER_EMPTY: DossierView = {
   courses: [],
   contact: { channel: null, lastInboundAt: null, dialogs: 0 },
   source: null,
+  missing: [],
 };
 
 /** Один визит и два сообщения: ритма нет, манеры нет — и это сказано словами. */
@@ -589,6 +590,25 @@ const DOSSIER_FULL: DossierView = {
   ],
   contact: { channel: "WHATSAPP", lastInboundAt: "2026-09-02T20:14:00.000Z", dialogs: 2 },
   source: { title: "Instagram", confidence: "MANUAL" },
+  missing: [],
+};
+
+/**
+ * Часть дела не прочиталась.
+ *
+ * Показываем то, что есть, и называем недостающее словами: «визитов не было»
+ * там, где визиты просто не пришли из базы, — утверждение о пациенте, которого
+ * мы не делали. Строки «обновите страницу» здесь нет — догружаем сами.
+ */
+const DOSSIER_PARTIAL: DossierView = {
+  ...DOSSIER_FULL,
+  visits: { total: 0, arrived: 0, noShow: 0, cancelled: 0, unmarked: 0, firstAt: null, lastAt: null },
+  services: [],
+  staff: [],
+  rhythm: { medianDays: null, meanDays: null, gaps: 0 },
+  money: { total: 0, paidVisits: 0, avgCheck: null },
+  source: null,
+  missing: ["visits"],
 };
 
 function Case({
@@ -713,32 +733,7 @@ export default function StatesPage() {
         загрузки, и это тоже состояние.
       */}
       <Case title="Источник визита" note="проставлен человеком, выведен из переписки, неизвестен">
-        <div className="border-border bg-surface flex max-w-[560px] flex-col gap-3 rounded-xl border p-5">
-          <SourcePicker
-            state={{ code: "instagram", title: "Instagram", confidence: "MANUAL" }}
-            onPick={() => {}}
-          />
-          <SourcePicker
-            state={{ code: "whatsapp", title: "WhatsApp", confidence: "DERIVED" }}
-            onPick={() => {}}
-          />
-          <SourcePicker state={{ code: null, title: null, confidence: "UNKNOWN" }} onPick={() => {}} />
-          {/* Длинное название источника не должно ломать строку визита. */}
-          <SourcePicker
-            state={{
-              code: "referral",
-              title: "Рекомендация коллеги из соседней клиники",
-              confidence: "MANUAL",
-            }}
-            onPick={() => {}}
-          />
-          {/* Только чтение: чужой день, отметки там не ставят. */}
-          <SourcePicker
-            state={{ code: "phone", title: "Звонок", confidence: "MANUAL" }}
-            readOnly
-            onPick={() => {}}
-          />
-        </div>
+        <SourceCases />
       </Case>
 
       {/*
@@ -780,18 +775,14 @@ export default function StatesPage() {
         срок ассистент ни разу не остался без ответа. Это разные утверждения.
       */}
       <Case title="Пробелы: за срок ни одного" note="пусто показываем словами">
-        <div className="max-w-[820px]">
-          <GapsBlock data={GAPS_EMPTY} onDraft={() => {}} />
-        </div>
+        <GapsCase data={GAPS_EMPTY} />
       </Case>
 
       <Case
         title="Пробелы: медицинская тема и длинные вопросы"
         note="кнопка создаёт черновик, а не запись"
       >
-        <div className="max-w-[820px]">
-          <GapsBlock data={GAPS_FULL} onDraft={() => {}} />
-        </div>
+        <GapsCase data={GAPS_FULL} />
       </Case>
 
       {/*
@@ -853,6 +844,15 @@ export default function StatesPage() {
       <Case title="Личное дело: полное" note="длинные названия услуг и четырёхзначные суммы">
         <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
           <DossierBody data={DOSSIER_FULL} />
+        </div>
+      </Case>
+
+      <Case
+        title="Личное дело: часть не прочиталась"
+        note="показано то, что есть; недостающее догружается"
+      >
+        <div className="border-border bg-surface max-w-[560px] rounded-xl border p-5">
+          <DossierBody data={DOSSIER_PARTIAL} />
         </div>
       </Case>
 
