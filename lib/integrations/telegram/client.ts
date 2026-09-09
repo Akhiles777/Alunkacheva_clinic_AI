@@ -186,3 +186,128 @@ export async function setWebhook(url: string, secret: string): Promise<boolean> 
   });
   return res.value === true;
 }
+
+/**
+ * Отправка файла пациенту — загрузкой, а не ссылкой.
+ *
+ * Ссылкой было бы проще: Telegram умеет скачать файл по URL сам. Но URL
+ * означает, что снимок направления лежит по открытому адресу и его может
+ * забрать любой, кто адрес узнал, — это разглашение сведений об обращении за
+ * помощью (§7). Поэтому байты уходят прямо в запрос и нигде не публикуются.
+ *
+ * Метод выбирается по виду файла: голосовое приходит пациенту кружком
+ * проигрывателя (sendVoice), фотография — картинкой, остальное документом.
+ * Отправить голосовое как документ технически можно, но пациент получит файл,
+ * который надо скачивать, — а он ждёт, что нажмёт и услышит.
+ */
+export type SendFileKind = "photo" | "video" | "voice" | "audio" | "document";
+
+const TELEGRAM_METHOD: Record<SendFileKind, { method: string; field: string }> = {
+  photo: { method: "sendPhoto", field: "photo" },
+  video: { method: "sendVideo", field: "video" },
+  voice: { method: "sendVoice", field: "voice" },
+  audio: { method: "sendAudio", field: "audio" },
+  document: { method: "sendDocument", field: "document" },
+};
+
+export async function sendFile(input: {
+  chatId: string | number;
+  kind: SendFileKind;
+  bytes: Uint8Array;
+  fileName: string;
+  mimeType: string;
+  caption?: string;
+  replyToExternalId?: string | null;
+}): Promise<SendResult> {
+  const t = token();
+  if (!t) return { ok: false, error: "TELEGRAM_BOT_TOKEN не задан" };
+  const { method, field } = TELEGRAM_METHOD[input.kind];
+
+  let error: string | undefined;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      const form = new FormData();
+      form.append("chat_id", String(input.chatId));
+      if (input.caption) form.append("caption", input.caption.slice(0, 1024));
+      if (input.replyToExternalId) {
+        form.append(
+          "reply_parameters",
+          JSON.stringify({ message_id: Number(input.replyToExternalId), allow_sending_without_reply: true }),
+        );
+      }
+      form.append(
+        field,
+        new Blob([new Uint8Array(input.bytes)], { type: input.mimeType }),
+        input.fileName,
+      );
+      const res = await fetch(`${API}/bot${t}/${method}`, {
+        method: "POST",
+        body: form,
+        // Файл больше текста: даём времени столько, сколько нужно на загрузку.
+        signal: AbortSignal.timeout(60_000),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        error = `Telegram ${res.status}: ${text.slice(0, 200)}`;
+        if (res.status < 500 && res.status !== 429) return { ok: false, error };
+      } else {
+        const json = JSON.parse(text) as { ok: boolean; result?: { message_id: number }; description?: string };
+        if (json.ok && json.result) return { ok: true, externalId: String(json.result.message_id) };
+        return { ok: false, error: `Telegram отказал: ${json.description ?? "без объяснения"}` };
+      }
+    } catch (e) {
+      error = `Связь с Telegram: ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`;
+    }
+    if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+  }
+  return { ok: false, error };
+}
+
+/**
+ * Ответ на конкретное сообщение пациента.
+ *
+ * Пациент пишет пять реплик подряд, администратор отвечает на третью — без
+ * цитаты собеседник гадает, о чём речь. `allow_sending_without_reply` нужен
+ * потому, что процитированное сообщение пациент мог удалить, и тогда лучше
+ * отправить ответ без цитаты, чем не отправить вовсе.
+ */
+export async function sendTextReply(
+  chatId: string | number,
+  text: string,
+  replyToExternalId: string,
+): Promise<SendResult> {
+  const res = await call<{ message_id: number }>("sendMessage", {
+    chat_id: chatId,
+    text,
+    reply_parameters: { message_id: Number(replyToExternalId), allow_sending_without_reply: true },
+    disable_web_page_preview: true,
+  });
+  return res.value
+    ? { ok: true, externalId: String(res.value.message_id) }
+    : { ok: false, error: res.error };
+}
+
+/** Удалить своё сообщение у пациента. Telegram разрешает это 48 часов. */
+export async function deleteMessage(chatId: string | number, externalId: string): Promise<SendResult> {
+  const res = await call<boolean>("deleteMessage", {
+    chat_id: chatId,
+    message_id: Number(externalId),
+  });
+  return res.value === true ? { ok: true } : { ok: false, error: res.error ?? "Telegram не удалил сообщение" };
+}
+
+/** Исправить текст уже отправленного сообщения. */
+export async function editMessage(
+  chatId: string | number,
+  externalId: string,
+  text: string,
+): Promise<SendResult> {
+  const res = await call<{ message_id: number }>("editMessageText", {
+    chat_id: chatId,
+    message_id: Number(externalId),
+    text,
+  });
+  return res.value
+    ? { ok: true, externalId: String(res.value.message_id) }
+    : { ok: false, error: res.error };
+}

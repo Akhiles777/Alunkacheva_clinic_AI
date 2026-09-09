@@ -259,6 +259,7 @@ model Company {
   patients                 Patient[]
   conversations            Conversation[]
   messages                 Message[]
+  mediaFiles               MediaFile[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -484,6 +485,17 @@ model Message {
   isDraft        Boolean          @default(false)
   approvedById   String?
   failureReason  String?
+  /// Наше сообщение — ответ на это (id нашего же сообщения).
+  ///
+  /// Без внешнего ключа намеренно: процитированное сообщение может быть
+  /// удалено, а цитата в переписке пациента останется — и в нашей она тоже
+  /// должна остаться, иначе экран разойдётся с тем, что видит человек.
+  replyToId      String?
+  /// Начало процитированного текста: показывается над ответом. Хранится
+  /// отдельно ровно потому, что оригинал может исчезнуть.
+  replyToPreview String?
+  /// Когда текст правили после отправки. Пусто — не правили.
+  editedAt       DateTime? @db.Timestamptz(3)
 
   sentAt      DateTime? @db.Timestamptz(3)
   deliveredAt DateTime? @db.Timestamptz(3)
@@ -502,6 +514,42 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([companyId, createdAt])
   @@map("messages")
+}
+
+/// Файл, который клиника отправляет пациенту.
+///
+/// Своё хранилище понадобилось ровно для отправки: вложения ПАЦИЕНТА живут у
+/// провайдера и проксируются на лету. Байты лежат на диске (`lib/media/store`),
+/// здесь — карточка файла: чей, какой, откуда взялся и в какое сообщение ушёл.
+///
+/// Публичного адреса у файла нет и не будет: снимок направления по открытой
+/// ссылке — разглашение сведений об обращении за помощью (§7, ст. 13 323-ФЗ).
+/// Отдаётся только через `/api/media` вошедшему сотруднику своей клиники.
+model MediaFile {
+  id        String  @id @default(cuid())
+  companyId String
+  /// Идентификатор файла на диске (uuid). Путь по нему строит lib/media/store.
+  storageId String  @unique
+  kind      String
+  mimeType  String
+  fileName  String?
+  sizeBytes Int
+  /// Длительность голосового или видео, если известна.
+  durationSec Int?
+  /// Кто загрузил. Пусто — загрузил не человек (напоминание, ассистент).
+  uploadedById String?
+  /// Сообщение, в котором файл ушёл пациенту. Пусто — ещё не отправлен.
+  messageId String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  uploadedBy StaffUser? @relation("MediaUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([messageId])
+  @@map("media_files")
 }
 
 /// Обращение — материализованная единица воронки. Создаётся входящим
@@ -1112,6 +1160,7 @@ model StaffUser {
   payrollPayouts           PayrollPayout[]
   conversations            Conversation[]
   approvedMessages         Message[]                 @relation("MessageApprovedBy")
+  uploadedMedia            MediaFile[]               @relation("MediaUploadedBy")
   acknowledgedEscalations  Escalation[]              @relation("EscalationAcknowledgedBy")
   resolvedEscalations      Escalation[]              @relation("EscalationResolvedBy")
   auditLogs                AuditLog[]

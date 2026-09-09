@@ -37,6 +37,19 @@ export const RATE_LIMIT = {
 export const ENDPOINTS = {
   sendMessage: (id: string, token: string) => `/waInstance${id}/sendMessage/${token}`,
   sendFileByUrl: (id: string, token: string) => `/waInstance${id}/sendFileByUrl/${token}`,
+  /**
+   * Загрузка файла прямо в запросе.
+   *
+   * Именно этот путь, а не `sendFileByUrl`: ссылка означает, что снимок
+   * направления лежит по открытому адресу и его заберёт любой, кто адрес
+   * узнал. Это разглашение сведений об обращении за помощью (§7, ст. 13
+   * 323-ФЗ). При загрузке файл нигде не публикуется.
+   */
+  sendFileByUpload: (id: string, token: string) => `/waInstance${id}/sendFileByUpload/${token}`,
+  /** Удалить своё сообщение у пациента. */
+  deleteMessage: (id: string, token: string) => `/waInstance${id}/deleteMessage/${token}`,
+  /** Исправить текст уже отправленного. */
+  editMessage: (id: string, token: string) => `/waInstance${id}/editMessage/${token}`,
   getStateInstance: (id: string, token: string) => `/waInstance${id}/getStateInstance/${token}`,
   getSettings: (id: string, token: string) => `/waInstance${id}/getSettings/${token}`,
   /**

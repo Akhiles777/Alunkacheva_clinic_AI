@@ -8,14 +8,28 @@ import { can, requirePermission } from "@/lib/server/authz";
 import { escalationRecipients, inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { phoneFromChatId } from "@/lib/integrations/whatsapp/chat-id";
-import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
-import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
+import {
+  sendText as sendTelegram,
+  sendTextReply as sendTelegramReply,
+  sendFile as sendTelegramFile,
+  deleteMessage as deleteTelegramMessage,
+  editMessage as editTelegramMessage,
+} from "@/lib/integrations/telegram/client";
+import {
+  sendText as sendWhatsapp,
+  sendTextReply as sendWhatsappReply,
+  sendFile as sendWhatsappFile,
+  deleteMessage as deleteWhatsappMessage,
+  editMessage as editWhatsappMessage,
+} from "@/lib/integrations/whatsapp/green-api";
+import { readStored } from "@/lib/media/store";
 import { chatIdFromPhone } from "@/lib/integrations/whatsapp/chat-id";
 import { fillTemplate, missingLabel } from "@/lib/message-template";
 import { visitTitle } from "@/lib/visit-title";
 import { listTemplates } from "@/lib/server/message-templates";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 import { KIND_LABEL, type AttachmentKind } from "@/lib/agent/attachments";
+import { splitQuote } from "@/lib/agent/quoted";
 import { requireId } from "@/lib/server/require-id";
 
 /**
@@ -194,6 +208,55 @@ export interface DialogMessageRecord {
   text: string;
   at: string;
   attachments: DialogAttachmentRecord[];
+  /**
+   * Что с сообщением стало: отправляется, дошло, прочитано, не ушло.
+   *
+   * Только у своих: у сообщения пациента «доставлено» означало бы, что мы
+   * отчитываемся о его телефоне, а мы о нём ничего не знаем.
+   */
+  delivery?: "sending" | "sent" | "delivered" | "read" | "failed";
+  /** Почему не ушло — словами провайдера, без перевода в код. */
+  failureReason?: string;
+  /** Начало процитированного сообщения, если это ответ. */
+  replyToPreview?: string;
+  /** Текст правили после отправки. */
+  edited?: boolean;
+  /** Можно ли ещё удалить или исправить у пациента (окно провайдера). */
+  canRecall?: boolean;
+}
+
+/**
+ * Сколько времени сообщение можно отозвать или исправить у пациента.
+ *
+ * У мессенджеров свой срок, и он у каждого свой; берём общий разумный —
+ * два часа. Кнопку, которая заведомо получит отказ провайдера, лучше не
+ * показывать вовсе: человек нажмёт и решит, что платформа сломана.
+ */
+const RECALL_HOURS = 2;
+
+function recallable(sentAt: Date): boolean {
+  return Date.now() - sentAt.getTime() < RECALL_HOURS * 3600 * 1000;
+}
+
+/**
+ * Состояние доставки одной строкой.
+ *
+ * Провайдер сообщает его вебхуком — sent / delivered / read; мы кладём отметки
+ * времени и читаем их здесь. Пока отметок нет, но сообщение записано без
+ * ошибки, честнее сказать «отправляется», чем «доставлено»: доставки мы ещё
+ * не видели.
+ */
+function deliveryOf(m: {
+  status: string;
+  sentAt: Date | null;
+  deliveredAt: Date | null;
+  readAt: Date | null;
+}): "sending" | "sent" | "delivered" | "read" | "failed" {
+  if (m.status === "FAILED") return "failed";
+  if (m.readAt) return "read";
+  if (m.deliveredAt) return "delivered";
+  if (m.sentAt) return "sent";
+  return "sending";
 }
 
 /** Вложения из JSON-поля сообщения в вид, пригодный для показа. */
@@ -208,7 +271,7 @@ function attachmentsOf(raw: unknown, messageId: string): DialogAttachmentRecord[
       mimeType?: unknown;
       fileName?: unknown;
       durationSec?: unknown;
-      source?: { provider?: unknown; fileId?: unknown; url?: unknown };
+      source?: { provider?: unknown; fileId?: unknown; url?: unknown; mediaId?: unknown };
     };
     if (typeof a.kind !== "string" || typeof a.label !== "string") continue;
 
@@ -227,6 +290,10 @@ function attachmentsOf(raw: unknown, messageId: string): DialogAttachmentRecord[
        * подставить чужой адрес.
        */
       href = `/api/media?provider=WHATSAPP&ref=${encodeURIComponent(messageId)}&i=${out.length}`;
+    } else if (p === "LOCAL" && typeof a.source?.mediaId === "string") {
+      // Наш собственный файл: лежит у нас на диске, отдаётся тем же адресом
+      // и с той же проверкой входа и клиники.
+      href = `/api/media?provider=LOCAL&ref=${encodeURIComponent(a.source.mediaId)}`;
     }
 
     out.push({
@@ -458,14 +525,33 @@ export async function getConversations(): Promise<DialogRecord[]> {
     const ordered = [...c.messages].reverse();
     const messages: DialogMessageRecord[] = ordered.map((m) => {
       const files = attachmentsOf(m.attachments, m.id);
+      const said = splitQuote(stripMarks(m.body, files));
       return {
       id: m.id,
       from: m.authorType === "PATIENT" ? "patient" : m.authorType === "BOT" ? "bot" : "staff",
       // Пометку про вложение из текста убираем: файл показан отдельной строкой
-      // рядом, и пациент видел «[фотография]» дважды.
-      text: stripMarks(m.body, files),
+      // рядом, и пациент видел «[фотография]» дважды. Цитату — отдельно от
+      // слов: свайпом пациент присылает две вещи сразу, и слитно это читается
+      // как одно сплошное сообщение.
+      text: said.own,
       at: atLabel(m.createdAt),
       attachments: files,
+      /**
+       * Состояние доставки — только у своих сообщений.
+       *
+       * У сообщения пациента «доставлено» означало бы, что мы отчитываемся о
+       * его телефоне; мы о нём ничего не знаем и знать не можем.
+       */
+      delivery: m.direction === "OUT" ? deliveryOf(m) : undefined,
+      failureReason: m.failureReason ?? undefined,
+      replyToPreview: m.replyToPreview ?? said.quote ?? undefined,
+      /**
+       * `Boolean`, а не сравнение с null: поле может прийти неопределённым
+       * (старый клиент Prisma в запущенном процессе), и `undefined !== null`
+       * пометило бы «исправлено» каждое сообщение подряд — включая чужие.
+       */
+      edited: Boolean(m.editedAt),
+      canRecall: m.direction === "OUT" && Boolean(m.externalId) && recallable(m.createdAt),
       };
     });
     const last = ordered[ordered.length - 1];
@@ -511,7 +597,12 @@ export async function getConversations(): Promise<DialogRecord[]> {
         c.channel === "INSTAGRAM" && windowLeftMs !== null && windowLeftMs > 0
           ? Math.round(windowLeftMs / 60000)
           : null,
-      preview: last?.body ?? "",
+      /**
+       * В списке — слова пациента, а не цитата, на которую он отвечал.
+       * Иначе все ответы свайпом выглядят одинаково: «В ответ на: «Окошко на
+       * завтра…»», и понять, кто чего хочет, по списку нельзя.
+       */
+      preview: last ? splitQuote(stripMarks(last.body, attachmentsOf(last.attachments, last.id))).own : "",
       at: atLabel(c.lastMessageAt),
       totalMessages: c._count.messages,
       messages,
@@ -524,6 +615,34 @@ export interface SendResult {
   error?: string;
 }
 
+/** Где именно не получилось: у канала своя причина и своё действие. */
+function whereFailed(channel: string, error?: string): string {
+  if (channel === "WHATSAPP") return `WhatsApp: ${error ?? "сообщение не отправлено"}`;
+  if (channel === "TELEGRAM") return error ?? "Telegram не принял сообщение. Проверьте настройки бота.";
+  return error ?? "Сообщение не отправлено";
+}
+
+/**
+ * Вид файла для провайдера. Стикер и всё непонятное уходит документом: это
+ * честнее, чем выдать неизвестный файл за фотографию и получить отказ.
+ */
+function fileKindFor(kind: string): "photo" | "video" | "voice" | "audio" | "document" {
+  if (kind === "photo" || kind === "video" || kind === "voice" || kind === "audio") return kind;
+  return "document";
+}
+
+/**
+ * Имя файла, когда его нет. Провайдер по имени и типу решает, чем показать
+ * файл собеседнику, поэтому расширение важнее красоты.
+ */
+function defaultFileName(kind: string, mimeType: string): string {
+  const ext = mimeType.split("/")[1]?.split(";")[0]?.replace(/[^a-z0-9]/gi, "") || "bin";
+  if (kind === "voice") return `voice.${ext === "webm" ? "webm" : ext}`;
+  if (kind === "photo") return `photo.${ext}`;
+  if (kind === "video") return `video.${ext}`;
+  return `file.${ext}`;
+}
+
 /**
  * Ответ администратора пациенту.
  *
@@ -534,10 +653,18 @@ export interface SendResult {
  * Instagram и WhatsApp пока не подключены (этап 2), поэтому там сообщение
  * помечается как неотправленное с честной причиной, а не тихо «отправляется».
  */
+export interface SendOptions {
+  /** Файлы из хранилища (`/api/upload`), которые уходят вместе с сообщением. */
+  mediaIds?: string[];
+  /** Наше сообщение — ответ на это сообщение пациента (цитата в мессенджере). */
+  replyToMessageId?: string | null;
+}
+
 export async function sendMessageDb(
   conversationId: string,
   messageId: string,
   text: string,
+  options: SendOptions = {},
 ): Promise<SendResult> {
   const session = await getSession();
   /**
@@ -555,33 +682,175 @@ export async function sendMessageDb(
   });
   if (!conv) return { ok: false, error: "Диалог не найден" };
 
+  /**
+   * Одно и то же сообщение дважды не отправляем.
+   *
+   * Идентификатор придумывает экран и присылает его сюда, поэтому повтор
+   * узнаётся точно. Это нужно ровно в том случае, ради которого повтор и
+   * существует: связь оборвалась на полпути, экран не дождался ответа и
+   * пробует снова — а сообщение к тому времени уже ушло пациенту. Без этой
+   * проверки он получил бы его второй раз, и виноватой выглядела бы клиника.
+   */
+  const already = await prisma.message.findUnique({
+    where: { id: messageId },
+    select: { id: true, status: true, failureReason: true },
+  });
+  if (already) {
+    return already.status === "FAILED"
+      ? { ok: false, error: already.failureReason ?? "Сообщение не ушло" }
+      : { ok: true };
+  }
+
   const body = text.trim();
+
+  /**
+   * Файлы берём из хранилища по идентификаторам, а не из тела запроса.
+   *
+   * Так браузер не пересылает байты второй раз, а сервер проверяет главное:
+   * файл принадлежит этой клинике и ещё никуда не ушёл. Повторная отправка
+   * одного и того же вложения означала бы, что пациент получит его дважды.
+   */
+  const media = options.mediaIds?.length
+    ? await prisma.mediaFile.findMany({
+        where: {
+          id: { in: options.mediaIds },
+          companyId: session.companyId,
+          deletedAt: null,
+          messageId: null,
+        },
+        select: {
+          id: true,
+          storageId: true,
+          kind: true,
+          mimeType: true,
+          fileName: true,
+          sizeBytes: true,
+          durationSec: true,
+        },
+      })
+    : [];
+
+  if (options.mediaIds?.length && media.length !== options.mediaIds.length) {
+    return { ok: false, error: "Вложение не найдено или уже отправлено — приложите файл заново." };
+  }
+  if (!body && media.length === 0) return { ok: false, error: "Пустое сообщение" };
+
+  /**
+   * Цитата: идентификатор у провайдера, а не наш.
+   *
+   * Мессенджер знает сообщение под своим номером; наш идентификатор ему ни о
+   * чём не говорит. Сообщения без внешнего номера (черновик, сообщение,
+   * которое не ушло) процитировать нельзя — отправляем без цитаты, а не
+   * отказываем: ответ важнее оформления.
+   */
+  let replyToExternalId: string | null = null;
+  let replyToPreview: string | null = null;
+  if (options.replyToMessageId) {
+    const quoted = await prisma.message.findFirst({
+      where: {
+        id: options.replyToMessageId,
+        conversationId,
+        conversation: { companyId: session.companyId },
+        deletedAt: null,
+      },
+      select: { externalId: true, body: true },
+    });
+    replyToExternalId = quoted?.externalId ?? null;
+    replyToPreview = quoted?.body?.slice(0, 160) ?? null;
+  }
+
   let delivered = false;
   let failure: string | null = null;
   let externalId: string | null = null;
 
-  if (conv.channel === "TELEGRAM") {
-    const res = await sendTelegram(conv.externalUserId, body);
-    if (res.ok) {
-      delivered = true;
-      externalId = res.externalId ?? null;
-    } else {
-      // Причину показываем как есть: «bot was blocked» и «таймаут» требуют
-      // от администратора разных действий.
-      failure = res.error ?? "Telegram не принял сообщение. Проверьте настройки бота.";
+  /**
+   * Каждый файл уходит отдельным сообщением — так устроены оба мессенджера.
+   * Подпись достаётся первому: пациент читает её один раз, а не под каждой
+   * фотографией. Если файлов нет, уходит обычный текст.
+   */
+  const sendOne = async (
+    file: (typeof media)[number] | null,
+    caption: string,
+  ): Promise<{ ok: boolean; externalId?: string | null; error?: string }> => {
+    if (conv.channel === "TELEGRAM") {
+      if (!file) {
+        const res = replyToExternalId
+          ? await sendTelegramReply(conv.externalUserId, caption, replyToExternalId)
+          : await sendTelegram(conv.externalUserId, caption);
+        return { ok: res.ok, externalId: res.externalId, error: res.error };
+      }
+      const bytes = await readStored(file.storageId);
+      if (!bytes) return { ok: false, error: "Файл пропал из хранилища" };
+      const res = await sendTelegramFile({
+        chatId: conv.externalUserId,
+        kind: fileKindFor(file.kind),
+        bytes,
+        fileName: file.fileName ?? defaultFileName(file.kind, file.mimeType),
+        mimeType: file.mimeType,
+        caption,
+        replyToExternalId,
+      });
+      return { ok: res.ok, externalId: res.externalId, error: res.error };
     }
-  } else if (conv.channel === "WHATSAPP") {
-    const res = await sendWhatsapp(session.companyId, conv.externalUserId, body);
+    if (conv.channel === "WHATSAPP") {
+      if (!file) {
+        const res = replyToExternalId
+          ? await sendWhatsappReply(session.companyId, conv.externalUserId, caption, replyToExternalId)
+          : await sendWhatsapp(session.companyId, conv.externalUserId, caption);
+        return { ok: res.ok, externalId: res.externalId, error: res.error };
+      }
+      const bytes = await readStored(file.storageId);
+      if (!bytes) return { ok: false, error: "Файл пропал из хранилища" };
+      const res = await sendWhatsappFile({
+        companyId: session.companyId,
+        phoneOrChatId: conv.externalUserId,
+        bytes,
+        fileName: file.fileName ?? defaultFileName(file.kind, file.mimeType),
+        mimeType: file.mimeType,
+        caption,
+        quotedMessageId: replyToExternalId,
+      });
+      return { ok: res.ok, externalId: res.externalId, error: res.error };
+    }
+    return { ok: false, error: "Канал ещё не подключён" };
+  };
+
+  if (conv.channel !== "TELEGRAM" && conv.channel !== "WHATSAPP") {
+    failure = media.length
+      ? "В этом канале файлы не отправляются."
+      : "Канал ещё не подключён — сообщение сохранено, но пациенту не ушло.";
+  } else if (media.length === 0) {
+    const res = await sendOne(null, body);
     if (res.ok) {
       delivered = true;
       externalId = res.externalId ?? null;
     } else {
-      // Причина от провайдера показывается как есть: «нет WhatsApp у номера»
-      // и «номер не привязан» требуют разных действий от администратора.
-      failure = `WhatsApp: ${res.error ?? "сообщение не отправлено"}`;
+      // Причину показываем как есть: «bot was blocked», «нет WhatsApp у
+      // номера» и «таймаут» требуют от администратора разных действий.
+      failure = whereFailed(conv.channel, res.error);
     }
   } else {
-    failure = "Канал ещё не подключён — сообщение сохранено, но пациенту не ушло.";
+    /**
+     * Файлы отправляем по одному и останавливаемся на первой неудаче.
+     *
+     * Продолжать нельзя: пациент получил бы вторую фотографию без первой и
+     * без подписи. Что успело уйти — сказано словами, иначе администратор
+     * отправит всё заново и пациент получит дубли.
+     */
+    const sentIds: string[] = [];
+    for (const [i, file] of media.entries()) {
+      const res = await sendOne(file, i === 0 ? body : "");
+      if (!res.ok) {
+        failure = whereFailed(conv.channel, res.error);
+        if (sentIds.length > 0) {
+          failure += ` Уже ушло файлов: ${sentIds.length} из ${media.length} — отправьте только оставшиеся.`;
+        }
+        break;
+      }
+      sentIds.push(file.id);
+      if (i === 0) externalId = res.externalId ?? null;
+    }
+    delivered = sentIds.length === media.length;
   }
 
   await prisma.$transaction([
@@ -599,8 +868,40 @@ export async function sendMessageDb(
         status: delivered ? "SENT" : "FAILED",
         failureReason: failure,
         sentAt: delivered ? new Date() : null,
+        /**
+         * Вложения храним так же, как у пациента: один и тот же вид читает
+         * один и тот же код показа. Свои файлы отличает `provider: "LOCAL"` —
+         * они лежат у нас, а не у провайдера.
+         */
+        attachments: media.length
+          ? media.map((f) => ({
+              kind: f.kind,
+              label: KIND_LABEL[f.kind as AttachmentKind] ?? "файл",
+              mimeType: f.mimeType,
+              fileName: f.fileName ?? undefined,
+              durationSec: f.durationSec ?? undefined,
+              sizeBytes: f.sizeBytes,
+              source: { provider: "LOCAL", mediaId: f.id },
+            }))
+          : undefined,
+        replyToId: options.replyToMessageId ?? null,
+        replyToPreview,
       },
     }),
+    ...(media.length
+      ? [
+          /**
+           * Файл привязывается к сообщению: второй раз его не отправить, и
+           * видно, куда он ушёл. Привязываем даже при неудаче — файл всё
+           * равно принадлежит этой попытке, а повторную отправку человек
+           * начинает заново, из предпросмотра.
+           */
+          prisma.mediaFile.updateMany({
+            where: { id: { in: media.map((f) => f.id) }, companyId: session.companyId },
+            data: { messageId },
+          }),
+        ]
+      : []),
     prisma.conversation.update({
       where: { id: conversationId },
       // Сотрудник ответил вручную — агент замолкает до возврата диалога (§6.4).
@@ -629,6 +930,176 @@ export async function sendMessageDb(
   });
 
   return failure ? { ok: false, error: failure } : { ok: true };
+}
+
+/**
+ * Отправить ещё раз то, что не ушло.
+ *
+ * Повтор из готового сообщения, а не набор заново: текст и приложенные файлы
+ * уже есть, и требовать от человека печатать всё снова из-за обрыва связи —
+ * это перекладывать на него нашу неудачу. Сообщение обновляется на месте, а
+ * не создаётся второе: в переписке не должно оставаться следа от попытки,
+ * которая не состоялась.
+ *
+ * Повторяем только по-настоящему неудавшиеся: у отправленного повтор означал
+ * бы второе сообщение пациенту.
+ */
+export async function resendMessageDb(messageId: string): Promise<SendResult> {
+  requireId(messageId, "сообщение");
+  const session = await getSession();
+  if (!(await can(session, "MESSAGE_PATIENTS"))) {
+    return { ok: false, error: "Нет права писать пациентам" };
+  }
+  const msg = await prisma.message.findFirst({
+    where: { id: messageId, companyId: session.companyId, deletedAt: null },
+    select: {
+      id: true,
+      status: true,
+      direction: true,
+      body: true,
+      replyToId: true,
+      conversationId: true,
+    },
+  });
+  if (!msg) return { ok: false, error: "Сообщение не найдено" };
+  if (msg.direction !== "OUT") return { ok: false, error: "Это сообщение пациента" };
+  if (msg.status !== "FAILED") return { ok: true };
+
+  /**
+   * Файлы того сообщения отвязываем и прикладываем заново: отправка
+   * принимает только неотправленные, а этот файл к пациенту так и не попал.
+   */
+  const files = await prisma.mediaFile.findMany({
+    where: { messageId, companyId: session.companyId, deletedAt: null },
+    select: { id: true },
+  });
+  await prisma.$transaction([
+    ...(files.length
+      ? [
+          prisma.mediaFile.updateMany({
+            where: { id: { in: files.map((f) => f.id) } },
+            data: { messageId: null },
+          }),
+        ]
+      : []),
+    // Старую попытку убираем: вторая строка об одном сообщении в переписке
+    // читается как два отправленных.
+    prisma.message.delete({ where: { id: messageId } }),
+  ]);
+
+  return sendMessageDb(msg.conversationId, messageId, msg.body, {
+    mediaIds: files.map((f) => f.id),
+    replyToMessageId: msg.replyToId,
+  });
+}
+
+/**
+ * Удалить своё сообщение — и у нас, и у пациента.
+ *
+ * Главное правило: экран не должен расходиться с телефоном пациента. Если
+ * провайдер отказался удалять (у мессенджеров на это есть срок), сообщение
+ * остаётся на месте и человеку сказано почему — «убрать у себя» создало бы
+ * две разные правды об одном разговоре, а пациент продолжил бы обсуждать
+ * то, чего администратор больше не видит.
+ *
+ * Сообщение, которое не ушло, удаляется просто: у пациента его и не было.
+ */
+export async function deleteMessageDb(messageId: string): Promise<SendResult> {
+  requireId(messageId, "сообщение");
+  const session = await getSession();
+  if (!(await can(session, "MESSAGE_PATIENTS"))) {
+    return { ok: false, error: "Нет права писать пациентам" };
+  }
+  const msg = await prisma.message.findFirst({
+    where: { id: messageId, companyId: session.companyId, deletedAt: null },
+    select: {
+      id: true,
+      direction: true,
+      externalId: true,
+      channel: true,
+      conversation: { select: { externalUserId: true } },
+    },
+  });
+  if (!msg) return { ok: false, error: "Сообщение не найдено" };
+  if (msg.direction !== "OUT") {
+    // Сообщение пациента у него не удалить — это его сообщение.
+    return { ok: false, error: "Сообщение пациента удалить нельзя." };
+  }
+
+  if (msg.externalId) {
+    const res =
+      msg.channel === "WHATSAPP"
+        ? await deleteWhatsappMessage(session.companyId, msg.conversation.externalUserId, msg.externalId)
+        : msg.channel === "TELEGRAM"
+          ? await deleteTelegramMessage(msg.conversation.externalUserId, msg.externalId)
+          : { ok: false, error: "В этом канале удаление не поддерживается" };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: `У пациента сообщение осталось: ${res.error ?? "провайдер отказал"}. Обычно это значит, что срок отзыва истёк.`,
+      };
+    }
+  }
+
+  await prisma.message.update({ where: { id: msg.id }, data: { deletedAt: new Date() } });
+  return { ok: true };
+}
+
+/**
+ * Исправить своё сообщение — и у нас, и у пациента.
+ *
+ * Та же оговорка, что у удаления: не согласился провайдер — текст остаётся
+ * прежним у обоих. Правленое сообщение помечается `editedAt`: в переписке
+ * видно, что текст меняли, иначе разговор выглядит так, будто администратор
+ * писал именно это с самого начала.
+ */
+export async function editMessageDb(messageId: string, text: string): Promise<SendResult> {
+  requireId(messageId, "сообщение");
+  const session = await getSession();
+  if (!(await can(session, "MESSAGE_PATIENTS"))) {
+    return { ok: false, error: "Нет права писать пациентам" };
+  }
+  const body = text.trim();
+  if (!body) return { ok: false, error: "Пустой текст" };
+
+  const msg = await prisma.message.findFirst({
+    where: { id: messageId, companyId: session.companyId, deletedAt: null },
+    select: {
+      id: true,
+      direction: true,
+      externalId: true,
+      channel: true,
+      attachments: true,
+      conversation: { select: { externalUserId: true } },
+    },
+  });
+  if (!msg) return { ok: false, error: "Сообщение не найдено" };
+  if (msg.direction !== "OUT") return { ok: false, error: "Сообщение пациента править нельзя." };
+  if (Array.isArray(msg.attachments) && msg.attachments.length > 0) {
+    // Подпись у отправленного файла мессенджеры менять не дают.
+    return { ok: false, error: "Сообщение с вложением исправить нельзя — удалите и отправьте заново." };
+  }
+
+  if (msg.externalId) {
+    const res =
+      msg.channel === "WHATSAPP"
+        ? await editWhatsappMessage(session.companyId, msg.conversation.externalUserId, msg.externalId, body)
+        : msg.channel === "TELEGRAM"
+          ? await editTelegramMessage(msg.conversation.externalUserId, msg.externalId, body)
+          : { ok: false, error: "В этом канале правка не поддерживается" };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: `У пациента текст прежний: ${res.error ?? "провайдер отказал"}. Обычно это значит, что срок правки истёк.`,
+      };
+    }
+  }
+
+  await prisma.message.update({
+    where: { id: msg.id },
+    data: { body, editedAt: new Date() },
+  });
+  return { ok: true };
 }
 
 /** Как часто из одного диалога можно звать администраторов вручную. */

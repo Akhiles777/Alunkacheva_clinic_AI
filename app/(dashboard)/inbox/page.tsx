@@ -16,6 +16,11 @@ import {
   hydrateDialogs,
   markDialogRead,
   flushReadMarks,
+  editMessage,
+  removeMessage,
+  resendMessage,
+  setDraft,
+  type OutgoingAttachment,
   returnToBot,
   setAgentEnabled,
   sendMessage,
@@ -30,6 +35,7 @@ import {
   type ApprovedTemplate,
   type DialogAttachmentRecord,
 } from "./actions";
+import { Composer } from "./composer";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { ContactPanel } from "./contact-panel";
 import { PatientCardBody } from "../_components/patient-card";
@@ -199,6 +205,82 @@ function DialogRow({
   );
 }
 
+/**
+ * Канал диалога в термины отправки.
+ *
+ * Пределы файлов и сама возможность их отправить зависят от канала, и
+ * называть его тем же словом, что и в переписке, надёжнее, чем угадывать по
+ * подписи на экране.
+ */
+const CHANNEL_FOR_SEND: Record<string, "WHATSAPP" | "TELEGRAM" | "INSTAGRAM"> = {
+  whatsapp: "WHATSAPP",
+  telegram: "TELEGRAM",
+  instagram: "INSTAGRAM",
+};
+
+/**
+ * Что стало с нашим сообщением.
+ *
+ * Провайдер сообщает это вебхуком, и до сих пор мы всё выбрасывали: любое своё
+ * сообщение выглядело отправленным, а «не дошло» было не отличить от
+ * «прочитано». Слова, а не галочки: «✓✓» без подписи каждый читает по-своему.
+ */
+function Delivery({ state, reason }: { state?: string; reason?: string }) {
+  if (!state) return null;
+  if (state === "failed") {
+    return (
+      <span className="text-accent-text" title={reason ?? undefined}>
+        не ушло{reason ? ` · ${reason}` : ""}
+      </span>
+    );
+  }
+  const label =
+    state === "sending"
+      ? "отправляется…"
+      : state === "sent"
+        ? "отправлено"
+        : state === "delivered"
+          ? "доставлено"
+          : "прочитано";
+  return <span>{label}</span>;
+}
+
+/** Правка отправленного сообщения прямо в переписке. */
+function MessageEditor({
+  initial,
+  onSave,
+  onCancel,
+}: {
+  initial: string;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  return (
+    <div className="flex flex-col gap-2">
+      <textarea
+        value={value}
+        rows={2}
+        onChange={(e) => setValue(e.target.value)}
+        className="border-border-input bg-surface resize-none rounded-md border px-2 py-1 text-sm outline-none"
+      />
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => onSave(value)}
+          disabled={!value.trim() || value.trim() === initial.trim()}
+          className="bg-accent text-accent-contrast rounded-md px-2.5 py-1 text-xs font-medium disabled:opacity-45"
+        >
+          Сохранить
+        </button>
+        <button type="button" onClick={onCancel} className="text-text-subtle hover:text-text text-xs">
+          Отмена
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function WindowBadge({ dialog }: { dialog: Dialog }) {
   if (!dialog.windowOpen) {
     return (
@@ -221,8 +303,12 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
 }
 
 function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => void; refresh: () => void }) {
-  const [text, setText] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
+  /** На какое сообщение отвечаем и какое правим — по одному за раз. */
+  const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  /** Пересоздать композер: черновик агента положили в поле ввода. */
+  const [composerKey, setComposerKey] = useState(0);
   /**
    * Результат вызова администраторов. Показываем словами: push уходит на
    * чужие телефоны, и нажавший иначе не узнает, ушёл он или нет.
@@ -264,29 +350,24 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
     };
   }, []);
 
-  function submit() {
-    if (dialog.windowOpen && text.trim()) {
-      // Показываем результат доставки: молчаливый «успех» при неотправленном
-      // сообщении — худший исход, администратор будет ждать ответа зря.
-      const sent = text;
-      void sendMessage(dialog.id, sent).then((res) => {
-        if (res.ok) {
-          setSendError(null);
-          return;
-        }
-        setSendError(res.error ?? "Сообщение не отправлено");
-        /**
-         * Возвращаем текст в поле.
-         *
-         * Сообщение не ушло и из переписки убрано — а поле уже очищено, и
-         * набранное пропадало вместе с ним. Человеку оставалось «повторите
-         * действие» с пустого места: он перепечатывал ответ заново или, чаще,
-         * брал телефон. Ошибка без того, чем её исправить, хуже молчания.
-         */
-        setText((cur) => (cur ? cur : sent));
-      });
-      setText("");
-    }
+  /**
+   * Отправка из композера.
+   *
+   * Текст и файлы уходят вместе; неудача видна и полосой, и на самом
+   * сообщении в переписке — «не ушло» с причиной. Набранное при этом не
+   * пропадает: сообщение остаётся в разговоре, его можно отправить заново.
+   */
+  function submit(text: string, files: OutgoingAttachment[]) {
+    if (!dialog.windowOpen) return;
+    const quoted = replyTo;
+    setReplyTo(null);
+    void sendMessage(dialog.id, text, {
+      files,
+      replyToMessageId: quoted?.id ?? null,
+      replyToPreview: quoted?.preview ?? null,
+    }).then((res) => {
+      setSendError(res.ok ? null : (res.error ?? "Сообщение не отправлено"));
+    });
   }
 
   return (
@@ -470,25 +551,107 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           {dialog.messages.map((m) => {
             const mine = m.from !== "patient";
             return (
-              <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+              <div key={m.id} className={`group flex ${mine ? "justify-end" : "justify-start"}`}>
                 <div className="max-w-[78%]">
+                  {m.replyToPreview ? (
+                    /* Цитата: без неё ответ на третью реплику из пяти читается как ответ на последнюю. */
+                    <div className="border-border-soft text-text-subtle mb-1 truncate border-l-2 pl-2 text-2xs">
+                      {m.replyToPreview}
+                    </div>
+                  ) : null}
                   <div
-                    className={`rounded-xl px-3.5 py-2 text-sm leading-snug ${
+                    /*
+                      Переносы строк сохраняем: администратор пишет ответ
+                      абзацами, а в переписке всё склеивалось в одну строку —
+                      экран показывал не то, что ушло пациенту.
+                    */
+                    className={`rounded-xl px-3.5 py-2 text-sm leading-snug whitespace-pre-wrap ${
                       m.from === "patient" ? "bg-surface border-border border" : "bg-raise text-text"
                     }`}
                   >
-                    {m.text}
-                    {m.attachments.length ? (
-                      <div className="mt-2 flex flex-col gap-2">
-                        {m.attachments.map((a, i) => (
-                          <Attachment key={`${m.id}-${i}`} a={a} />
-                        ))}
-                      </div>
-                    ) : null}
+                    {editing === m.id ? (
+                      <MessageEditor
+                        initial={m.text}
+                        onCancel={() => setEditing(null)}
+                        onSave={(next) =>
+                          void editMessage(dialog.id, m.id, next).then((res) => {
+                            if (res.ok) setEditing(null);
+                            else setSendError(res.error ?? "Не исправилось");
+                          })
+                        }
+                      />
+                    ) : (
+                      <>
+                        {m.text}
+                        {m.attachments.length ? (
+                          <div className="mt-2 flex flex-col gap-2">
+                            {m.attachments.map((a, i) => (
+                              <Attachment key={`${m.id}-${i}`} a={a} />
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
                   </div>
-                  <div className={`num text-text-subtle mt-1 text-2xs ${mine ? "text-right" : ""}`}>
-                    {m.from === "bot" ? "агент · " : m.from === "staff" ? "вы · " : ""}
-                    {m.at}
+                  <div
+                    className={`num text-text-subtle mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs ${
+                      mine ? "justify-end" : ""
+                    }`}
+                  >
+                    <span>
+                      {m.from === "bot" ? "агент · " : m.from === "staff" ? "вы · " : ""}
+                      {m.at}
+                      {m.edited ? " · исправлено" : ""}
+                    </span>
+                    {mine ? <Delivery state={m.delivery} reason={m.failureReason} /> : null}
+                    {mine && m.delivery === "failed" ? (
+                      /* Текст никуда не делся — он в самом сообщении; повтор
+                         не создаёт второе и не отправит дважды. */
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void resendMessage(dialog.id, m.id).then((res) => {
+                            if (!res.ok) setSendError(res.error ?? "Снова не ушло");
+                          })
+                        }
+                        className="text-accent-text hover:underline"
+                      >
+                        Отправить ещё раз
+                      </button>
+                    ) : null}
+                    {/*
+                      Действия появляются при наведении: они нужны редко, а
+                      переписка должна читаться, а не пестреть кнопками.
+                    */}
+                    <span className="hidden gap-2 group-hover:flex">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReplyTo({ id: m.id, preview: m.text || m.attachments[0]?.label || "вложение" })
+                        }
+                        className="hover:text-text"
+                      >
+                        Ответить
+                      </button>
+                      {mine && m.canRecall && m.attachments.length === 0 ? (
+                        <button type="button" onClick={() => setEditing(m.id)} className="hover:text-text">
+                          Исправить
+                        </button>
+                      ) : null}
+                      {mine && m.canRecall ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void removeMessage(dialog.id, m.id).then((res) => {
+                              if (!res.ok) setSendError(res.error ?? "Не удалилось");
+                            })
+                          }
+                          className="hover:text-text"
+                        >
+                          Удалить
+                        </button>
+                      ) : null}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -514,7 +677,15 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
             </button>
             <button
               type="button"
-              onClick={() => setText(dialog.agentDraft!)}
+              onClick={() => {
+                /**
+                 * Черновик агента переезжает в поле ввода. Пишем его в
+                 * черновик диалога и пересоздаём композер: так текст не
+                 * зависит от того, что там было набрано минуту назад.
+                 */
+                setDraft(dialog.id, dialog.agentDraft!);
+                setComposerKey((n) => n + 1);
+              }}
               className="border-border text-text-muted hover:bg-hover rounded-md border px-3 py-1.5 text-sm"
             >
               Изменить
@@ -547,39 +718,15 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
       {/* Композер: окно открыто — свободный текст; закрыто — только шаблоны. */}
       {dialog.windowOpen ? (
-        <div className="border-border flex-none border-t px-5 py-3">
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {quickReplies.map((q) => (
-              <button
-                key={q}
-                type="button"
-                onClick={() => setText(q)}
-                className="border-border text-text-muted hover:bg-hover truncate rounded-md border px-2 py-1 text-2xs"
-              >
-                {q.length > 34 ? q.slice(0, 32) + "…" : q}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
-              }}
-              placeholder="Ответить вручную…"
-              className="border-border-input bg-surface placeholder:text-text-subtle flex-1 rounded-md border px-3 py-2 text-sm outline-none"
-            />
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!text.trim()}
-              className="bg-accent text-accent-contrast hover:bg-accent-hover rounded-md px-4 py-2 text-sm font-medium disabled:opacity-45"
-            >
-              Отправить
-            </button>
-          </div>
-        </div>
+        <Composer
+          key={`${dialog.id}-${composerKey}`}
+          dialogId={dialog.id}
+          channel={CHANNEL_FOR_SEND[dialog.channel]}
+          replyTo={replyTo}
+          onCancelReply={() => setReplyTo(null)}
+          onSend={submit}
+          quickReplies={quickReplies}
+        />
       ) : (
         <div className="border-border flex-none border-t px-5 py-3">
           <p className="text-text-muted mb-2 text-xs">

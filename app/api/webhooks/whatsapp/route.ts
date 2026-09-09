@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { deliveryPatch, stageOf } from "@/lib/integrations/delivery";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { isWhatsappEnabled, WHATSAPP_PROVIDER } from "@/lib/integrations/whatsapp/config";
@@ -55,10 +56,31 @@ export async function POST(req: Request) {
 
   const event = parseWebhook(body);
 
+  /**
+   * Статус доставки нашего сообщения.
+   *
+   * Раньше он выбрасывался вместе с остальными служебными событиями, и в
+   * переписке все свои сообщения выглядели одинаково: «отправлено». Отличить
+   * «пациент прочитал» от «до пациента не дошло» было нельзя, и администратор
+   * ждал ответа на сообщение, которого никто не получал.
+   */
+  if (event.kind === "status") {
+    const stage = stageOf(event.status);
+    if (!stage) return NextResponse.json({ ok: true, kind: "status", ignored: event.status });
+    const msg = await prisma.message.findFirst({
+      where: { channel: "WHATSAPP", externalId: event.externalId },
+      select: { id: true, status: true, sentAt: true, deliveredAt: true, readAt: true },
+    });
+    if (!msg) return NextResponse.json({ ok: true, kind: "status", ignored: "чужое сообщение" });
+    const patch = deliveryPatch(msg, stage, new Date());
+    if (patch) await prisma.message.update({ where: { id: msg.id }, data: patch });
+    return NextResponse.json({ ok: true, kind: "status", applied: Boolean(patch) });
+  }
+
   if (event.kind !== "message" && event.kind !== "outgoing") {
     /**
-     * Статусы доставки, эхо собственных сообщений, смена состояния инстанса и
-     * звонки. Их достаточно подтвердить: заводить на них переписку нельзя.
+     * Эхо собственных сообщений, смена состояния инстанса и звонки. Их
+     * достаточно подтвердить: заводить на них переписку нельзя.
      */
     return NextResponse.json({ ok: true, kind: event.kind });
   }

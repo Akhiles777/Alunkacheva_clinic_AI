@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionOrNull } from "@/lib/server/session";
 import { fileLink } from "@/lib/integrations/telegram/client";
 import { prisma } from "@/lib/db";
+import { readStored } from "@/lib/media/store";
 
 /**
  * Отдача вложений пациента сотруднику.
@@ -45,6 +46,34 @@ export async function GET(req: Request) {
    * вебхуке («audio/ogg; codecs=opus») — он и точнее.
    */
   let declaredType: string | null = null;
+
+  /**
+   * Наш собственный файл — тот, который клиника отправила пациенту.
+   *
+   * Он лежит на диске, а не у провайдера, поэтому и отдаётся иначе: без
+   * похода наружу. Проверка та же и по той же причине — файл принадлежит
+   * клинике сотрудника, иначе по чужому идентификатору открылась бы
+   * переписка соседней клиники (§7).
+   */
+  if (provider === "LOCAL") {
+    const row = await prisma.mediaFile.findFirst({
+      where: { id: ref, companyId: session.companyId, deletedAt: null },
+      select: { storageId: true, mimeType: true, fileName: true },
+    });
+    if (!row) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
+    const bytes = await readStored(row.storageId);
+    if (!bytes) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
+    return new NextResponse(new Uint8Array(bytes), {
+      headers: {
+        "Content-Type": row.mimeType || "application/octet-stream",
+        "Content-Length": String(bytes.byteLength),
+        // Тот же кэш, что у чужих вложений: только у сотрудника и ненадолго.
+        "Cache-Control": "private, max-age=300",
+        "Content-Disposition": "inline",
+        "Accept-Ranges": "none",
+      },
+    });
+  }
 
   if (provider === "TELEGRAM") {
     source = await fileLink(ref);

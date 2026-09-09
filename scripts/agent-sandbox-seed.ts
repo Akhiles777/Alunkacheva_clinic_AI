@@ -26,6 +26,7 @@ import "dotenv/config";
 import { prisma } from "../lib/db";
 
 import { SANDBOX_YCLIENTS_ID } from "./sandbox-id";
+import { ALL_PERMISSIONS as PERMISSIONS, ROLE_MATRIX, type Role } from "../lib/permissions";
 
 /**
  * Есть ли в этой базе работающая клиника.
@@ -497,6 +498,23 @@ async function main() {
     },
   });
   console.log(`специалист: ${doctor.name} +79000000001`);
+
+  /**
+   * Матрица прав. В боевой базе её заводит `prisma/seed.ts`, а песочница
+   * обходилась без неё — и любая проверка инбокса упиралась в «Нет права
+   * писать пациентам». Дефекта в продукте при этом не было, но проверка
+   * показывала не то, что видит администратор, а это хуже отсутствия проверки.
+   */
+  for (const role of Object.keys(ROLE_MATRIX) as Role[]) {
+    const allowed = new Set(ROLE_MATRIX[role]);
+    for (const permission of PERMISSIONS) {
+      await prisma.rolePermission.upsert({
+        where: { companyId_role_permission: { companyId: company.id, role, permission } },
+        update: { allowed: allowed.has(permission) },
+        create: { companyId: company.id, role, permission, allowed: allowed.has(permission) },
+      });
+    }
+  }
 
   console.log("\nпесочница готова. Прогон: npx tsx scripts/agent-drill.ts");
 }

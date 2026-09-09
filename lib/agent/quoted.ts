@@ -63,3 +63,24 @@ export function withoutQuote(text: string): string {
 export function hasQuote(text: string): boolean {
   return QUOTED_TEXT.test(text) || QUOTED_OTHER.test(text);
 }
+
+/**
+ * Разделить сообщение на цитату и собственные слова — для показа в переписке.
+ *
+ * В инбоксе цитата шла обычным текстом первой строкой пузыря, и ответ пациента
+ * читался как одно сплошное сообщение: «В ответ на: «Окошко на завтра…»
+ * Запишите племянника». Глазами это разбирается плохо, а именно здесь
+ * администратор решает, о чём речь. Показываем цитату отдельной строкой — так
+ * же, как показываем свою.
+ *
+ * Сообщение, в котором кроме цитаты ничего нет, не разделяем: пустой пузырь
+ * означал бы, что пациент промолчал.
+ */
+export function splitQuote(text: string): { quote: string | null; own: string } {
+  const m = QUOTED_TEXT.exec(text) ?? QUOTED_OTHER.exec(text);
+  if (!m) return { quote: null, own: text };
+  const own = text.slice(m[0].length).trim();
+  if (own.length === 0) return { quote: null, own: text };
+  const quote = m[0].trim().replace(/^В ответ на:?\s*/, "").replace(/^«|»$/g, "");
+  return { quote: quote || null, own };
+}

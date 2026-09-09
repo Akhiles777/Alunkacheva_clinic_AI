@@ -196,6 +196,161 @@ export async function sendText(
   return { ok: true, externalId: res.data.idMessage };
 }
 
+/**
+ * Отправить файл пациенту — загрузкой, а не ссылкой (см. ENDPOINTS).
+ *
+ * Провайдер сам решает, чем показать файл собеседнику, по типу и имени:
+ * `voice.ogg` с типом audio/ogg приходит голосовым, jpeg — фотографией.
+ * Поэтому имя файла не выдумываем и тип не подменяем.
+ *
+ * Повторов нет намеренно: обрыв на отправке значит, что файл мог уйти, и
+ * повтор пришлёт пациенту второй. Так же устроена и отправка текста.
+ */
+export async function sendFile(input: {
+  companyId: string;
+  phoneOrChatId: string;
+  bytes: Uint8Array;
+  fileName: string;
+  mimeType: string;
+  caption?: string;
+  quotedMessageId?: string | null;
+}): Promise<SendResult> {
+  if (!isWhatsappEnabled()) return { ok: false, error: "Интеграция WhatsApp выключена" };
+
+  const creds = await loadCredentials(input.companyId);
+  if (!creds) return { ok: false, error: "Не заданы ключи Green API" };
+
+  const chatId = input.phoneOrChatId.includes("@")
+    ? input.phoneOrChatId
+    : chatIdFromPhone(input.phoneOrChatId);
+  if (!chatId) return { ok: false, error: "Не удалось разобрать номер получателя" };
+
+  const form = new FormData();
+  form.append("chatId", chatId);
+  form.append("fileName", input.fileName);
+  if (input.caption) form.append("caption", input.caption.slice(0, 1000));
+  if (input.quotedMessageId) form.append("quotedMessageId", input.quotedMessageId);
+  form.append(
+    "file",
+    new Blob([new Uint8Array(input.bytes)], { type: input.mimeType }),
+    input.fileName,
+  );
+
+  const url = `${GREEN_API_BASE}${ENDPOINTS.sendFileByUpload(creds.idInstance, creds.apiToken)}`;
+  try {
+    const res = await enqueue(async () => {
+      const r = await fetch(url, {
+        method: "POST",
+        body: form,
+        // Файл грузится дольше текста: двадцати секунд не хватает даже на
+        // фотографию с телефона.
+        signal: AbortSignal.timeout(90_000),
+      });
+      const text = await r.text();
+      if (!r.ok) return { ok: false as const, error: describeError(r.status, text), status: r.status };
+      try {
+        return { ok: true as const, data: JSON.parse(text) as { idMessage?: string } };
+      } catch {
+        return { ok: false as const, error: "Green API ответил неразборчиво", status: r.status };
+      }
+    });
+    if (!res.ok) return { ok: false, error: res.error };
+    if (!res.data.idMessage) {
+      // Ответ без идентификатора: файл мог уйти. Второй раз не отправляем.
+      return { ok: false, error: "Green API не вернул идентификатор сообщения" };
+    }
+    return { ok: true, externalId: res.data.idMessage };
+  } catch (e) {
+    const name = (e as Error).name;
+    return {
+      ok: false,
+      error: name === "TimeoutError" ? "провайдер не ответил вовремя" : "сеть недоступна",
+    };
+  }
+}
+
+/**
+ * Ответ на конкретное сообщение пациента.
+ *
+ * Отдельной функцией, а не полем в sendText: цитата — это другое намерение, и
+ * ей нужен идентификатор сообщения, которого у обычной отправки нет.
+ */
+export async function sendTextReply(
+  companyId: string,
+  phoneOrChatId: string,
+  text: string,
+  quotedMessageId: string,
+): Promise<SendResult> {
+  if (!isWhatsappEnabled()) return { ok: false, error: "Интеграция WhatsApp выключена" };
+  const creds = await loadCredentials(companyId);
+  if (!creds) return { ok: false, error: "Не заданы ключи Green API" };
+  const chatId = phoneOrChatId.includes("@") ? phoneOrChatId : chatIdFromPhone(phoneOrChatId);
+  if (!chatId) return { ok: false, error: "Не удалось разобрать номер получателя" };
+  const body = text.trim();
+  if (!body) return { ok: false, error: "Пустое сообщение" };
+
+  const res = await enqueue(() =>
+    call<{ idMessage?: string }>(ENDPOINTS.sendMessage(creds.idInstance, creds.apiToken), {
+      chatId,
+      message: body.slice(0, 4000),
+      quotedMessageId,
+    }),
+  );
+  if (!res.ok) return { ok: false, error: res.error };
+  if (!res.data.idMessage) return { ok: false, error: "Green API не вернул идентификатор сообщения" };
+  return { ok: true, externalId: res.data.idMessage };
+}
+
+/**
+ * Удалить своё сообщение у пациента.
+ *
+ * WhatsApp разрешает это ограниченное время после отправки, и провайдер
+ * отвечает отказом, когда срок вышел. Отказ показываем словами: «удалено у
+ * нас, но у пациента осталось» — это разные вещи, и человек должен знать, что
+ * именно произошло.
+ */
+export async function deleteMessage(
+  companyId: string,
+  phoneOrChatId: string,
+  idMessage: string,
+): Promise<SendResult> {
+  if (!isWhatsappEnabled()) return { ok: false, error: "Интеграция WhatsApp выключена" };
+  const creds = await loadCredentials(companyId);
+  if (!creds) return { ok: false, error: "Не заданы ключи Green API" };
+  const chatId = phoneOrChatId.includes("@") ? phoneOrChatId : chatIdFromPhone(phoneOrChatId);
+  if (!chatId) return { ok: false, error: "Не удалось разобрать номер получателя" };
+
+  const res = await enqueue(() =>
+    call<unknown>(ENDPOINTS.deleteMessage(creds.idInstance, creds.apiToken), { chatId, idMessage }),
+  );
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
+}
+
+/** Исправить текст уже отправленного сообщения. */
+export async function editMessage(
+  companyId: string,
+  phoneOrChatId: string,
+  idMessage: string,
+  text: string,
+): Promise<SendResult> {
+  if (!isWhatsappEnabled()) return { ok: false, error: "Интеграция WhatsApp выключена" };
+  const creds = await loadCredentials(companyId);
+  if (!creds) return { ok: false, error: "Не заданы ключи Green API" };
+  const chatId = phoneOrChatId.includes("@") ? phoneOrChatId : chatIdFromPhone(phoneOrChatId);
+  if (!chatId) return { ok: false, error: "Не удалось разобрать номер получателя" };
+  const body = text.trim();
+  if (!body) return { ok: false, error: "Пустое сообщение" };
+
+  const res = await enqueue(() =>
+    call<unknown>(ENDPOINTS.editMessage(creds.idInstance, creds.apiToken), {
+      chatId,
+      idMessage,
+      message: body.slice(0, 4000),
+    }),
+  );
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
+}
+
 /** Одно сообщение из истории переписки. */
 export interface HistoryMessage {
   externalId: string;

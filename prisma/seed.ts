@@ -10,6 +10,9 @@ import { PrismaClient } from "../generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { SourceKind, ServiceKind, StaffRole, Permission } from "../generated/prisma/enums";
 import { CLINIC_NAME } from "../lib/brand";
+// Матрица прав живёт в lib/permissions: тот же набор нужен местной песочнице,
+// а две копии однажды разъедутся.
+import { ROLE_MATRIX } from "../lib/permissions";
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
@@ -62,14 +65,6 @@ const PERMISSIONS: Permission[] = [
   "MESSAGE_PATIENTS",
   "VIEW_AUDIT",
 ];
-const ROLE_MATRIX: Record<StaffRole, Permission[]> = {
-  OWNER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "EDIT_SETTINGS", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
-  MANAGER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
-  // Администратор ведёт клинику ежедневно: заводит сотрудников, услуги и цены.
-  // Без EDIT_SETTINGS пункт «Настройки» превращался в кнопку, которая падает.
-  ADMIN: ["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS", "EDIT_SETTINGS"],
-  DOCTOR: [],
-};
 
 /** Стартовая база знаний ассистента. Клиника правит её в «Настройки → Ассистент». */
 const KNOWLEDGE: { topic: string; question: string; answer: string }[] = [

@@ -33,6 +33,9 @@ import {
   setAgentEnabledDb,
   markDialogReadDb,
   sendMessageDb,
+  deleteMessageDb,
+  editMessageDb,
+  resendMessageDb,
   sendTemplateDb,
   startDialogDb,
   type DialogRecord,
@@ -227,6 +230,16 @@ export interface Message {
   text: string;
   at: string;
   attachments: MessageAttachment[];
+  /** Что стало с нашим сообщением: отправляется / дошло / прочитано / не ушло. */
+  delivery?: "sending" | "sent" | "delivered" | "read" | "failed";
+  /** Почему не ушло — словами провайдера. */
+  failureReason?: string;
+  /** Начало процитированного сообщения, если это ответ. */
+  replyToPreview?: string;
+  /** Текст правили после отправки. */
+  edited?: boolean;
+  /** Можно ли ещё отозвать или исправить у пациента. */
+  canRecall?: boolean;
 }
 export interface CallRecord {
   id: string;
@@ -486,6 +499,11 @@ export function hydrateDialogs(records: DialogRecord[]) {
       text: m.text,
       at: m.at,
       attachments: m.attachments ?? [],
+      delivery: m.delivery,
+      failureReason: m.failureReason,
+      replyToPreview: m.replyToPreview,
+      edited: m.edited,
+      canRecall: m.canRecall,
     }));
     return {
       id: r.id,
@@ -892,23 +910,202 @@ function replaceDialog(id: string, fn: (d: Dialog) => Dialog) {
  * канал не принял сообщение, интерфейс обязан это показать — иначе
  * администратор уверен, что ответил, а пациент ничего не получил.
  */
-export function sendMessage(dialogId: string, text: string): Promise<{ ok: boolean; error?: string }> {
+export interface OutgoingAttachment {
+  /** Идентификатор в хранилище: файл уже загружен через /api/upload. */
+  mediaId: string;
+  kind: string;
+  label: string;
+  href: string;
+  fileName?: string;
+  durationSec?: number;
+}
+
+export function sendMessage(
+  dialogId: string,
+  text: string,
+  options: {
+    files?: OutgoingAttachment[];
+    replyToMessageId?: string | null;
+    replyToPreview?: string | null;
+  } = {},
+): Promise<{ ok: boolean; error?: string }> {
   const t = text.trim();
-  if (!t) return Promise.resolve({ ok: false, error: "Пустое сообщение" });
-  // Сотрудник отправляет текст: вложения из интерфейса пока не отправляются.
-  const msg: Message = { id: uid("m"), from: "staff", text: t, at: "сейчас", attachments: [] };
+  const files = options.files ?? [];
+  if (!t && files.length === 0) return Promise.resolve({ ok: false, error: "Пустое сообщение" });
+  const msg: Message = {
+    id: uid("m"),
+    from: "staff",
+    text: t,
+    at: "сейчас",
+    attachments: files.map((f) => ({
+      kind: f.kind,
+      label: f.label,
+      href: f.href,
+      fileName: f.fileName,
+      durationSec: f.durationSec,
+    })),
+    // Пока сервер не ответил — «отправляется». Не «доставлено»: доставки мы
+    // ещё не видели, а нарисованная галочка хуже её отсутствия.
+    delivery: "sending",
+    replyToPreview: options.replyToPreview ?? undefined,
+  };
   replaceDialog(dialogId, (d) => ({
     ...d,
     messages: [...d.messages, msg],
     status: "human",
     unread: false,
-    preview: t,
+    preview: t || files[0]?.label || "вложение",
     agentDraft: undefined,
   }));
-  return sendMessageDb(dialogId, msg.id, t).catch(() => ({
-    ok: false,
-    error: "Не удалось связаться с сервером",
+  return sendMessageDb(dialogId, msg.id, t, {
+    mediaIds: files.map((f) => f.mediaId),
+    replyToMessageId: options.replyToMessageId ?? null,
+  })
+    .then((res) => {
+      /**
+       * Не ушло — показываем это прямо в переписке, а не только полосой:
+       * администратор смотрит на разговор, а не на низ экрана.
+       */
+      replaceDialog(dialogId, (d) => ({
+        ...d,
+        messages: d.messages.map((m) =>
+          m.id === msg.id
+            ? { ...m, delivery: res.ok ? "sent" : "failed", failureReason: res.ok ? undefined : res.error }
+            : m,
+        ),
+      }));
+      return res;
+    })
+    .catch(() => {
+      /**
+       * Связь оборвалась на полпути: сообщение могло уйти, а могло и нет.
+       * Пробуем один раз сами — на сервере стоит проверка по идентификатору,
+       * поэтому второй отправки пациенту не будет. Не помогло — говорим
+       * словами и оставляем кнопку повтора: текст при этом никуда не делся,
+       * он в самом сообщении.
+       */
+      return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        setTimeout(() => {
+          void sendMessageDb(dialogId, msg.id, t, {
+            mediaIds: files.map((f) => f.mediaId),
+            replyToMessageId: options.replyToMessageId ?? null,
+          })
+            .then((res) => {
+              replaceDialog(dialogId, (d) => ({
+                ...d,
+                messages: d.messages.map((m) =>
+                  m.id === msg.id
+                    ? {
+                        ...m,
+                        delivery: res.ok ? "sent" : "failed",
+                        failureReason: res.ok ? undefined : res.error,
+                      }
+                    : m,
+                ),
+              }));
+              resolve(res);
+            })
+            .catch(() => {
+              replaceDialog(dialogId, (d) => ({
+                ...d,
+                messages: d.messages.map((m) =>
+                  m.id === msg.id
+                    ? { ...m, delivery: "failed", failureReason: "Нет связи с сервером" }
+                    : m,
+                ),
+              }));
+              resolve({ ok: false, error: "Нет связи с сервером" });
+            });
+        }, RESEND_DELAY_MS);
+      });
+    });
+}
+
+/** Пауза перед единственной автоматической повторной отправкой. */
+const RESEND_DELAY_MS = 2000;
+
+/** Отправить ещё раз то, что не ушло. Текст и файлы берутся из сообщения. */
+export function resendMessage(dialogId: string, messageId: string) {
+  replaceDialog(dialogId, (d) => ({
+    ...d,
+    messages: d.messages.map((m) =>
+      m.id === messageId ? { ...m, delivery: "sending", failureReason: undefined } : m,
+    ),
   }));
+  return resendMessageDb(messageId)
+    .then((res) => {
+      replaceDialog(dialogId, (d) => ({
+        ...d,
+        messages: d.messages.map((m) =>
+          m.id === messageId
+            ? { ...m, delivery: res.ok ? "sent" : "failed", failureReason: res.ok ? undefined : res.error }
+            : m,
+        ),
+      }));
+      return res;
+    })
+    .catch(() => {
+      replaceDialog(dialogId, (d) => ({
+        ...d,
+        messages: d.messages.map((m) =>
+          m.id === messageId ? { ...m, delivery: "failed", failureReason: "Нет связи с сервером" } : m,
+        ),
+      }));
+      return { ok: false, error: "Нет связи с сервером" };
+    });
+}
+
+/**
+ * Черновики по диалогам.
+ *
+ * Раньше поле ввода было общим на все переписки: набранное для одного
+ * пациента оставалось на экране при переходе к другому — и уходило ему же,
+ * стоило нажать «Отправить». Теперь черновик привязан к диалогу.
+ *
+ * В памяти, а не в localStorage: в черновике бывает жалоба на здоровье, и
+ * складывать её на диск браузера ради удобства нельзя (§7). Вкладку закрыли —
+ * черновик пропал; переключение диалогов, ради которого всё и делалось, он
+ * переживает.
+ */
+const drafts = new Map<string, string>();
+
+export function draftOf(dialogId: string): string {
+  return drafts.get(dialogId) ?? "";
+}
+
+export function setDraft(dialogId: string, text: string) {
+  if (text) drafts.set(dialogId, text);
+  else drafts.delete(dialogId);
+}
+
+/** Убрать сообщение у себя и у пациента. */
+export function removeMessage(dialogId: string, messageId: string) {
+  return deleteMessageDb(messageId)
+    .then((res) => {
+      if (res.ok) {
+        replaceDialog(dialogId, (d) => ({
+          ...d,
+          messages: d.messages.filter((m) => m.id !== messageId),
+        }));
+      }
+      return res;
+    })
+    .catch(() => ({ ok: false, error: "Не удалось связаться с сервером" }));
+}
+
+/** Исправить текст уже отправленного сообщения. */
+export function editMessage(dialogId: string, messageId: string, text: string) {
+  return editMessageDb(messageId, text)
+    .then((res) => {
+      if (res.ok) {
+        replaceDialog(dialogId, (d) => ({
+          ...d,
+          messages: d.messages.map((m) => (m.id === messageId ? { ...m, text, edited: true } : m)),
+        }));
+      }
+      return res;
+    })
+    .catch(() => ({ ok: false, error: "Не удалось связаться с сервером" }));
 }
 
 /**

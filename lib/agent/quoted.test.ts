@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasQuote, quoteOfKind, quoteOfText, withoutQuote } from "./quoted";
+import { hasQuote, quoteOfKind, quoteOfText, withoutQuote, splitQuote } from "./quoted";
 
 /**
  * Цитата принадлежит собеседнику, а не пациенту.
@@ -49,5 +49,32 @@ describe("withoutQuote", () => {
   it("узнаёт цитату", () => {
     expect(hasQuote(`${quoteOfText("привет")}\nда`)).toBe(true);
     expect(hasQuote("Здравствуйте")).toBe(false);
+  });
+});
+
+describe("разделение цитаты для показа", () => {
+  it("цитата и слова пациента показываются порознь", () => {
+    const r = splitQuote('В ответ на: «Окошко на завтра к Ирине ✅ 09:40»\nЗапишите племянника');
+    expect(r.quote).toBe("Окошко на завтра к Ирине ✅ 09:40");
+    expect(r.own).toBe("Запишите племянника");
+  });
+
+  it("ответ на фотографию: назван тип", () => {
+    const r = splitQuote("В ответ на: фотография\nэто моё направление");
+    expect(r.quote).toBe("фотография");
+    expect(r.own).toBe("это моё направление");
+  });
+
+  it("сообщение без цитаты не трогаем", () => {
+    const r = splitQuote("Здравствуйте, сколько стоит приём?");
+    expect(r.quote).toBeNull();
+    expect(r.own).toBe("Здравствуйте, сколько стоит приём?");
+  });
+
+  it("одна цитата без слов остаётся сообщением целиком", () => {
+    const text = "В ответ на: «Ждём вас завтра»";
+    const r = splitQuote(text);
+    expect(r.quote).toBeNull();
+    expect(r.own).toBe(text);
   });
 });

@@ -21,6 +21,26 @@ export const ALL_PERMISSIONS: Permission[] = [
   "VIEW_AUDIT",
 ];
 
+/**
+ * Права ролей при заведении клиники.
+ *
+ * Здесь, а не в `prisma/seed.ts`, потому что тот же набор нужен местной
+ * песочнице: без матрицы любая проверка инбокса упиралась в «Нет права писать
+ * пациентам», и проверка показывала не то, что видит администратор. Две копии
+ * одной матрицы однажды разъедутся, и разойдутся вместе с ними права.
+ *
+ * Это стартовое значение: дальше клиника правит матрицу в настройках, и
+ * пересев её не трогает.
+ */
+export const ROLE_MATRIX: Record<Role, Permission[]> = {
+  OWNER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "EDIT_SETTINGS", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
+  MANAGER: ["VIEW_OTHER_PATIENTS", "VIEW_REVENUE", "MESSAGE_PATIENTS", "VIEW_AUDIT"],
+  // Администратор ведёт клинику ежедневно: заводит сотрудников, услуги и цены.
+  // Без EDIT_SETTINGS пункт «Настройки» превращался в кнопку, которая падает.
+  ADMIN: ["VIEW_OTHER_PATIENTS", "MESSAGE_PATIENTS", "EDIT_SETTINGS"],
+  DOCTOR: [],
+};
+
 export interface RolePermissionRow {
   role: Role;
   permission: Permission;
