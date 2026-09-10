@@ -10,6 +10,7 @@ import { WriteAlert } from "./_components/write-alert";
 import { PushGate } from "./_components/push-gate";
 import { StaleBuildGuard } from "./_components/stale-build-guard";
 import { Tour } from "./_components/tour";
+import { ProblemButton } from "./_components/problem-button";
 import { AssistantChat } from "./_components/assistant-chat";
 import { getCurrentUser } from "./_components/user-actions";
 import { getSessionOrNull } from "@/lib/server/session";
@@ -47,6 +48,8 @@ export default async function DashboardLayout({ children }: { children: ReactNod
         общей раскладке: он должен видеть весь экран, а не свой кусок.
       */}
       <Tour />
+      {/* «Что-то не так?» — чтобы о поломке узнавали в тот же день. */}
+      <ProblemButton />
     </div>
   );
 }

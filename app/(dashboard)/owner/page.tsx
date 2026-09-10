@@ -12,6 +12,8 @@ import { CourseEconomicsBlock } from "../_components/course-economics";
 import { getAgentSales } from "@/lib/server/agent-sales";
 import { periodBounds } from "@/lib/server/analytics";
 import { AgentSales } from "./agent-sales";
+import { Adoption } from "./adoption";
+import { getAdoption } from "@/lib/server/adoption";
 
 export const metadata = { title: "Владелец" };
 
@@ -69,6 +71,12 @@ export default async function OwnerPage() {
       const { from, to } = periodBounds("month");
       return getAgentSales(session.companyId, from, to);
     }),
+    /**
+     * Перешли ли в систему: доля ответов из платформы против отправленных с
+     * телефона клиники. Главный вопрос цикла — без него не узнать, сработало
+     * ли остальное.
+     */
+    timed("переход в систему", () => getAdoption(session.companyId)),
   ] as const);
   logTimings("кабинет владельца", [...parts]);
 
@@ -77,6 +85,7 @@ export default async function OwnerPage() {
   const agent = parts[2].value;
   const courses = parts[3].value;
   const sales = parts[4].value;
+  const adoption = parts[5].value;
 
   return (
     <>
@@ -254,6 +263,12 @@ export default async function OwnerPage() {
         </section>
 
         <AgentSales report={sales} periodLabel={`за ${report.period.days} дней`} />
+
+        {/*
+          Перешли ли в систему. Главный вопрос цикла: пока администратор
+          отвечает с телефона, всё остальное сделано вхолостую.
+        */}
+        <Adoption data={adoption} />
 
         <AgentSection
           stats={agent}

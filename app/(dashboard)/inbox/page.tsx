@@ -42,6 +42,7 @@ import {
 import { Composer } from "./composer";
 import { Hint } from "../_components/hint";
 import { DialogTools } from "./dialog-tools";
+import { noteUse } from "../_components/usage-actions";
 import { cancelDialogTask } from "./dialog-actions";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { ContactPanel } from "./contact-panel";
@@ -1146,6 +1147,12 @@ export default function InboxPage() {
   function open(id: string) {
     setSelectedId(id);
     markDialogRead(id);
+    /**
+     * Считаем открытые переписки и другие приёмы работы — числами по дням,
+     * без имён и без переписки (§7). Нужно ради одного честного ответа: что
+     * из сделанного осталось невостребованным.
+     */
+    void noteUse("dialog-open");
   }
 
   /**
@@ -1204,6 +1211,7 @@ export default function InboxPage() {
         typing,
       });
       if (!action) return;
+      void noteUse("hotkey");
 
       if (action === "help") {
         e.preventDefault();
@@ -1273,6 +1281,7 @@ export default function InboxPage() {
               onClick={() => {
                 markDialogsRead(chosen);
                 setChosen([]);
+                void noteUse("bulk");
               }}
               className="border-border text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs"
             >
@@ -1283,6 +1292,7 @@ export default function InboxPage() {
               onClick={() => {
                 closeDialogs(chosen);
                 setChosen([]);
+                void noteUse("bulk");
               }}
               className="border-border text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs"
             >

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { checkFile, willSplit, TEXT_LIMIT, type SendChannel } from "@/lib/media/limits";
 import { draftOf, setDraft, type OutgoingAttachment } from "@/app/_data/store";
 import { previewTemplateDb } from "./actions";
+import { noteUse } from "../_components/usage-actions";
 
 /**
  * Поле ввода администратора: текст, файлы, голосовое.
@@ -132,6 +133,7 @@ export function Composer({
         setError(verdict.reason ?? "Такой файл отправить нельзя");
         continue;
       }
+      void noteUse(verdict.kind === "voice" || verdict.kind === "audio" ? "voice" : "attachment");
       const temp: Picked = {
         mediaId: `pending-${Math.random().toString(36).slice(2)}`,
         kind: verdict.kind,
@@ -218,6 +220,7 @@ export function Composer({
     }
     // Шаблон уходит целиком и с подстановкой на сервере — вставлять его
     // текстом нельзя, пациент получит «{{name}}».
+    void noteUse("template");
     onSendTemplate(item.id, item.title);
     setText("");
     setDraft(dialogId, "");

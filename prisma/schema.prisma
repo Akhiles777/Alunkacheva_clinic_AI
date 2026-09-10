@@ -263,6 +263,8 @@ model Company {
   dialogNotes              DialogNote[]
   dialogTasks              DialogTask[]
   dialogHandoffs           DialogHandoff[]
+  featureUse               FeatureUse[]
+  problemReports           ProblemReport[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -509,6 +511,13 @@ model Message {
   replyToPreview String?
   /// Когда текст правили после отправки. Пусто — не правили.
   editedAt       DateTime? @db.Timestamptz(3)
+  /// Ушло из платформы, а не с телефона клиники.
+  ///
+  /// Главная метрика цикла — перешёл ли администратор к нам или продолжает
+  /// отвечать в WhatsApp на аппарате. Отличить можно и по автору (у наших
+  /// сообщений он есть, у пришедших вебхуком — нет), но это признак косвенный:
+  /// у сессии без сотрудника автора тоже нет. Факт надёжнее вывода.
+  viaPlatform    Boolean   @default(false)
 
   sentAt      DateTime? @db.Timestamptz(3)
   deliveredAt DateTime? @db.Timestamptz(3)
@@ -527,6 +536,59 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([companyId, createdAt])
   @@map("messages")
+}
+
+/// Сколько раз пользовались тем или иным приёмом работы — по дням.
+///
+/// Нужно, чтобы честно ответить, что осталось невостребованным: шаблоны,
+/// горячие клавиши, вложения, голосовые, заметки. Считаем ЧИСЛА, а не
+/// действия: кто нажал и в каком диалоге — не наше дело, а без этого в
+/// таблице нет ни персональных данных, ни переписки (§7).
+model FeatureUse {
+  id        String   @id @default(cuid())
+  companyId String
+  /// День в зоне клиники, начало суток.
+  day       DateTime @db.Timestamptz(3)
+  /// Короткое имя приёма: template, hotkey, attachment, voice, note…
+  feature   String
+  count     Int      @default(0)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, day, feature])
+  @@index([companyId, day])
+  @@map("feature_use")
+}
+
+/// Сообщение о проблеме от сотрудника — одной кнопкой из интерфейса.
+///
+/// Администратор не станет писать разработчику в WhatsApp; он просто перестанет
+/// пользоваться тем, что сломалось. Кнопка нужна, чтобы узнать о проблеме
+/// раньше, чем через месяц по косвенным признакам.
+model ProblemReport {
+  id        String   @id @default(cuid())
+  companyId String
+  authorId  String?
+  /// Что человек написал сам.
+  text      String
+  /// Где он был в этот момент: путь экрана. Без параметров запроса — в них
+  /// попадают идентификаторы пациентов.
+  screen    String?
+  /// Последняя ошибка, которую видела вкладка. Техническая строка, без
+  /// текстов переписки (§7).
+  lastError String?
+  /// Сборка, на которой это случилось: половина сообщений о поломке приходит
+  /// со старой вкладки.
+  build     String?
+  resolvedAt DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  company Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  author  StaffUser? @relation("ProblemAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@map("problem_reports")
 }
 
 /// Внутренняя заметка по переписке. Пациент её не видит.
@@ -1281,6 +1343,7 @@ model StaffUser {
   uploadedMedia            MediaFile[]               @relation("MediaUploadedBy")
   dialogNotes              DialogNote[]              @relation("DialogNoteAuthor")
   dialogTasks              DialogTask[]              @relation("DialogTaskAuthor")
+  problemReports           ProblemReport[]           @relation("ProblemAuthor")
   handoffsSent             DialogHandoff[]           @relation("HandoffFrom")
   handoffsReceived         DialogHandoff[]           @relation("HandoffTo")
   acknowledgedEscalations  Escalation[]              @relation("EscalationAcknowledgedBy")

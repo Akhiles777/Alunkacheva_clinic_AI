@@ -14,6 +14,7 @@ import {
   type DialogNoteView,
   type DialogTaskView,
 } from "./dialog-actions";
+import { noteUse } from "../_components/usage-actions";
 
 /**
  * Заметка, передача коллеге и отложенная отправка — строкой под перепиской.
@@ -313,6 +314,7 @@ export function DialogTools({
           return;
         }
         setNotes((list) => [res.note!, ...list]);
+        void noteUse("note");
         setNoteText("");
         onChanged();
       })
@@ -328,6 +330,7 @@ export function DialogTools({
           return;
         }
         const who = colleagues.find((c) => c.id === toId)?.name ?? "коллеге";
+        void noteUse("handoff");
         setDone(`передано: ${who}`);
         setComment("");
         setToId("");
@@ -354,6 +357,7 @@ export function DialogTools({
           setError(res.error ?? "Не отложилось");
           return;
         }
+        void noteUse("later");
         setDone(laterKind === "SEND" ? `уйдёт ${at.label}` : `напомним ${at.label}`);
         setLaterText("");
         setPanel(null);
