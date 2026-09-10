@@ -47,6 +47,8 @@ export async function handBackAndRemind(companyId: string): Promise<HandbackResu
        * бы до вечера и переставала быть выключателем.
        */
       agentDisabled: false,
+      // Тренировка агенту не возвращается: его там нет вовсе.
+      isPractice: false,
     },
     orderBy: { lastMessageAt: "asc" },
     take: BATCH,

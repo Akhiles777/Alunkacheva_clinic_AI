@@ -310,6 +310,8 @@ export interface Dialog {
   unreadCount?: number;
   /** Первое обращение этого человека: с новым говорят иначе. */
   firstTime?: boolean;
+  /** Тренировочная переписка: наружу из неё ничего не уходит. */
+  practice?: boolean;
   /** Назревшее напоминание: диалог всплывает в списке в назначенный момент. */
   reminder?: { id: string; body: string } | null;
   /** Сколько отложенных сообщений ждут отправки. */
@@ -555,6 +557,7 @@ export function hydrateDialogs(records: DialogRecord[]) {
       waitingSince: r.waitingSince,
       unreadCount: r.unreadCount,
       firstTime: r.firstTime,
+      practice: r.practice,
       reminder: r.reminder,
       scheduled: r.scheduled,
       noteCount: r.noteCount,

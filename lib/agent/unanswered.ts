@@ -109,6 +109,14 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
       status: "BOT_ACTIVE",
       // Выключенный в диалоге агент не догоняет и старые сообщения тоже.
       agentDisabled: false,
+      /**
+       * Тренировочная переписка агенту не принадлежит.
+       *
+       * Иначе добор увидел бы «неотвеченный вопрос пациента», сходил в модель
+       * за деньги клиники и написал ответ учебному собеседнику, которого не
+       * существует.
+       */
+      isPractice: false,
       lastMessageAt: { gte: notOlderThan, lte: quietBefore },
       escalations: { none: { status: { not: "RESOLVED" } } },
     },

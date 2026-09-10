@@ -81,6 +81,9 @@ export function countInquiriesInPeriod(windows: InquiryWindow[], from: Date, to:
  * Предыдущее сообщение берётся без ограничения по дате: обращение первого
  * числа зависит от того, писал ли человек тридцать первого. Поэтому фильтр по
  * периоду стоит после оконной функции, а не внутри неё.
+ *
+ * Тренировочные переписки в счёт не идут вовсе: учебные сообщения в воронке
+ * означали бы, что клиника считает своей работой тренировку сотрудника.
  */
 export interface InquiryTotals {
   total: number;
@@ -109,7 +112,8 @@ export async function countInquiriesFromDb(
            AND m."isDraft" = false
       ) t
       JOIN conversations c ON c.id = t."conversationId"
-     WHERE t."createdAt" >= ${from}
+     WHERE c."isPractice" = false
+       AND t."createdAt" >= ${from}
        AND t."createdAt" < ${to}
        AND (t.prev IS NULL OR t."createdAt" - t.prev >= ${`${gapHours} hours`}::interval)
      GROUP BY c."sourceId"

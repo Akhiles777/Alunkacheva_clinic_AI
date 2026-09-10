@@ -1,7 +1,6 @@
 import { getCurrentUser } from "../_components/user-actions";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
 import { CLINIC_NAME } from "@/lib/brand";
-import { HelpClient } from "./help-client";
 
 export const metadata = { title: "Справка" };
 
@@ -75,20 +74,18 @@ export default async function HelpPage() {
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
         <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Справка</h1>
         <p className="text-text-muted mt-1 text-xs">
-          Как сделать то, что нужно прямо сейчас. Ваша роль — {ROLE_LABEL[user.role].toLowerCase()}.
+          Как пользоваться платформой. Ваша роль — {ROLE_LABEL[user.role].toLowerCase()}.
         </p>
       </header>
 
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
         {/*
-          Сначала — задачи, потом описание разделов.
-          Человек приходит сюда с делом («как передать диалог»), а не с
-          вопросом «что такое инбокс»; описание платформы нужно реже и стоит
-          ниже.
+          Порядок работы живёт не здесь.
+          «Как ответить», «как передать диалог», «что умеет ассистент» — это
+          рабочие указания администратора, и место им там, где он работает:
+          подсказками у самих кнопок и в шпаргалке по «?» в диалогах. В общей
+          справке остаётся описание разделов — то, за чем сюда и приходят.
         */}
-        <HelpClient />
-
-        <h2 className="text-md mt-8 mb-3 font-medium">Разделы платформы</h2>
         <div className="grid max-w-[900px] grid-cols-1 gap-4 lg:grid-cols-2">
           {SECTIONS.map((s) => {
             const mine = s.role === user.role;

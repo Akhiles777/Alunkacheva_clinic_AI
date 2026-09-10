@@ -406,6 +406,8 @@ export interface DialogRecord {
   unreadCount: number;
   /** Первое обращение этого человека: с новым говорят иначе. */
   firstTime: boolean;
+  /** Тренировочная переписка: наружу из неё ничего не уходит. */
+  practice: boolean;
   /**
    * Назревшее напоминание по диалогу: «вернуться через два дня».
    *
@@ -738,6 +740,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
       preview: last ? splitQuote(stripMarks(last.body, attachmentsOf(last.attachments, last.id))).own : "",
       at: atLabel(c.lastMessageAt),
       totalMessages: c._count.messages,
+      practice: c.isPractice,
       reminder: dueReminder.get(c.id) ?? null,
       scheduled: scheduledCount.get(c.id) ?? 0,
       noteCount: noteCount.get(c.id) ?? 0,
@@ -817,7 +820,7 @@ export async function sendMessageDb(
   }
   const conv = await prisma.conversation.findFirst({
     where: { id: conversationId, companyId: session.companyId },
-    select: { channel: true, externalUserId: true },
+    select: { channel: true, externalUserId: true, isPractice: true },
   });
   if (!conv) return { ok: false, error: "Диалог не найден" };
 
@@ -954,7 +957,18 @@ export async function sendMessageDb(
     return { ok: false, error: "Канал ещё не подключён" };
   };
 
-  if (conv.channel !== "TELEGRAM" && conv.channel !== "WHATSAPP") {
+  if (conv.isPractice) {
+    /**
+     * Тренировка: наружу не уходит ничего.
+     *
+     * Обрыв стоит ЗДЕСЬ, до провайдера, а не в интерфейсе: сотрудник учится
+     * теми же кнопками, что и работает, и любая ветка, обошедшая экран
+     * (отложенная отправка, шаблон, повтор), обязана упереться в ту же
+     * проверку. Сообщение при этом сохраняется и видно в переписке — иначе
+     * тренироваться не на чем.
+     */
+    delivered = true;
+  } else if (conv.channel !== "TELEGRAM" && conv.channel !== "WHATSAPP") {
     failure = media.length
       ? "В этом канале файлы не отправляются."
       : "Канал ещё не подключён — сообщение сохранено, но пациенту не ушло.";
@@ -1055,6 +1069,9 @@ export async function sendMessageDb(
       },
     }),
   ]);
+
+  // Тренировка коллег не касается: будить их учебным сообщением нельзя.
+  if (conv.isPractice) return { ok: true };
 
   // Диалог перешёл к человеку — остальным администраторам это важно знать,
   // чтобы двое не отвечали одному пациенту одновременно.

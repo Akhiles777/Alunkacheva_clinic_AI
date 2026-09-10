@@ -6,6 +6,7 @@ import { HANDBACK_HOURS } from "@/lib/agent/handback-rule";
 import { reportMaybeStale } from "@/lib/client/stale-build";
 import { URGENT_WAIT_MS, waitLabel } from "@/lib/inbox/waiting";
 import { HOTKEYS, hotkeyAction, nextWaiting, step } from "@/lib/inbox/hotkeys";
+import { AGENT_DOES, AGENT_DOES_NOT, ARTICLES } from "@/lib/help/topics";
 import {
   CHANNEL_LABEL,
   DIALOG_FILTERS,
@@ -288,6 +289,14 @@ function DialogRow({
             · {wait}
           </span>
         ) : null}
+        {dialog.practice ? (
+          /* Учебная переписка. Метка обязана быть видна раньше, чем человек
+             начнёт печатать: иначе он однажды решит, что тренируется, а
+             написал настоящему пациенту — или наоборот. */
+          <span className="border-border text-text-muted rounded-sm border px-1 py-px text-2xs">
+            тренировка
+          </span>
+        ) : null}
         {dialog.reminder ? (
           <span className="text-accent-text text-2xs font-medium">· напоминание</span>
         ) : null}
@@ -394,33 +403,81 @@ function MessageEditor({
 function Hotkeys({ onClose }: { onClose: () => void }) {
   return (
     <div
-      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center px-4 pt-[14vh]"
+      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center px-4 pt-[10vh]"
       onMouseDown={onClose}
       role="presentation"
     >
       <div
-        className="border-border bg-surface w-full max-w-[420px] rounded-xl border p-5"
+        className="border-border bg-surface max-h-[80vh] w-full max-w-[520px] overflow-auto rounded-xl border p-5"
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="Горячие клавиши"
+        aria-label="Подсказка по работе"
       >
         <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-md font-medium">Горячие клавиши</h2>
+          <h2 className="text-md font-medium">Подсказка</h2>
           <button type="button" onClick={onClose} className="text-text-subtle hover:text-text text-xs">
             закрыть
           </button>
         </div>
-        <ul className="flex flex-col gap-1.5">
+
+        <div className="text-text-subtle mb-1.5 text-2xs">Клавиши</div>
+        <ul className="mb-4 flex flex-col gap-1.5">
           {HOTKEYS.map((h) => (
             <li key={h.keys} className="flex items-baseline gap-3 text-xs">
-              <kbd className="num border-border text-text-muted flex-none rounded-sm border px-1.5 py-px text-2xs">
+              <kbd className="num border-border text-text-muted w-[110px] flex-none rounded-sm border px-1.5 py-px text-2xs">
                 {h.keys}
               </kbd>
               <span className="text-text-muted">{h.what}</span>
             </li>
           ))}
         </ul>
+
+        {/*
+          Порядок работы — здесь, а не в общей справке: он нужен в момент
+          работы и на том же экране. Заголовок — задача, строка под ним —
+          готовый ответ; подробности человек и так делает руками.
+        */}
+        <div className="text-text-subtle mb-1.5 text-2xs">Как сделать</div>
+        <ul className="mb-4 flex flex-col gap-2">
+          {ARTICLES.map((a) => (
+            <li key={a.id}>
+              <div className="text-xs font-medium">{a.title}</div>
+              <div className="text-text-muted text-xs leading-snug">{a.answer}</div>
+            </li>
+          ))}
+        </ul>
+
+        <div className="text-text-subtle mb-1.5 text-2xs">Ассистент</div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <div className="text-text-subtle mb-1 text-2xs">отвечает сам</div>
+            <ul className="text-text-muted flex list-disc flex-col gap-0.5 pl-4 text-xs leading-snug">
+              {AGENT_DOES.map((x) => (
+                <li key={x}>{x}</li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <div className="text-text-subtle mb-1 text-2xs">отдаёт человеку</div>
+            <ul className="text-text-muted flex list-disc flex-col gap-0.5 pl-4 text-xs leading-snug">
+              {AGENT_DOES_NOT.map((x) => (
+                <li key={x}>{x}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            onClose();
+            window.dispatchEvent(new Event("start-tour"));
+          }}
+          className="border-border text-text-muted hover:bg-hover mt-4 rounded-md border px-2.5 py-1 text-xs"
+        >
+          Показать знакомство с платформой заново
+        </button>
       </div>
     </div>
   );
@@ -449,8 +506,6 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
 
 function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => void; refresh: () => void }) {
   const [sendError, setSendError] = useState<string | null>(null);
-  /** Панель заметок и отложенного: свёрнута, пока не понадобилась. */
-  const [tools, setTools] = useState(false);
   /** На какое сообщение отвечаем и какое правим — по одному за раз. */
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -562,6 +617,14 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                 диалоге, а не действие. И видно её теперь на телефоне тоже —
                 эскалации теряться не должны (§9).
               */}
+              {dialog.practice ? (
+                <>
+                  {" · "}
+                  <span className="text-text-muted font-medium">
+                    тренировка: наружу ничего не уходит
+                  </span>
+                </>
+              ) : null}
               {dialog.status === "escalated" ? (
                 <>
                   {" · "}
@@ -651,25 +714,6 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           </button>
           <Hint id="callAdmin" className="self-center" />
           {/*
-            Заметки, передача коллеге и отложенная отправка. Свёрнуты по
-            умолчанию: в обычной работе они не нужны и не должны занимать
-            место, ради которого сюда смотрят, — саму переписку.
-          */}
-          <button
-            type="button"
-            onClick={() => setTools((v) => !v)}
-            className={`flex-none rounded-md border px-2.5 py-1 text-2xs ${
-              tools
-                ? "border-accent-border bg-accent-tint text-accent-text"
-                : "border-border text-text-muted hover:bg-hover"
-            }`}
-          >
-            Заметки и отложенное
-            {(dialog.noteCount ?? 0) + (dialog.scheduled ?? 0) > 0
-              ? ` · ${(dialog.noteCount ?? 0) + (dialog.scheduled ?? 0)}`
-              : ""}
-          </button>
-          {/*
             Выключатель агента — насовсем, а не на четыре часа.
 
             В пациентский канал пишут и сотрудники клиники между собой:
@@ -707,7 +751,9 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
               Вернуть агенту
             </button>
           ) : null}
-          {dialog.status !== "bot" ? (
+          {/* Подсказка живёт при своей кнопке: одинокий «?» объясняет то,
+              чего на экране нет, и сам становится загадкой. */}
+          {dialog.status !== "bot" && !dialog.agentDisabled ? (
             <Hint id="returnToBot" className="self-center" />
           ) : null}
         </div>
@@ -738,7 +784,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
         </div>
       ) : null}
 
-      {tools ? <DialogTools dialogId={dialog.id} onChanged={refresh} /> : null}
+
 
       <div className="flex-1 overflow-auto px-5 py-4">
         <div className="flex flex-col gap-3">
@@ -918,6 +964,11 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
         </div>
       ) : null}
 
+      {/*
+        Заметки, передача и отложенное — подписью ПОД перепиской, а не панелью
+        над ней: ими пользуются несколько раз за смену, и постоянное меню
+        забирает место у того, ради чего сюда смотрят.
+      */}
       {/* Композер: окно открыто — свободный текст; закрыто — только шаблоны. */}
       {dialog.windowOpen ? (
         <Composer
@@ -976,6 +1027,9 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           )}
         </div>
       )}
+
+      {/* Подпись под перепиской: заметка, передача коллеге, отложенное. */}
+      <DialogTools dialogId={dialog.id} onChanged={refresh} />
     </div>
   );
 }
@@ -984,7 +1038,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 export default function InboxPage() {
   const db = useDb();
   const [filter, setFilter] = useState("need");
-  const [syncing, setSyncing] = useState(false);
+
   /**
    * Часы списка. Ожидание («ждёт 12 мин») набегает между обновлениями, и без
    * своего тика надпись стояла бы неподвижно до следующего ответа сервера.
@@ -1000,8 +1054,15 @@ export default function InboxPage() {
    * Тихое обновление списка. Без него новые сообщения появлялись только после
    * перезахода на страницу: инбокс загружался один раз при монтировании.
    */
+  /**
+   * Список обновляется молча.
+   *
+   * Надпись «обновляем…» мигала каждые шесть секунд у самых фильтров и
+   * дёргала взгляд ровно там, где человек читает. Обновление и так видно по
+   * самому списку; отдельный признак нужен, только когда что-то пошло не так,
+   * а это отдельное сообщение.
+   */
   const refresh = useCallback(() => {
-    setSyncing(true);
     // Тем же кругом повторяем отметки прочтения, которые не легли в базу:
     // сеть моргнула или приложение перезапускалось — человека это не касается.
     flushReadMarks();
@@ -1011,8 +1072,7 @@ export default function InboxPage() {
         // Список не пришёл — молча: следующий круг через шесть секунд. Но если
         // вкладка на старой сборке, круги не помогут, и сторож это заметит.
         reportMaybeStale(e);
-      })
-      .finally(() => setSyncing(false));
+      });
   }, []);
 
   useEffect(() => {
@@ -1194,7 +1254,6 @@ export default function InboxPage() {
             </button>
           </div>
           <div data-tour="dialog-filters" className="mt-2.5 flex flex-wrap gap-1">
-            {syncing ? <span className="text-text-subtle self-center text-2xs">обновляем…</span> : null}
             {DIALOG_FILTERS.map((f) => (
               <button
                 key={f.id}

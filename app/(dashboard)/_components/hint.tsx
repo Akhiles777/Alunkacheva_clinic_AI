@@ -41,7 +41,7 @@ export function Hint({ id, className = "" }: { id: string; className?: string })
    * документа. Заодно он не переворачивается за край экрана: сверху разворот
    * вниз, у краёв — прижатие к краю.
    */
-  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+  const [at, setAt] = useState<{ top: number; left: number; below: boolean } | null>(null);
   const btn = useRef<HTMLButtonElement | null>(null);
   const open = (hover || pinned) && at !== null;
   const hint = HINTS[id];
@@ -58,6 +58,7 @@ export function Hint({ id, className = "" }: { id: string; className?: string })
     const width = Math.min(WIDTH, window.innerWidth - 24);
     const below = box.top < 160;
     setAt({
+      below,
       top: below ? box.bottom + 8 : Math.max(8, box.top - 8),
       left: Math.min(Math.max(12, box.left + box.width / 2 - width / 2), window.innerWidth - width - 12),
     });
@@ -97,8 +98,9 @@ export function Hint({ id, className = "" }: { id: string; className?: string })
                 top: at.top,
                 left: at.left,
                 width: Math.min(WIDTH, window.innerWidth - 24),
-                // Над кнопкой текст поднимается на свою высоту сам.
-                transform: at.top < (btn.current?.getBoundingClientRect().top ?? 0) ? "translateY(-100%)" : undefined,
+                // Над кнопкой текст поднимается на свою высоту сам; куда
+                // разворачивать, решено при замере, а не во время отрисовки.
+                transform: at.below ? undefined : "translateY(-100%)",
               }}
               className="border-border bg-surface text-text pointer-events-none fixed z-[80] rounded-md border p-2.5 text-xs leading-snug shadow-lg"
             >

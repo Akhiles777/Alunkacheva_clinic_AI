@@ -41,6 +41,8 @@ export async function getAgentSales(
     where: {
       companyId,
       deletedAt: null,
+      // Тренировочные переписки — учёба сотрудника, а не работа ассистента.
+      isPractice: false,
       messages: { some: { createdAt: { gte: from, lt: to }, deletedAt: null, isDraft: false } },
     },
     select: {

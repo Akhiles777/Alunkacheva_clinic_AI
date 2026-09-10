@@ -16,15 +16,13 @@ import {
 } from "./dialog-actions";
 
 /**
- * То, чего нет в WhatsApp, — прямо в окне переписки.
+ * Заметка, передача коллеге и отложенная отправка — строкой под перепиской.
  *
- * Заметка «просила перезвонить после 18», передача смены с комментарием,
- * ответ, написанный ночью и уходящий утром, и «вернуться к этому через два
- * дня». Всё это сейчас живёт в голове администратора или в тетради, то есть
- * теряется на первой же пересменке.
- *
- * Панель складывается: в обычной работе она не нужна и не должна занимать
- * место, ради которого сюда смотрят, — саму переписку.
+ * Сначала это была панель с вкладками над разговором. Вкладки — вид меню, а
+ * меню в рабочем окне забирает и место, и внимание: администратор смотрит на
+ * переписку, а не на органы управления. Ими пользуются несколько раз за смену,
+ * поэтому здесь — короткая подпись под полем ввода; нажал слово, под ним
+ * раскрылась одна форма, закончил — свернулась.
  */
 
 /** Готовые отсрочки: набирать дату руками ради «завтра утром» никто не станет. */
@@ -43,6 +41,8 @@ function nextMorning(): Date {
   return d;
 }
 
+type Panel = "notes" | "handoff" | "later" | null;
+
 export function DialogTools({
   dialogId,
   onChanged,
@@ -51,7 +51,7 @@ export function DialogTools({
   /** Список диалогов обновится: у переписки сменился хозяин или появилось отложенное. */
   onChanged: () => void;
 }) {
-  const [tab, setTab] = useState<"notes" | "handoff" | "later">("notes");
+  const [panel, setPanel] = useState<Panel>(null);
   const [notes, setNotes] = useState<DialogNoteView[]>([]);
   const [tasks, setTasks] = useState<DialogTaskView[]>([]);
   const [colleagues, setColleagues] = useState<ColleagueView[]>([]);
@@ -65,74 +65,76 @@ export function DialogTools({
   const [laterText, setLaterText] = useState("");
   const [when, setWhen] = useState(WHEN[0].id);
 
+  /**
+   * Считаем заметки и отложенное сразу: число в подписи говорит, есть ли там
+   * что-то, и без него подпись — просто ссылка, по которой надо сходить.
+   */
   useEffect(() => {
     let alive = true;
-    void Promise.all([listDialogNotes(dialogId), listDialogTasks(dialogId), listColleagues()])
-      .then(([n, t, c]) => {
+    void Promise.all([listDialogNotes(dialogId), listDialogTasks(dialogId)])
+      .then(([n, t]) => {
         if (!alive) return;
         setNotes(n);
         setTasks(t);
-        setColleagues(c);
       })
       .catch(() => {
-        // Панель не загрузилась — она вспомогательная, переписка работает.
-        if (alive) setError("Не удалось загрузить заметки и отложенное");
+        // Не загрузилось — переписка работает, подпись просто без чисел.
       });
     return () => {
       alive = false;
     };
   }, [dialogId]);
 
+  /** Коллеги нужны только для передачи — за ними ходим, когда открыли форму. */
+  useEffect(() => {
+    if (panel !== "handoff" || colleagues.length > 0) return;
+    let alive = true;
+    void listColleagues()
+      .then((c) => alive && setColleagues(c))
+      .catch(() => alive && setError("Не удалось получить список сотрудников"));
+    return () => {
+      alive = false;
+    };
+  }, [panel, colleagues.length]);
+
+  function toggle(next: Panel) {
+    setPanel((cur) => (cur === next ? null : next));
+    setError(null);
+    setDone(null);
+  }
+
   return (
-    <div className="border-border-soft bg-raise flex-none border-b px-5 py-3">
-      <div className="mb-2.5 flex flex-wrap gap-1.5">
-        {(
-          [
-            ["notes", `Заметки${notes.length ? ` · ${notes.length}` : ""}`],
-            ["handoff", "Передать коллеге"],
-            ["later", `Отложить${tasks.length ? ` · ${tasks.length}` : ""}`],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => {
-              setTab(id);
-              setError(null);
-              setDone(null);
-            }}
-            className={`rounded-md px-2 py-1 text-2xs ${
-              tab === id
-                ? "bg-accent-tint text-accent-text font-medium"
-                : "border-border text-text-muted hover:bg-hover border"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+    <div className="border-border-soft flex-none border-t px-5 py-1.5">
+      {/* Подпись, а не вкладки: три слова мелким шрифтом под полем ввода. */}
+      <div className="text-text-subtle flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
+        <Word active={panel === "notes"} onClick={() => toggle("notes")}>
+          Заметка{notes.length > 0 ? ` · ${notes.length}` : ""}
+        </Word>
+        <Word active={panel === "handoff"} onClick={() => toggle("handoff")}>
+          Передать коллеге
+        </Word>
+        <Word active={panel === "later"} onClick={() => toggle("later")}>
+          Отложить{tasks.length > 0 ? ` · ${tasks.length}` : ""}
+        </Word>
+        {done ? <span className="text-text-muted">{done}</span> : null}
+        {error ? <span className="text-accent-text">{error}</span> : null}
       </div>
 
-      {error ? <p className="text-accent-text mb-2 text-xs">{error}</p> : null}
-      {done ? <p className="text-text-muted mb-2 text-xs">{done}</p> : null}
-
-      {tab === "notes" ? (
-        <div className="flex flex-col gap-2">
-          {/*
-            Заметку видят все администраторы и не видит пациент. Так и
-            написано рядом с полем: цена ошибки здесь — служебная реплика,
-            ушедшая человеку, о котором она написана.
-          */}
+      {panel === "notes" ? (
+        <div className="mt-2 mb-1 flex flex-col gap-2">
           <div className="flex flex-wrap items-start gap-2">
             <input
               value={noteText}
+              autoFocus
               onChange={(e) => setNoteText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
                   save();
                 }
+                if (e.key === "Escape") setPanel(null);
               }}
-              placeholder="Заметка для коллег: «просила перезвонить после 18»"
+              placeholder="Для коллег, не для пациента: «просила перезвонить после 18»"
               className="border-border-input bg-surface placeholder:text-text-subtle min-w-[200px] flex-1 rounded-md border px-2.5 py-1.5 text-xs outline-none"
             />
             <button
@@ -141,11 +143,9 @@ export function DialogTools({
               disabled={!noteText.trim()}
               className="bg-accent text-accent-contrast rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-45"
             >
-              {/* Не «Записать»: рядом в шапке этим словом записывают на приём. */}
               Сохранить
             </button>
           </div>
-          <p className="text-text-subtle text-2xs">Пациент этого не видит. Видят администраторы.</p>
           {notes.length > 0 ? (
             <ul className="flex flex-col gap-1">
               {notes.map((n) => (
@@ -158,6 +158,7 @@ export function DialogTools({
                     onClick={() =>
                       void removeDialogNote(n.id).then(() => {
                         setNotes((list) => list.filter((x) => x.id !== n.id));
+                        onChanged();
                       })
                     }
                     className="text-text-subtle hover:text-text flex-none text-2xs"
@@ -171,8 +172,8 @@ export function DialogTools({
         </div>
       ) : null}
 
-      {tab === "handoff" ? (
-        <div className="flex flex-col gap-2">
+      {panel === "handoff" ? (
+        <div className="mt-2 mb-1 flex flex-col gap-2">
           {colleagues.length === 0 ? (
             <p className="text-text-muted text-xs">
               Передать некому: в клинике один сотрудник с доступом к перепискам.
@@ -208,49 +209,24 @@ export function DialogTools({
                 </button>
               </div>
               <p className="text-text-subtle text-2xs">
-                Коллега получит уведомление и увидит комментарий в заметках. Без комментария
-                передача — это та же работа заново.
+                Коллега получит уведомление, комментарий останется в заметках.
               </p>
             </>
           )}
         </div>
       ) : null}
 
-      {tab === "later" ? (
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap gap-1.5">
-            {(
-              [
-                ["SEND", "Отправить позже"],
-                ["REMIND", "Напомнить мне"],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setLaterKind(id)}
-                className={`rounded-md px-2 py-1 text-2xs ${
-                  laterKind === id
-                    ? "bg-accent-tint text-accent-text font-medium"
-                    : "border-border text-text-muted hover:bg-hover border"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <textarea
-            value={laterText}
-            rows={2}
-            onChange={(e) => setLaterText(e.target.value)}
-            placeholder={
-              laterKind === "SEND"
-                ? "Текст, который уйдёт пациенту в назначенное время"
-                : "О чём напомнить: «спросить про анализы»"
-            }
-            className="border-border-input bg-surface placeholder:text-text-subtle resize-none rounded-md border px-2.5 py-1.5 text-xs outline-none"
-          />
+      {panel === "later" ? (
+        <div className="mt-2 mb-1 flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={laterKind}
+              onChange={(e) => setLaterKind(e.target.value as "SEND" | "REMIND")}
+              className="border-border-input bg-surface rounded-md border px-2 py-1.5 text-xs outline-none"
+            >
+              <option value="SEND">Отправить пациенту позже</option>
+              <option value="REMIND">Напомнить мне</option>
+            </select>
             <select
               value={when}
               onChange={(e) => setWhen(e.target.value)}
@@ -268,13 +244,28 @@ export function DialogTools({
               disabled={!laterText.trim()}
               className="bg-accent text-accent-contrast rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-45"
             >
-              {laterKind === "SEND" ? "Отложить отправку" : "Поставить напоминание"}
+              {laterKind === "SEND" ? "Отложить" : "Напомнить"}
             </button>
           </div>
+          <textarea
+            value={laterText}
+            rows={2}
+            autoFocus
+            onChange={(e) => setLaterText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setPanel(null);
+            }}
+            placeholder={
+              laterKind === "SEND"
+                ? "Текст, который уйдёт пациенту в назначенное время"
+                : "О чём напомнить: «спросить про анализы»"
+            }
+            className="border-border-input bg-surface placeholder:text-text-subtle resize-none rounded-md border px-2.5 py-1.5 text-xs outline-none"
+          />
           <p className="text-text-subtle text-2xs">
             {laterKind === "SEND"
-              ? "Уйдёт само, даже если вкладка закрыта: отправку ведёт сервер."
-              : "Диалог всплывёт в списке наверху в назначенный момент."}
+              ? "Уйдёт само, даже если вкладка закрыта."
+              : "Диалог всплывёт наверху списка в назначенный момент."}
           </p>
           {tasks.length > 0 ? (
             <ul className="flex flex-col gap-1">
@@ -337,9 +328,10 @@ export function DialogTools({
           return;
         }
         const who = colleagues.find((c) => c.id === toId)?.name ?? "коллеге";
-        setDone(`Передано: ${who}. Уведомление ушло.`);
+        setDone(`передано: ${who}`);
         setComment("");
         setToId("");
+        setPanel(null);
         void listDialogNotes(dialogId).then(setNotes).catch(() => {});
         onChanged();
       })
@@ -362,15 +354,33 @@ export function DialogTools({
           setError(res.error ?? "Не отложилось");
           return;
         }
-        setDone(
-          laterKind === "SEND"
-            ? `Уйдёт ${at.label}. Отменить можно здесь же.`
-            : `Напомним ${at.label} — диалог всплывёт в списке.`,
-        );
+        setDone(laterKind === "SEND" ? `уйдёт ${at.label}` : `напомним ${at.label}`);
         setLaterText("");
+        setPanel(null);
         void listDialogTasks(dialogId).then(setTasks).catch(() => {});
         onChanged();
       })
       .catch(() => setError("Не отложилось — нет связи с сервером"));
   }
+}
+
+/** Слово-кнопка в подписи: не выглядит органом управления, пока не нужно. */
+function Word({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`hover:text-text ${active ? "text-accent-text font-medium" : ""}`}
+    >
+      {children}
+    </button>
+  );
 }

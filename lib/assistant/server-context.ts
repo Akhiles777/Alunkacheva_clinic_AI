@@ -86,7 +86,8 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
       _sum: { revenue: true },
     }),
     prisma.appointment.count({ where: { companyId, deletedAt: null, isFirstVisit: true } }),
-    prisma.conversation.count({ where: { companyId } }),
+    // Тренировочные переписки — учёба сотрудника, а не разговоры клиники.
+    prisma.conversation.count({ where: { companyId, isPractice: false } }),
     prisma.escalation.count({ where: { companyId, status: { not: "RESOLVED" } } }),
     /**
      * Услуги — по составу визита, а не по основной услуге.
