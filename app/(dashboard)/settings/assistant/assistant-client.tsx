@@ -18,6 +18,7 @@ import { mergeKeepingOrder } from "@/lib/merge-list";
 import { DEFAULT_INTAKE_PROMPT } from "@/lib/agent/intake";
 import { GapsBlock, type GapDraft, type GapsData } from "./gaps-block";
 import { SpecialistsBlock } from "./specialists-block";
+import { QualityBlock, type QualityData } from "./quality-block";
 import type { SpecialistItem } from "./specialists-actions";
 
 type AssistantConfig = typeof settingsStore.assistant;
@@ -197,6 +198,7 @@ export function AssistantClient({
   initial,
   serviceOptions,
   gaps,
+  quality,
   usage,
   usageSince,
   canApprove,
@@ -206,6 +208,8 @@ export function AssistantClient({
   initial: AssistantData;
   serviceOptions: { id: string; title: string }[];
   gaps: GapsData;
+  /** Что нашла ночная проверка ответов ассистента и что с этим сделал человек. */
+  quality: QualityData;
   /** Кому ассистент пересылает вопросы, на которые не отвечает сам. */
   specialists: SpecialistItem[];
   /** Сотрудники клиники: из них выбирают адресата. */
@@ -463,6 +467,22 @@ export function AssistantClient({
 
       <GapsBlock
         data={gaps}
+        onDraft={(draft) => {
+          const item = draftFromGap(draft);
+          setQuery("");
+          setKnowledge((items) => [...items, item]);
+          setDirtyKnowledgeIds((ids) => new Set(ids).add(item.id));
+        }}
+      />
+
+      {/*
+        Контроль качества — рядом с пробелами и по той же причине: и то, и
+        другое кончается одним действием, записью в справочнике. «Ответил без
+        справки» и «спросили, а ответить было нечем» — это один и тот же
+        пробел, увиденный с разных сторон.
+      */}
+      <QualityBlock
+        data={quality}
         onDraft={(draft) => {
           const item = draftFromGap(draft);
           setQuery("");

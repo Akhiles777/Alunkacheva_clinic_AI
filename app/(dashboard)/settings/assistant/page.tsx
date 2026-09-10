@@ -8,6 +8,8 @@ import { getSession } from "@/lib/server/session";
 import { getKnowledgeGaps, GAP_WINDOW_DAYS } from "@/lib/server/knowledge-gaps";
 import type { GapsData } from "./gaps-block";
 import { getSpecialists, getStaffOptions } from "./specialists-actions";
+import { qualityProblems, qualitySummary, QUALITY_WINDOW } from "@/lib/server/agent-quality";
+import type { QualityData } from "./quality-block";
 
 export default async function AssistantSettingsPage() {
   // Конфигурация — из JSON-настройки, база знаний — из доменной таблицы, той
@@ -72,6 +74,23 @@ export default async function AssistantSettingsPage() {
   for (const u of report.usage) usage[u.entryId] = u.used;
   const usageSince = report.usageSince?.toISOString() ?? null;
 
+  /**
+   * Контроль качества ответов ассистента: что нашла ночная проверка.
+   *
+   * Показываем и итог, и неразобранное. Одно без другого врёт: пустой список
+   * при нуле проверок означает «проверка не работала», а не «всё хорошо».
+   */
+  const qSummary = await qualitySummary(session.companyId);
+  const quality: QualityData = {
+    problems: await qualityProblems(session.companyId),
+    checked: qSummary.checked,
+    totalProblems: qSummary.problems,
+    confirmed: qSummary.confirmed,
+    rejected: qSummary.rejected,
+    since: qSummary.since,
+    window: QUALITY_WINDOW,
+  };
+
   /** Утверждать медицинские справки вправе врач и владелец — см. actions.ts. */
   const canApprove = session.role === "DOCTOR" || session.role === "OWNER";
 
@@ -86,6 +105,7 @@ export default async function AssistantSettingsPage() {
           initial={initial}
           serviceOptions={serviceOptions}
           gaps={gaps}
+          quality={quality}
           usage={usage}
           usageSince={usageSince}
           canApprove={canApprove}

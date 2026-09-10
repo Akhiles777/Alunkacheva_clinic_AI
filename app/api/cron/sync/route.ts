@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { runFastCycle, runSyncCycle, schedulerState } from "@/lib/server/scheduler";
+import { runFastCycle, runNightCycle, runSyncCycle, schedulerState } from "@/lib/server/scheduler";
 
 /**
  * Синхронизация с YCLIENTS по расписанию.
@@ -207,14 +207,20 @@ async function run(): Promise<Response> {
  * Что делать по этому обращению.
  *
  * `?check=1` — только состояние. `?fast=1` — короткий круг: свежие записи за
- * пару дней и месяц вперёд, без справочников и кассы. Полное расписание живёт
- * внутри приложения, но короткий круг доступен и снаружи: когда нужно увидеть
+ * пару дней и месяц вперёд, без справочников и кассы. `?night=1` — ночная
+ * работа (контроль качества ответов агента) принудительно. Полное расписание
+ * живёт внутри приложения, но круги доступны и снаружи: когда нужно увидеть
  * запись сейчас, а не через три минуты.
  */
 async function dispatch(req: Request): Promise<Response> {
   const q = new URL(req.url).searchParams;
   if (q.get("check")) return state();
   if (q.get("fast")) return NextResponse.json({ ok: true, короткийКруг: await runFastCycle() });
+  /**
+   * `?night=1` — ночная работа сейчас, не дожидаясь трёх часов. Иначе
+   * проверить, что контроль качества вообще идёт, можно только не спав.
+   */
+  if (q.get("night")) return NextResponse.json({ ok: true, ночнойКруг: await runNightCycle(true) });
   return run();
 }
 

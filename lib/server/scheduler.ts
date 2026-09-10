@@ -15,6 +15,8 @@ import {
 } from "@/lib/metrics/recompute";
 import { answerUnanswered } from "@/lib/agent/unanswered";
 import { handBackAndRemind } from "@/lib/agent/handback";
+import { runQualityCheck } from "@/lib/server/agent-quality";
+import { CLINIC_TZ } from "@/lib/clinic-time";
 
 /**
  * Синхронизация с YCLIENTS по расписанию — внутри приложения.
@@ -54,6 +56,18 @@ const FAST_INTERVAL_MIN = Number(process.env.SYNC_FAST_INTERVAL_MIN ?? 3);
 /** Первый прогон — не в момент старта: дадим приложению подняться. */
 const FIRST_RUN_DELAY_MS = 60_000;
 
+/**
+ * Ночное окно. Контроль качества ответов агента идёт только здесь.
+ *
+ * Днём сервер занят выгрузкой и перепиской, а памяти на нём 1,9 ГБ и рядом
+ * живёт второй проект. Проверка никуда не спешит: её результат читают утром, и
+ * лишний час ожидания не стоит ни одной задержки в инбоксе.
+ */
+const NIGHT_FROM_HOUR = 3;
+const NIGHT_TO_HOUR = 6;
+/** Как часто смотрим на часы. Проверка сама решает, наступило ли её время. */
+const NIGHT_TICK_MIN = 30;
+
 export interface SyncRunInfo {
   startedAt: string;
   finishedAt: string | null;
@@ -83,6 +97,10 @@ interface SchedulerShared {
   fastTimer: NodeJS.Timeout | null;
   fastRunning: boolean;
   fastHistory: SyncRunInfo[];
+  /** Ночная работа: контроль качества ответов агента. */
+  nightTimer: NodeJS.Timeout | null;
+  nightRunning: boolean;
+  nightHistory: SyncRunInfo[];
 }
 
 const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clinicScheduler ??= {
@@ -93,6 +111,9 @@ const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clini
   fastTimer: null,
   fastRunning: false,
   fastHistory: [],
+  nightTimer: null,
+  nightRunning: false,
+  nightHistory: [],
 }) as SchedulerShared;
 
 export function schedulerState() {
@@ -108,6 +129,12 @@ export function schedulerState() {
       окноДней: { назад: RECENT_BACK_DAYS, вперёд: RECENT_FORWARD_DAYS },
       идётСейчас: shared.fastRunning,
       последниеПрогоны: shared.fastHistory.slice(-5),
+    },
+    ночнаяРабота: {
+      включена: shared.nightTimer !== null,
+      окноЧасов: `${NIGHT_FROM_HOUR}:00–${NIGHT_TO_HOUR}:00 МСК`,
+      идётСейчас: shared.nightRunning,
+      последниеПрогоны: shared.nightHistory.slice(-5),
     },
     работаетСо: shared.startedAt?.toISOString() ?? null,
     идётСейчас: shared.running,
@@ -395,6 +422,78 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
 }
 
 /**
+ * Ночная работа: контроль качества ответов агента.
+ *
+ * Порциями и по одной клинике за раз. Всё, что здесь падает, падает молча для
+ * агента: он о проверке не знает и работать от неё не зависит — иначе
+ * недоступная проверяющая модель гасила бы ответы пациентам.
+ *
+ * `force` нужен ручному запуску: проверить работу проверки в три часа ночи
+ * никто не будет.
+ */
+export async function runNightCycle(force = false): Promise<SyncRunInfo> {
+  const started = Date.now();
+  const info: SyncRunInfo = {
+    startedAt: new Date(started).toISOString(),
+    finishedAt: null,
+    ok: false,
+    ms: null,
+  };
+
+  const hour = Number(
+    new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", hour12: false, timeZone: CLINIC_TZ }).format(
+      new Date(),
+    ),
+  );
+  const inWindow = hour >= NIGHT_FROM_HOUR && hour < NIGHT_TO_HOUR;
+  if (!force && !inWindow) {
+    info.error = `не ночь (${hour}:00)`;
+    info.finishedAt = new Date().toISOString();
+    info.ms = 0;
+    return info;
+  }
+  /**
+   * За память с выгрузкой не спорим: она тяжелее и важнее. Пропущенный тик
+   * ничего не стоит — следующий через полчаса, а окно длиной в три часа.
+   */
+  if (shared.running || shared.fastRunning || shared.nightRunning) {
+    info.error = shared.nightRunning ? "уже идёт" : "идёт выгрузка";
+    info.finishedAt = new Date().toISOString();
+    info.ms = 0;
+    return info;
+  }
+  shared.nightRunning = true;
+
+  try {
+    const companies = await prisma.company.findMany({
+      where: { yclientsId: { gte: 100 } },
+      select: { id: true, name: true },
+    });
+
+    const results: unknown[] = [];
+    for (const company of companies) {
+      const quality = await runQualityCheck(company.id).catch((e) => {
+        console.error("[scheduler] проверка ответов не удалась:", (e as Error)?.message ?? e);
+        return null;
+      });
+      results.push({ клиника: company.name, проверкаОтветов: quality });
+    }
+    info.ok = true;
+    info.counts = results;
+  } catch (e) {
+    info.error = String((e as Error)?.message ?? e).slice(0, 300);
+    console.error("[scheduler] ночной круг не удался:", info.error);
+  } finally {
+    shared.nightRunning = false;
+    info.finishedAt = new Date().toISOString();
+    info.ms = Date.now() - started;
+    shared.nightHistory.push(info);
+    if (shared.nightHistory.length > 20) shared.nightHistory.shift();
+  }
+  return info;
+}
+
+/**
  * Запустить расписание. Вызывается один раз при старте процесса из
  * instrumentation.ts; повторный вызов ничего не делает.
  */
@@ -428,4 +527,10 @@ export function startScheduler(): void {
         `при SYNC_INTERVAL_MIN=${INTERVAL_MIN} (нужно значение больше нуля и меньше полного круга)`,
     );
   }
+
+  shared.nightTimer = setInterval(() => void runNightCycle(), NIGHT_TICK_MIN * 60_000);
+  shared.nightTimer.unref?.();
+  console.log(
+    `[scheduler] ночная работа в ${NIGHT_FROM_HOUR}:00–${NIGHT_TO_HOUR}:00 (${CLINIC_TZ})`,
+  );
 }

@@ -266,6 +266,7 @@ model Company {
   featureUse               FeatureUse[]
   problemReports           ProblemReport[]
   noShowPredictions        NoShowPrediction[]
+  agentQualityChecks       AgentQualityCheck[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -537,6 +538,36 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([companyId, createdAt])
   @@map("messages")
+}
+
+/// Проверка одного ответа агента: не отклонился ли он от справочника.
+///
+/// Дрейф ловится до того, как его заметит пациент. Проверяющая модель тоже
+/// ошибается, поэтому её вердикт — не приговор: рядом лежит решение человека,
+/// и подтверждённое отклонение ведёт к правке справочника, а не к наказанию.
+model AgentQualityCheck {
+  id         String   @id @default(cuid())
+  companyId  String
+  agentRunId String   @unique
+  /// Почему ответ попал в выборку: medical | escalated | reasked | ungrounded | random.
+  reason     String
+  /// OK | DEVIATION | UNSUPPORTED_CLAIM | MEDICAL_WITHOUT_SOURCE | UNFINISHED.
+  verdict    String
+  comment    String
+  checkedAt  DateTime @default(now()) @db.Timestamptz(3)
+  /// Человек посмотрел: подтвердил вердикт или отклонил его.
+  reviewedById String?
+  reviewedAt   DateTime? @db.Timestamptz(3)
+  /// Согласился ли человек с проверяющей моделью.
+  confirmed    Boolean?
+
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  agentRun   AgentRun   @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+  reviewedBy StaffUser? @relation("QualityReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, checkedAt])
+  @@index([companyId, verdict])
+  @@map("agent_quality_checks")
 }
 
 /// Прогноз неявки по конкретной записи — и что из него вышло.
@@ -871,6 +902,8 @@ model AgentRun {
 
   company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  qualityCheck AgentQualityCheck?
 
   @@index([companyId, triggeredAt])
   @@index([conversationId])
@@ -1381,6 +1414,7 @@ model StaffUser {
   dialogNotes              DialogNote[]              @relation("DialogNoteAuthor")
   dialogTasks              DialogTask[]              @relation("DialogTaskAuthor")
   problemReports           ProblemReport[]           @relation("ProblemAuthor")
+  qualityReviews           AgentQualityCheck[]       @relation("QualityReviewer")
   handoffsSent             DialogHandoff[]           @relation("HandoffFrom")
   handoffsReceived         DialogHandoff[]           @relation("HandoffTo")
   acknowledgedEscalations  Escalation[]              @relation("EscalationAcknowledgedBy")
