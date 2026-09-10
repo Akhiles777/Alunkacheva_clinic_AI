@@ -50,6 +50,8 @@ export function Sidebar({
             <Link
               key={item.href}
               href={item.href}
+              // Тур подсвечивает настоящий пункт меню, а не его картинку.
+              data-tour={item.href === "/inbox" ? "nav-inbox" : undefined}
               aria-current={active ? "page" : undefined}
               className={`flex items-center justify-between rounded-md px-3 py-2 text-sm ${
                 active ? "bg-nav-active text-accent-text font-medium" : "text-text-muted hover:bg-hover"

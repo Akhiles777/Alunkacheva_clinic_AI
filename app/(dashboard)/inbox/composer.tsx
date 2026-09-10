@@ -407,7 +407,7 @@ export function Composer({
         под него: в один ряд текстовое поле сжималось до сотни точек, и
         печатать в него было нельзя. На широком — всё в одну строку, как было.
       */}
-      <div className="flex flex-wrap items-end gap-2">
+      <div data-tour="composer" className="flex flex-wrap items-end gap-2">
         <input
           ref={fileInput}
           type="file"

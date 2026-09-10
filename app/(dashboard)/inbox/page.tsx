@@ -41,6 +41,7 @@ import {
   type DialogAttachmentRecord,
 } from "./actions";
 import { Composer } from "./composer";
+import { Hint } from "../_components/hint";
 import { DialogTools } from "./dialog-tools";
 import { cancelDialogTask } from "./dialog-actions";
 import { ComposeOverlay } from "../_components/compose-overlay";
@@ -546,8 +547,11 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                 dialog.name
               )}
             </div>
-            <div className="text-text-subtle truncate text-2xs">
-              {CHANNEL_LABEL[dialog.channel]} · {DIALOG_STATUS_LABEL[dialog.status]}
+            <div data-tour="dialog-status" className="text-text-subtle truncate text-2xs">
+              {CHANNEL_LABEL[dialog.channel]} · {DIALOG_STATUS_LABEL[dialog.status]}{" "}
+              {/* «Ведёт агент» и «ведёт человек» — не одно и то же, и разница
+                  решает, отвечать сейчас или нет. */}
+              <Hint id={dialog.status === "human" ? "agentHuman" : "agentActive"} />
               {/*
                 Номер здесь не дублируем: строкой ниже он стоит ссылкой tel:,
                 по которой можно позвонить. Два одинаковых номера подряд
@@ -587,7 +591,8 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                   {" · "}
                   <span className="text-accent-text font-medium">
                     агент молчит до {dialog.agentPausedUntil}
-                  </span>
+                  </span>{" "}
+                  <Hint id="agentPaused" />
                 </>
               ) : null}
             </div>
@@ -638,11 +643,13 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
                 )
                 .finally(() => setPinging(false));
             }}
+            data-tour="call-admin"
             title="Отправить администраторам push: пациент ждёт ответа"
             className="border-border text-text-muted hover:bg-hover flex-none rounded-md border px-2.5 py-1 text-2xs disabled:opacity-50"
           >
             {pinging ? "Зовём…" : "Позвать админа"}
           </button>
+          <Hint id="callAdmin" className="self-center" />
           {/*
             Заметки, передача коллеге и отложенная отправка. Свёрнуты по
             умолчанию: в обычной работе они не нужны и не должны занимать
@@ -672,6 +679,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
             у него не истекает.
           */}
           <button
+            data-tour="agent-off"
             type="button"
             onClick={() => setAgentEnabled(dialog.id, Boolean(dialog.agentDisabled))}
             title={
@@ -687,6 +695,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           >
             {dialog.agentDisabled ? "Агент выключен" : "Выключить агента"}
           </button>
+          <Hint id="agentOff" className="self-center" />
           {dialog.status !== "bot" && !dialog.agentDisabled ? (
             <button
               type="button"
@@ -697,6 +706,9 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
             >
               Вернуть агенту
             </button>
+          ) : null}
+          {dialog.status !== "bot" ? (
+            <Hint id="returnToBot" className="self-center" />
           ) : null}
         </div>
       </div>
@@ -925,9 +937,9 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
         />
       ) : (
         <div className="border-border flex-none border-t px-5 py-3">
-          <p className="text-text-muted mb-2 text-xs">
-            24-часовое окно закрыто. Написать первым можно только утверждённым
-            шаблоном.
+          <p className="text-text-muted mb-2 flex flex-wrap items-center gap-1.5 text-xs">
+            24-часовое окно закрыто. Написать первым можно только утверждённым шаблоном.
+            <Hint id="window24" />
           </p>
           {approvedTemplates.length === 0 ? (
             <p className="text-text-subtle text-sm">
@@ -1181,7 +1193,7 @@ export default function InboxPage() {
               + Написать
             </button>
           </div>
-          <div className="mt-2.5 flex flex-wrap gap-1">
+          <div data-tour="dialog-filters" className="mt-2.5 flex flex-wrap gap-1">
             {syncing ? <span className="text-text-subtle self-center text-2xs">обновляем…</span> : null}
             {DIALOG_FILTERS.map((f) => (
               <button
@@ -1283,7 +1295,10 @@ export default function InboxPage() {
         )}
       </div>
 
-      <div className="border-border w-[320px] flex-none overflow-auto border-l px-5 py-5 max-xl:hidden">
+      <div
+        data-tour="patient-card"
+        className="border-border w-[320px] flex-none overflow-auto border-l px-5 py-5 max-xl:hidden"
+      >
         {patient ? (
           <PatientCardBody patientId={patient.id} />
         ) : selected ? (

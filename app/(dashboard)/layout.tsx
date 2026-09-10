@@ -9,6 +9,7 @@ import { StoreHydrator } from "./_components/store-hydrator";
 import { WriteAlert } from "./_components/write-alert";
 import { PushGate } from "./_components/push-gate";
 import { StaleBuildGuard } from "./_components/stale-build-guard";
+import { Tour } from "./_components/tour";
 import { AssistantChat } from "./_components/assistant-chat";
 import { getCurrentUser } from "./_components/user-actions";
 import { getSessionOrNull } from "@/lib/server/session";
@@ -41,6 +42,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <WriteAlert />
       <PushGate />
       <StaleBuildGuard />
+      {/*
+        Тур первого входа. Подсвечивает настоящие элементы, поэтому живёт в
+        общей раскладке: он должен видеть весь экран, а не свой кусок.
+      */}
+      <Tour />
     </div>
   );
 }
