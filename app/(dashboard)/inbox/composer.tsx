@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { checkFile, willSplit, TEXT_LIMIT, type SendChannel } from "@/lib/media/limits";
 import { draftOf, setDraft, type OutgoingAttachment } from "@/app/_data/store";
 import { previewTemplateDb } from "./actions";
+import { draftWarningsAction } from "./assistant-actions";
+import type { DraftWarning } from "@/lib/agent/draft-warnings";
 import { noteUse } from "../_components/usage-actions";
 
 /**
@@ -257,6 +259,37 @@ export function Composer({
 
   const parts = willSplit(text);
 
+  /**
+   * Что заметить перед отправкой: цена мимо прайса, занятое время, обещание
+   * записи без записи, медицинская тема с готовым ответом клиники.
+   *
+   * Подсказка, а не запрет: отправку не блокируем никогда — администратор
+   * знает ситуацию лучше системы. Спрашиваем с задержкой, а не на каждую
+   * букву: подсказка на полуслове мешает печатать.
+   */
+  const [hints, setHints] = useState<DraftWarning[]>([]);
+  /**
+   * Короткий и «/»-текст не разбираем вовсе; чтобы не гасить подсказки
+   * состоянием прямо в эффекте, показываем их только при достаточной длине.
+   */
+  const draftLongEnough = text.trim().length >= 8 && !text.trim().startsWith("/");
+  useEffect(() => {
+    const draft = text.trim();
+    if (!draftLongEnough) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      void draftWarningsAction(dialogId, draft)
+        .then((w) => alive && setHints(w))
+        .catch(() => {
+          // Ассистент недоступен — поле ввода работает как раньше.
+        });
+    }, 900);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [text, dialogId, draftLongEnough]);
+
   return (
     <div
       className={`border-border flex-none border-t px-5 py-3 ${dragging ? "bg-accent-tint" : ""}`}
@@ -341,6 +374,35 @@ export function Composer({
       ) : null}
 
       {error ? <p className="text-accent-text mb-2 text-xs">{error}</p> : null}
+
+      {/*
+        Подсказки ассистента администратора. Ничего не запрещают и ничего не
+        отправляют: это заметки на полях, которые можно не читать.
+      */}
+      {hints.length > 0 && draftLongEnough ? (
+        <div className="border-border-soft bg-raise mb-2 flex flex-col gap-1 rounded-md border px-2.5 py-1.5">
+          {hints.map((h) => (
+            <div key={h.kind} className="text-2xs leading-snug">
+              <span className="text-accent-text">{h.text}</span>
+              {h.suggestion ? (
+                <>
+                  {" "}
+                  <span className="text-text-muted">{h.suggestion}</span>
+                  {h.kind === "medical" ? (
+                    <button
+                      type="button"
+                      onClick={() => setText(h.suggestion ?? "")}
+                      className="text-accent-text ml-1 underline"
+                    >
+                      подставить
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {parts > 1 ? (
         <p className="text-text-muted mb-2 text-2xs">
           Длинное сообщение: уйдёт {parts} частями по {TEXT_LIMIT} знаков.

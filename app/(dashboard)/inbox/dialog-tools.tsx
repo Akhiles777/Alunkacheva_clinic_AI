@@ -15,6 +15,7 @@ import {
   type DialogTaskView,
 } from "./dialog-actions";
 import { noteUse } from "../_components/usage-actions";
+import { dialogBriefAction, type DialogBriefView } from "./assistant-actions";
 
 /**
  * Заметка, передача коллеге и отложенная отправка — строкой под перепиской.
@@ -42,7 +43,7 @@ function nextMorning(): Date {
   return d;
 }
 
-type Panel = "notes" | "handoff" | "later" | null;
+type Panel = "notes" | "handoff" | "later" | "brief" | null;
 
 export function DialogTools({
   dialogId,
@@ -56,6 +57,8 @@ export function DialogTools({
   const [notes, setNotes] = useState<DialogNoteView[]>([]);
   const [tasks, setTasks] = useState<DialogTaskView[]>([]);
   const [colleagues, setColleagues] = useState<ColleagueView[]>([]);
+  /** Сводка переписки: считается у нас, наружу ничего не уходит (§7). */
+  const [brief, setBrief] = useState<DialogBriefView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
@@ -86,6 +89,18 @@ export function DialogTools({
     };
   }, [dialogId]);
 
+  /** Сводку считаем по нажатию: она нужна не в каждом разговоре. */
+  useEffect(() => {
+    if (panel !== "brief" || brief) return;
+    let alive = true;
+    void dialogBriefAction(dialogId)
+      .then((b) => alive && setBrief(b))
+      .catch(() => alive && setBrief({ lines: [], topics: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [panel, brief, dialogId]);
+
   /** Коллеги нужны только для передачи — за ними ходим, когда открыли форму. */
   useEffect(() => {
     if (panel !== "handoff" || colleagues.length > 0) return;
@@ -108,6 +123,9 @@ export function DialogTools({
     <div className="border-border-soft flex-none border-t px-5 py-1.5">
       {/* Подпись, а не вкладки: три слова мелким шрифтом под полем ввода. */}
       <div className="text-text-subtle flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
+        <Word active={panel === "brief"} onClick={() => toggle("brief")}>
+          Что это за пациент
+        </Word>
         <Word active={panel === "notes"} onClick={() => toggle("notes")}>
           Заметка{notes.length > 0 ? ` · ${notes.length}` : ""}
         </Word>
@@ -120,6 +138,36 @@ export function DialogTools({
         {done ? <span className="text-text-muted">{done}</span> : null}
         {error ? <span className="text-accent-text">{error}</span> : null}
       </div>
+
+      {panel === "brief" ? (
+        <div className="mt-2 mb-1 flex flex-col gap-1.5">
+          {!brief ? (
+            <p className="text-text-muted text-xs">Смотрим…</p>
+          ) : brief.lines.length === 0 ? (
+            <p className="text-text-muted text-xs leading-snug">
+              Рассказывать нечего: переписка короткая, всё видно глазами.
+            </p>
+          ) : (
+            <>
+              <ul className="flex flex-col gap-0.5">
+                {brief.lines.map((l) => (
+                  <li key={l} className="text-text-muted text-xs leading-snug">
+                    {l}
+                  </li>
+                ))}
+              </ul>
+              {brief.topics.length > 0 ? (
+                <p className="text-text-subtle text-2xs">
+                  Спрашивал про: {brief.topics.join(", ")}.
+                </p>
+              ) : null}
+              <p className="text-text-subtle text-2xs">
+                Посчитано у нас, из своих данных. Переписка во внешние сервисы не отправляется.
+              </p>
+            </>
+          )}
+        </div>
+      ) : null}
 
       {panel === "notes" ? (
         <div className="mt-2 mb-1 flex flex-col gap-2">
