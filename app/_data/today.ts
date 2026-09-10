@@ -61,6 +61,14 @@ export interface FreeWindowRow {
   duration: string;
   /** Раньше всех по клинике — выделяется сплошным акцентом. */
   soon: boolean;
+  /**
+   * Кабинет и длительность машинными значениями — по ним подбираются
+   * кандидаты, которым это окно подходит (услуга влезает, кабинет тот).
+   */
+  roomId: string;
+  durationMin: number;
+  /** Начало окна целиком: время без даты кандидатов не подберёт. */
+  startAtIso: string;
 }
 
 export interface AttentionItem {
@@ -166,6 +174,19 @@ const ROOM_PLAN: {
 const ATTENTION: AttentionItem[] = [];
 const INQUIRIES: TodayInquiry[] = [];
 
+/**
+ * Начало окна целиком, с датой.
+ *
+ * Время без даты кандидатов не подберёт: «14:00» одинаково у сегодняшнего и
+ * завтрашнего дня, а занятость кабинета и пациента у них разная. Экран
+ * «Сегодня» считает по сегодняшнему дню клиники.
+ */
+function windowStart(startMinute: number): string {
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  return new Date(day.getTime() + startMinute * 60_000).toISOString();
+}
+
 function durationLabel(minutes: number): string {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -240,6 +261,9 @@ export function getToday(): TodayData {
     direction: w.direction,
     duration: durationLabel(w.durationMin),
     soon: w.startMinute === soonestStart,
+    roomId: w.cabId,
+    durationMin: w.durationMin,
+    startAtIso: windowStart(w.startMinute),
   }));
 
   // Отметить ближайшее окно в карточке того кабинета, где оно самое раннее.

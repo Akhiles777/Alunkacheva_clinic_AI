@@ -197,6 +197,13 @@ export function buildCabinets(
   return withStart.map((w) => w.cabinet);
 }
 
+/** Начало окна с датой: время без даты кандидатов не подберёт. */
+function startOfToday(startMinute: number): string {
+  const day = new Date();
+  day.setHours(0, 0, 0, 0);
+  return new Date(day.getTime() + startMinute * 60_000).toISOString();
+}
+
 /**
  * Список свободных окон по всем кабинетам до конца дня.
  *
@@ -226,6 +233,10 @@ export function buildFreeWindows(
         direction: room.direction,
         duration: durationLabel(g.endMinute - start),
         soon: false,
+        roomId: room.id,
+        durationMin: g.endMinute - start,
+        // Дата берётся от сегодняшнего дня клиники: этот список считает день.
+        startAtIso: startOfToday(start),
       });
     }
   }

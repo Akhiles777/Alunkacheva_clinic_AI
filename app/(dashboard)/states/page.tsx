@@ -220,8 +220,8 @@ const LONG_CABINET: CabinetNow = {
 };
 
 const LONG_WINDOWS: FreeWindowRow[] = [
-  { id: "lw1", time: "14:10", startMinute: 850, cabName: "Кабинет 2 (процедурный)", direction: "IV-терапия, забор анализов и инъекции", duration: "1 ч 30 мин", soon: true },
-  { id: "lw2", time: "16:00", startMinute: 960, cabName: "Кабинет 1", direction: "Остеопатия", duration: "1 ч", soon: false },
+  { id: "lw1", time: "14:10", startMinute: 850, cabName: "Кабинет 2 (процедурный)", direction: "IV-терапия, забор анализов и инъекции", duration: "1 ч 30 мин", soon: true, roomId: "room-2", durationMin: 90, startAtIso: "2026-09-11T11:10:00.000Z" },
+  { id: "lw2", time: "16:00", startMinute: 960, cabName: "Кабинет 1", direction: "Остеопатия", duration: "1 ч", soon: false, roomId: "room-1", durationMin: 60, startAtIso: "2026-09-11T13:00:00.000Z" },
 ];
 
 /**
