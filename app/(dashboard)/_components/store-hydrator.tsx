@@ -46,13 +46,19 @@ export function StoreHydrator() {
       // Скрытая вкладка данных не показывает: незачем и запрашивать.
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       /**
+       * Время запроса. Круг обновления идёт раз в минуту, и его ответ не
+       * должен затирать пометку или номер, которые человек добавил, пока
+       * запрос был в пути: на экране это выглядело как исчезнувшая правка.
+       */
+      const at = Date.now();
+      /**
        * Курсы — после пациентов: они приклеиваются к уже загруженным
        * карточкам. Иначе первый круг раскладывал бы их по пустому списку.
        */
       getPatientRecords()
         .then((records) => {
           if (!alive) return;
-          hydratePatients(records);
+          hydratePatients(records, at);
           return getCoursesForStore().then((courses) => {
             if (alive) hydrateCourses(courses);
           });

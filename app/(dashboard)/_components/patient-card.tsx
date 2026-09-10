@@ -216,9 +216,11 @@ export function PatientCardBody({
     if (!patientId || loadedFor.current === patientId) return;
     loadedFor.current = patientId;
     let alive = true;
+    // Время запроса: ответ старше местной правки списки карточки не трогает.
+    const at = Date.now();
     getPatientRecord(patientId)
       .then((record) => {
-        if (alive && record) hydratePatients([record]);
+        if (alive && record) hydratePatients([record], at);
       })
       .catch(() => {});
     return () => {

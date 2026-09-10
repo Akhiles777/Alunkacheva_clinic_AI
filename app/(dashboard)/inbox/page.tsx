@@ -9,7 +9,7 @@ import { AGENT_DOES, AGENT_DOES_NOT, ARTICLES } from "@/lib/help/topics";
 import {
   CHANNEL_LABEL,
   DIALOG_STATUS_LABEL,
-  sortDialogs,
+  withRemindersFirst,
 } from "@/app/_data/inbox";
 import {
   activeNotes,
@@ -989,8 +989,11 @@ export default function InboxPage() {
     // Тем же кругом повторяем отметки прочтения, которые не легли в базу:
     // сеть моргнула или приложение перезапускалось — человека это не касается.
     flushReadMarks();
+    // Время запроса: ответ, ушедший до нажатия, не должен возвращать кнопку в
+    // исходное и прятать только что отправленное сообщение.
+    const at = Date.now();
     getConversations()
-      .then(hydrateDialogs)
+      .then((rows) => hydrateDialogs(rows, at))
       .catch((e: unknown) => {
         // Список не пришёл — молча: следующий круг через шесть секунд. Но если
         // вкладка на старой сборке, круги не помогут, и сторож это заметит.
@@ -1042,13 +1045,13 @@ export default function InboxPage() {
    */
   const list = useMemo(() => {
     /**
-     * Один список без вкладок.
+     * Один список без вкладок и без сортировки по ожиданию.
      *
-     * Фильтров было пять, и каждый требовал решения ДО работы: администратор
-     * выбирал вкладку, а потом уже смотрел, кому отвечать. Порядок отвечает на
-     * тот же вопрос лучше и без выбора — сверху тот, кто ждёт дольше, и то,
-     * что горит. Закрытые сюда не идут: их закрыли намеренно, а найти их можно
-     * поиском (⌘K) и из карточки пациента.
+     * Порядок обычный, как в мессенджере: сверху последнее сообщение — так его
+     * отдаёт сервер. Перестановка по времени ожидания требовала от человека
+     * держать в голове ещё одно правило, а список должен читаться без правил.
+     * Наверх поднимается только то, о чём он сам попросил, — назревшее
+     * напоминание.
      */
     const matching = db.dialogs.filter((d) => d.status !== "closed");
     /**
@@ -1059,7 +1062,7 @@ export default function InboxPage() {
      */
     const open = selectedId ? db.dialogs.find((d) => d.id === selectedId) : undefined;
     const rows = open && !matching.some((d) => d.id === open.id) ? [...matching, open] : matching;
-    return sortDialogs(rows);
+    return withRemindersFirst(rows);
   }, [db.dialogs, selectedId]);
   const selected = db.dialogs.find((d) => d.id === selectedId) ?? null;
   const patient = selected?.patientId ? findPatient(selected.patientId) : undefined;

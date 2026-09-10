@@ -16,6 +16,7 @@ import { reportMaybeStale } from "@/lib/client/stale-build";
 import { createReadMarks } from "@/lib/client/read-marks";
 import {
   addNoteDb,
+  getPatientRecord,
   addPhoneDb,
   addRelationDb,
   createPatient,
@@ -424,7 +425,29 @@ export function getDb(): DB {
  * список пациентов при полутора тысячах в базе выглядит как потеря данных, и
  * администратор справедливо считает, что платформа сломалась.
  */
-export function hydratePatients(records: PatientRecord[]) {
+/**
+ * Когда карточку пациента правили руками — по каждой карточке отдельно.
+ *
+ * Карточка догружается с сервера в двух местах сразу (страница и сам блок
+ * карточки), и ответ, начатый ДО правки, приходил после неё — со старым
+ * списком отметок. На экране это выглядело так: пометку добавили, она
+ * появилась и через мгновение исчезла, а вернулась через минуту, на
+ * следующем круге обновления. Со снятием — наоборот: снятая пометка
+ * возвращалась. Ровно это и есть «добавляются и удаляются с багами и
+ * задержкой».
+ *
+ * Поэтому у гидрации есть время запроса: ответ, отправленный раньше местной
+ * правки, списки отметок, номеров и связей не трогает. Он всё равно принесёт
+ * имя, визиты и остальное — устаревшим оказывается только то, что человек
+ * только что менял.
+ */
+const patientWrites = new Map<string, number>();
+
+export function markPatientWrite(patientId: string) {
+  patientWrites.set(patientId, Date.now());
+}
+
+export function hydratePatients(records: PatientRecord[], requestedAt: number = Date.now()) {
   const byId = new Map(db.patients.map((p) => [p.id, p]));
   const patients: Patient[] = records.map((r) => {
     const existing = byId.get(r.id);
@@ -457,6 +480,8 @@ export function hydratePatients(records: PatientRecord[]) {
     const visits: Visit[] = r.visits ?? existing?.visits ?? [];
 
     if (existing) {
+      /** Правили после того, как этот ответ ушёл, — местное новее. */
+      const stale = (patientWrites.get(r.id) ?? 0) > requestedAt;
       return {
         ...existing,
         firstSeenAt: r.firstSeenAt ?? existing.firstSeenAt,
@@ -464,9 +489,9 @@ export function hydratePatients(records: PatientRecord[]) {
         name: r.name || existing.name,
         source: r.source ?? existing.source,
         sourceDerived: r.sourceDerived,
-        phones,
-        notes,
-        relations,
+        phones: stale ? existing.phones : phones,
+        notes: stale ? existing.notes : notes,
+        relations: stale ? existing.relations : relations,
         visits,
       };
     }
@@ -505,10 +530,30 @@ export function hydratePatients(records: PatientRecord[]) {
  * пациент, канал — из БД; UI-поля (черновик агента, таймер окна, причина
  * эскалации, «непрочитано») сохраняем из текущего диалога по id.
  */
-export function hydrateDialogs(records: DialogRecord[]) {
+/**
+ * Когда переписку правили руками — по каждой отдельно.
+ *
+ * Список диалогов тянется раз в шесть секунд, и ответ, ушедший ДО нажатия,
+ * приходит после него — со старым состоянием. Выключатель агента возвращался в
+ * прежнее положение сам, только что отправленное сообщение пропадало из
+ * переписки на несколько секунд и появлялось снова. В базе при этом всё было
+ * записано верно: врал экран.
+ *
+ * Та же защита, что у карточки пациента: ответ старше местной правки не
+ * трогает то, что человек только что менял.
+ */
+const dialogWrites = new Map<string, number>();
+
+export function markDialogWrite(dialogId: string) {
+  dialogWrites.set(dialogId, Date.now());
+}
+
+export function hydrateDialogs(records: DialogRecord[], requestedAt: number = Date.now()) {
   const byId = new Map(db.dialogs.map((d) => [d.id, d]));
   const dialogs: Dialog[] = records.map((r) => {
     const existing = byId.get(r.id);
+    /** Правили после того, как этот ответ ушёл, — местное новее. */
+    const stale = (dialogWrites.get(r.id) ?? 0) > requestedAt;
     const messages: Message[] = r.messages.map((m) => ({
       id: m.id,
       from: m.from,
@@ -521,13 +566,23 @@ export function hydrateDialogs(records: DialogRecord[]) {
       edited: m.edited,
       canRecall: m.canRecall,
     }));
+    /**
+     * Своё только что отправленное сообщение сервер мог ещё не отдать —
+     * дописываем его к пришедшим, а не подменяем список целиком: иначе оно
+     * исчезает из переписки на несколько секунд и появляется снова.
+     */
+    const known = new Set(messages.map((m) => m.id));
+    const merged =
+      stale && existing
+        ? [...messages, ...existing.messages.filter((m) => !known.has(m.id))]
+        : messages;
+
     return {
       id: r.id,
       name: r.name ?? existing?.name ?? "Без имени",
       channel: r.channel,
       patientId: r.patientId,
       phone: r.phone,
-      status: r.status,
       preview: r.preview,
       at: r.at,
       /**
@@ -542,18 +597,20 @@ export function hydrateDialogs(records: DialogRecord[]) {
       escalationReason: r.escalationReason ?? undefined,
       agentDraft: existing?.agentDraft,
       /**
-       * Выключатель агента берём с сервера.
+       * Выключатель агента и статус берём с сервера — кроме случая, когда их
+       * только что меняли руками.
        *
-       * Диалог здесь пересобирается по полям, и не перечисленное теряется.
-       * Поле забыли — и кнопка «Выключить агента» сама возвращалась в
-       * исходное через шесть секунд, на следующем обновлении списка. В базе
-       * при этом всё было записано верно: врал экран.
+       * Диалог здесь пересобирается по полям, и не перечисленное теряется:
+       * поле забыли — и кнопка возвращалась в исходное через шесть секунд.
+       * Теперь то же самое умеет сделать и ответ сервера, ушедший ДО нажатия;
+       * от этого спасает отметка местной правки.
        */
-      agentDisabled: r.agentDisabled,
+      agentDisabled: stale && existing ? existing.agentDisabled : r.agentDisabled,
       agentPausedUntil: r.agentPausedUntil,
       windowOpen: r.windowOpen,
       windowMinutesLeft: r.windowMinutesLeft,
       totalMessages: r.totalMessages,
+      status: stale && existing ? existing.status : r.status,
       waitingSince: r.waitingSince,
       unreadCount: r.unreadCount,
       firstTime: r.firstTime,
@@ -561,7 +618,7 @@ export function hydrateDialogs(records: DialogRecord[]) {
       reminder: r.reminder,
       scheduled: r.scheduled,
       noteCount: r.noteCount,
-      messages,
+      messages: merged,
     };
   });
   commit({ ...db, dialogs });
@@ -735,9 +792,10 @@ export function addPatient(input: { name: string; phone: string; source?: string
 export function updatePatient(id: string, patch: Partial<Pick<Patient, "name" | "bornYear" | "source">>) {
   replacePatient(id, (p) => ({ ...p, ...patch }));
   if (patch.name !== undefined || patch.source !== undefined) {
-    void updatePatientDb(id, { name: patch.name, source: patch.source }).catch(
-      writeFailed("не удалось сохранить карточку пациента"),
-    );
+    markPatientWrite(id);
+    void updatePatientDb(id, { name: patch.name, source: patch.source })
+      .then(() => refreshPatient(id))
+      .catch(writeFailed("не удалось сохранить карточку пациента"));
   }
 }
 
@@ -788,9 +846,10 @@ export function addPhone(patientId: string, raw: string): boolean {
   replacePatient(patientId, (cur) =>
     cur.phones.some((x) => x.e164 === e164) ? cur : { ...cur, phones: [...cur.phones, ph] },
   );
-  void addPhoneDb({ id: ph.id, patientId, e164, isPrimary: isFirst }).catch(
-    writeFailed("не удалось добавить номер"),
-  );
+  markPatientWrite(patientId);
+  void addPhoneDb({ id: ph.id, patientId, e164, isPrimary: isFirst })
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось добавить номер"));
   return true;
 }
 
@@ -805,7 +864,10 @@ export function removePhone(patientId: string, phoneId: string) {
     if (r.length > 0 && !r.some((ph) => ph.isPrimary)) r[0] = { ...r[0], isPrimary: true };
     return { ...cur, phones: r };
   });
-  void removePhoneDb(phoneId, newPrimaryId).catch(writeFailed("не удалось убрать номер"));
+  markPatientWrite(patientId);
+  void removePhoneDb(phoneId, newPrimaryId)
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось убрать номер"));
 }
 
 export function setPrimaryPhone(patientId: string, phoneId: string) {
@@ -813,7 +875,10 @@ export function setPrimaryPhone(patientId: string, phoneId: string) {
     ...p,
     phones: p.phones.map((ph) => ({ ...ph, isPrimary: ph.id === phoneId })),
   }));
-  void setPrimaryPhoneDb(patientId, phoneId).catch(writeFailed("не удалось сменить основной номер"));
+  markPatientWrite(patientId);
+  void setPrimaryPhoneDb(patientId, phoneId)
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось сменить основной номер"));
 }
 
 export function toggleWhatsapp(patientId: string, phoneId: string) {
@@ -823,15 +888,19 @@ export function toggleWhatsapp(patientId: string, phoneId: string) {
     ...cur,
     phones: cur.phones.map((ph) => (ph.id === phoneId ? { ...ph, whatsapp: !ph.whatsapp } : ph)),
   }));
-  void toggleWhatsappDb(phoneId, next).catch(writeFailed("не удалось отметить WhatsApp у номера"));
+  markPatientWrite(patientId);
+  void toggleWhatsappDb(phoneId, next)
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось отметить WhatsApp у номера"));
 }
 
 export function addNote(patientId: string, kind: NoteKind, text: string) {
   const note: Note = { id: uid("n"), kind, text: text.trim(), createdAt: "сегодня", resolved: false };
   replacePatient(patientId, (p) => ({ ...p, notes: [...p.notes, note] }));
-  void addNoteDb({ id: note.id, patientId, kind, text: note.text }).catch(
-    writeFailed("не удалось сохранить пометку"),
-  );
+  markPatientWrite(patientId);
+  void addNoteDb({ id: note.id, patientId, kind, text: note.text })
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось сохранить пометку"));
 }
 
 export function resolveNote(patientId: string, noteId: string) {
@@ -839,7 +908,30 @@ export function resolveNote(patientId: string, noteId: string) {
     ...p,
     notes: p.notes.map((n) => (n.id === noteId ? { ...n, resolved: true } : n)),
   }));
-  void resolveNoteDb(noteId).catch(writeFailed("не удалось снять пометку"));
+  markPatientWrite(patientId);
+  void resolveNoteDb(noteId)
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось снять пометку"));
+}
+
+/**
+ * Перечитать карточку сразу после записи.
+ *
+ * Раньше правка ждала общего круга обновления — минуту. За эту минуту экран
+ * показывал местное состояние, и если запись не прошла, человек об этом не
+ * знал: он видел свою пометку и уходил. Теперь ответ сервера приходит через
+ * доли секунды и подтверждает (или опровергает) то, что на экране.
+ */
+function refreshPatient(patientId: string) {
+  const at = Date.now();
+  void getPatientRecord(patientId)
+    .then((record) => {
+      if (record) hydratePatients([record], at);
+    })
+    .catch(() => {
+      // Не перечиталось — на экране остаётся местное состояние, а неудача
+      // самой записи показывается отдельно.
+    });
 }
 
 export function addRelation(patientId: string, relatedPatientId: string, kind: RelationKind) {
@@ -852,9 +944,10 @@ export function addRelation(patientId: string, relatedPatientId: string, kind: R
       ? cur
       : { ...cur, relations: [...cur.relations, rel] },
   );
-  void addRelationDb({ id: rel.id, patientId, relatedPatientId, kind }).catch(
-    writeFailed("не удалось связать карточки"),
-  );
+  markPatientWrite(patientId);
+  void addRelationDb({ id: rel.id, patientId, relatedPatientId, kind })
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось связать карточки"));
 }
 
 export function removeRelation(patientId: string, relationId: string) {
@@ -862,7 +955,10 @@ export function removeRelation(patientId: string, relationId: string) {
     ...p,
     relations: p.relations.filter((r) => r.id !== relationId),
   }));
-  void removeRelationDb(relationId).catch(writeFailed("не удалось убрать связь карточек"));
+  markPatientWrite(patientId);
+  void removeRelationDb(relationId)
+    .then(() => refreshPatient(patientId))
+    .catch(writeFailed("не удалось убрать связь карточек"));
 }
 
 /**
@@ -972,6 +1068,7 @@ export function sendMessage(
     delivery: "sending",
     replyToPreview: options.replyToPreview ?? undefined,
   };
+  markDialogWrite(dialogId);
   replaceDialog(dialogId, (d) => ({
     ...d,
     messages: [...d.messages, msg],
@@ -1049,6 +1146,7 @@ const RESEND_DELAY_MS = 2000;
 
 /** Отправить ещё раз то, что не ушло. Текст и файлы берутся из сообщения. */
 export function resendMessage(dialogId: string, messageId: string) {
+  markDialogWrite(dialogId);
   replaceDialog(dialogId, (d) => ({
     ...d,
     messages: d.messages.map((m) =>
@@ -1103,6 +1201,7 @@ export function setDraft(dialogId: string, text: string) {
 
 /** Убрать сообщение у себя и у пациента. */
 export function removeMessage(dialogId: string, messageId: string) {
+  markDialogWrite(dialogId);
   return deleteMessageDb(messageId)
     .then((res) => {
       if (res.ok) {
@@ -1118,6 +1217,7 @@ export function removeMessage(dialogId: string, messageId: string) {
 
 /** Исправить текст уже отправленного сообщения. */
 export function editMessage(dialogId: string, messageId: string, text: string) {
+  markDialogWrite(dialogId);
   return editMessageDb(messageId, text)
     .then((res) => {
       if (res.ok) {
@@ -1203,6 +1303,7 @@ export function setAgentEnabled(dialogId: string, enabled: boolean) {
     // им распоряжается сама переписка.
     status: enabled ? "bot" : d.status,
   }));
+  markDialogWrite(dialogId);
   persist(
     enabled ? "Агент не включился" : "Агент не выключился",
     () => setAgentEnabledDb(dialogId, enabled),
@@ -1212,6 +1313,7 @@ export function setAgentEnabled(dialogId: string, enabled: boolean) {
 
 export function returnToBot(dialogId: string) {
   replaceDialog(dialogId, (d) => ({ ...d, status: "bot", escalationReason: undefined }));
+  markDialogWrite(dialogId);
   persist(
     "Диалог не вернулся агенту",
     () => returnToBotDb(dialogId),

@@ -15,7 +15,6 @@ import {
   type DialogTaskView,
 } from "./dialog-actions";
 import { noteUse } from "../_components/usage-actions";
-import { closeDialogs } from "@/app/_data/store";
 
 /**
  * Заметка, передача коллеге и отложенная отправка — строкой под перепиской.
@@ -117,15 +116,6 @@ export function DialogTools({
         </Word>
         <Word active={panel === "later"} onClick={() => toggle("later")}>
           Отложить{tasks.length > 0 ? ` · ${tasks.length}` : ""}
-        </Word>
-        {/*
-          Закрыть разговор. Раньше это делалось галочками в списке; галочки
-          убраны, а закрывать надо: иначе разобранная переписка висит в списке
-          вечно. Здесь же, в подписи под перепиской, — по одному разговору за
-          раз, из того места, где человек его и закончил.
-        */}
-        <Word active={false} onClick={close}>
-          Закрыть разговор
         </Word>
         {done ? <span className="text-text-muted">{done}</span> : null}
         {error ? <span className="text-accent-text">{error}</span> : null}
@@ -312,13 +302,6 @@ export function DialogTools({
       ) : null}
     </div>
   );
-
-  function close() {
-    setError(null);
-    closeDialogs([dialogId]);
-    setDone("разговор закрыт — вернётся сам, если пациент напишет");
-    onChanged();
-  }
 
   function save() {
     const text = noteText.trim();

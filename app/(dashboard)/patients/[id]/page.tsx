@@ -42,10 +42,13 @@ export default function PatientPage() {
     if (!id || loadedFor.current === id) return;
     loadedFor.current = id;
     let alive = true;
+    // Время запроса: ответ, ушедший раньше правки карточки, не должен затирать
+    // только что добавленную пометку или номер (см. hydratePatients).
+    const at = Date.now();
     getPatientRecord(id)
       .then((record) => {
         if (!alive) return;
-        if (record) hydratePatients([record]);
+        if (record) hydratePatients([record], at);
         else setLookup("missing");
       })
       .catch(() => alive && setLookup("missing"));
