@@ -9,9 +9,7 @@ import { HOTKEYS, hotkeyAction, nextWaiting, step } from "@/lib/inbox/hotkeys";
 import { AGENT_DOES, AGENT_DOES_NOT, ARTICLES } from "@/lib/help/topics";
 import {
   CHANNEL_LABEL,
-  DIALOG_FILTERS,
   DIALOG_STATUS_LABEL,
-  dialogMatchesFilter,
   sortDialogs,
 } from "@/app/_data/inbox";
 import {
@@ -1037,7 +1035,6 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
 export default function InboxPage() {
   const db = useDb();
-  const [filter, setFilter] = useState("need");
 
   /**
    * Часы списка. Ожидание («ждёт 12 мин») набегает между обновлениями, и без
@@ -1123,7 +1120,16 @@ export default function InboxPage() {
    * только что закрыли, и дольше всех ждущего не было видно вовсе.
    */
   const list = useMemo(() => {
-    const matching = db.dialogs.filter((d) => dialogMatchesFilter(d, filter));
+    /**
+     * Один список без вкладок.
+     *
+     * Фильтров было пять, и каждый требовал решения ДО работы: администратор
+     * выбирал вкладку, а потом уже смотрел, кому отвечать. Порядок отвечает на
+     * тот же вопрос лучше и без выбора — сверху тот, кто ждёт дольше, и то,
+     * что горит. Закрытые сюда не идут: их закрыли намеренно, а найти их можно
+     * поиском (⌘K) и из карточки пациента.
+     */
+    const matching = db.dialogs.filter((d) => d.status !== "closed");
     /**
      * Открытая переписка остаётся в списке, даже если перестала подходить под
      * фильтр. Иначе она исчезает прямо под курсором: открыл диалог из «Нужен
@@ -1133,7 +1139,7 @@ export default function InboxPage() {
     const open = selectedId ? db.dialogs.find((d) => d.id === selectedId) : undefined;
     const rows = open && !matching.some((d) => d.id === open.id) ? [...matching, open] : matching;
     return sortDialogs(rows);
-  }, [db.dialogs, filter, selectedId]);
+  }, [db.dialogs, selectedId]);
   const selected = db.dialogs.find((d) => d.id === selectedId) ?? null;
   const patient = selected?.patientId ? findPatient(selected.patientId) : undefined;
 
@@ -1253,29 +1259,6 @@ export default function InboxPage() {
               + Написать
             </button>
           </div>
-          <div data-tour="dialog-filters" className="mt-2.5 flex flex-wrap gap-1">
-            {DIALOG_FILTERS.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setFilter(f.id)}
-                className={`rounded-md px-2 py-1 text-2xs ${
-                  filter === f.id ? "bg-nav-active text-accent-text font-medium" : "text-text-muted hover:bg-hover"
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-            {/* Шпаргалка. Сочетание, о котором никто не знает, скорости не даёт. */}
-            <button
-              type="button"
-              onClick={() => setHelpOpen(true)}
-              title="Горячие клавиши"
-              className="border-border text-text-subtle hover:bg-hover self-center rounded-md border px-1.5 py-0.5 text-2xs"
-            >
-              ?
-            </button>
-          </div>
         </div>
         {/*
           Массовые действия по концу смены. Панель появляется только когда
@@ -1322,9 +1305,17 @@ export default function InboxPage() {
           </div>
         ) : null}
 
-        <div className="flex-1 overflow-auto">
+        <div data-tour="dialog-list" className="flex-1 overflow-auto">
           {list.length === 0 ? (
-            <p className="text-text-muted px-4 py-6 text-sm">В этом фильтре пусто.</p>
+            /* Пусто — значит разобрано всё. Заодно единственное место, где
+               видно, что шпаргалка открывается клавишей «?». */
+            <p className="text-text-muted px-4 py-6 text-sm leading-snug">
+              Открытых переписок нет — всё разобрано.
+              <br />
+              <span className="text-text-subtle text-xs">
+                Закрытые ищутся поиском ⌘K и в карточке пациента. Подсказка по клавишам — «?».
+              </span>
+            </p>
           ) : (
             list.map((d) => (
               <DialogRow
