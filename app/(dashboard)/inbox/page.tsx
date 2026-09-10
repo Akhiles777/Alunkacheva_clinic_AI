@@ -18,6 +18,8 @@ import {
   findPatient,
   hydrateDialogs,
   markDialogRead,
+  markDialogsRead,
+  closeDialogs,
   flushReadMarks,
   editMessage,
   removeMessage,
@@ -161,12 +163,19 @@ function DialogRow({
   active,
   onClick,
   now,
+  chosen,
+  onChoose,
+  selecting,
 }: {
   dialog: Dialog;
   active: boolean;
   onClick: () => void;
   /** Текущее время, общее на весь список: у каждой строки своё шло бы вразнобой. */
   now: number;
+  chosen: boolean;
+  onChoose: (on: boolean) => void;
+  /** Хоть что-то выбрано — показываем галочки у всех строк. */
+  selecting: boolean;
 }) {
   const patient = dialog.patientId ? findPatient(dialog.patientId) : undefined;
   const notes = patient ? activeNotes(patient) : [];
@@ -186,11 +195,43 @@ function DialogRow({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full border-b border-border-soft px-4 py-3 text-left last:border-b-0 ${
+      className={`group/row w-full border-b border-border-soft px-4 py-3 text-left last:border-b-0 ${
         active ? "bg-nav-active" : "hover:bg-hover"
       }`}
     >
       <div className="flex items-baseline gap-2">
+        {/*
+          Галочка появляется по наведению и остаётся, пока идёт выбор: в
+          обычной работе она только мешает читать список, а в конце смены без
+          неё каждый диалог закрывается отдельным открытием переписки.
+
+          На телефоне наведения нет вовсе, поэтому там она видна всегда: иначе
+          массовый выбор на мобильном не начать ничем.
+        */}
+        <span
+          role="checkbox"
+          aria-checked={chosen}
+          tabIndex={0}
+          aria-label="Выбрать диалог"
+          onClick={(e) => {
+            e.stopPropagation();
+            onChoose(!chosen);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === " " || e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              onChoose(!chosen);
+            }
+          }}
+          className={`border-border-strong flex h-3.5 w-3.5 flex-none items-center justify-center self-center rounded-sm border text-2xs ${
+            chosen ? "bg-accent text-accent-contrast border-accent" : "bg-surface"
+          } ${
+            selecting || chosen ? "" : "opacity-0 group-hover/row:opacity-100 max-md:opacity-100"
+          }`}
+        >
+          {chosen ? "✓" : ""}
+        </span>
         <span className="truncate text-sm font-medium">{dialog.name}</span>
         <span className="num text-text-subtle ml-auto flex-none text-2xs">{dialog.at}</span>
         {/*
@@ -811,6 +852,12 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           onCancelReply={() => setReplyTo(null)}
           onSend={submit}
           quickReplies={quickReplies}
+          templates={approvedTemplates}
+          onSendTemplate={(templateId, title) =>
+            void sendTemplate(dialog.id, templateId, title).then((res) => {
+              if (!res.ok) setSendError(res.error ?? "Шаблон не отправлен");
+            })
+          }
         />
       ) : (
         <div className="border-border flex-none border-t px-5 py-3">
@@ -928,16 +975,29 @@ export default function InboxPage() {
   }, []);
   const [composing, setComposing] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  /**
+   * Выбранные строки для массовых действий. Пусто — режима выбора нет вовсе:
+   * галочки у каждой строки в обычной работе только мешают читать список.
+   */
+  const [chosen, setChosen] = useState<string[]>([]);
 
   /**
    * Порядок — по ожиданию, а не по времени последнего сообщения: пациент,
    * написавший сорок минут назад, уезжал вниз под свежую переписку, которую
    * только что закрыли, и дольше всех ждущего не было видно вовсе.
    */
-  const list = useMemo(
-    () => sortDialogs(db.dialogs.filter((d) => dialogMatchesFilter(d, filter))),
-    [db.dialogs, filter],
-  );
+  const list = useMemo(() => {
+    const matching = db.dialogs.filter((d) => dialogMatchesFilter(d, filter));
+    /**
+     * Открытая переписка остаётся в списке, даже если перестала подходить под
+     * фильтр. Иначе она исчезает прямо под курсором: открыл диалог из «Нужен
+     * ответ» — он тут же прочитан и пропал, список дёрнулся, стрелки повели
+     * не туда, а человек читает сообщение и не понимает, куда делась строка.
+     */
+    const open = selectedId ? db.dialogs.find((d) => d.id === selectedId) : undefined;
+    const rows = open && !matching.some((d) => d.id === open.id) ? [...matching, open] : matching;
+    return sortDialogs(rows);
+  }, [db.dialogs, filter, selectedId]);
   const selected = db.dialogs.find((d) => d.id === selectedId) ?? null;
   const patient = selected?.patientId ? findPatient(selected.patientId) : undefined;
 
@@ -1082,6 +1142,51 @@ export default function InboxPage() {
             </button>
           </div>
         </div>
+        {/*
+          Массовые действия по концу смены. Панель появляется только когда
+          что-то выбрано: постоянная строка кнопок над списком забирает место
+          у того, ради чего сюда смотрят.
+        */}
+        {chosen.length > 0 ? (
+          <div className="border-border-soft bg-raise flex flex-none flex-wrap items-center gap-2 border-b px-4 py-2">
+            <span className="text-text-muted text-2xs">Выбрано: {chosen.length}</span>
+            <button
+              type="button"
+              onClick={() => {
+                markDialogsRead(chosen);
+                setChosen([]);
+              }}
+              className="border-border text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs"
+            >
+              Отметить прочитанными
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                closeDialogs(chosen);
+                setChosen([]);
+              }}
+              className="border-border text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs"
+            >
+              Закрыть
+            </button>
+            <button
+              type="button"
+              onClick={() => setChosen(list.map((d) => d.id))}
+              className="text-text-subtle hover:text-text px-1 text-2xs"
+            >
+              Выбрать все
+            </button>
+            <button
+              type="button"
+              onClick={() => setChosen([])}
+              className="text-text-subtle hover:text-text ml-auto px-1 text-2xs"
+            >
+              Снять выбор
+            </button>
+          </div>
+        ) : null}
+
         <div className="flex-1 overflow-auto">
           {list.length === 0 ? (
             <p className="text-text-muted px-4 py-6 text-sm">В этом фильтре пусто.</p>
@@ -1093,6 +1198,11 @@ export default function InboxPage() {
                 active={d.id === selectedId}
                 onClick={() => open(d.id)}
                 now={now}
+                chosen={chosen.includes(d.id)}
+                onChoose={(on) =>
+                  setChosen((prev) => (on ? [...prev, d.id] : prev.filter((x) => x !== d.id)))
+                }
+                selecting={chosen.length > 0}
               />
             ))
           )}

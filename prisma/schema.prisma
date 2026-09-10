@@ -1736,6 +1736,13 @@ model MessageTemplate {
   variables          Json?
   providerTemplateId String?
   status             MessageTemplateStatus @default(DRAFT)
+  /// Сколько раз шаблон отправляли. Частые поднимаются в списке сами: тот,
+  /// кем пользуются каждый день, не должен лежать четвёртым сверху.
+  useCount           Int                   @default(0)
+  /// Когда отправляли в последний раз. Не пользовались три месяца — в
+  /// настройках это видно как кандидат на удаление: список, в котором
+  /// половина мёртвая, перестают читать целиком.
+  lastUsedAt         DateTime?             @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)

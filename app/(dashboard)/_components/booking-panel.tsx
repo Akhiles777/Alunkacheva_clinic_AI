@@ -59,9 +59,19 @@ export function BookingButton({ className = "" }: { className?: string }) {
 export function BookingPanel() {
   const [open, setOpen] = useState(false);
   const [openCount, setOpenCount] = useState(0);
+  /**
+   * Имя пациента, с которым панель открыли.
+   *
+   * Из переписки записывают конкретного человека, и вводить его имя заново —
+   * это лишний повод ошибиться и лишняя причина уйти из инбокса. Событие
+   * может принести имя; открытая «просто так» панель работает как раньше.
+   */
+  const [preset, setPreset] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    function onOpen() {
+    function onOpen(e: Event) {
+      const detail = (e as CustomEvent<{ patientName?: string }>).detail;
+      setPreset(detail?.patientName);
       setOpen(true);
       setOpenCount((c) => c + 1);
     }
@@ -77,10 +87,10 @@ export function BookingPanel() {
   }, []);
 
   if (!open) return null;
-  return <BookingInner key={openCount} onClose={() => setOpen(false)} />;
+  return <BookingInner key={openCount} onClose={() => setOpen(false)} preset={preset} />;
 }
 
-function BookingInner({ onClose }: { onClose: () => void }) {
+function BookingInner({ onClose, preset }: { onClose: () => void; preset?: string }) {
   const db = useDb();
   const [services, setServices] = useState<ServiceOption[]>([]);
   // Рабочее окно клиники на сегодня: в праздник и в укороченный день оно
@@ -88,7 +98,7 @@ function BookingInner({ onClose }: { onClose: () => void }) {
   const [clinicDay, setClinicDay] = useState<ClinicDayView | null>(null);
   const [serviceKey, setServiceKey] = useState<string | null>(null);
   const [windowId, setWindowId] = useState<string | null>(null);
-  const [patient, setPatient] = useState("");
+  const [patient, setPatient] = useState(preset ?? "");
   /**
    * Выбранный из базы пациент. Пока он не выбран, имя в поле — это заявка
    * завести нового: так администратор всегда видит, свяжется запись с

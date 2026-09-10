@@ -100,15 +100,23 @@ export async function getInboxTemplates(): Promise<InboxTemplates> {
  * Нечем заполнить — не отправляем вовсе и говорим, чего не хватает. Шаблон с
  * дырой хуже, чем не отправленный: он показывает, что клиника пишет роботом.
  */
-export async function sendTemplateDb(
+/**
+ * Подставить переменные шаблона по этому диалогу.
+ *
+ * Отдельной функцией, потому что ответ на один и тот же вопрос нужен дважды:
+ * при отправке и в предпросмотре. Считать их по-разному — значит однажды
+ * показать человеку один текст, а отправить другой.
+ */
+async function fillForDialog(
+  companyId: string,
   conversationId: string,
-  messageId: string,
   templateId: string,
-): Promise<SendResult> {
-  const session = await getSession();
-
+): Promise<
+  | { ok: true; text: string; title: string }
+  | { ok: false; error: string }
+> {
   const template = await prisma.messageTemplate.findFirst({
-    where: { id: templateId, companyId: session.companyId },
+    where: { id: templateId, companyId },
     select: { bodyTemplate: true, status: true, title: true },
   });
   if (!template) return { ok: false, error: "Шаблон не найден" };
@@ -117,7 +125,7 @@ export async function sendTemplateDb(
   }
 
   const conv = await prisma.conversation.findFirst({
-    where: { id: conversationId, companyId: session.companyId },
+    where: { id: conversationId, companyId },
     select: {
       patient: {
         select: {
@@ -162,9 +170,53 @@ export async function sendTemplateDb(
       error: `Не хватает данных для шаблона: ${missingLabel(filled.missing)}. Заполните их в карточке пациента или выберите другой шаблон.`,
     };
   }
-
-  return sendMessageDb(conversationId, messageId, filled.text);
+  return { ok: true, text: filled.text, title: template.title };
 }
+
+/**
+ * Предпросмотр: что именно уйдёт пациенту.
+ *
+ * Шаблон на экране — это заготовка с «{{name}}»; подставляет их сервер, у
+ * которого есть карточка и ближайшая запись. Пока предпросмотра не было,
+ * администратор нажимал кнопку вслепую и узнавал результат из переписки —
+ * причём в половине случаев узнавал, что данных не хватило и ничего не ушло.
+ */
+export async function previewTemplateDb(
+  conversationId: string,
+  templateId: string,
+): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  requireId(conversationId, "диалог");
+  requireId(templateId, "шаблон");
+  const session = await getSession();
+  const filled = await fillForDialog(session.companyId, conversationId, templateId);
+  return filled.ok ? { ok: true, text: filled.text } : { ok: false, error: filled.error };
+}
+
+export async function sendTemplateDb(
+  conversationId: string,
+  messageId: string,
+  templateId: string,
+): Promise<SendResult> {
+  const session = await getSession();
+  const filled = await fillForDialog(session.companyId, conversationId, templateId);
+  if (!filled.ok) return { ok: false, error: filled.error };
+
+  /**
+   * Отметка использования — ради двух вещей сразу: частые шаблоны поднимаются
+   * в списке сами, а не пользованные три месяца видно в настройках как
+   * кандидатов на удаление. Считаем по факту ОТПРАВКИ, а не открытия списка:
+   * посмотреть и передумать — это не «пользуются».
+   */
+  const sent = await sendMessageDb(conversationId, messageId, filled.text);
+  if (sent.ok) {
+    await prisma.messageTemplate.update({
+      where: { id: templateId },
+      data: { useCount: { increment: 1 }, lastUsedAt: new Date() },
+    });
+  }
+  return sent;
+}
+
 
 const DATE_FMT = new Intl.DateTimeFormat("ru-RU", {
   timeZone: "Europe/Moscow",
@@ -1442,6 +1494,58 @@ export async function markDialogReadDb(conversationId: string): Promise<{ ok: tr
     data: { staffReadAt: new Date() },
   });
   return { ok: true };
+}
+
+/**
+ * Массовые действия по концу смены.
+ *
+ * Администратор закрывает смену, и в списке остаётся десяток разговоров, где
+ * всё уже сказано: пациент поблагодарил, вопрос решён. По одному это десять
+ * открытий переписки — ровно та работа, из-за которой список перестают
+ * разбирать вовсе, и завтра он начинается грязным.
+ *
+ * Отметка прочтения и закрытие — разные вещи и разные кнопки. «Прочитано»
+ * говорит «я это видел», «закрыт» — «разговор окончен»; смешивать их нельзя,
+ * иначе закрытыми окажутся диалоги, которые просто просмотрели.
+ */
+export async function markDialogsReadDb(ids: string[]): Promise<{ ok: true; count: number }> {
+  const session = await getSession();
+  if (ids.length === 0) return { ok: true, count: 0 };
+  const res = await prisma.conversation.updateMany({
+    where: { id: { in: ids }, companyId: session.companyId },
+    data: { staffReadAt: new Date() },
+  });
+  return { ok: true, count: res.count };
+}
+
+/**
+ * Закрыть разговоры.
+ *
+ * Закрытие — не удаление: переписка остаётся, её видно фильтром «Закрытые» и
+ * в карточке пациента, а новое сообщение пациента открывает диалог заново
+ * (так работает вебхук). Поэтому кнопка не спрашивает подтверждения: цена
+ * ошибки — один клик по фильтру.
+ */
+export async function closeDialogsDb(ids: string[]): Promise<{ ok: true; count: number }> {
+  const session = await getSession();
+  if (!(await can(session, "MESSAGE_PATIENTS"))) {
+    return { ok: true, count: 0 };
+  }
+  if (ids.length === 0) return { ok: true, count: 0 };
+  const now = new Date();
+  const res = await prisma.conversation.updateMany({
+    where: { id: { in: ids }, companyId: session.companyId, status: { not: "CLOSED" } },
+    data: { status: "CLOSED", closedAt: now, staffReadAt: now },
+  });
+  /**
+   * Открытые эскалации закрываем вместе с диалогом: иначе разговор закрыт, а
+   * в «Срочных» он же висит — две правды об одном месте.
+   */
+  await prisma.escalation.updateMany({
+    where: { conversationId: { in: ids }, companyId: session.companyId, status: { not: "RESOLVED" } },
+    data: { status: "RESOLVED", resolvedAt: now, resolvedById: session.userId },
+  });
+  return { ok: true, count: res.count };
 }
 
 export interface StartDialogResult {

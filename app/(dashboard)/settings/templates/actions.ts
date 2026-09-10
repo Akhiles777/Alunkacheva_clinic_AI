@@ -88,6 +88,10 @@ export async function saveTemplate(
       body: saved.bodyTemplate,
       status: STATUS_BACK[saved.status] ?? "draft",
       variables: templateVariables(saved.bodyTemplate),
+      useCount: saved.useCount,
+      lastUsedAt: saved.lastUsedAt ? saved.lastUsedAt.toISOString() : null,
+      // Только что сохранённый шаблон мёртвым быть не может.
+      stale: false,
     },
   };
 }

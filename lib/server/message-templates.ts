@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { codeFromTitle, templateVariables } from "@/lib/message-template";
+import { codeFromTitle, templateVariables, TEMPLATE_STALE_DAYS } from "@/lib/message-template";
 import { settingsStore, type TemplateItem } from "@/app/_data/settings";
 
 /**
@@ -30,7 +30,15 @@ export { STATUS as STATUS_TO_DB };
 
 export interface TemplateRow extends TemplateItem {
   variables: string[];
+  /** Сколько раз отправляли: по нему частые поднимаются в списке. */
+  useCount: number;
+  /** Когда отправляли в последний раз; null — ни разу. */
+  lastUsedAt: string | null;
+  /** Не пользовались дольше порога — кандидат на удаление. */
+  stale: boolean;
 }
+
+
 
 /**
  * Перенос из JSON-настройки в таблицу — один раз, при первом чтении.
@@ -79,8 +87,14 @@ export async function listTemplates(companyId: string): Promise<TemplateRow[]> {
   await ensureTemplates(companyId);
   const rows = await prisma.messageTemplate.findMany({
     where: { companyId, channel: "WHATSAPP" },
-    orderBy: { createdAt: "asc" },
+    /**
+     * Частые сверху: тот, кем пользуются каждый день, не должен лежать
+     * четвёртым. При равном счёте — порядок заведения, чтобы список не
+     * перетасовывался сам собой.
+     */
+    orderBy: [{ useCount: "desc" }, { createdAt: "asc" }],
   });
+  const staleBefore = Date.now() - TEMPLATE_STALE_DAYS * 24 * 3600 * 1000;
   return rows.map((r) => ({
     id: r.id,
     code: r.code,
@@ -88,5 +102,13 @@ export async function listTemplates(companyId: string): Promise<TemplateRow[]> {
     body: r.bodyTemplate,
     status: STATUS_BACK[r.status] ?? "draft",
     variables: templateVariables(r.bodyTemplate),
+    useCount: r.useCount,
+    lastUsedAt: r.lastUsedAt ? r.lastUsedAt.toISOString() : null,
+    /**
+     * Кандидатом считаем только тот, которым уже пользовались и перестали.
+     * Заведённый вчера и ни разу не отправленный — это не мёртвый шаблон, а
+     * новый: предлагать удалить его через час после создания глупо.
+     */
+    stale: r.lastUsedAt !== null && r.lastUsedAt.getTime() < staleBefore,
   }));
 }

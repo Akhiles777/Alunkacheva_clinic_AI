@@ -136,6 +136,31 @@ export function ContactPanel({ dialog, onChanged }: { dialog: Dialog; onChanged:
       <button type="button" onClick={() => setMode("rename")} className="text-text-muted hover:text-text">
         Переименовать
       </button>
+      {/*
+        Записать и занести звонок — не уходя из переписки.
+        Панель записи и форма звонка живут поверх всех экранов; отсюда они
+        открываются с уже подставленным именем собеседника. Уход в другой
+        раздел посреди разговора — это возврат к телефону: пока
+        администратор ищет человека в расписании, пациент ждёт.
+      */}
+      <button
+        type="button"
+        onClick={() =>
+          window.dispatchEvent(
+            new CustomEvent("open-booking", { detail: { patientName: dialog.name } }),
+          )
+        }
+        className="text-text-muted hover:text-text"
+      >
+        Записать
+      </button>
+      <button
+        type="button"
+        onClick={() => window.dispatchEvent(new Event("open-call"))}
+        className="text-text-muted hover:text-text"
+      >
+        Занести звонок
+      </button>
       {!dialog.patientId ? (
         <button type="button" onClick={() => setMode("link")} className="text-text-muted hover:text-text">
           Привязать к клиенту

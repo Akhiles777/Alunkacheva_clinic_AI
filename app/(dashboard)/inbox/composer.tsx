@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { checkFile, willSplit, TEXT_LIMIT, type SendChannel } from "@/lib/media/limits";
 import { draftOf, setDraft, type OutgoingAttachment } from "@/app/_data/store";
+import { previewTemplateDb } from "./actions";
 
 /**
  * Поле ввода администратора: текст, файлы, голосовое.
@@ -36,6 +37,9 @@ export interface ComposerProps {
   onCancelReply: () => void;
   onSend: (text: string, files: OutgoingAttachment[]) => void;
   quickReplies: string[];
+  /** Утверждённые шаблоны: они уходят с подстановкой, а не как текст. */
+  templates: { id: string; title: string; body: string }[];
+  onSendTemplate: (templateId: string, title: string) => void;
 }
 
 interface Picked extends OutgoingAttachment {
@@ -53,12 +57,44 @@ export function Composer({
   onCancelReply,
   onSend,
   quickReplies,
+  templates,
+  onSendTemplate,
 }: ComposerProps) {
   const [text, setText] = useState(() => draftOf(dialogId));
   const [files, setFiles] = useState<Picked[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  /**
+   * Шаблоны по «/» прямо из поля ввода.
+   *
+   * Кнопками их было три, и они лежали ниже поля: чтобы отправить шаблон,
+   * администратор уводил руку с клавиатуры и глазами искал нужный. Набранное
+   * после «/» фильтрует список — так это устроено везде, где шаблонов больше
+   * трёх.
+   */
+  const slash = text.startsWith("/") ? text.slice(1).trim().toLowerCase() : null;
+  const [picked, setPicked] = useState(0);
+  const [preview, setPreview] = useState<{ id: string; text: string | null; error: string | null } | null>(
+    null,
+  );
+
+  const found = useMemo(() => {
+    if (slash === null) return [];
+    const items = [
+      ...templates.map((t) => ({ kind: "template" as const, id: t.id, title: t.title, body: t.body })),
+      ...quickReplies.map((q, i) => ({
+        kind: "quick" as const,
+        id: `q${i}`,
+        title: q.length > 40 ? `${q.slice(0, 38)}…` : q,
+        body: q,
+      })),
+    ];
+    if (!slash) return items.slice(0, 8);
+    return items
+      .filter((i) => `${i.title} ${i.body}`.toLowerCase().includes(slash))
+      .slice(0, 8);
+  }, [slash, templates, quickReplies]);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
@@ -143,6 +179,48 @@ export function Composer({
         setError("Файл не дошёл до сервера — проверьте связь и попробуйте ещё раз");
       }
     }
+  }
+
+  /**
+   * Предпросмотр подставленного текста для выбранного шаблона.
+   *
+   * Спрашиваем сервер: подстановка идёт там, где есть карточка пациента и его
+   * ближайшая запись. Быстрый ответ — просто текст, его показываем как есть.
+   */
+  useEffect(() => {
+    const item = found[picked];
+    if (!item || item.kind !== "template") return;
+    if (preview?.id === item.id) return;
+    let alive = true;
+    void previewTemplateDb(dialogId, item.id)
+      .then((res) => {
+        if (!alive) return;
+        setPreview(
+          res.ok
+            ? { id: item.id, text: res.text, error: null }
+            : { id: item.id, text: null, error: res.error },
+        );
+      })
+      .catch(() => {
+        if (alive) setPreview({ id: item.id, text: null, error: "Предпросмотр не загрузился" });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [found, picked, dialogId, preview?.id]);
+
+  function choose(item: { kind: "template" | "quick"; id: string; body: string; title: string }) {
+    if (item.kind === "quick") {
+      // Быстрый ответ вставляем в поле: его правят перед отправкой.
+      setText(item.body);
+      areaRef.current?.focus();
+      return;
+    }
+    // Шаблон уходит целиком и с подстановкой на сервере — вставлять его
+    // текстом нельзя, пациент получит «{{name}}».
+    onSendTemplate(item.id, item.title);
+    setText("");
+    setDraft(dialogId, "");
   }
 
   function submit() {
@@ -266,6 +344,49 @@ export function Composer({
         </p>
       ) : null}
 
+      {/*
+        Список шаблонов по «/». Предпросмотр показывается для выбранного: в
+        шаблоне переменные, подставляет их сервер, и до сих пор человек нажимал
+        кнопку вслепую — а в половине случаев узнавал из переписки, что данных
+        не хватило и не ушло ничего.
+      */}
+      {slash !== null && found.length > 0 ? (
+        <div className="border-border bg-surface mb-2 overflow-hidden rounded-md border">
+          <ul className="max-h-52 overflow-auto">
+            {found.map((item, i) => (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onMouseEnter={() => setPicked(i)}
+                  onClick={() => choose(item)}
+                  className={`flex w-full items-baseline gap-2 px-3 py-2 text-left ${
+                    i === picked ? "bg-hover" : ""
+                  }`}
+                >
+                  <span className="truncate text-sm">{item.title}</span>
+                  <span className="text-text-subtle ml-auto flex-none text-2xs">
+                    {item.kind === "template" ? "шаблон" : "быстрый ответ"}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="border-border-soft text-text-muted border-t px-3 py-2 text-xs">
+            {preview?.id === found[picked]?.id ? (
+              preview.error ? (
+                <span className="text-accent-text">{preview.error}</span>
+              ) : (
+                <span className="whitespace-pre-wrap">{preview.text}</span>
+              )
+            ) : found[picked]?.kind === "quick" ? (
+              <span className="whitespace-pre-wrap">{found[picked]?.body}</span>
+            ) : (
+              <span className="text-text-subtle">готовим предпросмотр…</span>
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {emojiOpen ? (
         <div className="border-border bg-surface mb-2 flex flex-wrap gap-1 rounded-md border p-2">
           {EMOJI.map((e) => (
@@ -327,6 +448,33 @@ export function Composer({
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             /**
+             * Пока открыт список шаблонов, стрелки и Enter принадлежат ему:
+             * иначе «вниз» уводит курсор в тексте, а Enter отправляет «/при»
+             * пациенту.
+             */
+            if (slash !== null && found.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setPicked((i) => Math.min(i + 1, found.length - 1));
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setPicked((i) => Math.max(i - 1, 0));
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                choose(found[picked]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setText("");
+                return;
+              }
+            }
+            /**
              * Enter отправляет, Shift+Enter переносит строку — как в
              * мессенджере. Cmd/Ctrl+Enter тоже отправляет: так привыкли те,
              * кто пришёл из почты.
@@ -344,7 +492,7 @@ export function Composer({
               void upload(pasted);
             }
           }}
-          placeholder="Ответить вручную…  Enter — отправить, Shift+Enter — новая строка"
+          placeholder="Ответить вручную…  «/» — шаблоны, Enter — отправить"
           className="border-border-input bg-surface placeholder:text-text-subtle order-1 max-h-40 min-h-[38px] grow basis-full resize-none rounded-md border px-3 py-2 text-sm outline-none md:order-2 md:basis-0 md:min-w-[160px]"
         />
         <button

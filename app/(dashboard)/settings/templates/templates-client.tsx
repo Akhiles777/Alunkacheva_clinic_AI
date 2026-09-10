@@ -5,7 +5,7 @@ import { Group, SaveBar, Textarea, TextInput } from "../_components/ui";
 import { saveSection } from "../blob-actions";
 import { deleteTemplate, saveTemplate } from "./actions";
 import type { TemplateRow } from "@/lib/server/message-templates";
-import { VARIABLE_LABEL, fillTemplate } from "@/lib/message-template";
+import { TEMPLATE_STALE_DAYS, VARIABLE_LABEL, fillTemplate } from "@/lib/message-template";
 
 export interface TemplatesData {
   templates: TemplateRow[];
@@ -102,6 +102,21 @@ export function TemplatesClient({ initial }: { initial: TemplatesData }) {
                     >
                       {status.text}
                     </span>
+                    {/*
+                      Сколько раз им пользовались и когда в последний раз.
+                      Без этого список нельзя ни почистить, ни понять, какой
+                      шаблон рабочий: все выглядят одинаково нужными.
+                    */}
+                    <span className="text-text-subtle num text-2xs">
+                      {t.useCount > 0
+                        ? `отправляли ${t.useCount} ${t.useCount === 1 ? "раз" : "раза"}`
+                        : "ни разу не отправляли"}
+                    </span>
+                    {t.stale ? (
+                      <span className="border-border text-text-muted rounded-sm border px-1.5 py-px text-2xs">
+                        не нужен? не пользовались {TEMPLATE_STALE_DAYS} дней
+                      </span>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => setDraft({ id: t.id, title: t.title, body: t.body, status: t.status })}

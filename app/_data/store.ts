@@ -36,6 +36,8 @@ import {
   deleteMessageDb,
   editMessageDb,
   resendMessageDb,
+  markDialogsReadDb,
+  closeDialogsDb,
   sendTemplateDb,
   startDialogDb,
   type DialogRecord,
@@ -1243,6 +1245,41 @@ export function markDialogRead(dialogId: string) {
  */
 export function flushReadMarks() {
   readMarks.flush();
+}
+
+/**
+ * Массовые действия по концу смены: отметить прочитанными и закрыть.
+ *
+ * Экран меняется сразу, база — следом, как и у остальных записей. Неудача
+ * видна человеку: «отметил десять» при десяти незаписанных отметках — это
+ * ровно тот случай, когда система уверенно врёт о выполненной работе.
+ */
+export function markDialogsRead(ids: string[]) {
+  commit({
+    ...db,
+    dialogs: db.dialogs.map((d) => (ids.includes(d.id) ? { ...d, unread: false, unreadCount: 0 } : d)),
+  });
+  persist(
+    "Отметки прочтения не записались",
+    () => markDialogsReadDb(ids),
+    "Диалоги остались непрочитанными — отметьте ещё раз.",
+  );
+}
+
+export function closeDialogs(ids: string[]) {
+  commit({
+    ...db,
+    dialogs: db.dialogs.map((d) =>
+      ids.includes(d.id)
+        ? { ...d, status: "closed", unread: false, unreadCount: 0, escalationReason: undefined }
+        : d,
+    ),
+  });
+  persist(
+    "Диалоги не закрылись",
+    () => closeDialogsDb(ids),
+    "Они остались открытыми — попробуйте ещё раз.",
+  );
 }
 
 /** Начать диалог. Если окно закрыто, первым сообщением идёт только шаблон. */
