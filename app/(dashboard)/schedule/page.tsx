@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { visitTitle } from "@/lib/visit-title";
 import { noShowMarksAction } from "../_components/no-show-actions";
+import { AssemblyPanel } from "../_components/assembly-panel";
 import Link from "next/link";
 import { VisitNote } from "../_components/visit-note";
 import { VisitSource } from "../_components/visit-source";
@@ -227,6 +228,10 @@ export default function SchedulePage() {
    * Веса прогноза не утверждены — пометок нет вовсе.
    */
   const [marks, setMarks] = useState<Record<string, string[]>>({});
+  /** Открытая панель «собрать окно»: кабинет и день, по которым ищем перенос. */
+  const [assembly, setAssembly] = useState<{ roomId: string; roomName: string; dayIso: string } | null>(
+    null,
+  );
   useEffect(() => {
     let alive = true;
     noShowMarksAction(openDay?.date)
@@ -325,6 +330,15 @@ export default function SchedulePage() {
       </header>
 
       <div className="flex-1 overflow-auto px-7 py-5 max-md:px-5">
+        {assembly ? (
+          <AssemblyPanel
+            roomId={assembly.roomId}
+            roomName={assembly.roomName}
+            dayIso={assembly.dayIso}
+            onClose={() => setAssembly(null)}
+          />
+        ) : null}
+
         {view === "day" ? (
           <div className="grid grid-cols-3 gap-4 max-lg:grid-cols-1">
             {rooms.filter((r) => room === "all" || r.id === room).map((r) => {
@@ -333,8 +347,26 @@ export default function SchedulePage() {
                 .sort((a, b) => a.startMinute - b.startMinute);
               return (
                 <section key={r.id}>
-                  <div className="mb-2.5 flex items-baseline justify-between">
+                  <div className="mb-2.5 flex items-baseline justify-between gap-2">
                     <h2 className="text-sm font-medium">{r.name}</h2>
+                    {/*
+                      «Собрать окно»: окна нарезаны по сорок минут, а услуга
+                      бывает на полтора часа — и администратор отказывает,
+                      хотя рядом стоит запись, которую человек подвинул бы.
+                    */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAssembly({
+                          roomId: r.id,
+                          roomName: r.name,
+                          dayIso: (openDay?.date ?? new Date().toISOString()),
+                        })
+                      }
+                      className="text-text-subtle hover:text-text ml-auto text-2xs"
+                    >
+                      собрать окно
+                    </button>
                     <span className="num text-text-subtle text-xs">{appts.length}</span>
                   </div>
                   {appts.length === 0 ? (
