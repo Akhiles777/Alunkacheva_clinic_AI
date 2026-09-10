@@ -37,8 +37,16 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   const session = await getSession();
   const canEditSettings = await can(session, "EDIT_SETTINGS");
   if (session.userId) {
-    const u = await prisma.staffUser.findUnique({
-      where: { id: session.userId },
+    /**
+     * Отбираем и по клинике, а не по одному идентификатору.
+     *
+     * Личность приходит из подписанной куки, подделать её без ключа нельзя —
+     * но правило «данные клиники читаются только в её границах» не должно
+     * иметь исключений: одно место без проверки со временем становится
+     * образцом для следующего.
+     */
+    const u = await prisma.staffUser.findFirst({
+      where: { id: session.userId, companyId: session.companyId },
       select: {
         id: true,
         name: true,

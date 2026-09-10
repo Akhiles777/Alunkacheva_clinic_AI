@@ -878,8 +878,14 @@ export async function sendMessageDb(
    * пробует снова — а сообщение к тому времени уже ушло пациенту. Без этой
    * проверки он получил бы его второй раз, и виноватой выглядела бы клиника.
    */
-  const already = await prisma.message.findUnique({
-    where: { id: messageId },
+  const already = await prisma.message.findFirst({
+    /**
+     * И по клинике тоже. Идентификатор придумывает экран, то есть он приходит
+     * снаружи: без этого условия чужое сообщение отвечало бы «уже отправлено»
+     * (и наше не ушло бы вовсе), а его причина отказа возвращалась бы в чужую
+     * клинику.
+     */
+    where: { id: messageId, companyId: session.companyId },
     select: { id: true, status: true, failureReason: true },
   });
   if (already) {

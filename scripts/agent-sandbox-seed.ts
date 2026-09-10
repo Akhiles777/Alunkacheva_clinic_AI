@@ -27,6 +27,7 @@ import { prisma } from "../lib/db";
 
 import { SANDBOX_YCLIENTS_ID } from "./sandbox-id";
 import { ALL_PERMISSIONS as PERMISSIONS, ROLE_MATRIX, type Role } from "../lib/permissions";
+import { hashPassword } from "../lib/auth";
 
 /**
  * Есть ли в этой базе работающая клиника.
@@ -528,6 +529,30 @@ async function main() {
       });
     }
   }
+
+  /**
+   * Учётка сотрудника. Без неё песочница не показывает того, что видит
+   * администратор: внутренний чат отвечает ошибкой, отложенная отправка не
+   * находит отправителя, а вход возможен только по запасному пути. Проверка,
+   * идущая не тем путём, что живой пользователь, хуже отсутствия проверки —
+   * тем же соображением здесь заведена и матрица прав.
+   *
+   * Пароль заведомо слабый и это нормально: скрипт отказывается работать на
+   * боевой базе (`assertNoLiveClinic`), а песочница живёт только на localhost.
+   */
+  const owner = await prisma.staffUser.upsert({
+    where: { id: "sandbox-owner" },
+    update: { companyId: company.id, name: "Владелец песочницы", role: "OWNER", isActive: true },
+    create: {
+      id: "sandbox-owner",
+      companyId: company.id,
+      login: "sandbox",
+      passwordHash: hashPassword("sandbox"),
+      name: "Владелец песочницы",
+      role: "OWNER",
+    },
+  });
+  console.log(`учётка: ${owner.login || "sandbox"} / sandbox (роль ${owner.role})`);
 
   console.log("\nпесочница готова. Прогон: npx tsx scripts/agent-drill.ts");
 }

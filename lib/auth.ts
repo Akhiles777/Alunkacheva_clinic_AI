@@ -67,10 +67,27 @@ export interface SessionPayload {
   userId: string;
   companyId: string;
   role: string;
+  /** Когда истекает, в секундах эпохи. У выпущенных до этой правки его нет. */
+  exp?: number;
 }
 
+/** Сколько живёт сессия. Столько же стоит на самой куке. */
+export const SESSION_TTL_SEC = 60 * 60 * 24 * 30;
+
+/**
+ * Подписать сессию.
+ *
+ * Срок кладём В САМ токен, а не только на куку. Кука — просьба к браузеру,
+ * которую можно не исполнить: скопированный токен без срока годен вечно, и
+ * сервер принял бы его через год. Для CRM с медицинскими данными это
+ * недопустимо, и проверять срок обязан тот, кто проверяет подпись.
+ */
 export function signSession(payload: SessionPayload): string {
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const withExp: SessionPayload = {
+    ...payload,
+    exp: payload.exp ?? Math.floor(Date.now() / 1000) + SESSION_TTL_SEC,
+  };
+  const body = Buffer.from(JSON.stringify(withExp)).toString("base64url");
   const sig = crypto.createHmac("sha256", secret()).update(body).digest("base64url");
   return `${body}.${sig}`;
 }
@@ -83,7 +100,14 @@ export function verifySession(token: string): SessionPayload | null {
     return null;
   }
   try {
-    return JSON.parse(Buffer.from(body, "base64url").toString()) as SessionPayload;
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as SessionPayload;
+    /**
+     * Токены, выпущенные до появления срока, принимаем: иначе выкатка
+     * выкидывает из системы всех разом посреди рабочего дня. Своё они
+     * отживут сами — кука держится тридцать суток и не продлевается.
+     */
+    if (typeof payload.exp === "number" && payload.exp * 1000 <= Date.now()) return null;
+    return payload;
   } catch {
     return null;
   }

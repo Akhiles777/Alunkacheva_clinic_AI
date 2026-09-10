@@ -97,6 +97,23 @@ export async function countInquiriesFromDb(
   to: Date,
   gapHours: number = INQUIRY_GAP_HOURS,
 ): Promise<InquiryTotals> {
+  /**
+   * Нижняя граница внутреннего просмотра — начало периода минус сама пауза.
+   *
+   * Без неё запрос читал ВСЕ входящие сообщения клиники за всё время, чтобы
+   * посчитать обращения за один день: оконная функция смотрит на предыдущее
+   * сообщение, и ограничить её было будто бы нельзя. На боевых данных это
+   * полный просмотр таблицы на каждое открытие экрана — та самая «платформа
+   * долго грузит».
+   *
+   * Ограничить можно, и результат не меняется ни в одном случае. Для
+   * сообщения T внутри периода важно ровно одно: было ли предыдущее ближе, чем
+   * `gapHours`. Если было — оно лежит в окне и находится. Если не было —
+   * предыдущего в окне нет, `LAG` даёт NULL, и T считается новым обращением,
+   * что и требуется по §8. Сообщения старше границы на ответ повлиять не
+   * могут по определению.
+   */
+  const scanFrom = new Date(from.getTime() - gapHours * 3600 * 1000);
   const rows = await prisma.$queryRaw<{ sourceId: string | null; count: bigint }[]>`
     SELECT c."sourceId" AS "sourceId", COUNT(*) AS count
       FROM (
@@ -110,6 +127,8 @@ export async function countInquiriesFromDb(
            AND m.direction = 'IN'
            AND m."deletedAt" IS NULL
            AND m."isDraft" = false
+           AND m."createdAt" >= ${scanFrom}
+           AND m."createdAt" < ${to}
       ) t
       JOIN conversations c ON c.id = t."conversationId"
      WHERE c."isPractice" = false
