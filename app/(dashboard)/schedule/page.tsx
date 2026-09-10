@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { visitTitle } from "@/lib/visit-title";
+import { noShowMarksAction } from "../_components/no-show-actions";
 import Link from "next/link";
 import { VisitNote } from "../_components/visit-note";
 import { VisitSource } from "../_components/visit-source";
@@ -48,7 +49,16 @@ const STATUS: Record<Appt["status"], { label: string; cls: string }> = {
  * человек нажал бы второй раз и третий. Лучше не показывать кнопку вовсе, чем
  * показывать не работающую.
  */
-function ApptCard({ appt, readOnly = false }: { appt: Appt; readOnly?: boolean }) {
+function ApptCard({
+  appt,
+  readOnly = false,
+  risk,
+}: {
+  appt: Appt;
+  readOnly?: boolean;
+  /** Почему запись стоит подтвердить. Пусто — пометки нет. */
+  risk?: string[];
+}) {
   const [editing, setEditing] = useState(false);
   const [time, setTime] = useState(formatMinute(appt.startMinute));
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +124,13 @@ function ApptCard({ appt, readOnly = false }: { appt: Appt; readOnly?: boolean }
       <div className="text-text-subtle truncate text-xs">
         {visitTitle(appt.parts, appt.service)} · {appt.doctor}
       </div>
+      {risk && risk.length > 0 ? (
+        /* Пометка с основанием. Без основания администратор решит, что
+           система гадает, и перестанет на неё смотреть. */
+        <div className="border-accent-border bg-accent-tint text-accent-text mt-1.5 rounded-md border px-2 py-1 text-2xs leading-snug">
+          стоит подтвердить: {risk.join(" · ")}
+        </div>
+      ) : null}
       <VisitNote appt={appt} />
       <VisitSource appt={appt} readOnly={readOnly} />
       {appt.bookedByName ? (
@@ -203,6 +220,22 @@ export default function SchedulePage() {
   }, [openDay]);
 
   const source = openDay ? dayAppts : db.appointments;
+
+  /**
+   * Пометки риска неявки. Ничего не блокируют: рядом с записью появляется
+   * строка с основанием — «не пришёл 2 раза из 5, записан за 24 дня».
+   * Веса прогноза не утверждены — пометок нет вовсе.
+   */
+  const [marks, setMarks] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    let alive = true;
+    noShowMarksAction(openDay?.date)
+      .then((m) => alive && setMarks(m))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [openDay]);
 
   // Кабинеты клиники — с сервера, тем же запросом, что и рабочий день.
   const [rooms, setRooms] = useState<{ id: string; name: string }[]>(FALLBACK_ROOMS);

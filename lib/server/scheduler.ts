@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { runDueDialogTasks } from "@/app/(dashboard)/inbox/dialog-actions";
+import { settleOutcomes } from "@/lib/server/no-show";
 import {
   syncAll,
   syncRecentRecords,
@@ -352,6 +353,15 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
         console.error("[scheduler] отложенные сообщения не ушли:", (e as Error)?.message ?? e);
         return null;
       });
+      /**
+       * Исход прошедших визитов — в журнал прогнозов. Без этого шага журнал
+       * остаётся без ответа на главный вопрос: пришёл человек или нет.
+       * Порциями и на коротком круге: работа копеечная, а знание накопится.
+       */
+      const outcomes = await settleOutcomes(company.id).catch((e) => {
+        console.error("[scheduler] исходы прогнозов не проставлены:", (e as Error)?.message ?? e);
+        return null;
+      });
 
       results.push({
         клиника: company.name,
@@ -361,6 +371,7 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
         возвратДиалогов: handback,
         доборНеотвеченных: sweep,
         отложенныеОтправки: later,
+        исходовПрогноза: outcomes,
       });
     }
     /**

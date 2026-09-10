@@ -18,8 +18,12 @@ export type NavItem = { label: string; href: string; badge?: number };
  * Считаем то, ради чего он нужен: диалоги, где последним написал пациент и
  * которые ещё не закрыты.
  */
-export function waitingCount(dialogs: { unread: boolean; status: string }[]): number {
-  return dialogs.filter((d) => d.unread && d.status !== "closed").length;
+export function waitingCount(
+  dialogs: { unread: boolean; status: string; practice?: boolean }[],
+): number {
+  // Тренировочная переписка в счётчик не идёт: значок должен звать к
+  // настоящему пациенту, иначе на него перестают смотреть.
+  return dialogs.filter((d) => d.unread && d.status !== "closed" && !d.practice).length;
 }
 
 // «Чат» доступен всем ролям: это внутренняя переписка клиники, а не

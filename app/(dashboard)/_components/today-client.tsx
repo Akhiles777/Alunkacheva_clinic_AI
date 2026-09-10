@@ -6,6 +6,7 @@ import { DayPicker } from "./day-picker";
 import { RevenueBreakdown } from "./revenue-breakdown";
 import { FreeWindows } from "./free-windows";
 import { AttentionList, InquiryList } from "./today-lists";
+import { ConfirmTomorrow } from "./confirm-tomorrow";
 import { TodayAlerts } from "./today-alerts";
 import { SearchTrigger } from "./command-palette";
 import { BookingButton } from "./booking-panel";
@@ -274,10 +275,18 @@ export function TodayClient() {
   const settled = arrived.length + noShow.length;
   const arrivalPct = settled > 0 ? 100 - noShowRate(arrived.length, noShow.length) : null;
 
-  // «Требует внимания» и «обращения» — из живых диалогов.
+  /**
+   * «Требует внимания» и «обращения» — из живых диалогов.
+   *
+   * Тренировочные переписки сюда не идут: экран «Сегодня» отвечает на вопрос
+   * «что происходит в клинике», а учебное упражнение к работе клиники
+   * отношения не имеет — и, попав в список, оно вытесняет настоящее
+   * обращение.
+   */
   const attention = useMemo(() => {
     const items: AttentionItem[] = [];
-    const escalated = db.dialogs.filter((d) => d.status === "escalated");
+    const real = db.dialogs.filter((d) => !d.practice);
+    const escalated = real.filter((d) => d.status === "escalated");
     for (const d of escalated) {
       items.push({
         id: `esc-${d.id}`,
@@ -288,7 +297,7 @@ export function TodayClient() {
         urgent: true,
       });
     }
-    const waiting = db.dialogs.filter((d) => d.unread && d.status !== "escalated" && d.status !== "closed");
+    const waiting = real.filter((d) => d.unread && d.status !== "escalated" && d.status !== "closed");
     for (const d of waiting) {
       items.push({
         id: `wait-${d.id}`,
@@ -317,7 +326,8 @@ export function TodayClient() {
   const inquiries = useMemo(
     () =>
       db.dialogs
-        .filter((d) => d.status !== "closed")
+        // Тренировка — не обращение клиники (см. «Требует внимания» выше).
+        .filter((d) => d.status !== "closed" && !d.practice)
         .slice(0, 6)
         .map((d) => ({
           id: d.id,
@@ -539,6 +549,13 @@ export function TodayClient() {
             <CabinetCard key={cabinet.id} cabinet={cabinet} />
           ))}
         </div>
+
+        {/*
+          Кому позвонить накануне. Блок появляется только если есть кого
+          подтверждать и веса прогноза утверждены — пустой раздел на главном
+          экране читается как сломанный.
+        */}
+        {isToday ? <ConfirmTomorrow /> : null}
 
         {isToday ? (
           <section className="mt-[26px]">

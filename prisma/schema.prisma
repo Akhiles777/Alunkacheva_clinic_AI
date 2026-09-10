@@ -265,6 +265,7 @@ model Company {
   dialogHandoffs           DialogHandoff[]
   featureUse               FeatureUse[]
   problemReports           ProblemReport[]
+  noShowPredictions        NoShowPrediction[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -536,6 +537,40 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([companyId, createdAt])
   @@map("messages")
+}
+
+/// Прогноз неявки по конкретной записи — и что из него вышло.
+///
+/// Хранится не ради самого прогноза (он считается на лету), а ради обратной
+/// связи: без неё через месяц никто не скажет, работает ли функция вообще.
+/// Поэтому рядом с уровнем лежат признаки, по которым он получен, и исход
+/// визита, проставленный потом.
+model NoShowPrediction {
+  id            String   @id @default(cuid())
+  companyId     String
+  appointmentId String
+  /// «raised» или «usual» — процентов не показываем и не храним (§1.3).
+  level         String
+  /// Сумма весов: нужна, чтобы проверить порог задним числом.
+  score         Float
+  /// Признаки, по которым получен уровень, — как есть, в момент расчёта.
+  factors       Json
+  /// Основание словами: то же, что видел администратор.
+  reasons       String[]
+  predictedAt   DateTime @default(now()) @db.Timestamptz(3)
+  /// Чем кончилось: ARRIVED | NO_SHOW | CANCELLED. Пусто — визит ещё впереди.
+  actualOutcome String?
+  outcomeAt     DateTime? @db.Timestamptz(3)
+  /// Писали ли пациенту после прогноза — по этому считается польза.
+  wasContacted  Boolean   @default(false)
+
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  /// Один прогноз на запись: пересчёт обновляет существующий.
+  @@unique([appointmentId])
+  @@index([companyId, predictedAt])
+  @@map("no_show_predictions")
 }
 
 /// Сколько раз пользовались тем или иным приёмом работы — по дням.
@@ -970,6 +1005,8 @@ model Appointment {
   callLogs          CallLog[]            @relation("CallResultedInAppointment")
 
   @@unique([companyId, yclientsRecordId])
+  noShowPrediction NoShowPrediction?
+
   @@index([companyId, startAt])
   @@index([companyId, staffId, startAt])
   @@index([companyId, roomId, startAt])

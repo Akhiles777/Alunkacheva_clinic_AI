@@ -14,6 +14,8 @@ import { periodBounds } from "@/lib/server/analytics";
 import { AgentSales } from "./agent-sales";
 import { Adoption } from "./adoption";
 import { getAdoption } from "@/lib/server/adoption";
+import { NoShowQualityBlock } from "./no-show-quality";
+import { getWeights, noShowQuality } from "@/lib/server/no-show";
 
 export const metadata = { title: "Владелец" };
 
@@ -77,6 +79,14 @@ export default async function OwnerPage() {
      * ли остальное.
      */
     timed("переход в систему", () => getAdoption(session.companyId)),
+    /**
+     * Работает ли прогноз неявки. Без этого числа через месяц никто не
+     * скажет, приносит функция пользу или просто мигает пометками.
+     */
+    timed("прогноз неявки", async () => ({
+      quality: await noShowQuality(session.companyId),
+      weights: await getWeights(session.companyId),
+    })),
   ] as const);
   logTimings("кабинет владельца", [...parts]);
 
@@ -86,6 +96,7 @@ export default async function OwnerPage() {
   const courses = parts[3].value;
   const sales = parts[4].value;
   const adoption = parts[5].value;
+  const noShow = parts[6].value;
 
   return (
     <>
@@ -269,6 +280,8 @@ export default async function OwnerPage() {
           отвечает с телефона, всё остальное сделано вхолостую.
         */}
         <Adoption data={adoption} />
+
+        <NoShowQualityBlock data={noShow.quality} weightsSet={noShow.weights !== null} />
 
         <AgentSection
           stats={agent}

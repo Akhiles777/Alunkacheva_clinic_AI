@@ -11,7 +11,10 @@ import { CallButton } from "./call-form";
  */
 export function TodayAlerts() {
   const db = useDb();
-  const unread = db.dialogs.filter((d) => d.unread && d.status !== "closed").length;
+  // Тренировочные переписки в счёт не идут: это упражнение, а не работа.
+  const unread = db.dialogs.filter(
+    (d) => d.unread && d.status !== "closed" && !d.practice,
+  ).length;
   const stalled = allCourses(db.patients).filter((c) => c.stalled).length;
 
   return (
