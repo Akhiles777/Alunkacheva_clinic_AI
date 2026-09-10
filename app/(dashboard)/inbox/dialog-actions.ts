@@ -313,7 +313,18 @@ export async function runDueDialogTasks(companyId: string): Promise<{ sent: numb
     where: { companyId, status: "PENDING", kind: "SEND", runAt: { lte: new Date() } },
     orderBy: { runAt: "asc" },
     take: 20,
-    select: { id: true, conversationId: true, body: true, mediaIds: true, replyToId: true },
+    /**
+     * Автор задачи нужен для отправки: запроса здесь нет, сессии тоже, а у
+     * сообщения пациенту всегда есть отправитель.
+     */
+    select: {
+      id: true,
+      conversationId: true,
+      body: true,
+      mediaIds: true,
+      replyToId: true,
+      createdById: true,
+    },
   });
 
   let sent = 0;
@@ -334,6 +345,14 @@ export async function runDueDialogTasks(companyId: string): Promise<{ sent: numb
     const res = await sendMessageDb(task.conversationId, messageId, task.body, {
       mediaIds: task.mediaIds,
       replyToMessageId: task.replyToId,
+      /**
+       * Отправляем от имени того, кто задачу поставил, и в его клинике.
+       * Без этого `sendMessageDb` шёл за сессией, а её вне запроса нет:
+       * задача падала с «cookies was called outside a request scope», и
+       * обещанное пациенту сообщение молча оседало в «не ушло».
+       */
+      companyId,
+      actorUserId: task.createdById,
     }).catch((e: unknown) => ({ ok: false, error: (e as Error)?.message ?? "сбой отправки" }));
 
     if (res.ok) {

@@ -36,6 +36,30 @@ const WHEN = [
   { id: "week", label: "через неделю", at: () => new Date(Date.now() + 7 * 24 * 3600_000) },
 ];
 
+/**
+ * Своё время.
+ *
+ * Готовых кнопок хватает на «завтра утром», но не на «в четверг к пяти, когда
+ * она освободится»: администратор договаривается с живым человеком, и
+ * округлять его договорённость до ближайшей константы значит отправить не
+ * тогда, когда обещано.
+ */
+const CUSTOM = "custom";
+
+/** «2026-09-12T14:30» для `datetime-local` — в местном времени вкладки. */
+function localInputValue(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** «12 сентября в 14:30» — то, что человек увидит перед нажатием. */
+const WHEN_TEXT = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "long",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 function nextMorning(): Date {
   const d = new Date();
   d.setDate(d.getDate() + 1);
@@ -68,6 +92,21 @@ export function DialogTools({
   const [laterKind, setLaterKind] = useState<"SEND" | "REMIND">("SEND");
   const [laterText, setLaterText] = useState("");
   const [when, setWhen] = useState(WHEN[0].id);
+  /**
+   * Своё время. Заводим его на час вперёд, а не на «сейчас»: пустое или
+   * прошедшее значение в поле — первое, обо что спотыкаются.
+   */
+  const [customAt, setCustomAt] = useState(() =>
+    localInputValue(new Date(Date.now() + 60 * 60_000)),
+  );
+  /**
+   * Точка отсчёта — в состоянии, а не в рендере.
+   *
+   * Время выбирают за секунды, и секундная точность здесь не нужна; зато
+   * `Date.now()` при отрисовке делает результат непредсказуемым при каждом
+   * лишнем рендере. Ставим её кликом, когда открывают форму.
+   */
+  const [openedAt, setOpenedAt] = useState(() => Date.now());
 
   /**
    * Считаем заметки и отложенное сразу: число в подписи говорит, есть ли там
@@ -117,6 +156,7 @@ export function DialogTools({
     setPanel((cur) => (cur === next ? null : next));
     setError(null);
     setDone(null);
+    if (next === "later") setOpenedAt(Date.now());
   }
 
   return (
@@ -286,11 +326,21 @@ export function DialogTools({
                   {w.label}
                 </option>
               ))}
+              <option value={CUSTOM}>своё время…</option>
             </select>
+            {when === CUSTOM ? (
+              <input
+                type="datetime-local"
+                value={customAt}
+                min={localInputValue(new Date(openedAt + 60_000))}
+                onChange={(e) => setCustomAt(e.target.value)}
+                className="border-border-input bg-surface rounded-md border px-2 py-1.5 text-xs outline-none"
+              />
+            ) : null}
             <button
               type="button"
               onClick={later}
-              disabled={!laterText.trim()}
+              disabled={!laterText.trim() || customTime(openedAt) === null}
               className="bg-accent text-accent-contrast rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-45"
             >
               {laterKind === "SEND" ? "Отложить" : "Напомнить"}
@@ -311,7 +361,14 @@ export function DialogTools({
             }
             className="border-border-input bg-surface placeholder:text-text-subtle resize-none rounded-md border px-2.5 py-1.5 text-xs outline-none"
           />
+          {/*
+            Что именно произойдёт — словами и до нажатия. «Своё время» в поле
+            ввода читается как набор цифр, а ошибиться там легче всего: не тот
+            день, не тот час, случайно прошедшее время.
+          */}
           <p className="text-text-subtle text-2xs">
+            {whenLabel()}
+            {" · "}
             {laterKind === "SEND"
               ? "Уйдёт само, даже если вкладка закрыта."
               : "Диалог всплывёт наверху списка в назначенный момент."}
@@ -389,16 +446,48 @@ export function DialogTools({
       .catch(() => setError("Не передалось — нет связи с сервером"));
   }
 
+  /**
+   * Своё время, если оно годится. `null` — поле пустое, неразборчивое или
+   * время уже прошло. У готовых кнопок такой заботы нет: они всегда в будущем.
+   *
+   * Точку отсчёта передают снаружи: в рендере это момент открытия формы, при
+   * нажатии — настоящее «сейчас». Тридцать секунд запаса — те же, что
+   * проверяет сервер: две правды о том, прошло время или нет, дали бы отказ
+   * уже после нажатия.
+   */
+  function customTime(nowMs: number): Date | null {
+    if (when !== CUSTOM) return null;
+    if (!customAt) return null;
+    const at = new Date(customAt);
+    if (Number.isNaN(at.getTime())) return null;
+    return at.getTime() < nowMs + 30_000 ? null : at;
+  }
+
+  /** Что произойдёт — словами. У готовой кнопки её же подпись. */
+  function whenLabel(): string {
+    const verb = laterKind === "SEND" ? "Уйдёт" : "Напомним";
+    if (when !== CUSTOM) {
+      return `${verb} ${(WHEN.find((w) => w.id === when) ?? WHEN[0]).label}`;
+    }
+    const at = customTime(openedAt);
+    return at === null ? "Выберите время в будущем" : `${verb} ${WHEN_TEXT.format(at)}`;
+  }
+
   function later() {
     const text = laterText.trim();
     if (!text) return;
+    const at =
+      when === CUSTOM ? customTime(Date.now()) : (WHEN.find((w) => w.id === when) ?? WHEN[0]).at();
+    if (at === null) {
+      setError("Выберите время в будущем");
+      return;
+    }
     setError(null);
-    const at = WHEN.find((w) => w.id === when) ?? WHEN[0];
     void scheduleDialogTask({
       conversationId: dialogId,
       kind: laterKind,
       body: text,
-      runAtIso: at.at().toISOString(),
+      runAtIso: at.toISOString(),
     })
       .then((res) => {
         if (!res.ok) {
@@ -406,7 +495,9 @@ export function DialogTools({
           return;
         }
         void noteUse("later");
-        setDone(laterKind === "SEND" ? `уйдёт ${at.label}` : `напомним ${at.label}`);
+        setDone(
+          `${laterKind === "SEND" ? "уйдёт" : "напомним"} ${WHEN_TEXT.format(at)}`,
+        );
         setLaterText("");
         setPanel(null);
         void listDialogTasks(dialogId).then(setTasks).catch(() => {});

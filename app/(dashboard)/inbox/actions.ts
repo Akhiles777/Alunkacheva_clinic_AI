@@ -4,7 +4,8 @@ import { prisma } from "@/lib/db";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { isNewInquiryWaiting } from "@/lib/inbox/needs-reply";
 import { getSession } from "@/lib/server/session";
-import { can, requirePermission } from "@/lib/server/authz";
+import { can, requirePermission, type AuthzSubject } from "@/lib/server/authz";
+import type { Role } from "@/lib/permissions";
 import { escalationRecipients, inboxRecipients, notifyStaff } from "@/lib/server/notify";
 import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { phoneFromChatId } from "@/lib/integrations/whatsapp/chat-id";
@@ -795,11 +796,44 @@ function defaultFileName(kind: string, mimeType: string): string {
  * Instagram и WhatsApp пока не подключены (этап 2), поэтому там сообщение
  * помечается как неотправленное с честной причиной, а не тихо «отправляется».
  */
+/**
+ * Отправитель для фоновой работы — без сессии и без запроса.
+ *
+ * Роль берём из базы: расписание передаёт только идентификатор, а решать по
+ * присланной роли значило бы, что фоновая ветка может назначить себе любые
+ * права. Сотрудник уволен или выключен — отправителя нет, и сообщение не
+ * уходит: у сообщения пациенту всегда есть автор.
+ */
+async function backgroundActor(
+  companyId: string,
+  userId: string | null,
+): Promise<AuthzSubject | null> {
+  if (!userId) return null;
+  const user = await prisma.staffUser.findFirst({
+    where: { id: userId, companyId, isActive: true },
+    select: { id: true, role: true },
+  });
+  if (!user) return null;
+  return { companyId, userId: user.id, role: user.role as Role };
+}
+
 export interface SendOptions {
   /** Файлы из хранилища (`/api/upload`), которые уходят вместе с сообщением. */
   mediaIds?: string[];
   /** Наше сообщение — ответ на это сообщение пациента (цитата в мессенджере). */
   replyToMessageId?: string | null;
+  /**
+   * От чьего имени отправляем, когда запроса нет.
+   *
+   * Отложенную отправку исполняет расписание внутри процесса, а не браузер:
+   * там нет ни куки, ни сессии, и `getSession()` падал с «cookies was called
+   * outside a request scope» — то есть обещанное пациенту на девять утра
+   * сообщение молча оседало в «не ушло». Кто отправитель, известно из самой
+   * задачи (`DialogTask.createdById`), и подставлять «никого» нельзя:
+   * сообщение пациенту всегда чьё-то.
+   */
+  actorUserId?: string | null;
+  companyId?: string;
 }
 
 export async function sendMessageDb(
@@ -808,12 +842,23 @@ export async function sendMessageDb(
   text: string,
   options: SendOptions = {},
 ): Promise<SendResult> {
-  const session = await getSession();
+  /**
+   * Кто отправляет. Из запроса — сессия; из расписания — сотрудник, который
+   * эту отправку и назначил. Роль в обоих случаях читаем из базы, а не
+   * доверяем вызывающему: иначе фоновая ветка стала бы обходом прав.
+   */
+  const session = options.companyId
+    ? await backgroundActor(options.companyId, options.actorUserId ?? null)
+    : await getSession();
+  if (!session) return { ok: false, error: "Отправитель не найден — сообщение не ушло" };
   /**
    * Право «писать пациентам» настраивается по каждому сотруднику, но до сих
    * пор его соблюдал только интерфейс: кнопку прятали, а действие на сервере
    * работало у кого угодно. Отвечаем отказом текстом, а не исключением —
    * сообщение не должно исчезать в красном экране.
+   *
+   * Проверяется и у отложенной отправки, в момент ОТПРАВКИ: права могли
+   * отобрать между «запланировал» и «ушло».
    */
   if (!(await can(session, "MESSAGE_PATIENTS"))) {
     return { ok: false, error: "Нет права писать пациентам" };
@@ -1426,10 +1471,22 @@ export async function setAgentEnabledDb(
     where: { id: conversationId, companyId: session.companyId },
     data: enabled
       ? /**
-         * Включаем — снимаем и паузу: администратор нажал кнопку осознанно,
-         * заставлять его ждать ещё четыре часа незачем.
+         * Включаем — ждать ещё четыре часа незачем, но и переигрывать старую
+         * переписку агент не должен.
+         *
+         * Раньше здесь стояло `botPausedUntil: null`, и это была дыра.
+         * Граница, по которой добор отличает новое сообщение от старого, —
+         * именно `botPausedUntil` (`needsAnswer`); сняв её, мы отдавали
+         * добору последнее сообщение пациента, если ему меньше шести часов
+         * (`MAX_AGE_HOURS`). Короткий круг ходит раз в три минуты — и через
+         * 5–15 минут после включения агент писал пациенту ответ на реплику,
+         * которую тот давно обсудил с администратором.
+         *
+         * Ставим границу «сейчас»: она уже в прошлом и ничего не задерживает,
+         * но всё, что было до неё, остаётся за человеком. Ровно тот же приём,
+         * которым пользуется автоматический возврат через четыре часа.
          */
-        { agentDisabled: false, status: "BOT_ACTIVE", botPausedUntil: null }
+        { agentDisabled: false, status: "BOT_ACTIVE", botPausedUntil: new Date() }
       : { agentDisabled: true },
   });
   if (enabled) {

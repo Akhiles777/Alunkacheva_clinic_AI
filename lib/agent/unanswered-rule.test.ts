@@ -81,6 +81,35 @@ describe("после возврата агенту", () => {
     ).toBe(true);
   });
 
+  /**
+   * Кнопка «Включить агента» ставит границу «сейчас».
+   *
+   * Заказчик боялся включать агента в живых чатах: через 5–15 минут после
+   * включения тот писал ответ на реплику, которую пациент давно обсудил с
+   * администратором. Причина была не в правиле, а в том, что кнопка СНИМАЛА
+   * границу (`botPausedUntil: null`), и добор видел старое сообщение как
+   * неотвеченное.
+   */
+  it("сразу после включения агента старое сообщение не догоняется", () => {
+    const justEnabled = new Date(NOW.getTime() - 1000);
+    expect(
+      needsAnswer(
+        { last: { direction: "IN", createdAt: minutesAgo(30) }, botPausedUntil: justEnabled },
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("а на сообщение, пришедшее уже после включения, отвечаем как обычно", () => {
+    const justEnabled = new Date(NOW.getTime() - 20 * 60_000);
+    expect(
+      needsAnswer(
+        { last: { direction: "IN", createdAt: minutesAgo(10) }, botPausedUntil: justEnabled },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
   it("паузы не было вовсе — правило ничего не меняет", () => {
     expect(
       needsAnswer({ last: { direction: "IN", createdAt: minutesAgo(10) } }, NOW),
