@@ -11,6 +11,7 @@ import { averageCheck, noShowRate } from "@/lib/metrics/summary";
 import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
 import { weekKeyOf } from "@/lib/metrics/types";
 import { revenueByDay } from "@/lib/server/daily-revenue";
+import { weeklyBuckets } from "@/lib/server/weekly-series";
 import { attendanceBetween } from "@/lib/server/analytics";
 
 /**
@@ -412,12 +413,6 @@ export interface WeeklyDynamics {
   clientsGrowthPct: number | null;
 }
 
-function weekStart(d: Date): number {
-  // Сдвигаем к московскому «настенному» времени и берём понедельник недели.
-  const msk = new Date(d.getTime() + 3 * 3600 * 1000);
-  const dow = (msk.getUTCDay() + 6) % 7; // 0 = понедельник
-  return Date.UTC(msk.getUTCFullYear(), msk.getUTCMonth(), msk.getUTCDate() - dow);
-}
 /**
  * Подпись недели — диапазоном, а не одной датой.
  *
@@ -435,104 +430,31 @@ function weekLabel(key: number): string {
   return `${dd(from)}–${dd(to)}.${mm(to)}`;
 }
 
-/** Динамика по неделям (доход, клиенты, приёмы) за последние 6 недель. */
+/**
+ * Динамика по неделям (доход, клиенты, приёмы) за последние 6 недель.
+ *
+ * Сами недели считает `weeklyBuckets` — тот же расчёт, по которому идёт
+ * еженедельная сводка владельцу. Второй копии этого кода быть не должно:
+ * график и сводка разошлись бы в выручке недели, и владелец поверил бы той,
+ * которая удобнее (§8).
+ */
 export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
   const session = await getSession();
   // Отчёт по выручке — только тем, кому это право выдано (§9).
   await requirePermission(session, "VIEW_REVENUE");
-  const since = new Date(Date.now() - 8 * 7 * 24 * 3600 * 1000);
-  const rows = await prisma.appointment.findMany({
-    // Верхняя граница обязательна: без неё в динамику попадали будущие недели.
-    where: { companyId: session.companyId, deletedAt: null, status: "ARRIVED", startAt: { gte: since, lt: new Date() } },
-    select: { startAt: true, revenue: true, patientId: true, isFirstVisit: true },
-  });
 
-  /** Новые пациенты недели — по дате первого обращения, как в отчётах (§8). */
-  const fresh = await prisma.patient.findMany({
-    where: {
-      companyId: session.companyId,
-      deletedAt: null,
-      firstSeenExact: true,
-      firstSeenAt: { gte: since, lt: new Date() },
-    },
-    select: { firstSeenAt: true },
-  });
-
-  const buckets = new Map<
-    number,
-    {
-      revenue: number;
-      clients: Set<string>;
-      appts: number;
-      paying: number;
-      first: number;
-      newPatients: number;
-    }
-  >();
-  const empty = () => ({
-    revenue: 0,
-    clients: new Set<string>(),
-    appts: 0,
-    paying: 0,
-    first: 0,
-    newPatients: 0,
-  });
-  for (const r of rows) {
-    const key = weekStart(r.startAt);
-    const b = buckets.get(key) ?? empty();
-    b.revenue += Number(r.revenue);
-    if (r.patientId) b.clients.add(r.patientId);
-    b.appts += 1;
-    if (r.isFirstVisit) b.first += 1;
-    if (Number(r.revenue) > 0) b.paying += 1;
-    buckets.set(key, b);
-  }
-  for (const p of fresh) {
-    const key = weekStart(p.firstSeenAt);
-    const b = buckets.get(key) ?? empty();
-    b.newPatients += 1;
-    buckets.set(key, b);
-  }
-
-  /**
-   * Проданные курсы — в ту же неделю, в которую куплены.
-   *
-   * Это была четвёртая по счёту реализация выручки в проекте, и единственная,
-   * куда курсы не попали: график читал визиты напрямую и складывал их
-   * стоимость. За неделю 10–16 августа он показывал 174 000 ₽, а отчёты за ту
-   * же неделю — 240 455 ₽. Разница — деньги за курсы, проданные кассой.
-   *
-   * Приёмом продажа не считается и в число клиентов недели не идёт: приёмом
-   * были её сеансы, они уже посчитаны выше.
-   */
-  for (const p of await coursePurchasesBetween(session.companyId, since, new Date())) {
-    const key = weekStart(p.at);
-    const b = buckets.get(key) ?? empty();
-    b.revenue += p.amount;
-    // Приёмом продажа не считается, а чеком — да: у неё есть клиент и сумма.
-    b.paying += 1;
-    buckets.set(key, b);
-  }
-
-  // Текущая неделя ещё не завершена — в динамику берём только полные недели.
-  const currentWeek = weekStart(new Date());
-  const keys = [...buckets.keys()].filter((k) => k < currentWeek).sort((a, b) => a - b).slice(-6);
-  const weeks: WeekPoint[] = keys.map((k) => {
-    const b = buckets.get(k)!;
-    return {
-      label: weekLabel(k),
-      key: weekKeyOf(new Date(k + 12 * 3600 * 1000)),
-      revenue: b.revenue,
-      clients: b.clients.size,
-      appts: b.appts,
-      paying: b.paying,
-      first: b.first,
-      // Повторные считаем здесь, а не отдают вычитать читателю: разность двух
-      // чисел в чужой голове — тоже арифметика, а её мы уже один раз проиграли.
-      repeat: b.appts - b.first,
-      newPatients: b.newPatients,
-    };
-  });
+  const buckets = await weeklyBuckets(session.companyId, 6);
+  const weeks: WeekPoint[] = buckets.map((b) => ({
+    label: weekLabel(b.key),
+    key: weekKeyOf(new Date(b.key + 12 * 3600 * 1000)),
+    revenue: b.revenue,
+    clients: b.clients,
+    appts: b.appts,
+    paying: b.paying,
+    first: b.first,
+    repeat: b.repeat,
+    newPatients: b.newPatients,
+  }));
 
   const pct = (arr: number[]) => {
     if (arr.length < 2 || arr[0] === 0) return null;

@@ -2,6 +2,8 @@ import { formatMoney, formatNumber } from "@/lib/format";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { getOwnerReport, getWeeklyDynamics } from "./actions";
+import { getWeeklyDigests } from "./digest-actions";
+import { WeeklyDigestBlock } from "./weekly-digest";
 import { OwnerAssistant } from "./owner-assistant";
 import { WeeklyCharts } from "./weekly-charts";
 import { AgentSection } from "./agent-section";
@@ -87,6 +89,12 @@ export default async function OwnerPage() {
       quality: await noShowQuality(session.companyId),
       weights: await getWeights(session.companyId),
     })),
+    /**
+     * Сводка недели: наблюдения уже посчитаны и сохранены понедельничным
+     * прогоном. Экран только читает — считать здесь нельзя, иначе владелец
+     * увидит одно, а в push придёт другое.
+     */
+    timed("сводка недели", () => getWeeklyDigests()),
   ] as const);
   logTimings("кабинет владельца", [...parts]);
 
@@ -97,6 +105,7 @@ export default async function OwnerPage() {
   const sales = parts[4].value;
   const adoption = parts[5].value;
   const noShow = parts[6].value;
+  const digests = parts[7].value;
 
   return (
     <>
@@ -142,6 +151,16 @@ export default async function OwnerPage() {
             value={report.patients.total}
             hint={`новых за ${report.period.days} дней ${report.patients.primary} · без согласия ${report.patients.noConsent}`}
           />
+        </div>
+
+        {/*
+          Сводка стоит первой и во всю ширину: она отвечает на вопрос «куда
+          смотреть», а таблицы ниже — на вопрос «что там». Обратный порядок
+          означал бы, что владелец сначала листает цифры, а потом узнаёт, какие
+          из них стоило смотреть.
+        */}
+        <div className="mt-4">
+          <WeeklyDigestBlock digests={digests} />
         </div>
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">

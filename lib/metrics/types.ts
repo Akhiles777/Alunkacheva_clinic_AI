@@ -106,13 +106,22 @@ const SHORT_MONTHS = [
   "июл", "авг", "сен", "окт", "ноя", "дек",
 ];
 
-/** «w2026-08-10» → «10–16 авг». Подпись читает человек. */
+/**
+ * «w2026-08-10» → «10–16 авг». Подпись читает человек.
+ *
+ * Через границу месяца называются ОБА месяца: «31–6 сен» читается как
+ * шестое число раньше тридцать первого, и на экране это выглядит опечаткой
+ * платформы. «31 авг – 6 сен» длиннее на четыре знака и не требует догадки.
+ */
 export function weekLabel(key: string): string {
   const m = WEEK_RE.exec(key);
   if (!m) return key;
   const from = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
   const to = new Date(from.getTime() + 6 * 24 * 3600 * 1000);
   const month = SHORT_MONTHS[to.getUTCMonth()];
+  if (from.getUTCMonth() !== to.getUTCMonth()) {
+    return `${from.getUTCDate()} ${SHORT_MONTHS[from.getUTCMonth()]} – ${to.getUTCDate()} ${month}`;
+  }
   return `${from.getUTCDate()}–${to.getUTCDate()} ${month}`;
 }
 

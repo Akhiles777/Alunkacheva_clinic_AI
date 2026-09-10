@@ -16,6 +16,7 @@ import {
 import { answerUnanswered } from "@/lib/agent/unanswered";
 import { handBackAndRemind } from "@/lib/agent/handback";
 import { runQualityCheck } from "@/lib/server/agent-quality";
+import { deliverWeeklyDigest } from "@/lib/server/weekly-digest-delivery";
 import { CLINIC_TZ } from "@/lib/clinic-time";
 
 /**
@@ -65,8 +66,20 @@ const FIRST_RUN_DELAY_MS = 60_000;
  */
 const NIGHT_FROM_HOUR = 3;
 const NIGHT_TO_HOUR = 6;
-/** Как часто смотрим на часы. Проверка сама решает, наступило ли её время. */
+/** Как часто смотрим на часы. Каждая работа сама решает, её ли время. */
 const NIGHT_TICK_MIN = 30;
+
+/**
+ * Утро понедельника — окно еженедельной сводки владельцу.
+ *
+ * Не ночью вместе с проверкой: сводка читается в начале рабочей недели, и
+ * push в четыре утра разбудил бы владельца ради текста, который подождёт до
+ * завтрака. Окно широкое, потому что тик получасовой и сервер мог быть
+ * перезапущен.
+ */
+const DIGEST_WEEKDAY = "Mon";
+const DIGEST_FROM_HOUR = 8;
+const DIGEST_TO_HOUR = 10;
 
 export interface SyncRunInfo {
   startedAt: string;
@@ -132,7 +145,8 @@ export function schedulerState() {
     },
     ночнаяРабота: {
       включена: shared.nightTimer !== null,
-      окноЧасов: `${NIGHT_FROM_HOUR}:00–${NIGHT_TO_HOUR}:00 МСК`,
+      проверкаОтветов: `${NIGHT_FROM_HOUR}:00–${NIGHT_TO_HOUR}:00`,
+      сводкаВладельцу: `понедельник ${DIGEST_FROM_HOUR}:00–${DIGEST_TO_HOUR}:00`,
       идётСейчас: shared.nightRunning,
       последниеПрогоны: shared.nightHistory.slice(-5),
     },
@@ -422,14 +436,15 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
 }
 
 /**
- * Ночная работа: контроль качества ответов агента.
+ * Фоновые работы вне выгрузки: проверка ответов агента и сводка владельцу.
  *
- * Порциями и по одной клинике за раз. Всё, что здесь падает, падает молча для
- * агента: он о проверке не знает и работать от неё не зависит — иначе
- * недоступная проверяющая модель гасила бы ответы пациентам.
+ * Один таймер на обе, но окна у них разные, и каждая решает сама, её ли время.
+ * Всё, что здесь падает, падает молча для агента и для инбокса: они об этих
+ * работах не знают и от них не зависят — иначе недоступная модель гасила бы
+ * ответы пациентам.
  *
- * `force` нужен ручному запуску: проверить работу проверки в три часа ночи
- * никто не будет.
+ * `force` нужен ручному запуску: проверять работу ночной проверки в три часа
+ * ночи и сводки в понедельник утром никто не будет.
  */
 export async function runNightCycle(force = false): Promise<SyncRunInfo> {
   const started = Date.now();
@@ -440,21 +455,28 @@ export async function runNightCycle(force = false): Promise<SyncRunInfo> {
     ms: null,
   };
 
+  const now = new Date();
   const hour = Number(
-    new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", hour12: false, timeZone: CLINIC_TZ }).format(
-      new Date(),
-    ),
+    new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", hour12: false, timeZone: CLINIC_TZ }).format(now),
   );
-  const inWindow = hour >= NIGHT_FROM_HOUR && hour < NIGHT_TO_HOUR;
-  if (!force && !inWindow) {
-    info.error = `не ночь (${hour}:00)`;
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    timeZone: CLINIC_TZ,
+  }).format(now);
+
+  const qualityDue = force || (hour >= NIGHT_FROM_HOUR && hour < NIGHT_TO_HOUR);
+  const digestDue =
+    force || (weekday === DIGEST_WEEKDAY && hour >= DIGEST_FROM_HOUR && hour < DIGEST_TO_HOUR);
+
+  if (!qualityDue && !digestDue) {
+    info.error = `не время (${weekday} ${hour}:00)`;
     info.finishedAt = new Date().toISOString();
     info.ms = 0;
     return info;
   }
   /**
    * За память с выгрузкой не спорим: она тяжелее и важнее. Пропущенный тик
-   * ничего не стоит — следующий через полчаса, а окно длиной в три часа.
+   * ничего не стоит — следующий через полчаса, а окна длиной в часы.
    */
   if (shared.running || shared.fastRunning || shared.nightRunning) {
     info.error = shared.nightRunning ? "уже идёт" : "идёт выгрузка";
@@ -472,11 +494,23 @@ export async function runNightCycle(force = false): Promise<SyncRunInfo> {
 
     const results: unknown[] = [];
     for (const company of companies) {
-      const quality = await runQualityCheck(company.id).catch((e) => {
-        console.error("[scheduler] проверка ответов не удалась:", (e as Error)?.message ?? e);
-        return null;
+      const quality = qualityDue
+        ? await runQualityCheck(company.id).catch((e) => {
+            console.error("[scheduler] проверка ответов не удалась:", (e as Error)?.message ?? e);
+            return null;
+          })
+        : null;
+      const digest = digestDue
+        ? await deliverWeeklyDigest(company.id).catch((e) => {
+            console.error("[scheduler] сводка владельцу не собралась:", (e as Error)?.message ?? e);
+            return null;
+          })
+        : null;
+      results.push({
+        клиника: company.name,
+        ...(qualityDue ? { проверкаОтветов: quality } : {}),
+        ...(digestDue ? { сводкаНедели: digest } : {}),
       });
-      results.push({ клиника: company.name, проверкаОтветов: quality });
     }
     info.ok = true;
     info.counts = results;
@@ -531,6 +565,7 @@ export function startScheduler(): void {
   shared.nightTimer = setInterval(() => void runNightCycle(), NIGHT_TICK_MIN * 60_000);
   shared.nightTimer.unref?.();
   console.log(
-    `[scheduler] ночная работа в ${NIGHT_FROM_HOUR}:00–${NIGHT_TO_HOUR}:00 (${CLINIC_TZ})`,
+    `[scheduler] проверка ответов в ${NIGHT_FROM_HOUR}:00–${NIGHT_TO_HOUR}:00, ` +
+      `сводка владельцу по понедельникам в ${DIGEST_FROM_HOUR}:00–${DIGEST_TO_HOUR}:00 (${CLINIC_TZ})`,
   );
 }
