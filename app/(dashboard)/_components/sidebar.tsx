@@ -101,6 +101,19 @@ export function Sidebar({
         </Link>
       ) : null}
 
+      {/*
+        «Что-то не так?» — рядом со справкой, а не плавающей кнопкой поверх
+        экрана: там она налезала на карточку сотрудника. На телефоне меню
+        спрятано, и кнопка остаётся плавающей (см. problem-button).
+      */}
+      <button
+        type="button"
+        onClick={() => window.dispatchEvent(new Event("open-problem"))}
+        className="text-text-muted hover:bg-hover mb-2 rounded-md px-3 py-2 text-left text-sm"
+      >
+        Что-то не так?
+      </button>
+
       <div className="border-border-soft mt-1 flex items-center gap-2.5 border-t px-2 pt-2.5">
         <div className="bg-ink-avatar text-text-muted flex h-[30px] w-[30px] flex-none items-center justify-center rounded-full text-2xs font-medium">
           {initials(userName) || "?"}

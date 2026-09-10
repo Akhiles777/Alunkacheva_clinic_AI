@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { HANDBACK_HOURS } from "@/lib/agent/handback-rule";
 import { reportMaybeStale } from "@/lib/client/stale-build";
-import { URGENT_WAIT_MS, waitLabel } from "@/lib/inbox/waiting";
 import { HOTKEYS, hotkeyAction, nextWaiting, step } from "@/lib/inbox/hotkeys";
 import { AGENT_DOES, AGENT_DOES_NOT, ARTICLES } from "@/lib/help/topics";
 import {
@@ -17,8 +16,6 @@ import {
   findPatient,
   hydrateDialogs,
   markDialogRead,
-  markDialogsRead,
-  closeDialogs,
   flushReadMarks,
   editMessage,
   removeMessage,
@@ -165,20 +162,10 @@ function DialogRow({
   dialog,
   active,
   onClick,
-  now,
-  chosen,
-  onChoose,
-  selecting,
 }: {
   dialog: Dialog;
   active: boolean;
   onClick: () => void;
-  /** Текущее время, общее на весь список: у каждой строки своё шло бы вразнобой. */
-  now: number;
-  chosen: boolean;
-  onChoose: (on: boolean) => void;
-  /** Хоть что-то выбрано — показываем галочки у всех строк. */
-  selecting: boolean;
 }) {
   /**
    * Через снимок стора, а не прямым чтением модуля: на сервере состояние
@@ -190,58 +177,16 @@ function DialogRow({
   const patient = dialog.patientId ? db.patients.find((p) => p.id === dialog.patientId) : undefined;
   const notes = patient ? activeNotes(patient) : [];
   const unread = dialog.unreadCount ?? 0;
-  /**
-   * Ожидание считаем на экране, а не на сервере: сервер отдаёт МОМЕНТ, с
-   * которого человек ждёт, и минуты набегают между обновлениями сами. Иначе
-   * «ждёт 12 мин» стояло бы неподвижно по шесть секунд и врало бы к концу.
-   */
-  const wait = dialog.waitingSince ? waitLabel(now - Date.parse(dialog.waitingSince)) : null;
-  const urgent =
-    dialog.waitingSince !== null &&
-    dialog.waitingSince !== undefined &&
-    now - Date.parse(dialog.waitingSince) >= URGENT_WAIT_MS;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`group/row w-full border-b border-border-soft px-4 py-3 text-left last:border-b-0 ${
+      className={`w-full border-b border-border-soft px-4 py-3 text-left last:border-b-0 ${
         active ? "bg-nav-active" : "hover:bg-hover"
       }`}
     >
       <div className="flex items-baseline gap-2">
-        {/*
-          Галочка появляется по наведению и остаётся, пока идёт выбор: в
-          обычной работе она только мешает читать список, а в конце смены без
-          неё каждый диалог закрывается отдельным открытием переписки.
-
-          На телефоне наведения нет вовсе, поэтому там она видна всегда: иначе
-          массовый выбор на мобильном не начать ничем.
-        */}
-        <span
-          role="checkbox"
-          aria-checked={chosen}
-          tabIndex={0}
-          aria-label="Выбрать диалог"
-          onClick={(e) => {
-            e.stopPropagation();
-            onChoose(!chosen);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === " " || e.key === "Enter") {
-              e.preventDefault();
-              e.stopPropagation();
-              onChoose(!chosen);
-            }
-          }}
-          className={`border-border-strong flex h-3.5 w-3.5 flex-none items-center justify-center self-center rounded-sm border text-2xs ${
-            chosen ? "bg-accent text-accent-contrast border-accent" : "bg-surface"
-          } ${
-            selecting || chosen ? "" : "opacity-0 group-hover/row:opacity-100 max-md:opacity-100"
-          }`}
-        >
-          {chosen ? "✓" : ""}
-        </span>
         <span className="truncate text-sm font-medium">{dialog.name}</span>
         <span className="num text-text-subtle ml-auto flex-none text-2xs">{dialog.at}</span>
         {/*
@@ -278,16 +223,6 @@ function DialogRow({
         ) : (
           <span className="text-text-subtle text-2xs">· {DIALOG_STATUS_LABEL[dialog.status]}</span>
         )}
-        {/*
-          Сколько человек ждёт — прямо в строке. Без этого числа список
-          отвечает на вопрос «кто написал последним», а работать надо по
-          вопросу «кто ждёт дольше всех».
-        */}
-        {wait ? (
-          <span className={`num text-2xs ${urgent ? "text-accent-text font-medium" : "text-text-subtle"}`}>
-            · {wait}
-          </span>
-        ) : null}
         {dialog.practice ? (
           /* Учебная переписка. Метка обязана быть видна раньше, чем человек
              начнёт печатать: иначе он однажды решит, что тренируется, а
@@ -1037,16 +972,6 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 export default function InboxPage() {
   const db = useDb();
 
-  /**
-   * Часы списка. Ожидание («ждёт 12 мин») набегает между обновлениями, и без
-   * своего тика надпись стояла бы неподвижно до следующего ответа сервера.
-   * Полминуты хватает: минуты меняются медленнее.
-   */
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(t);
-  }, []);
 
   /**
    * Тихое обновление списка. Без него новые сообщения появлялись только после
@@ -1109,11 +1034,6 @@ export default function InboxPage() {
   }, []);
   const [composing, setComposing] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  /**
-   * Выбранные строки для массовых действий. Пусто — режима выбора нет вовсе:
-   * галочки у каждой строки в обычной работе только мешают читать список.
-   */
-  const [chosen, setChosen] = useState<string[]>([]);
 
   /**
    * Порядок — по ожиданию, а не по времени последнего сообщения: пациент,
@@ -1268,53 +1188,6 @@ export default function InboxPage() {
             </button>
           </div>
         </div>
-        {/*
-          Массовые действия по концу смены. Панель появляется только когда
-          что-то выбрано: постоянная строка кнопок над списком забирает место
-          у того, ради чего сюда смотрят.
-        */}
-        {chosen.length > 0 ? (
-          <div className="border-border-soft bg-raise flex flex-none flex-wrap items-center gap-2 border-b px-4 py-2">
-            <span className="text-text-muted text-2xs">Выбрано: {chosen.length}</span>
-            <button
-              type="button"
-              onClick={() => {
-                markDialogsRead(chosen);
-                setChosen([]);
-                void noteUse("bulk");
-              }}
-              className="border-border text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs"
-            >
-              Отметить прочитанными
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                closeDialogs(chosen);
-                setChosen([]);
-                void noteUse("bulk");
-              }}
-              className="border-border text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs"
-            >
-              Закрыть
-            </button>
-            <button
-              type="button"
-              onClick={() => setChosen(list.map((d) => d.id))}
-              className="text-text-subtle hover:text-text px-1 text-2xs"
-            >
-              Выбрать все
-            </button>
-            <button
-              type="button"
-              onClick={() => setChosen([])}
-              className="text-text-subtle hover:text-text ml-auto px-1 text-2xs"
-            >
-              Снять выбор
-            </button>
-          </div>
-        ) : null}
-
         <div data-tour="dialog-list" className="flex-1 overflow-auto">
           {list.length === 0 ? (
             /* Пусто — значит разобрано всё. Заодно единственное место, где
@@ -1333,12 +1206,6 @@ export default function InboxPage() {
                 dialog={d}
                 active={d.id === selectedId}
                 onClick={() => open(d.id)}
-                now={now}
-                chosen={chosen.includes(d.id)}
-                onChoose={(on) =>
-                  setChosen((prev) => (on ? [...prev, d.id] : prev.filter((x) => x !== d.id)))
-                }
-                selecting={chosen.length > 0}
               />
             ))
           )}

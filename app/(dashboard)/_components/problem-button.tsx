@@ -46,6 +46,17 @@ export function ProblemButton() {
     };
   }, []);
 
+  /** Открыть из меню: там же, где «Справка», а не поверх экрана. */
+  useEffect(() => {
+    const onOpen = () => {
+      setOpen(true);
+      setSent(false);
+      setError(null);
+    };
+    window.addEventListener("open-problem", onOpen);
+    return () => window.removeEventListener("open-problem", onOpen);
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -55,6 +66,11 @@ export function ProblemButton() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
+  /**
+   * На широком экране кнопка живёт в меню (см. `sidebar`), и плавающая там не
+   * нужна: она налезала на карточку сотрудника внизу. На телефоне меню
+   * спрятано, поэтому кнопка остаётся — но выше нижней панели.
+   */
   if (!open) {
     return (
       <button
@@ -65,7 +81,7 @@ export function ProblemButton() {
           setError(null);
         }}
         title="Сообщить о проблеме"
-        className="border-border bg-surface text-text-subtle hover:text-text fixed bottom-4 left-4 z-40 rounded-full border px-3 py-1.5 text-2xs shadow-sm max-md:bottom-20"
+        className="border-border bg-surface text-text-subtle hover:text-text fixed bottom-20 left-4 z-40 rounded-full border px-3 py-1.5 text-2xs shadow-sm md:hidden"
       >
         Что-то не так?
       </button>

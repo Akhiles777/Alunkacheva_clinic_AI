@@ -1,6 +1,7 @@
 import { getCurrentUser } from "../_components/user-actions";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
 import { CLINIC_NAME } from "@/lib/brand";
+import { DialogsGuide } from "./dialogs-guide";
 
 export const metadata = { title: "Справка" };
 
@@ -80,12 +81,13 @@ export default async function HelpPage() {
 
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
         {/*
-          Порядок работы живёт не здесь.
-          «Как ответить», «как передать диалог», «что умеет ассистент» — это
-          рабочие указания администратора, и место им там, где он работает:
-          подсказками у самих кнопок и в шпаргалке по «?» в диалогах. В общей
-          справке остаётся описание разделов — то, за чем сюда и приходят.
+          Справочник по диалогам — первым: там администратор проводит смену, и
+          вопросы у него оттуда. Быстрая подсказка живёт в самой переписке (по
+          «?»), здесь то же самое подробно; тексты у них общие.
         */}
+        <DialogsGuide />
+
+        <h2 className="text-md mt-6 mb-3 font-medium">Разделы платформы</h2>
         <div className="grid max-w-[900px] grid-cols-1 gap-4 lg:grid-cols-2">
           {SECTIONS.map((s) => {
             const mine = s.role === user.role;
