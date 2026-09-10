@@ -16,6 +16,7 @@ import { recordChanged } from "./changed";
 import { courseAwareSource, revenueAfterCourse, serviceRevenue } from "./mappers";
 import { splitVisitMinutes } from "./split-visit";
 import { removeVanished, windowIsTrustworthy } from "./vanished";
+import { isRealMove } from "@/lib/metrics/reschedule";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
 import { linkCourses } from "@/lib/courses/link";
@@ -1701,6 +1702,19 @@ export async function upsertRecord(
   }
 
   const endAt = new Date(r.startAt.getTime() + r.durationMin * 60_000);
+
+  /**
+   * Перенос замечаем ДО записи нового времени: старого после неё не останется.
+   *
+   * YCLIENTS о переносах не сообщает вовсе — он показывает запись в её текущем
+   * виде. Значит единственный момент, когда перенос вообще можно увидеть, —
+   * этот. Задним числом его не восстановить ни по одному полю.
+   */
+  const before = await prisma.appointment.findUnique({
+    where: { companyId_yclientsRecordId: { companyId, yclientsRecordId: r.yclientsRecordId } },
+    select: { id: true, patientId: true, startAt: true },
+  });
+
   await prisma.appointment.upsert({
     where: { companyId_yclientsRecordId: { companyId, yclientsRecordId: r.yclientsRecordId } },
     update: {
@@ -1742,6 +1756,29 @@ export async function upsertRecord(
       updatedAtYclients: r.startAt,
     },
   });
+
+  /**
+   * Время у той же записи изменилось — это перенос без всяких допущений,
+   * поэтому `exact: true`. Повтор выгрузки его не задваивает: пара
+   * «откуда — куда» уникальна.
+   */
+  if (before && isRealMove(before.startAt, r.startAt)) {
+    await prisma.appointmentMove
+      .create({
+        data: {
+          companyId,
+          appointmentId: before.id,
+          patientId: before.patientId,
+          fromStartAt: before.startAt,
+          toStartAt: r.startAt,
+          exact: true,
+        },
+      })
+      .catch(() => {
+        // Такой перенос уже записан: уникальный индекс, и это нормальный исход.
+      });
+  }
+
   return true;
 }
 

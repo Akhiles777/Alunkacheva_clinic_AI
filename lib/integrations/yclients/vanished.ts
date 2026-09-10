@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { pairMoves, PAIR_WINDOW_DAYS } from "@/lib/metrics/reschedule";
 
 /**
  * Визиты, исчезнувшие из YCLIENTS.
@@ -87,6 +88,20 @@ export async function removeVanished(
 ): Promise<VanishResult> {
   if (!trusted) return { removed: 0 };
 
+  /**
+   * Что именно исчезает — читаем ДО отметки: после неё уже не отличить эти
+   * записи от тех, что убрали в прошлые круги.
+   */
+  const vanishing = await prisma.appointment.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      startAt: { gte: window.from, lt: window.to },
+      yclientsRecordId: { not: null, notIn: seenIds },
+    },
+    select: { id: true, patientId: true, startAt: true },
+  });
+
   const result = await prisma.appointment.updateMany({
     where: {
       companyId,
@@ -97,5 +112,66 @@ export async function removeVanished(
     data: { deletedAt: new Date() },
   });
 
+  await recordDerivedMoves(companyId, vanishing);
+
   return { removed: result.count };
+}
+
+/**
+ * Перенос, сделанный пересозданием.
+ *
+ * Администратор удаляет запись и заводит новую — со стороны YCLIENTS это
+ * просто исчезновение и появление, и связать их можно только выводом. Поэтому
+ * такие переносы помечены `exact: false`, а на экране подписаны иначе:
+ * догадка не подаётся как факт (§9).
+ *
+ * Правила сопоставления живут в `lib/metrics/reschedule.ts` и проверяются
+ * тестами — они узкие намеренно: лучше не заметить перенос, чем назвать
+ * переносом отдельную запись.
+ */
+async function recordDerivedMoves(
+  companyId: string,
+  vanished: { id: string; patientId: string | null; startAt: Date }[],
+): Promise<void> {
+  const patientIds = [...new Set(vanished.map((v) => v.patientId).filter((id): id is string => !!id))];
+  if (patientIds.length === 0) return;
+
+  const now = new Date();
+  const candidates = await prisma.appointment.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      patientId: { in: patientIds },
+      createdAtYclients: { gte: new Date(now.getTime() - PAIR_WINDOW_DAYS * 24 * 3600 * 1000) },
+    },
+    select: { id: true, patientId: true, startAt: true, createdAtYclients: true },
+  });
+
+  const moves = pairMoves(
+    vanished.map((v) => ({ appointmentId: v.id, patientId: v.patientId, startAt: v.startAt })),
+    candidates.map((c) => ({
+      appointmentId: c.id,
+      patientId: c.patientId,
+      startAt: c.startAt,
+      createdAt: c.createdAtYclients ?? c.startAt,
+    })),
+    now,
+  );
+
+  for (const m of moves) {
+    await prisma.appointmentMove
+      .create({
+        data: {
+          companyId,
+          appointmentId: m.appointmentId,
+          patientId: m.patientId,
+          fromStartAt: m.fromStartAt,
+          toStartAt: m.toStartAt,
+          exact: false,
+        },
+      })
+      .catch(() => {
+        // Уже записан: уникальный индекс, нормальный исход повторной выгрузки.
+      });
+  }
 }

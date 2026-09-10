@@ -6,12 +6,12 @@
  * выхода из системы. Для медицинских данных это недопустимо (§7), поэтому
  * навигация всегда идёт в сеть, а офлайн получает статическую заглушку.
  */
-const CACHE = "mera-v2";
+const CACHE = "mera-v3";
 const OFFLINE_URL = "/offline.html";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll([OFFLINE_URL, "/icon.svg"])));
+  event.waitUntil(caches.open(CACHE).then((c) => c.addAll([OFFLINE_URL, "/icon-192.png"])));
 });
 
 self.addEventListener("activate", (event) => {
@@ -41,8 +41,11 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      icon: "/icon.svg",
-      badge: "/icon.svg",
+      /* Тот же значок, что у приложения на телефоне. Прежде здесь стоял
+         `/icon.svg` — служебная заглушка с буквой «М», не имеющая отношения к
+         иконке платформы: уведомление приходило от чего-то постороннего. */
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
       data: { url: data.url || "/" },
     }),
   );

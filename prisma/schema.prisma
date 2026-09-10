@@ -268,6 +268,7 @@ model Company {
   noShowPredictions        NoShowPrediction[]
   agentQualityChecks       AgentQualityCheck[]
   weeklyDigests            WeeklyDigest[]
+  appointmentMoves         AppointmentMove[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -546,6 +547,28 @@ model Message {
 /// Дрейф ловится до того, как его заметит пациент. Проверяющая модель тоже
 /// ошибается, поэтому её вердикт — не приговор: рядом лежит решение человека,
 /// и подтверждённое отклонение ведёт к правке справочника, а не к наказанию.
+model AppointmentMove {
+  id            String   @id @default(cuid())
+  companyId     String
+  /// Запись в её НЫНЕШНЕМ виде: при переносе пересозданием старой уже нет.
+  appointmentId String
+  patientId     String?
+  fromStartAt   DateTime @db.Timestamptz(3)
+  toStartAt     DateTime @db.Timestamptz(3)
+  /// true — время изменилось у той же записи, это факт. false — выведено из
+  /// пересоздания, и на экране такой перенос подписан «похоже на перенос».
+  exact         Boolean  @default(true)
+  detectedAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  /// Повторная выгрузка тот же перенос второй раз не записывает.
+  @@unique([companyId, appointmentId, fromStartAt, toStartAt])
+  @@index([companyId, detectedAt])
+  @@map("appointment_moves")
+}
+
 model WeeklyDigest {
   id           String   @id @default(cuid())
   companyId    String
@@ -1058,6 +1081,7 @@ model Appointment {
   course            Course?              @relation(fields: [courseId], references: [id], onDelete: SetNull)
   source            Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
   conversation      Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  moves             AppointmentMove[]
   primaryService    Service?             @relation("AppointmentPrimaryService", fields: [primaryServiceId], references: [id], onDelete: SetNull)
   bookedByPatient   Patient?             @relation("AppointmentBookedByPatient", fields: [bookedByPatientId], references: [id], onDelete: SetNull)
   bookedByStaffUser StaffUser?           @relation("AppointmentBookedByStaff", fields: [bookedByStaffUserId], references: [id], onDelete: SetNull)

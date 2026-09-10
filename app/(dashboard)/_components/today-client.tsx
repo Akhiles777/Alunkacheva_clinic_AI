@@ -4,6 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { CabinetCard } from "./cabinet-card";
 import { DayPicker } from "./day-picker";
 import { RevenueBreakdown } from "./revenue-breakdown";
+import { VisitsBreakdown, type VisitFilter } from "./visits-breakdown";
+import { MovesBreakdown } from "./moves-breakdown";
+import { getDayFacts, type DayFacts } from "./day-facts";
 import { FreeWindows } from "./free-windows";
 import { AttentionList, InquiryList } from "./today-lists";
 import { ConfirmTomorrow } from "./confirm-tomorrow";
@@ -88,6 +91,15 @@ export function TodayClient() {
    */
   /** Открыт ли разбор выручки: «из чего сложилось» по нажатию на сумму. */
   const [showOperations, setShowOperations] = useState(false);
+  /** Какой срез визитов открыт: null — окно закрыто. */
+  const [showVisits, setShowVisits] = useState<VisitFilter | null>(null);
+  const [showMoves, setShowMoves] = useState(false);
+  /**
+   * Обращения и переносы считает сервер: и то, и другое считается по всей
+   * переписке и по журналу выгрузки, а не по тому, что лежит в сторе экрана.
+   * Своя арифметика здесь — прямой путь к двум правдам об одном числе (§8).
+   */
+  const [facts, setFacts] = useState<DayFacts | null>(null);
   const [dayBack, setDayBack] = useState(0);
   const [dir, setDir] = useState<"back" | "fwd">("back");
   /**
@@ -116,6 +128,26 @@ export function TodayClient() {
       })
       .catch(() => {
         if (alive) setSales({ key, rows: [] });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [dayBack, todayMs]);
+
+  useEffect(() => {
+    if (todayMs === null) return;
+    const key = dayKeyBack(todayMs, dayBack);
+    let alive = true;
+    getDayFacts(key)
+      .then((f) => {
+        if (alive) setFacts(f);
+      })
+      .catch(() => {
+        /**
+         * Не прочиталось — показываем прочерк, а не ноль: «обращений 0» и
+         * «не смогли посчитать» это разные утверждения.
+         */
+        if (alive) setFacts(null);
       });
     return () => {
       alive = false;
@@ -480,12 +512,33 @@ export function TodayClient() {
             </>
           ) : null}
           <span aria-hidden className="sep-dot" />
+          {/*
+            Число отвечает «сколько», а следующий вопрос всегда «кто именно и
+            на что» — и до сих пор за ответом приходилось идти в отчёты.
+            Нажатие открывает тот же день и те же визиты, что стоят здесь.
+          */}
           <span>
-            первичных <b className="num text-text font-medium">{formatNumber(firstVisits)}</b>
+            первичных{" "}
+            <button
+              type="button"
+              onClick={() => setShowVisits("first")}
+              title="Показать, кто пришёл впервые и на какую услугу"
+              className="num text-text hover:text-accent-text font-medium underline decoration-dotted underline-offset-2 transition-colors"
+            >
+              {formatNumber(firstVisits)}
+            </button>
           </span>
           <span aria-hidden className="sep-dot" />
           <span>
-            повторных <b className="num text-text font-medium">{formatNumber(repeatVisits)}</b>
+            повторных{" "}
+            <button
+              type="button"
+              onClick={() => setShowVisits("repeat")}
+              title="Показать, кто пришёл повторно и на какую услугу"
+              className="num text-text hover:text-accent-text font-medium underline decoration-dotted underline-offset-2 transition-colors"
+            >
+              {formatNumber(repeatVisits)}
+            </button>
           </span>
           {noShow.length > 0 ? (
             <>
@@ -500,6 +553,39 @@ export function TodayClient() {
               <span aria-hidden className="sep-dot" />
               <span title="пришли ÷ (пришли + неявки); запланированное на вечер в счёт не идёт">
                 доходимость <b className="num text-text font-medium">{arrivalPct}%</b>
+              </span>
+            </>
+          ) : null}
+          {/*
+            Обращения — по определению §8 (сообщение после суточной паузы), а
+            не число диалогов: постоянный пациент пишет в тот же чат месяцами.
+            Считает сервер той же функцией, что и отчёты.
+          */}
+          <span aria-hidden className="sep-dot" />
+          <span title="Сообщение пациента считается новым обращением, если предыдущее его сообщение было больше суток назад">
+            обращений{" "}
+            <b className="num text-text font-medium">
+              {facts === null ? "—" : formatNumber(facts.inquiries)}
+            </b>
+          </span>
+          {/*
+            Переносы. Ноль показываем только когда счёт уже ведётся: до первой
+            выкатки этой возможности он означал бы «не переносят», а означает
+            «замечать было нечем».
+          */}
+          {facts !== null && (facts.moves.length > 0 || facts.movesSince !== null) ? (
+            <>
+              <span aria-hidden className="sep-dot" />
+              <span>
+                перенесли{" "}
+                <button
+                  type="button"
+                  onClick={() => setShowMoves(true)}
+                  title="Показать, кто перенёс запись и на какую дату"
+                  className="num text-text hover:text-accent-text font-medium underline decoration-dotted underline-offset-2 transition-colors"
+                >
+                  {formatNumber(facts.moves.length)}
+                </button>
               </span>
             </>
           ) : null}
@@ -529,6 +615,24 @@ export function TodayClient() {
           sales={daySales}
           dateLabel={isToday ? "сегодня" : dayLabelShort(shownAt)}
           onClose={() => setShowOperations(false)}
+        />
+      ) : null}
+
+      {showVisits !== null ? (
+        <VisitsBreakdown
+          appts={appts}
+          initial={showVisits}
+          dateLabel={isToday ? "сегодня" : dayLabelShort(shownAt)}
+          onClose={() => setShowVisits(null)}
+        />
+      ) : null}
+
+      {showMoves && facts !== null ? (
+        <MovesBreakdown
+          moves={facts.moves}
+          since={facts.movesSince}
+          dateLabel={isToday ? "сегодня" : dayLabelShort(shownAt)}
+          onClose={() => setShowMoves(false)}
         />
       ) : null}
 
