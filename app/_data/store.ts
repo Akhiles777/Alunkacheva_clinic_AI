@@ -302,6 +302,12 @@ export interface Dialog {
   windowMinutesLeft: number | null;
   /** Сообщений в переписке всего. Больше загруженных — значит история длиннее. */
   totalMessages?: number;
+  /** С какого момента пациент ждёт ответа (ISO). Пусто — не ждёт. */
+  waitingSince?: string | null;
+  /** Сколько сообщений пациента сотрудник ещё не видел. */
+  unreadCount?: number;
+  /** Первое обращение этого человека: с новым говорят иначе. */
+  firstTime?: boolean;
 }
 
 export interface DB {
@@ -538,6 +544,9 @@ export function hydrateDialogs(records: DialogRecord[]) {
       windowOpen: r.windowOpen,
       windowMinutesLeft: r.windowMinutesLeft,
       totalMessages: r.totalMessages,
+      waitingSince: r.waitingSince,
+      unreadCount: r.unreadCount,
+      firstTime: r.firstTime,
       messages,
     };
   });

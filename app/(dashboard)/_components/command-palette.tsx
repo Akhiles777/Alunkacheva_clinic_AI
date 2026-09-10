@@ -7,6 +7,7 @@ import {
   primaryPhone,
   searchPatients,
   useDb,
+  type Dialog,
   type Patient,
 } from "@/app/_data/store";
 
@@ -20,6 +21,27 @@ import {
  */
 function search(query: string, patients: Patient[]): Patient[] {
   return query.trim() ? searchPatients(query, patients) : patients.slice(0, 5);
+}
+
+/**
+ * Диалоги в том же поиске, что и пациенты.
+ *
+ * Искать переписку было нечем: у человека без карточки (новый номер, чат со
+ * скрытым адресом) имя есть только в диалоге, и найти его можно было лишь
+ * глазами по списку. Ищем по имени собеседника, по номеру и по последнему
+ * сообщению — по тому, что человек помнит.
+ */
+function searchDialogs(query: string, dialogs: Dialog[]): Dialog[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const digits = q.replace(/\D/g, "");
+  return dialogs
+    .filter((d) => {
+      if (d.name.toLowerCase().includes(q)) return true;
+      if (digits.length >= 3 && (d.phone ?? "").replace(/\D/g, "").includes(digits)) return true;
+      return d.preview.toLowerCase().includes(q);
+    })
+    .slice(0, 6);
 }
 
 export function CommandPalette() {
@@ -59,6 +81,19 @@ function PaletteInner({ onClose }: { onClose: () => void }) {
   const db = useDb();
 
   const results = useMemo(() => search(query, db.patients), [query, db.patients]);
+  const dialogs = useMemo(() => searchDialogs(query, db.dialogs), [query, db.dialogs]);
+  /**
+   * Один список на клавиатуре, две группы на экране. Стрелки должны ходить
+   * подряд, иначе «вниз» на последнем пациенте упирается в пустоту, хотя
+   * ниже есть диалоги.
+   */
+  const all = useMemo(
+    () => [
+      ...results.map((p) => ({ kind: "patient" as const, patient: p })),
+      ...dialogs.map((d) => ({ kind: "dialog" as const, dialog: d })),
+    ],
+    [results, dialogs],
+  );
 
   useEffect(() => {
     const t = setTimeout(() => inputRef.current?.focus(), 20);
@@ -68,6 +103,20 @@ function PaletteInner({ onClose }: { onClose: () => void }) {
   function choose(patient: Patient) {
     onClose();
     router.push(`/patients/${patient.id}`);
+  }
+
+  function openDialog(dialog: Dialog) {
+    onClose();
+    // Инбокс открывает названную переписку сам: адрес — единственное, что
+    // переживает переход между экранами.
+    router.push(`/inbox?d=${encodeURIComponent(dialog.id)}`);
+  }
+
+  function pick(index: number) {
+    const item = all[index];
+    if (!item) return;
+    if (item.kind === "patient") choose(item.patient);
+    else openDialog(item.dialog);
   }
 
   return (
@@ -94,15 +143,15 @@ function PaletteInner({ onClose }: { onClose: () => void }) {
             onKeyDown={(e) => {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
-                setActive((i) => Math.min(i + 1, results.length - 1));
+                setActive((i) => Math.min(i + 1, all.length - 1));
               } else if (e.key === "ArrowUp") {
                 e.preventDefault();
                 setActive((i) => Math.max(i - 1, 0));
-              } else if (e.key === "Enter" && results[active]) {
-                choose(results[active]);
+              } else if (e.key === "Enter") {
+                pick(active);
               }
             }}
-            placeholder="Пациент, телефон или номер записи"
+            placeholder="Пациент, диалог, телефон"
             className="text-base placeholder:text-text-subtle w-full border-none bg-transparent outline-none"
           />
           <kbd className="num text-text-subtle border-border rounded-sm border px-1.5 py-0.5 text-2xs">
@@ -111,7 +160,7 @@ function PaletteInner({ onClose }: { onClose: () => void }) {
         </div>
 
         <ul className="max-h-[52vh] overflow-auto p-1.5">
-          {results.length === 0 ? (
+          {all.length === 0 ? (
             <li className="text-text-muted px-3 py-6 text-center text-sm">
               Ничего не нашлось. Проверьте номер или имя.
             </li>
@@ -148,6 +197,38 @@ function PaletteInner({ onClose }: { onClose: () => void }) {
               </li>
             ))
           )}
+          {dialogs.length > 0 ? (
+            <>
+              <li className="text-text-subtle px-3 pt-2 pb-1 text-2xs">Переписка</li>
+              {dialogs.map((dialog, i) => {
+                const index = results.length + i;
+                return (
+                  <li key={dialog.id}>
+                    <button
+                      type="button"
+                      onMouseEnter={() => setActive(index)}
+                      onClick={() => openDialog(dialog)}
+                      className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left ${
+                        index === active ? "bg-hover" : ""
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{dialog.name}</span>
+                        <span className="text-text-subtle block truncate text-xs">
+                          {dialog.preview || "переписка"}
+                        </span>
+                      </span>
+                      {(dialog.unreadCount ?? 0) > 0 ? (
+                        <span className="bg-accent text-accent-contrast num flex-none rounded-full px-1.5 py-px text-2xs font-medium">
+                          {dialog.unreadCount}
+                        </span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </>
+          ) : null}
         </ul>
       </div>
     </div>

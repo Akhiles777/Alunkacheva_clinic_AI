@@ -4,11 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { HANDBACK_HOURS } from "@/lib/agent/handback-rule";
 import { reportMaybeStale } from "@/lib/client/stale-build";
+import { URGENT_WAIT_MS, waitLabel } from "@/lib/inbox/waiting";
+import { HOTKEYS, hotkeyAction, nextWaiting, step } from "@/lib/inbox/hotkeys";
 import {
   CHANNEL_LABEL,
   DIALOG_FILTERS,
   DIALOG_STATUS_LABEL,
   dialogMatchesFilter,
+  sortDialogs,
 } from "@/app/_data/inbox";
 import {
   activeNotes,
@@ -157,13 +160,27 @@ function DialogRow({
   dialog,
   active,
   onClick,
+  now,
 }: {
   dialog: Dialog;
   active: boolean;
   onClick: () => void;
+  /** Текущее время, общее на весь список: у каждой строки своё шло бы вразнобой. */
+  now: number;
 }) {
   const patient = dialog.patientId ? findPatient(dialog.patientId) : undefined;
   const notes = patient ? activeNotes(patient) : [];
+  const unread = dialog.unreadCount ?? 0;
+  /**
+   * Ожидание считаем на экране, а не на сервере: сервер отдаёт МОМЕНТ, с
+   * которого человек ждёт, и минуты набегают между обновлениями сами. Иначе
+   * «ждёт 12 мин» стояло бы неподвижно по шесть секунд и врало бы к концу.
+   */
+  const wait = dialog.waitingSince ? waitLabel(now - Date.parse(dialog.waitingSince)) : null;
+  const urgent =
+    dialog.waitingSince !== null &&
+    dialog.waitingSince !== undefined &&
+    now - Date.parse(dialog.waitingSince) >= URGENT_WAIT_MS;
 
   return (
     <button
@@ -174,11 +191,21 @@ function DialogRow({
       }`}
     >
       <div className="flex items-baseline gap-2">
-        {dialog.unread ? (
-          <span aria-hidden className="bg-accent h-1.5 w-1.5 flex-none rounded-full" />
-        ) : null}
         <span className="truncate text-sm font-medium">{dialog.name}</span>
         <span className="num text-text-subtle ml-auto flex-none text-2xs">{dialog.at}</span>
+        {/*
+          Число, а не точка. Точка отвечает только на «есть ли новое», а
+          администратор решает, куда идти первым: три сообщения подряд и одно
+          «спасибо» — это разные диалоги. Так устроен любой мессенджер, и
+          привычку ломать незачем.
+        */}
+        {unread > 0 ? (
+          <span className="bg-accent text-accent-contrast num flex-none rounded-full px-1.5 py-px text-2xs font-medium">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        ) : dialog.unread ? (
+          <span aria-hidden className="bg-accent h-1.5 w-1.5 flex-none rounded-full" />
+        ) : null}
       </div>
       {/* Служебные отметки пациента видны сразу у имени (§5.3). */}
       {notes.length > 0 ? (
@@ -191,7 +218,7 @@ function DialogRow({
         </div>
       ) : null}
       <p className="text-text-muted mt-1 truncate text-xs">{dialog.preview}</p>
-      <div className="mt-1.5 flex items-center gap-1.5">
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <span className="text-text-subtle text-2xs">{CHANNEL_LABEL[dialog.channel]}</span>
         {dialog.status === "escalated" ? (
           <span className="text-accent-text text-2xs font-medium">· нужен человек</span>
@@ -200,6 +227,22 @@ function DialogRow({
         ) : (
           <span className="text-text-subtle text-2xs">· {DIALOG_STATUS_LABEL[dialog.status]}</span>
         )}
+        {/*
+          Сколько человек ждёт — прямо в строке. Без этого числа список
+          отвечает на вопрос «кто написал последним», а работать надо по
+          вопросу «кто ждёт дольше всех».
+        */}
+        {wait ? (
+          <span className={`num text-2xs ${urgent ? "text-accent-text font-medium" : "text-text-subtle"}`}>
+            · {wait}
+          </span>
+        ) : null}
+        {/* Новый человек: с ним ещё ничего не связывает, и уходит он молча. */}
+        {dialog.firstTime && dialog.unread ? (
+          <span className="border-border text-text-muted rounded-sm border px-1 py-px text-2xs">
+            впервые
+          </span>
+        ) : null}
       </div>
     </button>
   );
@@ -276,6 +319,48 @@ function MessageEditor({
         <button type="button" onClick={onCancel} className="text-text-subtle hover:text-text text-xs">
           Отмена
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Шпаргалка по «?».
+ *
+ * Сочетание, о котором никто не знает, не ускоряет работу: администратор
+ * пользуется тем, что видел. Список один и тот же в коде и на экране
+ * (`HOTKEYS`) — расходиться им нельзя, иначе шпаргалка врёт.
+ */
+function Hotkeys({ onClose }: { onClose: () => void }) {
+  return (
+    <div
+      className="overlay-scrim fixed inset-0 z-50 flex items-start justify-center px-4 pt-[14vh]"
+      onMouseDown={onClose}
+      role="presentation"
+    >
+      <div
+        className="border-border bg-surface w-full max-w-[420px] rounded-xl border p-5"
+        onMouseDown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Горячие клавиши"
+      >
+        <div className="mb-3 flex items-baseline justify-between">
+          <h2 className="text-md font-medium">Горячие клавиши</h2>
+          <button type="button" onClick={onClose} className="text-text-subtle hover:text-text text-xs">
+            закрыть
+          </button>
+        </div>
+        <ul className="flex flex-col gap-1.5">
+          {HOTKEYS.map((h) => (
+            <li key={h.keys} className="flex items-baseline gap-3 text-xs">
+              <kbd className="num border-border text-text-muted flex-none rounded-sm border px-1.5 py-px text-2xs">
+                {h.keys}
+              </kbd>
+              <span className="text-text-muted">{h.what}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
@@ -777,6 +862,16 @@ export default function InboxPage() {
   const db = useDb();
   const [filter, setFilter] = useState("need");
   const [syncing, setSyncing] = useState(false);
+  /**
+   * Часы списка. Ожидание («ждёт 12 мин») набегает между обновлениями, и без
+   * своего тика надпись стояла бы неподвижно до следующего ответа сервера.
+   * Полминуты хватает: минуты меняются медленнее.
+   */
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   /**
    * Тихое обновление списка. Без него новые сообщения появлялись только после
@@ -814,11 +909,33 @@ export default function InboxPage() {
   }, [refresh]);
   // Ничего не выбрано по умолчанию: раньше здесь стоял id выдуманного диалога,
   // и при пустом инбоксе экран пытался открыть несуществующую переписку.
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  /**
+   * Переписку можно назвать адресом: `/inbox?d=<id>`.
+   *
+   * Так её открывает глобальный поиск (⌘K) и любая ссылка с другого экрана —
+   * иначе «найти диалог» означало «перейти в инбокс и искать глазами», то
+   * есть ровно то, ради чего администратор открывает WhatsApp на телефоне.
+   * Читаем адрес при первом рендере, а не эффектом: выбор — это начальное
+   * состояние экрана, а не изменение уже показанного.
+   */
+  const [selectedId, setSelectedId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("d"),
+  );
+  // Адрес чистим сразу: перезагрузка не должна возвращать к тому диалогу,
+  // с которого человек уже ушёл.
+  useEffect(() => {
+    if (window.location.search) window.history.replaceState(null, "", "/inbox");
+  }, []);
   const [composing, setComposing] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
+  /**
+   * Порядок — по ожиданию, а не по времени последнего сообщения: пациент,
+   * написавший сорок минут назад, уезжал вниз под свежую переписку, которую
+   * только что закрыли, и дольше всех ждущего не было видно вовсе.
+   */
   const list = useMemo(
-    () => db.dialogs.filter((d) => dialogMatchesFilter(d, filter)),
+    () => sortDialogs(db.dialogs.filter((d) => dialogMatchesFilter(d, filter))),
     [db.dialogs, filter],
   );
   const selected = db.dialogs.find((d) => d.id === selectedId) ?? null;
@@ -829,8 +946,103 @@ export default function InboxPage() {
     markDialogRead(id);
   }
 
+  /**
+   * Названный адресом диалог отмечаем прочитанным, когда он доехал.
+   *
+   * Сам выбор сделан ещё при первом рендере (см. `selectedId`), а список
+   * приходит с сервера позже — отметку раньше ставить некуда. Ставим ровно
+   * один раз на диалог: дальше это делает `open`.
+   */
+  const markedFromUrl = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedId || markedFromUrl.current === selectedId) return;
+    if (!db.dialogs.some((d) => d.id === selectedId)) return;
+    markedFromUrl.current = selectedId;
+    markDialogRead(selectedId);
+  }, [selectedId, db.dialogs]);
+
+  /**
+   * Счётчик непрочитанных в заголовке вкладки — как в мессенджере.
+   *
+   * Платформа стоит приложением и неделями висит открытой в фоне. Пока число
+   * жило только на экране, о новом сообщении узнавали, вернувшись к вкладке;
+   * теперь оно видно в списке окон и на панели задач.
+   */
+  const waiting = useMemo(
+    () => db.dialogs.filter((d) => d.unread && d.status !== "closed").length,
+    [db.dialogs],
+  );
+  useEffect(() => {
+    const base = "Диалоги";
+    document.title = waiting > 0 ? `(${waiting}) ${base}` : base;
+    return () => {
+      document.title = base;
+    };
+  }, [waiting]);
+
+  /**
+   * Клавиатура. Решение о том, что делать с нажатием, принимает
+   * `lib/inbox/hotkeys` — там же оно проверено тестами: горячая клавиша,
+   * сработавшая во время набора ответа, стоит человеку набранного текста.
+   */
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const el = e.target as HTMLElement | null;
+      const typing =
+        !!el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable === true);
+      const action = hotkeyAction({
+        key: e.key,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        shiftKey: e.shiftKey,
+        typing,
+      });
+      if (!action) return;
+
+      if (action === "help") {
+        e.preventDefault();
+        setHelpOpen((v) => !v);
+        return;
+      }
+      if (action === "escape") {
+        if (helpOpen) setHelpOpen(false);
+        else if (typing) (el as HTMLElement).blur();
+        else setSelectedId(null);
+        return;
+      }
+      if (action === "next" || action === "prev") {
+        e.preventDefault();
+        const id = step(list.map((d) => d.id), selectedId, action === "next" ? 1 : -1);
+        if (id) open(id);
+        return;
+      }
+      if (action === "nextWaiting") {
+        e.preventDefault();
+        const id = nextWaiting(
+          list.map((d) => ({ id: d.id, waiting: d.unread })),
+          selectedId,
+        );
+        if (id) open(id);
+        return;
+      }
+      if (action === "reply") {
+        e.preventDefault();
+        // Курсор в поле ввода: «ответить» — это единственное, ради чего
+        // открывают диалог, и тянуться к нему мышью незачем.
+        document.querySelector<HTMLTextAreaElement>("[data-composer-input]")?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   return (
     <div className="flex h-full min-h-0 flex-1">
+      {helpOpen ? <Hotkeys onClose={() => setHelpOpen(false)} /> : null}
       <div
         className={`border-border flex w-[300px] flex-none flex-col border-r max-md:w-full ${selected ? "max-md:hidden" : ""}`}
       >
@@ -859,6 +1071,15 @@ export default function InboxPage() {
                 {f.label}
               </button>
             ))}
+            {/* Шпаргалка. Сочетание, о котором никто не знает, скорости не даёт. */}
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              title="Горячие клавиши"
+              className="border-border text-text-subtle hover:bg-hover self-center rounded-md border px-1.5 py-0.5 text-2xs"
+            >
+              ?
+            </button>
           </div>
         </div>
         <div className="flex-1 overflow-auto">
@@ -866,7 +1087,13 @@ export default function InboxPage() {
             <p className="text-text-muted px-4 py-6 text-sm">В этом фильтре пусто.</p>
           ) : (
             list.map((d) => (
-              <DialogRow key={d.id} dialog={d} active={d.id === selectedId} onClick={() => open(d.id)} />
+              <DialogRow
+                key={d.id}
+                dialog={d}
+                active={d.id === selectedId}
+                onClick={() => open(d.id)}
+                now={now}
+              />
             ))
           )}
         </div>

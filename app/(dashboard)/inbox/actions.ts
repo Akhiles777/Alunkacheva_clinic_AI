@@ -30,6 +30,7 @@ import { listTemplates } from "@/lib/server/message-templates";
 import type { ConversationStatus } from "@/generated/prisma/enums";
 import { KIND_LABEL, type AttachmentKind } from "@/lib/agent/attachments";
 import { splitQuote } from "@/lib/agent/quoted";
+import { unreadCount, waitingSince } from "@/lib/inbox/waiting";
 import { requireId } from "@/lib/server/require-id";
 
 /**
@@ -341,6 +342,18 @@ export interface DialogRecord {
   windowMinutesLeft: number | null;
   /** Сколько сообщений в переписке всего: если больше загруженных — покажем. */
   totalMessages: number;
+  /**
+   * С какого момента пациент ждёт ответа (ISO). Пусто — не ждёт.
+   *
+   * Список сортировался по времени последнего сообщения, и тот, кто ждёт
+   * дольше всех, уезжал вниз под свежую переписку. Это разные вопросы, и
+   * администратору нужен второй.
+   */
+  waitingSince: string | null;
+  /** Сколько сообщений пациента сотрудник ещё не видел — как в мессенджере. */
+  unreadCount: number;
+  /** Первое обращение этого человека: с новым говорят иначе. */
+  firstTime: boolean;
   status: DialogStatus;
   preview: string;
   at: string;
@@ -467,6 +480,12 @@ export async function getConversations(): Promise<DialogRecord[]> {
           name: true,
           deletedAt: true,
           phones: { where: { isPrimary: true }, take: 1, select: { phone: true } },
+          /**
+           * Состоявшиеся визиты — чтобы отличить первое обращение. С новым
+           * человеком ещё ничего не связывает, и уходит он молча: в списке
+           * он должен быть виден отдельно.
+           */
+          _count: { select: { appointments: { where: { status: "ARRIVED", deletedAt: null } } } },
         },
       },
       // Последние сообщения, а не вся история: список обновляется каждые
@@ -555,6 +574,18 @@ export async function getConversations(): Promise<DialogRecord[]> {
       };
     });
     const last = ordered[ordered.length - 1];
+    /**
+     * Очередь считаем по НЕудалённым сообщениям переписки: те же, что видит
+     * администратор. Правила — в lib/inbox/waiting, там же тесты.
+     */
+    const queue = ordered.map((m) => ({ direction: m.direction, createdAt: m.createdAt }));
+    const waiting = waitingSince(queue);
+    /**
+     * Первое обращение: у пациента нет ни одного состоявшегося визита и
+     * переписка началась недавно. Незнакомого человека легко потерять — с ним
+     * ещё ничего не связывает, и он уходит молча.
+     */
+    const firstTime = !patient || patient._count.appointments === 0;
     // Ждёт ответа, если пришло новое обращение и диалог не закрыт. Само
     // правило — в lib/inbox/needs-reply: там же оно проверено тестами.
     const newInquiry = isNewInquiryWaiting(
@@ -605,6 +636,9 @@ export async function getConversations(): Promise<DialogRecord[]> {
       preview: last ? splitQuote(stripMarks(last.body, attachmentsOf(last.attachments, last.id))).own : "",
       at: atLabel(c.lastMessageAt),
       totalMessages: c._count.messages,
+      waitingSince: waiting ? waiting.toISOString() : null,
+      unreadCount: unreadCount(queue, c.staffReadAt),
+      firstTime,
       messages,
     };
   });
