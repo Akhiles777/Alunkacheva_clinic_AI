@@ -7,6 +7,7 @@ import { needsBreakdown, visitTitle } from "@/lib/visit-title";
 import { SourcePicker } from "./visit-source";
 import { PatientDossier } from "./patient-dossier";
 import { formatMoney } from "@/lib/format";
+import { glanceOf } from "@/lib/metrics/patient-glance";
 import {
   addNote,
   addPhone,
@@ -15,6 +16,7 @@ import {
   hydratePatients,
   patientCalls,
   patientTags,
+  activeNotes,
   primaryPhone,
   removePhone,
   removeRelation,
@@ -77,6 +79,116 @@ function visitTime(iso: string): string {
     minute: "2-digit",
   }).format(new Date(iso));
 }
+
+/**
+ * Что важно знать до первой фразы: отметки, ближайшая запись, курс, долг.
+ *
+ * Администратор смотрит на карточку несколько секунд, прежде чем начать
+ * отвечать, и за эти секунды должен узнать то, чего нет в телефоне. Всё
+ * считает `lib/metrics/patient-glance` — на наших данных и без догадок: где
+ * наблюдений мало, строки нет вовсе.
+ */
+function Glance({ patient }: { patient: Patient }) {
+  const notes = activeNotes(patient);
+  const g = glanceOf(
+    patient.visits.map((v) => ({
+      status: v.status,
+      at: v.at,
+      amount: v.amount,
+      paidEarlier: v.paidEarlier,
+      service: v.service,
+      doctor: v.doctor,
+      kind: v.kind,
+    })),
+    patient.courses.map((c) => ({
+      title: c.title,
+      used: c.used,
+      total: c.total,
+      booked: c.booked,
+      status: c.status,
+    })),
+  );
+
+  if (!g.next && !g.noShow && !g.course && !g.owes && notes.length === 0) return null;
+
+  return (
+    <div className="border-border-soft mt-4 flex flex-col gap-1.5 border-t pt-4">
+      {/* Служебные отметки — крупно и первыми: их ставят, чтобы их увидели. */}
+      {notes.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {notes.map((n) => (
+            <span
+              key={n.id}
+              className="border-accent-border bg-accent-tint text-accent-text rounded-md border px-2 py-0.5 text-xs font-medium"
+            >
+              {n.text || NOTE_LABEL[n.kind]}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {g.next ? (
+        <Line
+          label="Ближайшая запись"
+          value={`${DAY_FMT.format(new Date(g.next.at))} · ${g.next.service}${
+            g.next.doctor ? ` · ${g.next.doctor}` : ""
+          }`}
+        />
+      ) : null}
+
+      {/*
+        Не «риск неявки 73%»: модели предсказания у нас нет, и процент был бы
+        догадкой с видом расчёта. Факт отвечает на тот же вопрос — стоит ли
+        подтверждать запись накануне.
+      */}
+      {g.noShow ? (
+        <Line
+          label="Неявки"
+          value={`не пришёл ${g.noShow.count} из ${g.noShow.of} — стоит подтвердить накануне`}
+          attention
+        />
+      ) : null}
+
+      {g.course ? (
+        <Line
+          label="Курс"
+          value={
+            `${g.course.title} · ${g.course.used}/${g.course.total}` +
+            (g.course.booked > 0 ? ` · записан ещё на ${g.course.booked}` : "") +
+            (g.course.stalled ? " · выпал из графика" : "")
+          }
+          attention={g.course.stalled}
+        />
+      ) : null}
+
+      {g.owes ? (
+        <Line
+          label="Не отмечено оплаченным"
+          value={`${formatMoney(g.owes.amount)} по ${g.owes.visits} визитам — повод спросить, а не счёт`}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function Line({ label, value, attention }: { label: string; value: string; attention?: boolean }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="text-text-subtle w-[128px] flex-none text-2xs">{label}</span>
+      <span className={`min-w-0 flex-1 text-xs ${attention ? "text-accent-text font-medium" : ""}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+const DAY_FMT = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "long",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Europe/Moscow",
+});
 
 export function PatientCardBody({
   patientId,
@@ -161,6 +273,8 @@ export function PatientCardBody({
           ))}
         </div>
       ) : null}
+
+      <Glance patient={patient} />
 
       {/* телефоны */}
       <div className="border-border-soft mt-5 border-t pt-5">

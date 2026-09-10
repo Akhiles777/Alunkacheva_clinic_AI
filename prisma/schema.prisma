@@ -260,6 +260,9 @@ model Company {
   conversations            Conversation[]
   messages                 Message[]
   mediaFiles               MediaFile[]
+  dialogNotes              DialogNote[]
+  dialogTasks              DialogTask[]
+  dialogHandoffs           DialogHandoff[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -457,6 +460,9 @@ model Conversation {
   appointments Appointment[]
   agentRuns    AgentRun[]
   specialistQueries SpecialistQuery[]
+  notes        DialogNote[]
+  tasks        DialogTask[]
+  handoffs     DialogHandoff[]
 
   @@unique([companyId, channel, externalUserId])
   @@index([companyId, status, lastMessageAt])
@@ -514,6 +520,111 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([companyId, createdAt])
   @@map("messages")
+}
+
+/// Внутренняя заметка по переписке. Пациент её не видит.
+///
+/// В WhatsApp такого нет вовсе, и «просила перезвонить после 18» живёт в
+/// голове администратора или в тетради — то есть теряется при передаче смены.
+/// Отдельно от `Message`: сообщение уходит наружу, заметка — никогда, и
+/// смешивать их в одной таблице значит однажды отправить её пациенту.
+model DialogNote {
+  id             String   @id @default(cuid())
+  companyId      String
+  conversationId String
+  authorId       String?
+  body           String
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  author       StaffUser?   @relation("DialogNoteAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@map("dialog_notes")
+}
+
+/// Отложенная отправка и напоминание по диалогу.
+///
+/// Два разных дела с одной механикой времени, поэтому одна таблица и поле
+/// `kind`: «отправить в 9 утра» и «вернуться через два дня» отличаются только
+/// тем, кому адресован результат — пациенту или администратору.
+///
+/// Пациент пишет в 23:00, и ответ ему нужен не ночью: администратор набирает
+/// его сейчас, а уходит он утром. «Не забыть написать» точно так же теряется —
+/// напоминание поднимает диалог в списке в нужный момент.
+model DialogTask {
+  id             String         @id @default(cuid())
+  companyId      String
+  conversationId String
+  kind           DialogTaskKind
+  /// Текст, который уйдёт пациенту (у отложенной отправки). У напоминания —
+  /// заметка для себя: «спросить про анализы».
+  body           String
+  /// Файлы отложенного сообщения: те же MediaFile, что и у обычного.
+  mediaIds       String[]
+  /// Ответ на конкретное сообщение — сохраняем намерение до отправки.
+  replyToId      String?
+  runAt          DateTime       @db.Timestamptz(3)
+  status         DialogTaskStatus @default(PENDING)
+  createdById    String?
+  /// Что вышло: идентификатор отправленного сообщения либо причина отказа.
+  resultMessageId String?
+  failureReason  String?
+
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  completedAt DateTime? @db.Timestamptz(3)
+  cancelledAt DateTime? @db.Timestamptz(3)
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdBy    StaffUser?   @relation("DialogTaskAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status, runAt])
+  @@index([conversationId, status])
+  @@map("dialog_tasks")
+}
+
+enum DialogTaskKind {
+  /// Отправить пациенту в назначенное время.
+  SEND
+  /// Поднять диалог в списке администратора.
+  REMIND
+}
+
+enum DialogTaskStatus {
+  PENDING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+/// Передача переписки коллеге с комментарием.
+///
+/// Смена сдаётся не пересказом в общем чате, а передачей диалогов: принимающий
+/// должен получить не только разговор, но и то, что не написано в нём, —
+/// «уточни у Ирины Омаровны и ответь».
+model DialogHandoff {
+  id             String   @id @default(cuid())
+  companyId      String
+  conversationId String
+  fromId         String?
+  toId           String
+  comment        String
+
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  acceptedAt   DateTime? @db.Timestamptz(3)
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  from         StaffUser?   @relation("HandoffFrom", fields: [fromId], references: [id], onDelete: SetNull)
+  to           StaffUser    @relation("HandoffTo", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, toId, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("dialog_handoffs")
 }
 
 /// Файл, который клиника отправляет пациенту.
@@ -1161,6 +1272,10 @@ model StaffUser {
   conversations            Conversation[]
   approvedMessages         Message[]                 @relation("MessageApprovedBy")
   uploadedMedia            MediaFile[]               @relation("MediaUploadedBy")
+  dialogNotes              DialogNote[]              @relation("DialogNoteAuthor")
+  dialogTasks              DialogTask[]              @relation("DialogTaskAuthor")
+  handoffsSent             DialogHandoff[]           @relation("HandoffFrom")
+  handoffsReceived         DialogHandoff[]           @relation("HandoffTo")
   acknowledgedEscalations  Escalation[]              @relation("EscalationAcknowledgedBy")
   resolvedEscalations      Escalation[]              @relation("EscalationResolvedBy")
   auditLogs                AuditLog[]

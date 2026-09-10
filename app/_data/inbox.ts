@@ -55,8 +55,19 @@ export function sortDialogs(dialogs: Dialog[]): Dialog[] {
     .map((d, i) => ({ d, i }))
     .sort((a, b) =>
       compareQueue(
-        { waitingSince: a.d.waitingSince ?? null, at: -a.i, escalated: a.d.status === "escalated" },
-        { waitingSince: b.d.waitingSince ?? null, at: -b.i, escalated: b.d.status === "escalated" },
+        {
+          waitingSince: a.d.waitingSince ?? null,
+          at: -a.i,
+          // Назревшее напоминание поднимает диалог так же, как эскалация:
+          // «вернуться через два дня» бесполезно, если через два дня строка
+          // лежит там же, где лежала.
+          escalated: a.d.status === "escalated" || Boolean(a.d.reminder),
+        },
+        {
+          waitingSince: b.d.waitingSince ?? null,
+          at: -b.i,
+          escalated: b.d.status === "escalated" || Boolean(b.d.reminder),
+        },
       ),
     )
     .map((x) => x.d);

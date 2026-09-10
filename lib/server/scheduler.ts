@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { runDueDialogTasks } from "@/app/(dashboard)/inbox/dialog-actions";
 import {
   syncAll,
   syncRecentRecords,
@@ -340,6 +341,17 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
         console.error("[scheduler] добор не удался:", (e as Error)?.message ?? e);
         return null;
       });
+      /**
+       * Отложенные сообщения — тем же коротким кругом.
+       *
+       * Обещали пациенту ответ в девять утра — он уйдёт в девять, а не когда
+       * администратор откроет вкладку: таймер в браузере переживает только
+       * открытую страницу. Три минуты точности здесь достаточно.
+       */
+      const later = await runDueDialogTasks(company.id).catch((e) => {
+        console.error("[scheduler] отложенные сообщения не ушли:", (e as Error)?.message ?? e);
+        return null;
+      });
 
       results.push({
         клиника: company.name,
@@ -348,6 +360,7 @@ export async function runFastCycle(): Promise<SyncRunInfo> {
         источниковВыведено: sync?.sources ?? 0,
         возвратДиалогов: handback,
         доборНеотвеченных: sweep,
+        отложенныеОтправки: later,
       });
     }
     /**

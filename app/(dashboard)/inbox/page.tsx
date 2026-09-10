@@ -41,6 +41,8 @@ import {
   type DialogAttachmentRecord,
 } from "./actions";
 import { Composer } from "./composer";
+import { DialogTools } from "./dialog-tools";
+import { cancelDialogTask } from "./dialog-actions";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { ContactPanel } from "./contact-panel";
 import { PatientCardBody } from "../_components/patient-card";
@@ -177,7 +179,14 @@ function DialogRow({
   /** Хоть что-то выбрано — показываем галочки у всех строк. */
   selecting: boolean;
 }) {
-  const patient = dialog.patientId ? findPatient(dialog.patientId) : undefined;
+  /**
+   * Через снимок стора, а не прямым чтением модуля: на сервере состояние
+   * пустое, к гидрации на клиенте уже заполнено, и React выбрасывает
+   * серверную разметку целиком — на экране это выглядит как рывок и долгая
+   * загрузка.
+   */
+  const db = useDb();
+  const patient = dialog.patientId ? db.patients.find((p) => p.id === dialog.patientId) : undefined;
   const notes = patient ? activeNotes(patient) : [];
   const unread = dialog.unreadCount ?? 0;
   /**
@@ -277,6 +286,15 @@ function DialogRow({
           <span className={`num text-2xs ${urgent ? "text-accent-text font-medium" : "text-text-subtle"}`}>
             · {wait}
           </span>
+        ) : null}
+        {dialog.reminder ? (
+          <span className="text-accent-text text-2xs font-medium">· напоминание</span>
+        ) : null}
+        {(dialog.scheduled ?? 0) > 0 ? (
+          <span className="text-text-subtle text-2xs">· отложено {dialog.scheduled}</span>
+        ) : null}
+        {(dialog.noteCount ?? 0) > 0 ? (
+          <span className="text-text-subtle text-2xs">· заметки {dialog.noteCount}</span>
         ) : null}
         {/* Новый человек: с ним ещё ничего не связывает, и уходит он молча. */}
         {dialog.firstTime && dialog.unread ? (
@@ -430,6 +448,8 @@ function WindowBadge({ dialog }: { dialog: Dialog }) {
 
 function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => void; refresh: () => void }) {
   const [sendError, setSendError] = useState<string | null>(null);
+  /** Панель заметок и отложенного: свёрнута, пока не понадобилась. */
+  const [tools, setTools] = useState(false);
   /** На какое сообщение отвечаем и какое правим — по одному за раз. */
   const [replyTo, setReplyTo] = useState<{ id: string; preview: string } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -624,6 +644,25 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
             {pinging ? "Зовём…" : "Позвать админа"}
           </button>
           {/*
+            Заметки, передача коллеге и отложенная отправка. Свёрнуты по
+            умолчанию: в обычной работе они не нужны и не должны занимать
+            место, ради которого сюда смотрят, — саму переписку.
+          */}
+          <button
+            type="button"
+            onClick={() => setTools((v) => !v)}
+            className={`flex-none rounded-md border px-2.5 py-1 text-2xs ${
+              tools
+                ? "border-accent-border bg-accent-tint text-accent-text"
+                : "border-border text-text-muted hover:bg-hover"
+            }`}
+          >
+            Заметки и отложенное
+            {(dialog.noteCount ?? 0) + (dialog.scheduled ?? 0) > 0
+              ? ` · ${(dialog.noteCount ?? 0) + (dialog.scheduled ?? 0)}`
+              : ""}
+          </button>
+          {/*
             Выключатель агента — насовсем, а не на четыре часа.
 
             В пациентский канал пишут и сотрудники клиники между собой:
@@ -663,6 +702,31 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
       </div>
 
       <ContactPanel key={dialog.id} dialog={dialog} onChanged={refresh} />
+
+      {/*
+        Назревшее напоминание — первым, что видно при открытии: ради этого
+        момента его и ставили. Кнопка «сделано» убирает его и опускает диалог
+        обратно в общий порядок.
+      */}
+      {dialog.reminder ? (
+        <div className="border-accent-border bg-accent-tint flex flex-none flex-wrap items-center gap-2 border-b px-5 py-2">
+          <span className="text-accent-text text-xs font-medium">Напоминание:</span>
+          <span className="text-text min-w-0 flex-1 text-xs">{dialog.reminder.body}</span>
+          <button
+            type="button"
+            onClick={() => {
+              const id = dialog.reminder?.id;
+              if (!id) return;
+              void cancelDialogTask(id).then(refresh);
+            }}
+            className="border-border bg-surface text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs"
+          >
+            Сделано
+          </button>
+        </div>
+      ) : null}
+
+      {tools ? <DialogTools dialogId={dialog.id} onChanged={refresh} /> : null}
 
       <div className="flex-1 overflow-auto px-5 py-4">
         <div className="flex flex-col gap-3">

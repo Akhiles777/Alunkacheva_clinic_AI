@@ -5,14 +5,23 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { PatientCardBody } from "../../_components/patient-card";
 import { PatientAnalyticsPanel } from "../patient-analytics-panel";
-import { findPatient, hydratePatients, useDb } from "@/app/_data/store";
+import { hydratePatients, useDb } from "@/app/_data/store";
 import { getPatientRecord, logPatientView } from "../actions";
 
 export default function PatientPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
-  useDb(); // подписка на стор — карточка обновляется при правках
-  const patient = findPatient(id);
+  /**
+   * Пациента читаем ЧЕРЕЗ снимок стора, а не прямым обращением к модулю.
+   *
+   * `findPatient` читает живое состояние; на сервере оно пустое, а к моменту
+   * гидрации на клиенте уже заполнено — и React ловил расхождение: «сервер
+   * отрисовал „Загружаем…“, клиент — имя». Из-за такого расхождения React
+   * выбрасывает серверную разметку и рисует поддерево заново, а на экране это
+   * и выглядит как «страница дёргается и долго грузит».
+   */
+  const db = useDb();
+  const patient = db.patients.find((p) => p.id === id);
 
   /**
    * Карточку всегда догружаем с сервера, даже если пациент уже в сторе.

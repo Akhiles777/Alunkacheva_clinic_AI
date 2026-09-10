@@ -406,6 +406,17 @@ export interface DialogRecord {
   unreadCount: number;
   /** Первое обращение этого человека: с новым говорят иначе. */
   firstTime: boolean;
+  /**
+   * Назревшее напоминание по диалогу: «вернуться через два дня».
+   *
+   * Диалог всплывает в списке в назначенный момент — это и заменяет «не
+   * забыть написать», которое сейчас теряется между сменами.
+   */
+  reminder: { id: string; body: string } | null;
+  /** Сколько отложенных сообщений ждут отправки. */
+  scheduled: number;
+  /** Внутренних заметок по диалогу: их видно всем администраторам. */
+  noteCount: number;
   status: DialogStatus;
   preview: string;
   at: string;
@@ -590,6 +601,45 @@ export async function getConversations(): Promise<DialogRecord[]> {
     });
   }
 
+  /**
+   * Напоминания, заметки и отложенные — одним запросом на весь список.
+   *
+   * По одному на диалог это тридцать запросов каждые шесть секунд: список
+   * тянется постоянно, и такая мелочь и есть то, из-за чего платформа
+   * «долго грузит».
+   */
+  const ids = convs.map((c) => c.id);
+  const [tasks, notes] = await Promise.all([
+    ids.length
+      ? prisma.dialogTask.findMany({
+          where: { conversationId: { in: ids }, companyId: session.companyId, status: "PENDING" },
+          select: { id: true, conversationId: true, kind: true, body: true, runAt: true },
+        })
+      : Promise.resolve([]),
+    ids.length
+      ? prisma.dialogNote.groupBy({
+          by: ["conversationId"],
+          where: { conversationId: { in: ids }, companyId: session.companyId, deletedAt: null },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const nowMs = Date.now();
+  const dueReminder = new Map<string, { id: string; body: string }>();
+  const scheduledCount = new Map<string, number>();
+  for (const t of tasks) {
+    if (t.kind === "REMIND") {
+      // Всплывает только назревшее: напоминание на послезавтра сегодня не
+      // должно поднимать диалог наверх.
+      if (t.runAt.getTime() <= nowMs && !dueReminder.has(t.conversationId)) {
+        dueReminder.set(t.conversationId, { id: t.id, body: t.body });
+      }
+    } else {
+      scheduledCount.set(t.conversationId, (scheduledCount.get(t.conversationId) ?? 0) + 1);
+    }
+  }
+  const noteCount = new Map(notes.map((n) => [n.conversationId, n._count._all]));
+
   return convs.map((c) => {
     const patient = c.patient?.deletedAt ? null : c.patient;
     // Из базы пришли в обратном порядке (последние сверху) — разворачиваем.
@@ -688,6 +738,9 @@ export async function getConversations(): Promise<DialogRecord[]> {
       preview: last ? splitQuote(stripMarks(last.body, attachmentsOf(last.attachments, last.id))).own : "",
       at: atLabel(c.lastMessageAt),
       totalMessages: c._count.messages,
+      reminder: dueReminder.get(c.id) ?? null,
+      scheduled: scheduledCount.get(c.id) ?? 0,
+      noteCount: noteCount.get(c.id) ?? 0,
       waitingSince: waiting ? waiting.toISOString() : null,
       unreadCount: unreadCount(queue, c.staffReadAt),
       firstTime,
