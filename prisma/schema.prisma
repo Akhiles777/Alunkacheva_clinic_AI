@@ -269,6 +269,8 @@ model Company {
   agentQualityChecks       AgentQualityCheck[]
   weeklyDigests            WeeklyDigest[]
   appointmentMoves         AppointmentMove[]
+  knownDevices             KnownDevice[]
+  appRestarts              AppRestart[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -567,6 +569,65 @@ model AppointmentMove {
   @@unique([companyId, appointmentId, fromStartAt, toStartAt])
   @@index([companyId, detectedAt])
   @@map("appointment_moves")
+}
+
+/// Устройство, с которого заходят в платформу.
+///
+/// Пишется ОДИН раз при входе и обновляется там же — на горячем пути запросов
+/// этой таблицы нет вовсе. «Что делали» берётся из журнала аудита, где строка
+/// браузера и так пишется у каждого действия: вторая запись того же самого
+/// стоила бы скорости и разъехалась бы с первой.
+model KnownDevice {
+  id          String    @id @default(cuid())
+  companyId   String
+  userId      String
+  /// Хэш нормализованной строки браузера: «тот же браузер на том же аппарате».
+  fingerprint String
+  /// Строка браузера целиком — она же лежит в журнале аудита.
+  userAgent   String
+  /// «Mac · Safari». Модели аппарата в строке браузера нет, и здесь её тоже нет.
+  label       String
+  platform    String
+  browser     String
+  /// desktop | mobile | tablet | unknown
+  kind        String
+  logins      Int       @default(0)
+  firstSeenAt DateTime  @default(now()) @db.Timestamptz(3)
+  lastLoginAt DateTime  @default(now()) @db.Timestamptz(3)
+  /// Владелец пометил устройство своим: в статистике оно не учитывается.
+  /// Скрытое при этом считается числом и называется вслух — молча не пропадает.
+  excluded    Boolean   @default(false)
+  excludedAt  DateTime? @db.Timestamptz(3)
+  /// Имя, которое дал устройству человек: «мой рабочий ноутбук».
+  note        String?
+
+  company Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    StaffUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId, fingerprint])
+  @@index([companyId, lastLoginAt])
+  @@map("known_devices")
+}
+
+/// Запуск процесса приложения.
+///
+/// Строка пишется один раз при старте. Нужна ровно для одного вопроса — «а
+/// сколько раз за сутки платформа перезапускалась»: pm2 убивает процесс по
+/// пределу памяти молча, и со стороны это выглядит как «слетело». Без этой
+/// отметки перезапуск не отличить от сбоя сети, и чинить приходится наугад.
+model AppRestart {
+  id        String   @id @default(cuid())
+  companyId String
+  startedAt DateTime @default(now()) @db.Timestamptz(3)
+  /// Сколько памяти процесс занимал сразу после старта, МБ.
+  rssMb     Int?
+  /// Версия сборки, если известна.
+  commit    String?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, startedAt])
+  @@map("app_restarts")
 }
 
 model WeeklyDigest {
@@ -1464,6 +1525,7 @@ model StaffUser {
   dialogTasks              DialogTask[]              @relation("DialogTaskAuthor")
   problemReports           ProblemReport[]           @relation("ProblemAuthor")
   qualityReviews           AgentQualityCheck[]       @relation("QualityReviewer")
+  devices                  KnownDevice[]
   handoffsSent             DialogHandoff[]           @relation("HandoffFrom")
   handoffsReceived         DialogHandoff[]           @relation("HandoffTo")
   acknowledgedEscalations  Escalation[]              @relation("EscalationAcknowledgedBy")
