@@ -70,7 +70,7 @@ export function AssistantChat() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Спросить ИИ"
-        className="border-accent-border bg-accent text-accent-contrast hover:bg-accent-hover fixed right-5 bottom-5 z-40 inline-flex items-center gap-2 rounded-pill border px-4 py-2.5 text-sm font-medium max-md:right-4 max-md:bottom-4"
+        className="app-float border-accent-border bg-accent text-accent-contrast hover:bg-accent-hover fixed right-5 bottom-5 z-40 inline-flex items-center gap-2 rounded-pill border px-4 py-2.5 text-sm font-medium max-md:right-4 max-md:bottom-4"
       >
         <span aria-hidden className="text-base leading-none">✦</span>
         <span className="max-md:hidden">Спросить ИИ</span>

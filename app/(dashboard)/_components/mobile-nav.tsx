@@ -61,7 +61,13 @@ export function MobileNav({
 
   return (
     <>
-      <header className="border-border bg-sidebar flex h-14 flex-none items-center gap-3 border-b px-4 md:hidden">
+      {/*
+        `mobile-topbar`: пока на телефоне открыта клавиатура, полоса убирается.
+        Над клавиатурой остаётся около 360 точек, и 56 из них уходили на строку,
+        которая во время набора не нужна: человек пишет ответ, а не переходит
+        между разделами. Убрал клавиатуру — полоса вернулась.
+      */}
+      <header className="mobile-topbar border-border bg-sidebar flex h-14 flex-none items-center gap-3 border-b px-4 md:hidden">
         <button
           type="button"
           onClick={() => setOpen(true)}

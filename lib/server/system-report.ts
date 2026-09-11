@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { parseDevice, KIND_LABEL, type DeviceInfo } from "@/lib/metrics/device";
 import { memoryNow, type MemoryNow } from "@/lib/server/restarts";
+import { screenLabel } from "@/lib/metrics/route-pattern";
 import type { AuditAction } from "@/generated/prisma/enums";
 
 /**
@@ -32,6 +33,7 @@ const MAX_ROWS = 20_000;
 
 const ACTION_LABEL: Record<string, string> = {
   LOGIN: "вход",
+  PAGE_VIEW: "открывал экран",
   LOGOUT: "выход",
   PATIENT_VIEW: "смотрел карточку пациента",
   PATIENT_EXPORT: "выгружал данные пациента",
@@ -80,6 +82,15 @@ export interface DayRow {
   logins: number;
 }
 
+export interface EventRow {
+  at: string;
+  userName: string;
+  /** «открыл Диалоги», «открыл переписку», «менял настройки». */
+  what: string;
+  deviceLabel: string;
+  ip: string | null;
+}
+
 export interface SystemReport {
   windowDays: number;
   /** Строк журнала разобрано; упёрлись ли в предел. */
@@ -88,6 +99,8 @@ export interface SystemReport {
   devices: DeviceRow[];
   people: PersonRow[];
   days: DayRow[];
+  /** Последние действия по одному — «кто и когда открывал диалог». */
+  recent: EventRow[];
   /** Сколько действий скрыто отметкой «моё устройство» — молча ничего не пропадает. */
   excludedActions: number;
   excludedDevices: number;
@@ -122,7 +135,16 @@ export async function getSystemReport(
       take: MAX_ROWS,
       // Тел сообщений и содержимого карточек здесь нет и не запрашиваем (§7):
       // только кто, что, когда и с чего.
-      select: { actorId: true, action: true, createdAt: true, userAgent: true, ip: true },
+      select: {
+        actorId: true,
+        action: true,
+        createdAt: true,
+        userAgent: true,
+        ip: true,
+        // Для открытия экрана здесь лежит ОБРАЗЕЦ адреса, а не сам адрес:
+        // параметры запроса в журнал не попадают (§7).
+        entityType: true,
+      },
     }),
     prisma.knownDevice.findMany({
       where: { companyId },
@@ -328,6 +350,31 @@ export async function getSystemReport(
     });
   }
 
+  /**
+   * Последние действия по одному.
+   *
+   * Сводка отвечает «сколько», а разбирают всегда конкретный случай: кто
+   * открывал эту переписку и когда. Берём последние сто — больше на экране
+   * всё равно не читают, а срок переключается кнопками выше.
+   */
+  const recent: EventRow[] = audit
+    .filter((r) => !excludedKeys.has(`${r.actorId}|${infoFor(r.userAgent).fingerprint}`))
+    .slice(0, 100)
+    .map((r) => {
+      const action = r.action as AuditAction;
+      const what =
+        action === "PAGE_VIEW"
+          ? `открыл: ${screenLabel(r.entityType)}`
+          : (ACTION_LABEL[action] ?? action);
+      return {
+        at: r.createdAt.toISOString(),
+        userName: nameOf(r.actorId),
+        what,
+        deviceLabel: infoFor(r.userAgent).label,
+        ip: r.ip,
+      };
+    });
+
   const days: DayRow[] = [...byDay.entries()]
     .map(([day, v]) => ({ day, ...v }))
     .sort((a, b) => a.day.localeCompare(b.day));
@@ -339,6 +386,7 @@ export async function getSystemReport(
     devices,
     people,
     days,
+    recent,
     excludedActions,
     excludedDevices: excludedKeys.size,
     memory: memoryNow(),

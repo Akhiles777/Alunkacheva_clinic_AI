@@ -59,23 +59,23 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
     });
   };
 
-  const toggle = (id: string, excluded: boolean) => {
+  const toggle = (userId: string, fingerprint: string, excluded: boolean) => {
     setError(null);
     start(async () => {
       try {
-        setData(await setDeviceExcluded(id, excluded, days));
+        setData(await setDeviceExcluded(userId, fingerprint, excluded, days));
       } catch (e) {
         setError((e as Error)?.message || "Не удалось сохранить");
       }
     });
   };
 
-  const saveNote = (id: string) => {
+  const saveNote = (userId: string, fingerprint: string) => {
     const text = noteText;
     setEditing(null);
     start(async () => {
       try {
-        setData(await setDeviceNote(id, text, days));
+        setData(await setDeviceNote(userId, fingerprint, text, days));
       } catch (e) {
         setError((e as Error)?.message || "Не удалось сохранить");
       }
@@ -270,7 +270,7 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
                       <span className="text-text-subtle block text-2xs">
                         {d.kindLabel}
                         {d.note ? ` · ${d.note}` : ""}
-                        {d.id === null ? " · только по журналу" : ""}
+                        {d.id === null ? " · пока только по журналу" : ""}
                       </span>
                     </td>
                     <td className="text-text-muted px-4 py-2 text-xs">
@@ -284,21 +284,28 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
                       {d.ips.length > 0 ? d.ips.join(", ") : "—"}
                     </td>
                     <td className="px-4 py-2">
-                      {d.id === null ? (
+                      {/*
+                        Кнопки доступны и у устройств, известных только по
+                        журналу: отметка о входе появилась позже самого
+                        журнала, и у давно работающих аппаратов своей строки
+                        ещё нет. Именно свои устройства владелец отмечает
+                        первыми — строка заводится в момент отметки.
+                      */}
+                      {d.userId === null ? (
                         <span
                           className="text-text-subtle text-2xs"
-                          title="Устройство замечено только в журнале действий — до того, как появился этот учёт. Отметить его можно будет после следующего входа с него."
+                          title="Действие без учётки: фоновая задача или вебхук. Отмечать нечего."
                         >
                           —
                         </span>
-                      ) : editing === d.id ? (
+                      ) : editing === `${d.userId}|${d.fingerprint}` ? (
                         <span className="flex items-center gap-1.5">
                           <input
                             autoFocus
                             value={noteText}
                             onChange={(e) => setNoteText(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === "Enter") saveNote(d.id!);
+                              if (e.key === "Enter") saveNote(d.userId!, d.fingerprint);
                               if (e.key === "Escape") setEditing(null);
                             }}
                             placeholder="мой ноутбук"
@@ -306,7 +313,7 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
                           />
                           <button
                             type="button"
-                            onClick={() => saveNote(d.id!)}
+                            onClick={() => saveNote(d.userId!, d.fingerprint)}
                             className="text-accent-text text-2xs"
                           >
                             ок
@@ -317,7 +324,7 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
                           <button
                             type="button"
                             disabled={pending}
-                            onClick={() => toggle(d.id!, !d.excluded)}
+                            onClick={() => toggle(d.userId!, d.fingerprint, !d.excluded)}
                             className="border-border text-text-muted hover:bg-hover rounded-md border px-2 py-1 text-2xs disabled:opacity-50"
                           >
                             {d.excluded ? "учитывать" : "моё"}
@@ -325,7 +332,7 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
                           <button
                             type="button"
                             onClick={() => {
-                              setEditing(d.id);
+                              setEditing(`${d.userId}|${d.fingerprint}`);
                               setNoteText(d.note ?? "");
                             }}
                             className="text-text-subtle hover:text-text text-2xs"
@@ -341,6 +348,42 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
             </tbody>
           </table>
         </div>
+      </section>
+
+      {/* ── Последние действия по одному ── */}
+      <section className="border-border bg-surface mb-5 rounded-xl border">
+        <div className="border-border border-b px-4 py-3">
+          <h2 className="text-sm font-medium">Последние действия</h2>
+          <p className="text-text-subtle mt-0.5 max-w-[80ch] text-2xs leading-relaxed">
+            Сводка выше отвечает «сколько», а разбирают всегда конкретный случай — кто
+            открывал эту переписку и когда. Показаны последние {data.recent.length} за
+            выбранный срок. Адрес экрана записывается образцом: параметры запроса не
+            сохраняются, в них живут идентификаторы пациентов.
+          </p>
+        </div>
+        {data.recent.length === 0 ? (
+          <p className="text-text-subtle px-4 py-6 text-sm">
+            За этот срок действий не записано. Открытия экранов и переписок начали
+            записываться с этой версии — про прошлое журнал честно молчит.
+          </p>
+        ) : (
+          <ul className="max-h-[420px] overflow-auto">
+            {data.recent.map((e, i) => (
+              <li
+                key={`${e.at}-${i}`}
+                className="border-border-soft flex items-baseline gap-3 border-b px-4 py-1.5 text-xs last:border-0"
+              >
+                <span className="num text-text-subtle w-24 flex-none">{when(e.at)}</span>
+                <span className="w-44 flex-none truncate">{e.userName}</span>
+                <span className="min-w-0 flex-1 truncate">{e.what}</span>
+                <span className="text-text-subtle flex-none">{e.deviceLabel}</span>
+                <span className="num text-text-subtle w-28 flex-none truncate text-right">
+                  {e.ip ?? "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       {/* ── По дням ── */}

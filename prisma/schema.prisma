@@ -228,6 +228,9 @@ enum SyncStatus {
 enum AuditAction {
   LOGIN
   LOGOUT
+  /// Открыл экран платформы. Пишется с самого экрана и не блокирует переход:
+  /// без него журнал отвечал только на «кто входил», но не на «чем занимался».
+  PAGE_VIEW
   PATIENT_VIEW
   PATIENT_EXPORT
   CONVERSATION_VIEW

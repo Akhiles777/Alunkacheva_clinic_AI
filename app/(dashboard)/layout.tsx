@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { Sidebar } from "./_components/sidebar";
 import { MobileNav } from "./_components/mobile-nav";
@@ -12,6 +12,8 @@ import { StaleBuildGuard } from "./_components/stale-build-guard";
 import { Tour } from "./_components/tour";
 import { ProblemButton } from "./_components/problem-button";
 import { AssistantChat } from "./_components/assistant-chat";
+import { VisitLogger } from "./_components/visit-logger";
+import { ViewportFit } from "./_components/viewport-fit";
 import { getCurrentUser } from "./_components/user-actions";
 import { getSessionOrNull } from "@/lib/server/session";
 
@@ -28,13 +30,13 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   const user = await getCurrentUser();
 
   return (
-    <div className="flex h-dvh w-full overflow-hidden max-md:flex-col">
+    <div className="app-shell flex h-dvh w-full overflow-hidden max-md:flex-col">
       <MobileNav role={user.role} userName={user.name} canEditSettings={user.canEditSettings} />
       <Sidebar role={user.role} userName={user.name} canEditSettings={user.canEditSettings} />
       {/* Запас снизу — «безопасная зона» под плавающими кнопками ассистента и
           уведомлений. Без него они перекрывали кнопку отправки в чате и в
           инбоксе, причём на десктопе тоже, а не только на телефоне. */}
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col pb-16">{children}</main>
+      <main className="app-main flex min-h-0 min-w-0 flex-1 flex-col pb-16">{children}</main>
       <CommandPalette />
       <BookingPanel />
       <CallForm />
@@ -43,6 +45,16 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <WriteAlert />
       <PushGate />
       <StaleBuildGuard />
+      {/* Высота рабочей области при открытой клавиатуре — только телефон. */}
+      <ViewportFit />
+      {/*
+        Отметка об открытом экране. Ничего не рисует и ничего не задерживает:
+        запись уходит без ожидания ответа. Нужна, чтобы журнал отвечал не
+        только на «кто входил», но и на «кто открывал этот диалог».
+      */}
+      <Suspense fallback={null}>
+        <VisitLogger />
+      </Suspense>
       {/*
         Тур первого входа. Подсвечивает настоящие элементы, поэтому живёт в
         общей раскладке: он должен видеть весь экран, а не свой кусок.

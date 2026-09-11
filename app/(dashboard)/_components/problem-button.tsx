@@ -81,7 +81,7 @@ export function ProblemButton() {
           setError(null);
         }}
         title="Сообщить о проблеме"
-        className="border-border bg-surface text-text-subtle hover:text-text fixed bottom-20 left-4 z-40 rounded-full border px-3 py-1.5 text-2xs shadow-sm md:hidden"
+        className="app-float border-border bg-surface text-text-subtle hover:text-text fixed bottom-20 left-4 z-40 rounded-full border px-3 py-1.5 text-2xs shadow-sm md:hidden"
       >
         Что-то не так?
       </button>

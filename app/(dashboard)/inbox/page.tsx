@@ -37,6 +37,7 @@ import {
   type DialogAttachmentRecord,
 } from "./actions";
 import { Composer } from "./composer";
+import { noteDialogOpen } from "../_components/visit-logger";
 import { Hint } from "../_components/hint";
 import { DialogTools } from "./dialog-tools";
 import { noteUse } from "../_components/usage-actions";
@@ -599,7 +600,14 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        {/*
+          `thread-collapsible`: на телефоне, пока открыта клавиатура, эти ряды
+          скрываются. Они никуда не деваются — возвращаются, как только человек
+          убрал клавиатуру. Причина простая: видимой области над клавиатурой
+          остаётся около 360 точек, и шапка съедала её почти целиком — на саму
+          переписку, ради которой экран и открыт, не оставалось ничего.
+        */}
+        <div className="thread-collapsible flex flex-wrap items-center gap-2">
           {/*
             Позвать администратора к диалогу.
 
@@ -693,7 +701,9 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
         </div>
       </div>
 
-      <ContactPanel key={dialog.id} dialog={dialog} onChanged={refresh} />
+      <div className="thread-collapsible contents">
+        <ContactPanel key={dialog.id} dialog={dialog} onChanged={refresh} />
+      </div>
 
       {/*
         Назревшее напоминание — первым, что видно при открытии: ради этого
@@ -1076,6 +1086,12 @@ export default function InboxPage() {
      * из сделанного осталось невостребованным.
      */
     void noteUse("dialog-open");
+    /**
+     * И поимённо — в журнал действий: «кто и когда открывал эту переписку»
+     * первый вопрос при разборе спорного случая, а счётчик приёмов работы на
+     * него не отвечает. Повторы отсекаются там же, где отсекаются у экранов.
+     */
+    noteDialogOpen(id);
   }
 
   /**
