@@ -98,3 +98,27 @@ describe("parseHistory", () => {
     expect(rows[0].at.getTime()).toBe(100_000);
   });
 });
+
+describe("цитата в истории переписки", () => {
+  it("ответ свайпом сохраняет текст цитаты — в нём метка вопроса", () => {
+    const [m] = parseHistory([
+      {
+        idMessage: "x1",
+        type: "incoming",
+        timestamp: 1_757_750_000,
+        typeMessage: "quotedMessage",
+        textMessage: "Да, такое лечим",
+        quotedMessage: { textMessage: "Вопрос от пациента — Анна (WhatsApp) · #2" },
+      },
+    ]);
+    expect(m.text).toBe("Да, такое лечим");
+    expect(m.quoted).toContain("#2");
+  });
+
+  it("обычное сообщение цитаты не получает", () => {
+    const [m] = parseHistory([
+      { idMessage: "x2", type: "incoming", timestamp: 1_757_750_000, typeMessage: "textMessage", textMessage: "Ок" },
+    ]);
+    expect(m.quoted).toBeUndefined();
+  });
+});

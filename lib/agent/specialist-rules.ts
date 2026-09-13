@@ -130,3 +130,45 @@ export function refFromQuote(text: string): number | null {
   const m = /#(\d{1,6})(?!\d)/.exec(text);
   return m ? Number(m[1]) : null;
 }
+
+/** Вопрос специалисту в тот момент, когда пришло сообщение. */
+export interface QueryForLink {
+  id: string;
+  ref: number;
+  askedAt: Date;
+  /** Когда вопрос закрылся ответом; пусто — ещё открыт. */
+  answeredAt: Date | null;
+}
+
+/**
+ * К какому вопросу относится сообщение из переписки со специалистом.
+ *
+ * Правило ровно то же, по которому агент решает, кому переслать ответ, — и так
+ * же не гадает:
+ *   1. Метка «#N» в самом тексте (наше письмо) или в цитате (ответ свайпом) —
+ *      точно этот вопрос.
+ *   2. Метки нет, но в момент сообщения открытым был ровно один вопрос — он.
+ *   3. Открытых несколько или ни одного — неизвестно, и сообщение остаётся
+ *      без привязки. Приписать ответ не тому пациенту хуже, чем не приписать.
+ */
+export function linkToQuery(
+  message: { body: string; quoted?: string | null; at: Date },
+  queries: QueryForLink[],
+): string | null {
+  /**
+   * В сообщении может стоять НЕСКОЛЬКО меток — так выглядит наш же переспрос
+   * «сейчас открыто несколько вопросов: #1, #2». Это сообщение про оба сразу,
+   * и приписать его первому по порядку значило бы показать его не в том
+   * диалоге.
+   */
+  const refsIn = (text: string) => [...new Set([...text.matchAll(/#(\d{1,6})(?!\d)/g)].map((m) => Number(m[1])))];
+  const quotedRefs = refsIn(message.quoted ?? "");
+  const refs = quotedRefs.length > 0 ? quotedRefs : refsIn(message.body);
+  if (refs.length > 1) return null;
+  if (refs.length === 1) return queries.find((q) => q.ref === refs[0])?.id ?? null;
+
+  const open = queries.filter(
+    (q) => q.askedAt <= message.at && (q.answeredAt === null || q.answeredAt >= message.at),
+  );
+  return open.length === 1 ? open[0].id : null;
+}

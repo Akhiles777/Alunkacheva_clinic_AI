@@ -19,6 +19,11 @@ import { prisma } from "@/lib/db";
  * (заметка администратора, привязка к диалогу) выгрузка не трогает.
  */
 export const EXISTING_SELECT = {
+  /**
+   * Идентификатор — не для сравнения (его нет в списке `recordChanged`), а
+   * чтобы записать перенос: `AppointmentMove` ссылается на саму запись.
+   */
+  id: true,
   yclientsRecordId: true,
   staffId: true,
   patientId: true,
@@ -48,6 +53,7 @@ export const EXISTING_SELECT = {
 } as const;
 
 export interface ExistingRecord {
+  id: string;
   yclientsRecordId: number | null;
   staffId: string;
   patientId: string;

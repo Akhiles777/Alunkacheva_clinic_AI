@@ -95,18 +95,46 @@ export function SpecialistQueries({ dialogId }: { dialogId: string }) {
               <div className="text-text-subtle text-2xs">
                 #{q.ref} · {q.specialist} · отправлено {q.askedAt} · {STATUS[q.status]}
               </div>
-              <div>
-                <div className="text-text-subtle text-2xs">Ушло врачу</div>
-                <div className="text-text whitespace-pre-wrap">{q.question}</div>
-              </div>
-              {q.answer ? (
-                <div>
-                  <div className="text-text-subtle text-2xs">
-                    Ответ врача, дословно{q.answeredAt ? ` · ${q.answeredAt}` : ""}
+
+              {q.messages.length > 0 ? (
+                /**
+                 * Переписка со специалистом целиком, как в мессенджере. Подпись
+                 * «агент» — письмо ушло из платформы, а не от сотрудника: так
+                 * оно и было отправлено. Ответ, который агент не смог отнести к
+                 * вопросу, помечен — пересылку по нему решает человек.
+                 */
+                <ul className="flex flex-col gap-1.5">
+                  {q.messages.map((m) => (
+                    <li key={m.id}>
+                      <div className="text-text-subtle text-2xs">
+                        {m.author} · {m.at}
+                        {!m.linked ? " · к какому вопросу — неясно: открытых было несколько" : ""}
+                      </div>
+                      <div
+                        className={`whitespace-pre-wrap ${m.fromSpecialist ? "text-text" : "text-text-muted"}`}
+                      >
+                        {m.body}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <>
+                  <div>
+                    <div className="text-text-subtle text-2xs">Ушло врачу</div>
+                    <div className="text-text whitespace-pre-wrap">{q.question}</div>
                   </div>
-                  <div className="text-text whitespace-pre-wrap">{q.answer}</div>
-                </div>
-              ) : null}
+                  {q.answer ? (
+                    <div>
+                      <div className="text-text-subtle text-2xs">
+                        Ответ врача, дословно{q.answeredAt ? ` · ${q.answeredAt}` : ""}
+                      </div>
+                      <div className="text-text whitespace-pre-wrap">{q.answer}</div>
+                    </div>
+                  ) : null}
+                </>
+              )}
+
               {/*
                 Пересказ показываем, только если он отличается от ответа:
                 одинаковый текст дважды — шум, а расхождение администратор

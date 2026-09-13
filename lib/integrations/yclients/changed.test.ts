@@ -5,6 +5,7 @@ import type { ExistingRecord } from "./lookups";
 const START = new Date("2026-08-17T09:00:00Z");
 
 const existing: ExistingRecord = {
+  id: "appt-501",
   yclientsRecordId: 501,
   staffId: "st-1",
   patientId: "p-1",

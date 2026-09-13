@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
+import { linkToQuery,
   complexMedical,
   declinesRelay,
   managementTopic,
@@ -131,5 +131,51 @@ describe("сложный вопрос против мелкого уточнен
     ]) {
       expect(complexMedical(t), t).toBe(false);
     }
+  });
+});
+
+/**
+ * Привязка переписки со специалистом к вопросам.
+ *
+ * Живой случай: у врача два открытых вопроса, она ответила обычным сообщением,
+ * без свайпа, — и ответ не засчитался. Показывать его надо, но приписывать
+ * конкретному пациенту без основания нельзя.
+ */
+describe("к какому вопросу относится сообщение", () => {
+  const at = (iso: string) => new Date(iso);
+  const q1 = { id: "q1", ref: 1, askedAt: at("2026-09-13T08:50:00Z"), answeredAt: null };
+  const q2 = { id: "q2", ref: 2, askedAt: at("2026-09-13T08:56:00Z"), answeredAt: null };
+
+  it("наше письмо с меткой — его вопрос", () => {
+    expect(linkToQuery({ body: "Вопрос от пациента — Анна (WhatsApp) · #2", at: at("2026-09-13T08:56:01Z") }, [q1, q2])).toBe("q2");
+  });
+
+  it("ответ свайпом — по метке в цитате", () => {
+    expect(
+      linkToQuery({ body: "Да, лечим", quoted: "Вопрос от пациента — Анна · #1", at: at("2026-09-13T09:30:00Z") }, [q1, q2]),
+    ).toBe("q1");
+  });
+
+  it("ответ без метки при ОДНОМ открытом вопросе — к нему", () => {
+    expect(linkToQuery({ body: "Да, лечим", at: at("2026-09-13T08:55:00Z") }, [q1, q2])).toBe("q1");
+  });
+
+  it("ответ без метки при НЕСКОЛЬКИХ открытых — неизвестно, не гадаем", () => {
+    expect(linkToQuery({ body: "Да, лечим", at: at("2026-09-13T09:30:00Z") }, [q1, q2])).toBeNull();
+  });
+
+  it("метка несуществующего вопроса — тоже неизвестно", () => {
+    expect(linkToQuery({ body: "ок", quoted: "#99", at: at("2026-09-13T09:30:00Z") }, [q1, q2])).toBeNull();
+  });
+});
+
+describe("сообщение про несколько вопросов сразу", () => {
+  it("переспрос «открыто несколько: #1, #2» ни к одному не привязывается", () => {
+    const at = new Date("2026-09-13T09:31:00Z");
+    const qs = [
+      { id: "q1", ref: 1, askedAt: new Date("2026-09-13T08:50:00Z"), answeredAt: null },
+      { id: "q2", ref: 2, askedAt: new Date("2026-09-13T08:56:00Z"), answeredAt: null },
+    ];
+    expect(linkToQuery({ body: "Сейчас открыто несколько вопросов: #1, #2. Ответьте на нужное.", at }, qs)).toBeNull();
   });
 });

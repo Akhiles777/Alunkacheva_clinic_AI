@@ -398,6 +398,20 @@ export interface SpecialistQueryView {
   relayed: string | null;
   askedAt: string;
   answeredAt: string | null;
+  /**
+   * Переписка со специалистом по этому вопросу. `linked: false` — сообщение
+   * пришло, пока вопрос был открыт, но к какому именно вопросу оно относится,
+   * сказать нельзя: открыто их было несколько, а ответ пришёл без цитаты.
+   */
+  messages: {
+    id: string;
+    /** «агент» — письмо ушло из платформы; иначе имя специалиста. */
+    author: string;
+    fromSpecialist: boolean;
+    body: string;
+    at: string;
+    linked: boolean;
+  }[];
 }
 
 export async function listSpecialistQueries(conversationId: string): Promise<SpecialistQueryView[]> {
@@ -416,9 +430,33 @@ export async function listSpecialistQueries(conversationId: string): Promise<Spe
       relayed: true,
       askedAt: true,
       answeredAt: true,
+      specialistId: true,
       specialist: { select: { name: true } },
     },
   });
+  if (rows.length === 0) return [];
+
+  /**
+   * Сообщения специалиста: привязанные к этим вопросам и непривязанные, что
+   * пришли от того же специалиста, пока вопрос был открыт. Вторые показываем с
+   * пометкой — иначе ответ врача, который агент не смог отнести к вопросу,
+   * снова пропал бы из виду, как пропадал до сих пор.
+   */
+  const specialistIds = [...new Set(rows.map((r) => r.specialistId))];
+  const earliest = rows.reduce((min, r) => (r.askedAt < min ? r.askedAt : min), rows[0].askedAt);
+  const messages = await prisma.specialistMessage.findMany({
+    where: {
+      companyId: session.companyId,
+      OR: [
+        { queryId: { in: rows.map((r) => r.id) } },
+        { queryId: null, specialistId: { in: specialistIds }, sentAt: { gte: earliest } },
+      ],
+    },
+    orderBy: { sentAt: "asc" },
+    take: 200,
+    select: { id: true, queryId: true, specialistId: true, direction: true, body: true, sentAt: true },
+  });
+
   return rows.map((r) => ({
     id: r.id,
     ref: r.ref,
@@ -429,5 +467,22 @@ export async function listSpecialistQueries(conversationId: string): Promise<Spe
     relayed: r.relayed,
     askedAt: TIME_FMT.format(r.askedAt),
     answeredAt: r.answeredAt ? TIME_FMT.format(r.answeredAt) : null,
+    messages: messages
+      .filter(
+        (m) =>
+          m.queryId === r.id ||
+          (m.queryId === null &&
+            m.specialistId === r.specialistId &&
+            m.sentAt >= r.askedAt &&
+            (r.answeredAt === null || m.sentAt <= r.answeredAt)),
+      )
+      .map((m) => ({
+        id: m.id,
+        author: m.direction === "OUT" ? "агент" : r.specialist.name,
+        fromSpecialist: m.direction === "IN",
+        body: m.body,
+        at: TIME_FMT.format(m.sentAt),
+        linked: m.queryId === r.id,
+      })),
   }));
 }

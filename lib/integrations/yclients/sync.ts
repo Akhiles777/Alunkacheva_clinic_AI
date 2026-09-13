@@ -16,7 +16,7 @@ import { recordChanged } from "./changed";
 import { courseAwareSource, revenueAfterCourse, serviceRevenue } from "./mappers";
 import { splitVisitMinutes } from "./split-visit";
 import { removeVanished, windowIsTrustworthy } from "./vanished";
-import { isRealMove } from "@/lib/metrics/reschedule";
+import { isRealMove, MOVES_TRACKING_KEY } from "@/lib/metrics/reschedule";
 import { adoptCandidate } from "./adopt";
 import { pushPendingAppointments } from "./write-back";
 import { linkCourses } from "@/lib/courses/link";
@@ -67,9 +67,32 @@ export interface SyncOptions {
   transactionsSince?: Date;
 }
 
+/**
+ * Отметить, что учёт переносов пошёл.
+ *
+ * Пишется один раз на клинику и больше не трогается: `update: {}` оставляет
+ * первую дату. В процессе проверяется однажды, чтобы не ходить в базу на
+ * каждом круге.
+ */
+const movesTrackingNoted = new Set<string>();
+async function noteMovesTracking(companyId: string): Promise<void> {
+  if (movesTrackingNoted.has(companyId)) return;
+  await prisma.setting
+    .upsert({
+      where: { companyId_key: { companyId, key: MOVES_TRACKING_KEY } },
+      update: {},
+      create: { companyId, key: MOVES_TRACKING_KEY, value: { since: new Date().toISOString() } },
+    })
+    .then(() => movesTrackingNoted.add(companyId))
+    .catch(() => {
+      // Не записалось — попробуем на следующем круге; выгрузке это не мешает.
+    });
+}
+
 export async function syncAll(companyId: string, options: SyncOptions = {}): Promise<SyncResult> {
   const client = await getYclientsClient(companyId);
   if (!client) return { skipped: true, counts: {}, errors: [] };
+  await noteMovesTracking(companyId);
 
   const counts: SyncResult["counts"] = {};
   const errors: string[] = [];
@@ -798,6 +821,7 @@ export async function syncRecentRecords(
 ): Promise<{ records: number; skipped?: true }> {
   const client = await getYclientsClient(companyId);
   if (!client) return { records: 0, skipped: true };
+  await noteMovesTracking(companyId);
 
   const now = new Date();
   const from = new Date(now.getTime() - backDays * 24 * 3600 * 1000);
@@ -1255,6 +1279,36 @@ async function syncRecordsWindow(
             : { ...withoutCreatedAt, deletedAt: null },
         });
         touched.push(recordId);
+
+        /**
+         * Перенос правкой записи — здесь, в пути самой выгрузки.
+         *
+         * Прежде он записывался только в `upsertRecord`, а её вызывает лишь
+         * вебхук YCLIENTS — которого у клиники нет вовсе (§8). Выгрузка же
+         * обновляет записи пачкой через `updateMany`, и ни один перенос на
+         * боевых данных записан не был: на экране дня метрика так и не
+         * появилась. Прежнее время известно ровно здесь — после этой строки
+         * его уже не будет.
+         *
+         * Запись, вернувшаяся из удалённых, переносом не считается: её время
+         * сравнивать не с чем, она просто снова видна.
+         */
+        if (existing && existing.deletedAt === null && isRealMove(existing.startAt, row.data.startAt as Date)) {
+          await prisma.appointmentMove
+            .create({
+              data: {
+                companyId,
+                appointmentId: existing.id,
+                patientId: existing.patientId,
+                fromStartAt: existing.startAt,
+                toStartAt: row.data.startAt as Date,
+                exact: true,
+              },
+            })
+            .catch(() => {
+              // Уже записан: уникальный индекс, повторная выгрузка — нормальный исход.
+            });
+        }
       } else {
         /**
          * Не заводим второй визит там, где он уже есть под нашим номером:

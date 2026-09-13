@@ -5,6 +5,7 @@ import { getSession } from "@/lib/server/session";
 import { countInquiriesFromDb } from "@/lib/metrics/inquiries";
 import { clinicDayRange } from "@/lib/clinic-time";
 import { visitTitle } from "@/lib/visit-title";
+import { MOVES_TRACKING_KEY } from "@/lib/metrics/reschedule";
 import {
   explainUnmarked,
   UNMARKED_LABEL,
@@ -118,10 +119,14 @@ export async function getDayFacts(dayKey: string): Promise<DayFacts> {
         },
       },
     }),
-    prisma.appointmentMove.findFirst({
-      where: { companyId: session.companyId },
-      orderBy: { detectedAt: "asc" },
-      select: { detectedAt: true },
+    /**
+     * С какого момента переносы действительно записываются — отметка
+     * выгрузки, а не дата первого переноса: иначе «ноль переносов» не
+     * показывался бы вовсе, а это тоже ответ.
+     */
+    prisma.setting.findUnique({
+      where: { companyId_key: { companyId: session.companyId, key: MOVES_TRACKING_KEY } },
+      select: { value: true },
     }),
   ]);
 
@@ -223,6 +228,6 @@ export async function getDayFacts(dayKey: string): Promise<DayFacts> {
       toAt: m.toStartAt.toISOString(),
       exact: m.exact,
     })),
-    movesSince: first?.detectedAt.toISOString() ?? null,
+    movesSince: (first?.value as { since?: string } | null)?.since ?? null,
   };
 }

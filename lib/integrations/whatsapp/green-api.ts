@@ -397,6 +397,14 @@ export interface HistoryMessage {
    * которая шла на телефоне до подключения платформы, это половина содержания.
    */
   attachments: IncomingAttachment[];
+  /**
+   * Текст сообщения, на которое отвечали свайпом.
+   *
+   * Нужен переписке со специалистом: врач отвечает на наше письмо, и метка
+   * «#N» вопроса стоит именно в цитате. Без неё нельзя понять, к какому
+   * вопросу ответ, когда их открыто несколько.
+   */
+  quoted?: string;
 }
 
 /**
@@ -451,6 +459,11 @@ export function parseHistory(rows: unknown[]): HistoryMessage[] {
     // разбор целиком, а вместе с ним и всю подгруженную историю.
     if (!raw || typeof raw !== "object") continue;
     const m = raw as {
+      quotedMessage?: {
+        textMessage?: string;
+        caption?: string;
+        extendedTextMessage?: { text?: string };
+      };
       idMessage?: string;
       type?: string;
       timestamp?: number;
@@ -504,12 +517,20 @@ export function parseHistory(rows: unknown[]): HistoryMessage[] {
     const body = messageBody(text, attachments) || (m.typeMessage ? `[${m.typeMessage}]` : "");
     if (!body) continue;
 
+    const quoted = (
+      m.quotedMessage?.textMessage ??
+      m.quotedMessage?.caption ??
+      m.quotedMessage?.extendedTextMessage?.text ??
+      ""
+    ).trim();
+
     out.push({
       externalId: m.idMessage,
       direction: m.type === "outgoing" ? "OUT" : "IN",
       text: body.slice(0, 4000),
       at: new Date(m.timestamp * 1000),
       attachments,
+      ...(quoted ? { quoted: quoted.slice(0, 1000) } : {}),
     });
   }
   // От старых к новым: в таком порядке они лягут в переписку.

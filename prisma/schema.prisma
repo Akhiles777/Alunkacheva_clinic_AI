@@ -274,6 +274,7 @@ model Company {
   appointmentMoves         AppointmentMove[]
   knownDevices             KnownDevice[]
   appRestarts              AppRestart[]
+  specialistMessages       SpecialistMessage[]
   inquiries                Inquiry[]
   escalations              Escalation[]
   agentRuns                AgentRun[]
@@ -2404,9 +2405,10 @@ model ClinicSpecialist {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  staff   Staff?            @relation(fields: [staffId], references: [id], onDelete: SetNull)
-  queries SpecialistQuery[]
+  company  Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  staff    Staff?              @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  queries  SpecialistQuery[]
+  messages SpecialistMessage[]
 
   /// Номер принадлежит одному специалисту: по нему идёт вся маршрутизация.
   @@unique([companyId, phone])
@@ -2439,6 +2441,41 @@ enum SpecialistQueryStatus {
 /// человеку», она закрывается администратором и живёт своей жизнью. Вопрос
 /// врачу — переписка с третьим лицом, у неё свой ответ, своё состояние и своя
 /// доставка обратно пациенту.
+/// Переписка с врачом или руководителем: всё, что ушло специалисту и пришло от
+/// него.
+///
+/// Чат специалиста в инбокс не попадает намеренно — врач не пациент (§6). Но
+/// из-за этого администратор не видел ничего: вопросы и ответы находились
+/// только в кабинете Green API. Здесь они лежат для показа в диалоге пациента.
+/// Отправкой этот журнал не управляет и ничего не отправляет.
+model SpecialistMessage {
+  id           String   @id @default(cuid())
+  companyId    String
+  specialistId String
+  /// К какому вопросу относится, если это можно сказать точно: по метке «#N»
+  /// в тексте или в цитате, или потому что открытый вопрос был ровно один.
+  /// Пусто — к какому, неизвестно, и гадать нельзя.
+  queryId      String?
+  /// OUT — от платформы специалисту, IN — от специалиста.
+  direction    String
+  body         String
+  /// Цитата, если специалист отвечал свайпом: в ней стоит метка вопроса.
+  quoted       String?
+  /// Идентификатор провайдера: повторная подгрузка не задваивает.
+  externalId   String?
+  sentAt       DateTime @db.Timestamptz(3)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  company    Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  specialist ClinicSpecialist @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  query      SpecialistQuery? @relation(fields: [queryId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, externalId])
+  @@index([specialistId, sentAt])
+  @@index([queryId])
+  @@map("specialist_messages")
+}
+
 model SpecialistQuery {
   id             String                @id @default(cuid())
   companyId      String
@@ -2462,10 +2499,11 @@ model SpecialistQuery {
   answeredAt DateTime? @db.Timestamptz(3)
   relayedAt  DateTime? @db.Timestamptz(3)
 
-  company      Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  conversation Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  patient      Patient?         @relation(fields: [patientId], references: [id], onDelete: SetNull)
-  specialist   ClinicSpecialist @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  patient      Patient?            @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  specialist   ClinicSpecialist    @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  messages     SpecialistMessage[]
 
   @@unique([companyId, ref])
   @@index([companyId, status])

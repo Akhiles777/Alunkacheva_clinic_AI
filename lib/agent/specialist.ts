@@ -4,7 +4,7 @@ import { chatIdFromPhone } from "@/lib/integrations/whatsapp/chat-id";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
 import { escalationRecipients, notifyStaff } from "@/lib/server/notify";
 import { withoutQuote } from "./quoted";
-import { declinesRelay, refFromQuote, refMark } from "./specialist-rules";
+import { declinesRelay, linkToQuery, refFromQuote, refMark } from "./specialist-rules";
 import { relayDoctorAnswer } from "./llm";
 import { ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
@@ -54,12 +54,85 @@ async function deliver(
   text: string,
   /** Кому пишем — только для журнала прогона: «специалисту» или «пациенту». */
   who: "специалисту" | "пациенту" = "специалисту",
-): Promise<{ ok: boolean; error?: string }> {
+  /**
+   * Записать отправленное специалисту в журнал переписки. Без этого письма
+   * врачу видны только в кабинете Green API, а в платформе — нигде.
+   */
+  record?: { specialistId: string },
+): Promise<{ ok: boolean; error?: string; externalId?: string }> {
   if (process.env.AGENT_DRILL === "1") {
     console.log(`[drill] ${who} ${to}:\n${text}`);
+    if (record) {
+      await recordSpecialistMessage({ companyId, specialistId: record.specialistId, direction: "OUT", body: text, at: new Date() });
+    }
     return { ok: true };
   }
-  return sendWhatsapp(companyId, to, text);
+  const res = await sendWhatsapp(companyId, to, text);
+  // Записываем только ушедшее: журнал показывает переписку, а не попытки.
+  if (res.ok && record) {
+    await recordSpecialistMessage({
+      companyId,
+      specialistId: record.specialistId,
+      direction: "OUT",
+      body: text,
+      externalId: res.externalId ?? null,
+      at: new Date(),
+    });
+  }
+  return res;
+}
+
+/**
+ * Положить сообщение переписки со специалистом в журнал.
+ *
+ * Привязка к вопросу — тем же правилом, по которому агент решает, кому
+ * переслать ответ (`linkToQuery`): по метке, а без неё — только при
+ * единственном открытом вопросе. Сбой записи отправку не отменяет: журнал
+ * нужен для показа, а сообщение уже ушло.
+ */
+export async function recordSpecialistMessage(input: {
+  companyId: string;
+  specialistId: string;
+  direction: "IN" | "OUT";
+  body: string;
+  quoted?: string | null;
+  externalId?: string | null;
+  at: Date;
+}): Promise<void> {
+  try {
+    const queries = await prisma.specialistQuery.findMany({
+      where: { companyId: input.companyId, specialistId: input.specialistId },
+      orderBy: { askedAt: "desc" },
+      take: 50,
+      select: { id: true, ref: true, askedAt: true, answeredAt: true },
+    });
+    const queryId = linkToQuery(
+      { body: input.body, quoted: input.quoted ?? null, at: input.at },
+      queries,
+    );
+    const data = {
+      companyId: input.companyId,
+      specialistId: input.specialistId,
+      queryId,
+      direction: input.direction,
+      body: input.body.slice(0, 4000),
+      quoted: input.quoted?.slice(0, 1000) ?? null,
+      externalId: input.externalId ?? null,
+      sentAt: input.at,
+    };
+    if (input.externalId) {
+      // Повторное событие того же сообщения второй строки не заводит.
+      await prisma.specialistMessage.upsert({
+        where: { companyId_externalId: { companyId: input.companyId, externalId: input.externalId } },
+        update: {},
+        create: data,
+      });
+    } else {
+      await prisma.specialistMessage.create({ data });
+    }
+  } catch (e) {
+    console.error("[specialist] журнал переписки не записан:", (e as Error)?.message ?? e);
+  }
 }
 
 /** Как называем адресата пациенту: врач и руководство — разные слова. */
@@ -303,7 +376,7 @@ export async function askSpecialist(input: {
     return { sent: false, reason: `не удалось отправить: ${sent.error ?? "причина не записана"}` };
   }
 
-  await prisma.specialistQuery.create({
+  const createdQuery = await prisma.specialistQuery.create({
     data: {
       companyId: input.companyId,
       conversationId: input.conversationId,
@@ -314,6 +387,22 @@ export async function askSpecialist(input: {
       question,
       askedAt: now,
     },
+    select: { id: true },
+  });
+  /**
+   * Письмо в журнал — ПОСЛЕ создания вопроса: метка «#ref» в тексте должна
+   * найти, к чему привязаться. Отправлено оно уже выше.
+   */
+  void createdQuery;
+  await recordSpecialistMessage({
+    companyId: input.companyId,
+    specialistId: specialist.id,
+    direction: "OUT",
+    body: letter,
+    // Идентификатор провайдера: без него подгрузка истории завела бы это же
+    // письмо второй раз.
+    externalId: sent.externalId ?? null,
+    at: now,
   });
 
   /**
@@ -393,6 +482,8 @@ export async function handleSpecialistReply(input: {
         specialistPhone,
         `Сейчас открыто несколько вопросов: ${open.map((q) => refMark(q.ref)).join(", ")}. ` +
           "Ответьте, пожалуйста, на нужное сообщение — тогда я пойму, к какому он относится.",
+        "специалисту",
+        { specialistId: input.specialist.id },
       ).catch(() => {});
       return { kind: "ambiguous", refs: open.map((q) => q.ref) };
     }
@@ -424,6 +515,7 @@ export async function handleSpecialistReply(input: {
   const relayed = await relayToPatient({
     companyId: input.companyId,
     query,
+    specialistId: input.specialist.id,
     doctorName: input.specialist.name,
     doctorPhone: specialistPhone,
     doctorAnswer: own,
@@ -443,6 +535,7 @@ export async function handleSpecialistReply(input: {
 async function relayToPatient(input: {
   companyId: string;
   query: { id: string; conversationId: string; question: string; ref: number };
+  specialistId: string;
   doctorName: string;
   doctorPhone: string;
   doctorAnswer: string;
@@ -526,6 +619,8 @@ async function relayToPatient(input: {
     input.companyId,
     input.doctorPhone,
     `Передала ваш ответ пациенту (${conv.patient?.name ?? conv.contactName ?? "без имени"}, ${refMark(input.query.ref)}).`,
+    "специалисту",
+    { specialistId: input.specialistId },
   ).catch(() => {});
 
   await notifyStaff({

@@ -9,7 +9,8 @@ import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
 import { messageBody } from "@/lib/agent/attachments";
 import { runSerial } from "@/lib/server/background";
 import { importWhatsappHistory } from "@/lib/integrations/whatsapp/history";
-import { handleSpecialistReply, specialistForChat } from "@/lib/agent/specialist";
+import { handleSpecialistReply, recordSpecialistMessage, specialistForChat } from "@/lib/agent/specialist";
+import { splitQuote } from "@/lib/agent/quoted";
 
 /**
  * Вебхук WhatsApp (Green API).
@@ -221,6 +222,25 @@ export async function POST(req: Request) {
   });
   if (specialist) {
     runSerial(`whatsapp:specialist:${event.chatId}`, async () => {
+      /**
+       * Сообщение врача — в журнал ДО разбора, и в любом случае.
+       *
+       * Если открытых вопросов несколько, а ответ пришёл без цитаты, агент не
+       * засчитывает его (гадать нельзя — ответ уйдёт не тому пациенту). Прежде
+       * такой ответ после этого не существовал нигде, кроме кабинета Green API:
+       * у врача двое вопросов, «ответов 0», а она отвечала. Теперь он виден в
+       * платформе даже тогда, когда пересылка не состоялась.
+       */
+      const { quote, own } = splitQuote(event.text);
+      await recordSpecialistMessage({
+        companyId,
+        specialistId: specialist.id,
+        direction: "IN",
+        body: own,
+        quoted: quote,
+        externalId: event.externalId,
+        at: new Date(),
+      });
       const outcome = await handleSpecialistReply({
         companyId,
         specialist,
