@@ -6,6 +6,7 @@ import { DayPicker } from "./day-picker";
 import { RevenueBreakdown } from "./revenue-breakdown";
 import { VisitsBreakdown, type VisitFilter } from "./visits-breakdown";
 import { MovesBreakdown } from "./moves-breakdown";
+import { UnmarkedBreakdown } from "./unmarked-breakdown";
 import { getDayFacts, type DayFacts } from "./day-facts";
 import { FreeWindows } from "./free-windows";
 import { AttentionList, InquiryList } from "./today-lists";
@@ -94,6 +95,7 @@ export function TodayClient() {
   /** Какой срез визитов открыт: null — окно закрыто. */
   const [showVisits, setShowVisits] = useState<VisitFilter | null>(null);
   const [showMoves, setShowMoves] = useState(false);
+  const [showUnmarked, setShowUnmarked] = useState(false);
   /**
    * Обращения и переносы считает сервер: и то, и другое считается по всей
    * переписке и по журналу выгрузки, а не по тому, что лежит в сторе экрана.
@@ -519,7 +521,19 @@ export function TodayClient() {
               <span aria-hidden className="sep-dot" />
               <span title="Время приёма прошло, а отметка «пришёл» или «не пришёл» в YCLIENTS не проставлена">
                 не отмечено{" "}
-                <b className="num text-text font-medium">{formatNumber(unmarked.length)}</b>
+                {/*
+                  Число отвечает «сколько», а вопрос всегда следующий: это
+                  перенос или отметку забыли? Это два разных действия —
+                  позвонить человеку или проставить отметку.
+                */}
+                <button
+                  type="button"
+                  onClick={() => setShowUnmarked(true)}
+                  title="Показать, перенесли эти записи или отметку просто не проставили"
+                  className="num text-text hover:text-accent-text font-medium underline decoration-dotted underline-offset-2 transition-colors"
+                >
+                  {formatNumber(unmarked.length)}
+                </button>
               </span>
             </>
           ) : null}
@@ -593,11 +607,14 @@ export function TodayClient() {
                 <button
                   type="button"
                   onClick={() => setShowMoves(true)}
-                  title="Показать, кто перенёс запись и на какую дату"
+                  title="Записи, которые стояли на этот день и уехали на другое время"
                   className="num text-text hover:text-accent-text font-medium underline decoration-dotted underline-offset-2 transition-colors"
                 >
                   {formatNumber(facts.moves.length)}
                 </button>
+                {facts.movedIn.length > 0 ? (
+                  <span className="text-text-subtle"> · приехало {facts.movedIn.length}</span>
+                ) : null}
               </span>
             </>
           ) : null}
@@ -636,6 +653,15 @@ export function TodayClient() {
           initial={showVisits}
           dateLabel={isToday ? "сегодня" : dayLabelShort(shownAt)}
           onClose={() => setShowVisits(null)}
+        />
+      ) : null}
+
+      {showUnmarked ? (
+        <UnmarkedBreakdown
+          appts={unmarked}
+          unmarked={facts?.unmarked ?? {}}
+          dateLabel={isToday ? "сегодня" : dayLabelShort(shownAt)}
+          onClose={() => setShowUnmarked(false)}
         />
       ) : null}
 
