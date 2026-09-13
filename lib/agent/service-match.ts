@@ -45,9 +45,31 @@ const ADULT_WORDS =
  */
 const SELF_BOOKING = /(?<!\p{L})(?:записаться|запишите\s+меня|записать\s+себя|хочу\s+к\s+)/iu;
 
+/**
+ * Возраст, который бывает только у ребёнка.
+ *
+ * «МагомедХабибов Шамиль, 2,5 месяца» — возраст назван прямо, а слова
+ * «ребёнок» в сообщении нет, и агент через реплику снова спросил «для кого —
+ * взрослому или ребёнку». Месяцы у взрослых не считают; годы — считают, и
+ * «33 года» ребёнком не делает, поэтому здесь только месяцы.
+ */
+const AGE_IN_MONTHS = /(?<!\p{L})\d+(?:[.,]\d+)?\s*мес/iu;
+
+/**
+ * Дата рождения не старше восемнадцати лет — тоже ребёнок.
+ * «Абдулкадирова Халима 01.11.2023 г» — анкета ребёнка, присланная родителем.
+ */
+function recentBirthDate(t: string, now: Date = new Date()): boolean {
+  const m = t.match(/(?<!\d)(\d{1,2})[./](\d{1,2})[./](\d{4})(?!\d)/);
+  if (!m) return false;
+  const year = Number(m[3]);
+  const age = now.getFullYear() - year;
+  return year > 1900 && age >= 0 && age < 18;
+}
+
 export function whomFor(text: string): Whom {
   const t = norm(text);
-  const child = CHILD_WORDS.test(t);
+  const child = CHILD_WORDS.test(t) || AGE_IN_MONTHS.test(t) || recentBirthDate(t);
   const adult = ADULT_WORDS.test(t);
   // Сказали и то и другое («записать ребёнка и себя») — выбирать нельзя.
   if (child && adult) return "unknown";

@@ -90,7 +90,7 @@ import { stuckInMisunderstanding } from "./confusion";
 import { withoutQuote } from "./quoted";
 import { inHandoverFlow, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames, specialistQueryPending } from "./specialist";
-import { nothingToAnswer } from "./unanswered-rule";
+import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { complexMedical, managementTopic } from "./specialist-rules";
 import { WEEKDAY_WHEN, daysAsked, staffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
@@ -1205,31 +1205,41 @@ export async function handlePatientMessage(
   }
 
   /**
-   * Пока вопрос у врача, на «хорошо» и «спасибо» агент молчит.
+   * На «хорошо» и «спасибо» агент не отвечает, если отвечать не на что.
    *
-   * Живой диалог: пациентка описала диагноз ребёнка, агент ответил «Уточню у
-   * врача и напишу вам здесь же», она написала «Хорошо» — и через минуту
-   * получила «Хорошо, если появятся вопросы — я здесь». Разговор был не
-   * закончен: ответа врача она как раз ждала, а бот сказал ей, что разговор
-   * окончен.
+   * Два живых случая. Пациентка описала диагноз ребёнка, услышала «уточню у
+   * врача», написала «Хорошо» — и получила «Хорошо, если появятся вопросы — я
+   * здесь», хотя как раз ждала ответа врача. Другая после «Спасибо, передал(а)
+   * данные администратору» обменялась с агентом тремя вежливостями подряд:
+   * «Хорошо» — «Хорошо, если появятся…» — «Спасибо» — «Пожалуйста!» — «Хорошо».
    *
-   * Правило про жесты вежливости в проекте есть (`nothingToAnswer`), но стояло
-   * ОДНО — в доборе неотвеченных. Прямой путь его не проверял вовсе.
+   * Правило про жесты вежливости (`nothingToAnswer`) было, но стояло ОДНО — в
+   * доборе неотвеченных, и прямой путь его не проверял вовсе.
    *
-   * Ставим узко и намеренно: только пока вопрос у специалиста. Общее правило
-   * «не отвечать на „хорошо“» здесь опасно — этим же словом отвечают на вопрос
-   * САМОГО агента («записать вас к Ирине?» — «да»), и молчание было бы хуже
-   * лишней реплики. А в этом состоянии последним словом агента было «уточню у
-   * врача»: вопроса он не задавал, и добавить ему нечего.
+   * Молчим только когда отвечать действительно не на что: вопрос уже у врача,
+   * ИЛИ последней репликой агент ничего не спрашивал. «Хорошо» после
+   * «Подтверждаете?» — это ответ, и на него агент отвечает как обычно
+   * (`agentAskedSomething`). Сообщение с цитатой вежливостью не считается:
+   * человек отвечает свайпом на конкретную реплику, и точка в ответ на свою
+   * же анкету — это «вот мои данные», а не «спасибо».
    */
-  if (nothingToAnswer(own) && (await specialistQueryPending(ctx.companyId, conversation.id))) {
-    await logAgentRun({
-      companyId: ctx.companyId,
-      conversationId: conversation.id,
-      outcome: "SUPPRESSED",
-      error: "вопрос у врача, пациент ответил вежливостью — отвечать нечего",
-    });
-    return null;
+  const withQuote = own.trim() !== text.trim();
+  if (!withQuote && nothingToAnswer(own)) {
+    const pending = await specialistQueryPending(ctx.companyId, conversation.id);
+    const lastAgent = pending
+      ? undefined
+      : [...(await recentTurns(conversation.id))].reverse().find((t) => t.role === "assistant");
+    if (pending || (lastAgent && !agentAskedSomething(lastAgent.content))) {
+      await logAgentRun({
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        outcome: "SUPPRESSED",
+        error: pending
+          ? "вопрос у врача, пациент ответил вежливостью — отвечать нечего"
+          : "пациент ответил вежливостью, а агент ничего не спрашивал — отвечать нечего",
+      });
+      return null;
+    }
   }
 
   /**
@@ -1765,7 +1775,13 @@ async function replyToQuestion(
      */
     if (!hasQuestion(own)) {
       return respond(ctx, conversation.id, {
-        text: "Спасибо, записал(а). Администратор подберёт ближайшее удобное время и напишет здесь же.",
+        /**
+         * «Передал(а)», а не «записал(а)». Агент не записывает на приём, а
+         * «записал» пациент читает именно так: через реплику он просил «найдите
+         * ближайшую запись» и получал «записи впереди я у вас не вижу» —
+         * два сообщения подряд противоречили друг другу.
+         */
+        text: "Спасибо, передал(а) ваши данные администратору. Он подберёт ближайшее удобное время и напишет здесь же.",
       });
     }
   }

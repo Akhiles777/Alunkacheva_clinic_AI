@@ -371,3 +371,63 @@ export async function runDueDialogTasks(companyId: string): Promise<{ sent: numb
   }
   return { sent, failed };
 }
+
+/**
+ * Вопросы специалисту по этому диалогу — что спросили и что ответили.
+ *
+ * Агент пересылает сложный вопрос врачу в её личный WhatsApp и пересказывает
+ * ответ пациенту. Сама эта переписка в инбокс не попадает намеренно: врач —
+ * не пациент (§6), её чат не должен заводить диалог и идти в метрики. Но из-за
+ * этого администратор вообще не видел, что происходило: в переписке стояло
+ * «уточню у врача», а что ушло врачу и что она ответила, можно было найти
+ * только в кабинете Green API. Заказчик так и нашёл — и сначала решил, что
+ * вопросы не отправляются вовсе.
+ *
+ * Показываем в диалоге пациента служебным блоком, а не сообщениями: наружу
+ * это не уходит и в ленту переписки не смешивается.
+ */
+export interface SpecialistQueryView {
+  id: string;
+  ref: number;
+  specialist: string;
+  status: "SENT" | "ANSWERED" | "DECLINED" | "STALE";
+  question: string;
+  /** Дословно, как написал специалист. */
+  answer: string | null;
+  /** Что в итоге ушло пациенту — может отличаться от ответа формулировкой. */
+  relayed: string | null;
+  askedAt: string;
+  answeredAt: string | null;
+}
+
+export async function listSpecialistQueries(conversationId: string): Promise<SpecialistQueryView[]> {
+  requireId(conversationId, "диалог");
+  const session = await getSession();
+  const rows = await prisma.specialistQuery.findMany({
+    where: { conversationId, companyId: session.companyId },
+    orderBy: { askedAt: "desc" },
+    take: 10,
+    select: {
+      id: true,
+      ref: true,
+      status: true,
+      question: true,
+      answer: true,
+      relayed: true,
+      askedAt: true,
+      answeredAt: true,
+      specialist: { select: { name: true } },
+    },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    ref: r.ref,
+    specialist: r.specialist.name,
+    status: r.status,
+    question: r.question,
+    answer: r.answer,
+    relayed: r.relayed,
+    askedAt: TIME_FMT.format(r.askedAt),
+    answeredAt: r.answeredAt ? TIME_FMT.format(r.answeredAt) : null,
+  }));
+}

@@ -42,6 +42,7 @@ import { Hint } from "../_components/hint";
 import { DialogTools } from "./dialog-tools";
 import { noteUse } from "../_components/usage-actions";
 import { cancelDialogTask } from "./dialog-actions";
+import { SpecialistQueries } from "./specialist-queries";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { ContactPanel } from "./contact-panel";
 import { PatientCardBody } from "../_components/patient-card";
@@ -703,6 +704,11 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
       <div className="thread-collapsible contents">
         <ContactPanel key={dialog.id} dialog={dialog} onChanged={refresh} />
+      </div>
+
+      {/* Что спросили у врача и что она ответила — видно прямо здесь. */}
+      <div className="thread-collapsible contents">
+        <SpecialistQueries key={`sq-${dialog.id}`} dialogId={dialog.id} />
       </div>
 
       {/*

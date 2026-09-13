@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS, nothingToAnswer } from "./unanswered-rule";
+import { agentAskedSomething, needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS, nothingToAnswer } from "./unanswered-rule";
 
 const NOW = new Date("2026-08-17T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000);
@@ -164,5 +164,37 @@ describe("отвечать нечего", () => {
       botPausedUntil: null,
     };
     expect(needsAnswer(heart, now)).toBe(false);
+  });
+});
+
+/**
+ * «Хорошо» как ответ и «хорошо» как жест.
+ *
+ * Живой диалог: после «Спасибо, передал(а) данные администратору» агент
+ * обменялся с пациенткой тремя вежливостями подряд. Молчать можно только там,
+ * где агент ничего не спрашивал.
+ */
+describe("спросил ли агент что-нибудь", () => {
+  it("вопросительный знак — вопрос", () => {
+    expect(agentAskedSomething("Взрослый приём — 8 000 ₽. Подтверждаете?")).toBe(true);
+  });
+
+  it("просьба без знака вопроса — тоже вопрос", () => {
+    expect(
+      agentAskedSomething("Пока скажите, пожалуйста, на какую услугу записываемся и для кого."),
+    ).toBe(true);
+    expect(agentAskedSomething("Ответьте «Да» или «Нет».")).toBe(true);
+  });
+
+  it("сообщение без вопроса — вопросом не считается", () => {
+    expect(
+      agentAskedSomething("Спасибо, передал(а) ваши данные администратору. Он напишет здесь же."),
+    ).toBe(false);
+    expect(agentAskedSomething("Хорошо, если появятся вопросы — я здесь.")).toBe(false);
+    expect(agentAskedSomething("Уточню у врача и напишу вам здесь же.")).toBe(false);
+  });
+
+  it("не знаем, что сказал агент, — считаем, что спрашивал: молчать вслепую нельзя", () => {
+    expect(agentAskedSomething(undefined)).toBe(true);
   });
 });
