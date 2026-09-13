@@ -89,7 +89,8 @@ import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
 import { withoutQuote } from "./quoted";
 import { inHandoverFlow, timeDetail } from "./handover-flow";
-import { askSpecialist, specialistNames } from "./specialist";
+import { askSpecialist, specialistNames, specialistQueryPending } from "./specialist";
+import { nothingToAnswer } from "./unanswered-rule";
 import { complexMedical, managementTopic } from "./specialist-rules";
 import { WEEKDAY_WHEN, daysAsked, staffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
@@ -1201,6 +1202,34 @@ export async function handlePatientMessage(
   if (conversation.consentAskedAt && !conversation.consentGrantedAt) {
     const answer = consentFromText(own);
     if (answer) return handleCallback(ctx, conversation.id, answer);
+  }
+
+  /**
+   * Пока вопрос у врача, на «хорошо» и «спасибо» агент молчит.
+   *
+   * Живой диалог: пациентка описала диагноз ребёнка, агент ответил «Уточню у
+   * врача и напишу вам здесь же», она написала «Хорошо» — и через минуту
+   * получила «Хорошо, если появятся вопросы — я здесь». Разговор был не
+   * закончен: ответа врача она как раз ждала, а бот сказал ей, что разговор
+   * окончен.
+   *
+   * Правило про жесты вежливости в проекте есть (`nothingToAnswer`), но стояло
+   * ОДНО — в доборе неотвеченных. Прямой путь его не проверял вовсе.
+   *
+   * Ставим узко и намеренно: только пока вопрос у специалиста. Общее правило
+   * «не отвечать на „хорошо“» здесь опасно — этим же словом отвечают на вопрос
+   * САМОГО агента («записать вас к Ирине?» — «да»), и молчание было бы хуже
+   * лишней реплики. А в этом состоянии последним словом агента было «уточню у
+   * врача»: вопроса он не задавал, и добавить ему нечего.
+   */
+  if (nothingToAnswer(own) && (await specialistQueryPending(ctx.companyId, conversation.id))) {
+    await logAgentRun({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      outcome: "SUPPRESSED",
+      error: "вопрос у врача, пациент ответил вежливостью — отвечать нечего",
+    });
+    return null;
   }
 
   /**

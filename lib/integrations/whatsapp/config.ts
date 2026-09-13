@@ -51,6 +51,16 @@ export const ENDPOINTS = {
   /** Исправить текст уже отправленного. */
   editMessage: (id: string, token: string) => `/waInstance${id}/editMessage/${token}`,
   getStateInstance: (id: string, token: string) => `/waInstance${id}/getStateInstance/${token}`,
+  /**
+   * Есть ли WhatsApp у номера.
+   *
+   * Единственный способ отличить «сообщение ушло» от «ушло в никуда». Green
+   * API принимает отправку на любой номер и возвращает идентификатор — для
+   * нас это «ok», — а если WhatsApp у номера нет, сообщение не доходит и
+   * молчит об этом. Ровно так выглядел случай «вопросов 2, ответов 0, а в
+   * чатах ничего нет».
+   */
+  checkWhatsapp: (id: string, token: string) => `/waInstance${id}/checkWhatsapp/${token}`,
   getSettings: (id: string, token: string) => `/waInstance${id}/getSettings/${token}`,
   /**
    * История переписки с одним собеседником.

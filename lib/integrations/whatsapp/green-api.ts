@@ -160,6 +160,37 @@ export async function instanceState(companyId: string): Promise<{ state: string;
  * Адресуем по телефону, а не по chatId из переписки: телефон — наш ключ
  * пациента (§4), и он же остаётся верным, если провайдер сменится.
  */
+/**
+ * Есть ли WhatsApp у номера.
+ *
+ * Нужно ровно для одного вопроса: «отправили, а человек не видит». Отправка
+ * сама по себе на него не отвечает — Green API принимает сообщение на любой
+ * номер и возвращает идентификатор, а доходит оно только туда, где WhatsApp
+ * есть. Без этой проверки отличить «не дошло» от «не смотрел» нечем.
+ */
+export async function numberHasWhatsapp(
+  companyId: string,
+  phone: string,
+): Promise<{ ok: boolean; exists?: boolean; error?: string }> {
+  if (!isWhatsappEnabled()) return { ok: false, error: "Интеграция WhatsApp выключена" };
+  const creds = await loadCredentials(companyId);
+  if (!creds) return { ok: false, error: "Не заданы ключи Green API" };
+
+  const chatId = phone.includes("@") ? phone : chatIdFromPhone(phone);
+  if (!chatId) return { ok: false, error: "Не удалось разобрать номер" };
+  // Провайдер ждёт голый номер, без «@c.us».
+  const digits = chatId.split("@")[0];
+
+  const res = await enqueue(() =>
+    call<{ existsWhatsapp?: boolean }>(
+      ENDPOINTS.checkWhatsapp(creds.idInstance, creds.apiToken),
+      { phoneNumber: Number(digits) },
+    ),
+  );
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true, exists: res.data.existsWhatsapp === true };
+}
+
 export async function sendText(
   companyId: string,
   phoneOrChatId: string,

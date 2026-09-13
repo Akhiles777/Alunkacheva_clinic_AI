@@ -206,6 +206,30 @@ export interface AskResult {
  * Молчаливого «ничего не произошло» здесь быть не может: причина всегда
  * названа словами.
  */
+/**
+ * Висит ли по диалогу неотвеченный вопрос к специалисту.
+ *
+ * Тот же отбор, что и антиспам внутри `askSpecialist`, — вынесен наружу,
+ * потому что об этом состоянии нужно знать и до того, как решать, спрашивать
+ * ли врача: пока вопрос у неё, агенту в разговоре добавить нечего.
+ */
+export async function specialistQueryPending(
+  companyId: string,
+  conversationId: string,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const row = await prisma.specialistQuery.findFirst({
+    where: {
+      companyId,
+      conversationId,
+      status: "SENT",
+      askedAt: { gte: new Date(now.getTime() - QUERY_QUIET_HOURS * 3600 * 1000) },
+    },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
 export async function askSpecialist(input: {
   companyId: string;
   conversationId: string;
