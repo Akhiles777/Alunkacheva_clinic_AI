@@ -26,12 +26,9 @@ export function waitingCount(
   return dialogs.filter((d) => d.unread && d.status !== "closed" && !d.practice).length;
 }
 
-// «Чат» доступен всем ролям: это внутренняя переписка клиники, а не
-// пациентский канал.
 const NAV_COMMON: NavItem[] = [
   { label: "Сегодня", href: "/" },
   { label: "Диалоги", href: "/inbox" },
-  { label: "Чат", href: "/chat" },
   { label: "Пациенты", href: "/patients" },
   { label: "Курсы", href: "/courses" },
   // Рабочая очередь администратора: кому звонить и что предложить.
@@ -46,8 +43,7 @@ export function navForRole(role: AppRole): NavItem[] {
     return [
       { label: "Мой кабинет", href: "/doctor" },
       { label: "Диалоги", href: "/inbox" },
-      { label: "Чат", href: "/chat" },
-      { label: "Пациенты", href: "/patients" },
+          { label: "Пациенты", href: "/patients" },
       { label: "Курсы", href: "/courses" },
     ];
   return NAV_COMMON;

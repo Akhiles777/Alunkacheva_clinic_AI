@@ -7,7 +7,6 @@ import { formatMinute } from "@/lib/metrics/occupancy";
 import { formatMoney } from "@/lib/format";
 import { useDb } from "@/app/_data/store";
 import { getCurrentUser, type CurrentUser } from "../_components/user-actions";
-import { InternalStaffChat } from "../chat/internal-staff-chat";
 import { VisitNote } from "../_components/visit-note";
 import { getCourseSalesForDay, type CourseSaleRow } from "../courses/actions";
 import { clinicDateKey } from "@/lib/clinic-time";
@@ -172,9 +171,6 @@ export default function DoctorPage() {
           </section>
         </div>
 
-        <div className="mt-4">
-          <InternalStaffChat compact />
-        </div>
       </div>
     </>
   );

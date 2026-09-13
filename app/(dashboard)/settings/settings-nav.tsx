@@ -14,8 +14,6 @@ const SECTIONS: { href: string; label: string }[] = [
   { href: "/settings/assistant", label: "Ассистент" },
   { href: "/settings/templates", label: "Шаблоны" },
   { href: "/settings/notifications", label: "Уведомления" },
-  { href: "/settings/consent", label: "Согласие" },
-  { href: "/settings/audit", label: "Аудит" },
 ];
 
 /**

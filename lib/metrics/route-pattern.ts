@@ -19,7 +19,6 @@ const WITH_ID = ["/patients", "/settings/staff"];
 export const SCREEN_LABEL: Record<string, string> = {
   "/": "Сегодня",
   "/inbox": "Диалоги",
-  "/chat": "Чат",
   "/patients": "Пациенты",
   "/patients/[id]": "Карточка пациента",
   "/courses": "Курсы",
