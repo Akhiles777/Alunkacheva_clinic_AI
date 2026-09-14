@@ -226,10 +226,11 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
         <div className="border-border border-b px-4 py-3">
           <h2 className="text-sm font-medium">Устройства</h2>
           <p className="text-text-subtle mt-0.5 max-w-[80ch] text-2xs leading-relaxed">
-            Все устройства всех ролей. Модель аппарата браузер не сообщает — у всех Mac
-            строка одна и та же, у всех iPhone тоже, — поэтому «MacBook Air M2» от другого
-            Mac здесь не отличить. Чтобы не учитывать свои устройства, отметьте их кнопкой
-            «моё»: отметка точная, по конкретному аппарату и браузеру.
+            Все устройства всех ролей. Модель аппарата браузер не сообщает — у всех iPhone
+            строка одна и та же, — поэтому одинаковые аппараты различаются номером («№3f9a»):
+            его браузер получает при входе. Устройства без номера ещё не входили заново и
+            узнаются только по строке браузера — одинаковые из них стоят одной строкой.
+            Своё устройство отмечено «это устройство»; чтобы не учитывать его, нажмите «моё».
           </p>
           {data.excludedDevices > 0 ? (
             <p className="text-accent-text mt-1.5 text-2xs">
@@ -266,9 +267,16 @@ export function SistemClient({ initial }: { initial: SystemReport }) {
                     className={`border-border-soft border-b last:border-0 ${d.excluded ? "opacity-50" : ""}`}
                   >
                     <td className="px-4 py-2">
-                      <span className="block">{d.label}</span>
+                      <span className="block">
+                        {d.label}
+                        {d.tag ? <span className="num text-text-muted"> {d.tag}</span> : null}
+                        {d.current ? (
+                          <span className="text-accent-text ml-1.5 text-2xs font-medium">это устройство</span>
+                        ) : null}
+                      </span>
                       <span className="text-text-subtle block text-2xs">
                         {d.kindLabel}
+                        {d.tag ? "" : " · без номера — по строке браузера"}
                         {d.note ? ` · ${d.note}` : ""}
                         {d.id === null ? " · пока только по журналу" : ""}
                       </span>

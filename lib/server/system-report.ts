@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { parseDevice, KIND_LABEL, type DeviceInfo } from "@/lib/metrics/device";
+import { deviceKey, deviceTag, parseDevice, KIND_LABEL, type DeviceInfo } from "@/lib/metrics/device";
 import { memoryNow, type MemoryNow } from "@/lib/server/restarts";
 import { screenLabel } from "@/lib/metrics/route-pattern";
 import type { AuditAction } from "@/generated/prisma/enums";
@@ -58,6 +58,10 @@ export interface DeviceRow {
   lastSeenAt: string | null;
   excluded: boolean;
   note: string | null;
+  /** «№3f9a» — у помеченных браузеров; различает одинаковые аппараты. */
+  tag: string | null;
+  /** Это устройство, с которого открыт экран. */
+  current: boolean;
   /** Действий за срок с этого устройства. */
   actions: number;
   /** Адреса, с которых заходили. Один — обычно дом или клиника. */
@@ -123,7 +127,10 @@ const DAY_KEY = new Intl.DateTimeFormat("ru-RU", {
 export async function getSystemReport(
   companyId: string,
   windowDays: number = SYSTEM_WINDOW_DAYS,
+  /** Метка браузера, с которого открыт экран: его строка подписана «это устройство». */
+  currentDeviceId: string | null = null,
 ): Promise<SystemReport> {
+  const currentKey = currentDeviceId ? deviceKey("", currentDeviceId) : null;
   const since = new Date(Date.now() - windowDays * 24 * 3600 * 1000);
   const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
   const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
@@ -141,6 +148,7 @@ export async function getSystemReport(
         createdAt: true,
         userAgent: true,
         ip: true,
+        deviceId: true,
         // Для открытия экрана здесь лежит ОБРАЗЕЦ адреса, а не сам адрес:
         // параметры запроса в журнал не попадают (§7).
         entityType: true,
@@ -221,9 +229,15 @@ export async function getSystemReport(
   const byDay = new Map<string, { actions: number; logins: number }>();
   let excludedActions = 0;
 
+  /**
+   * Ключ устройства строки журнала: метка браузера, а у строк без неё —
+   * отпечаток, как раньше (`deviceKey`).
+   */
+  const keyOf = (r: { actorId: string | null; userAgent: string | null; deviceId: string | null }) =>
+    `${r.actorId}|${deviceKey(infoFor(r.userAgent).fingerprint, r.deviceId)}`;
+
   for (const row of audit) {
-    const info = infoFor(row.userAgent);
-    const key = `${row.actorId}|${info.fingerprint}`;
+    const key = keyOf(row);
     if (excludedKeys.has(key)) {
       excludedActions += 1;
       continue;
@@ -278,6 +292,8 @@ export async function getSystemReport(
       lastSeenAt: (b?.lastAt ?? d.lastLoginAt).toISOString(),
       excluded: d.excluded,
       note: d.note,
+      tag: deviceTag(d.fingerprint),
+      current: d.fingerprint === currentKey,
       actions: b?.actions ?? 0,
       ips: [...(b?.ips ?? [])].slice(0, 5),
     });
@@ -286,9 +302,7 @@ export async function getSystemReport(
   for (const [key, b] of byDevice) {
     if (seen.has(key)) continue;
     const [actorId, fingerprint] = key.split("|");
-    const sample = audit.find(
-      (r) => `${r.actorId}|${infoFor(r.userAgent).fingerprint}` === key,
-    );
+    const sample = audit.find((r) => keyOf(r) === key);
     const info = infoFor(sample?.userAgent ?? null);
     devices.push({
       id: null,
@@ -304,6 +318,8 @@ export async function getSystemReport(
       lastSeenAt: b.lastAt?.toISOString() ?? null,
       excluded: false,
       note: null,
+      tag: deviceTag(fingerprint),
+      current: fingerprint === currentKey,
       actions: b.actions,
       ips: [...b.ips].slice(0, 5),
     });
@@ -358,7 +374,7 @@ export async function getSystemReport(
    * всё равно не читают, а срок переключается кнопками выше.
    */
   const recent: EventRow[] = audit
-    .filter((r) => !excludedKeys.has(`${r.actorId}|${infoFor(r.userAgent).fingerprint}`))
+    .filter((r) => !excludedKeys.has(keyOf(r)))
     .slice(0, 100)
     .map((r) => {
       const action = r.action as AuditAction;
@@ -370,7 +386,9 @@ export async function getSystemReport(
         at: r.createdAt.toISOString(),
         userName: nameOf(r.actorId),
         what,
-        deviceLabel: infoFor(r.userAgent).label,
+        deviceLabel: [infoFor(r.userAgent).label, deviceTag(deviceKey("", r.deviceId))]
+          .filter(Boolean)
+          .join(" "),
         ip: r.ip,
       };
     });

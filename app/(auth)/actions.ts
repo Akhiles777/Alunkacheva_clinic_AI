@@ -7,7 +7,8 @@ import { appRoleOf, type AppRole } from "@/lib/roles";
 import type { StaffRole } from "@/generated/prisma/enums";
 import { writeAudit } from "@/lib/server/audit";
 import { getSessionOrNull } from "@/lib/server/session";
-import { parseDevice } from "@/lib/metrics/device";
+import { deviceKey, parseDevice } from "@/lib/metrics/device";
+import { ensureDeviceId } from "@/lib/server/device-id";
 
 /**
  * Вход и регистрация. Входа «без пароля» нет: прежняя кнопка «Войти как
@@ -94,19 +95,21 @@ export async function registerUser(input: { name: string; login: string; passwor
  * подпись честно ограничена системой и браузером, а различает устройства
  * отпечаток.
  */
-async function rememberDevice(companyId: string, userId: string): Promise<void> {
+async function rememberDevice(companyId: string, userId: string, deviceId: string | null): Promise<void> {
   const ua = (await headers()).get("user-agent")?.slice(0, 300) ?? "";
   if (!ua) return;
   const d = parseDevice(ua);
+  // Помеченный браузер — отдельное устройство, даже если строка браузера та же.
+  const fingerprint = deviceKey(d.fingerprint, deviceId);
   await prisma.knownDevice.upsert({
     where: {
-      companyId_userId_fingerprint: { companyId, userId, fingerprint: d.fingerprint },
+      companyId_userId_fingerprint: { companyId, userId, fingerprint },
     },
     update: { lastLoginAt: new Date(), logins: { increment: 1 }, userAgent: ua, label: d.label },
     create: {
       companyId,
       userId,
-      fingerprint: d.fingerprint,
+      fingerprint,
       userAgent: ua,
       label: d.label,
       platform: d.platform,
@@ -131,10 +134,11 @@ export async function loginUser(input: { login: string; password: string }): Pro
   }
   await prisma.staffUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   await setSession(user.id, cid, user.role);
+  const deviceId = await ensureDeviceId().catch(() => null);
   // Устройство — один upsert на вход. Входят редко, на скорость работы это не
   // влияет никак; «что делали» берётся из журнала аудита и второй записи не
   // требует.
-  await rememberDevice(cid, user.id).catch(() => {
+  await rememberDevice(cid, user.id, deviceId).catch(() => {
     // Учёт устройств не должен мешать войти в систему.
   });
   // Вход фиксируем в журнале: без него нельзя ответить, кто и с какого
@@ -144,6 +148,7 @@ export async function loginUser(input: { login: string; password: string }): Pro
     actorId: user.id,
     action: "LOGIN",
     entityType: "session",
+    deviceId,
   }).catch(() => {});
   return { ok: true, role: appRoleOf(user.role) };
 }

@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { prisma } from "@/lib/db";
+import { readDeviceId } from "@/lib/server/device-id";
 import type { AuditAction } from "@/generated/prisma/enums";
 
 /**
@@ -34,8 +35,14 @@ export async function writeAudit(input: {
   entityType: string;
   entityId?: string | null;
   meta?: Record<string, unknown>;
+  /**
+   * Метка браузера, если её только что завели. При входе кука ставится в этом
+   * же ответе, и из запроса её ещё не прочитать.
+   */
+  deviceId?: string | null;
 }): Promise<void> {
   const origin = await requestOrigin();
+  const deviceId = input.deviceId ?? (await readDeviceId());
   await prisma.auditLog.create({
     data: {
       companyId: input.companyId,
@@ -45,6 +52,7 @@ export async function writeAudit(input: {
       entityId: input.entityId ?? null,
       ip: origin.ip,
       userAgent: origin.userAgent,
+      deviceId,
       meta: input.meta as object | undefined,
     },
   });

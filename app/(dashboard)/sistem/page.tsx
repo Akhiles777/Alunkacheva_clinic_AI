@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getSession } from "@/lib/server/session";
 import { getSystemReport, SYSTEM_WINDOW_DAYS } from "@/lib/server/system-report";
+import { readDeviceId } from "@/lib/server/device-id";
 import { SistemClient } from "./sistem-client";
 
 /**
@@ -26,6 +27,6 @@ export default async function SistemPage() {
   const session = await getSession();
   if (session.role !== "OWNER") notFound();
 
-  const report = await getSystemReport(session.companyId, SYSTEM_WINDOW_DAYS);
+  const report = await getSystemReport(session.companyId, SYSTEM_WINDOW_DAYS, await readDeviceId());
   return <SistemClient initial={report} />;
 }

@@ -4,7 +4,8 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { requireId } from "@/lib/server/require-id";
 import { getSystemReport, type SystemReport } from "@/lib/server/system-report";
-import { parseDevice } from "@/lib/metrics/device";
+import { deviceKey, parseDevice } from "@/lib/metrics/device";
+import { readDeviceId } from "@/lib/server/device-id";
 
 /**
  * Раздел учёта: кто, с какого устройства и что делал.
@@ -27,7 +28,7 @@ export async function systemReport(windowDays: number): Promise<SystemReport> {
   // Срок приходит с экрана: ограничиваем, чтобы «за всё время» не превращалось
   // в разбор сотен тысяч строк на каждое открытие страницы.
   const days = Math.min(180, Math.max(1, Math.round(windowDays) || 30));
-  return getSystemReport(companyId, days);
+  return getSystemReport(companyId, days, await readDeviceId());
 }
 
 /**
@@ -72,19 +73,27 @@ export async function setDeviceExcluded(
     return systemReport(windowDays);
   }
 
-  const sample = await prisma.auditLog.findFirst({
-    where: { companyId, actorId: userId, userAgent: { not: null } },
-    orderBy: { createdAt: "desc" },
-    select: { userAgent: true, createdAt: true },
-  });
+  /**
+   * Строку журнала ищем по тому же ключу, которым устройство показано: у
+   * помеченного браузера это метка, у остальных — отпечаток строки браузера.
+   * Прежний запасной ход «последняя строка этого человека» убран: при двух
+   * устройствах он заводил отметку не на тот аппарат.
+   */
   const candidates = await prisma.auditLog.findMany({
-    where: { companyId, actorId: userId, userAgent: { not: null } },
-    distinct: ["userAgent"],
-    select: { userAgent: true, createdAt: true },
+    where: {
+      companyId,
+      actorId: userId,
+      userAgent: { not: null },
+      ...(fingerprint.startsWith("b:") ? { deviceId: fingerprint.slice(2) } : {}),
+    },
+    distinct: ["userAgent", "deviceId"],
+    orderBy: { createdAt: "desc" },
+    select: { userAgent: true, deviceId: true, createdAt: true },
     take: 50,
   });
-  const match =
-    candidates.find((c) => parseDevice(c.userAgent).fingerprint === fingerprint) ?? sample;
+  const match = candidates.find(
+    (c) => deviceKey(parseDevice(c.userAgent).fingerprint, c.deviceId) === fingerprint,
+  );
   if (!match?.userAgent) return systemReport(windowDays);
 
   const d = parseDevice(match.userAgent);

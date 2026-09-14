@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deviceFingerprint, parseDevice } from "./device";
+import { deviceFingerprint, deviceKey, deviceTag, parseDevice } from "./device";
 
 const MAC_SAFARI =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
@@ -78,5 +78,25 @@ describe("модель аппарата по строке браузера не 
   it("модели iPhone в строке нет", () => {
     expect(IPHONE_SAFARI).not.toMatch(/13|pro/i);
     expect(parseDevice(IPHONE_SAFARI).label).toBe("iPhone · Safari");
+  });
+});
+
+describe("ключ устройства", () => {
+  const ua =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1";
+
+  it("два одинаковых iPhone с метками — два устройства", () => {
+    const fp = parseDevice(ua).fingerprint;
+    expect(deviceKey(fp, "aaaaaaaaaaaaaaaaaaaaaaaa")).not.toBe(deviceKey(fp, "bbbbbbbbbbbbbbbbbbbbbbbb"));
+  });
+
+  it("без метки — прежний отпечаток, старый журнал узнаётся как раньше", () => {
+    const fp = parseDevice(ua).fingerprint;
+    expect(deviceKey(fp, null)).toBe(fp);
+    expect(deviceTag(fp)).toBeNull();
+  });
+
+  it("номер на экране — первые знаки метки", () => {
+    expect(deviceTag(deviceKey("x", "3f9a00000000000000000000"))).toBe("№3f9a");
   });
 });

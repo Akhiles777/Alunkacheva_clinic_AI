@@ -1813,6 +1813,9 @@ model AuditLog {
   entityId   String?
   ip         String?
   userAgent  String?
+  /// Метка браузера (`mera_device`): различает одинаковые аппараты. Пусто у
+  /// строк до её появления и у действий не из браузера.
+  deviceId   String?
   meta       Json?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
