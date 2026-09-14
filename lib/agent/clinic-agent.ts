@@ -56,6 +56,7 @@ import {
   grantConsent,
   materializeConsent,
   withoutConsentRequest,
+  asksForConsent,
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
 import { consentFromText, greetingUsed, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
@@ -92,7 +93,7 @@ import { inHandoverFlow, rescheduleAsked, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames, specialistQueryPending } from "./specialist";
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { complexMedical, managementTopic } from "./specialist-rules";
-import { WEEKDAY_WHEN, daysAsked, staffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
+import { WEEKDAY_WHEN, daysAsked, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
 /**
  * Агент пациентского канала.
@@ -148,6 +149,12 @@ export interface AgentReply {
   buttons?: { text: string; data: string }[];
   /** Запросить номер телефона кнопкой Telegram. */
   askPhone?: boolean;
+  /**
+   * Текст о согласии написала сама платформа: её запрос со ссылкой на политику
+   * или ответ на отказ. Такой текст `respond` не переписывает — правило про
+   * просьбу о согласии ловит слова МОДЕЛИ, а не наши.
+   */
+  platformConsent?: boolean;
 }
 
 /**
@@ -733,7 +740,15 @@ async function respond(
     }
   }
 
-  if (asksForPersonalData(reply.text)) {
+  /**
+   * Просьба о согласии СЛОВАМИ МОДЕЛИ — туда же, что и просьба о данных.
+   *
+   * Модель спросила «Вы согласны?» своими словами: без ссылки на политику и без
+   * отметки, что согласие спрошено. «Да» на это платформа не принимала и
+   * спрашивала согласие второй раз, по форме. Теперь такое предложение
+   * заменяется запросом платформы тут же — и первое же «Да» засчитывается.
+   */
+  if (asksForPersonalData(reply.text) || (asksForConsent(reply.text) && !reply.platformConsent)) {
     /**
      * Спросили один раз — и замолчали: так данные собирались БЕЗ согласия.
      *
@@ -1180,6 +1195,7 @@ export async function handlePatientMessage(
           ? `${known}\n\n${consent.text}${consentHint(ctx.channel)}`
           : consent.text + consentHint(ctx.channel)) + alreadyWithHuman,
       buttons: consent.buttons,
+      platformConsent: true,
     });
   }
 
@@ -1524,11 +1540,32 @@ function intakeAsk(whom: Whom, needsWeight = false): string {
  * человек воспринимает как форму и бросает. ФИО и возраст здесь не просим
  * никогда: это персональные данные, их собирают после согласия (§7).
  */
-async function slotHandoverText(companyId: string, texts: string[]): Promise<string> {
+async function slotHandoverText(
+  companyId: string,
+  texts: string[],
+  /**
+   * Только слова пациента. Врача ищем в них, а не во всём разговоре: наше же
+   * приветствие «Клиника доктора Алункачевой» совпало бы с фамилией врача в
+   * каждой переписке.
+   */
+  patientTexts: string[],
+): Promise<string> {
   const lead = "Свободное время подберёт администратор — он напишет здесь же.";
   const tail = " Передам вместе с вашим вопросом, чтобы вам не повторяться.";
 
-  const hasService = await knownService(companyId, texts);
+  /**
+   * Названный врач — тоже ответ на «на какую услугу»: к кому человек идёт, он
+   * сказал сам, а что она ведёт, администратор знает. Только если врач назван
+   * однозначно (`uniqueStaffAsked`).
+   */
+  const staff = await prisma.staff
+    .findMany({
+      where: { companyId, isActive: true, deletedAt: null },
+      select: { id: true, name: true },
+    })
+    .catch(() => []);
+  const hasService =
+    patientTexts.some((t) => uniqueStaffAsked(t, staff) !== null) || (await knownService(companyId, texts));
   /**
    * Взрослый или ребёнок — по всему разговору, а не по последней реплике.
    * Человек назвал это в первом сообщении, а спросил про окно во втором.
@@ -1620,10 +1657,14 @@ async function replyToQuestion(
       text: moving
         ? "Поняла, передал(а) администратору — он подберёт время из тех, что вы просите, и напишет здесь же."
         : slotAsk
-        ? await slotHandoverText(ctx.companyId, [
-            own,
-            ...(await recentTurns(conversation.id)).map((t) => t.content),
-          ])
+        ? await (async () => {
+            const turns = await recentTurns(conversation.id);
+            return slotHandoverText(
+              ctx.companyId,
+              [own, ...turns.map((t) => t.content)],
+              [own, ...turns.filter((t) => t.role === "user").map((t) => t.content)],
+            );
+          })()
         : "Передал(а) администратору — он ответит здесь же.",
     });
   }
@@ -1753,6 +1794,7 @@ async function replyToQuestion(
       return respond(ctx, conversation.id, {
         text: request ? request.text + consentHint(ctx.channel) : CONSENT_REMINDER,
         buttons: request?.buttons ?? consentButtons(),
+        platformConsent: true,
       });
     }
 
@@ -2179,7 +2221,11 @@ async function replyToQuestion(
        * воспринимает как форму и бросает.
        */
       return respond(ctx, conversation.id, {
-        text: await slotHandoverText(ctx.companyId, [text, ...said.map((t) => t.content)]),
+        text: await slotHandoverText(
+          ctx.companyId,
+          [text, ...said.map((t) => t.content)],
+          [own, ...said.filter((t) => t.role === "user").map((t) => t.content)],
+        ),
       });
     }
 
@@ -3034,6 +3080,7 @@ async function handleCallback(ctx: AgentContext, conversationId: string, data: s
       text:
         "Хорошо. Без согласия на обработку персональных данных мы не сможем вести переписку — " +
         "передал(а) администратору, он свяжется с вами.",
+      platformConsent: true,
     });
   }
   if (data === "prices") {

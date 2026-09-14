@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daysAsked, staffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
+import { daysAsked, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
 
 /**
  * Живой диалог, из-за которого правило появилось: «работаете ли вы в выходные
@@ -123,5 +123,31 @@ describe("поиск услуги без слов о днях", () => {
     expect(withoutDays("А в воскресенье можно на остеопатию?")).toContain("остеопатию");
     expect(withoutDays("А в воскресенье можно на остеопатию?")).not.toContain("воскресень");
     expect(withoutDays("Работаете ли вы в выходные дни?")).not.toContain("выходн");
+  });
+});
+
+/**
+ * «Скажите пожалуйста к Ирине Алилгаджиевне когда есть окошко?» — к кому
+ * записываться, человек сказал; агент переспросил «на какую услугу». Но просто
+ * «к Ирине» — это двое, и угадывать нельзя.
+ */
+describe("uniqueStaffAsked", () => {
+  const staff = [
+    { id: "a", name: "Алункачева Ирина Алилгаджиевна" },
+    { id: "b", name: "Омарова Ирина" },
+    { id: "c", name: "Разият Ризвановна" },
+  ];
+
+  it("врач назван однозначно", () => {
+    expect(uniqueStaffAsked("Скажите пожалуйста к Ирине Алилгаджиевне когда есть окошко?", staff)?.id).toBe("a");
+    expect(uniqueStaffAsked("есть окошко к Разият?", staff)?.id).toBe("c");
+  });
+
+  it("одно имя на двоих — не угадываем", () => {
+    expect(uniqueStaffAsked("есть окошко к Ирина?", staff)).toBeNull();
+  });
+
+  it("без имени — никого", () => {
+    expect(uniqueStaffAsked("есть свободное окошко на завтра?", staff)).toBeNull();
   });
 });
