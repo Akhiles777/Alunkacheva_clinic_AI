@@ -612,9 +612,6 @@ export function TodayClient() {
                 >
                   {formatNumber(facts.moves.length)}
                 </button>
-                {facts.movedIn.length > 0 ? (
-                  <span className="text-text-subtle"> · приехало {facts.movedIn.length}</span>
-                ) : null}
               </span>
             </>
           ) : null}

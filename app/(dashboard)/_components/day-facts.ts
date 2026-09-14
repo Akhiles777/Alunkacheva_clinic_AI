@@ -54,8 +54,6 @@ export interface DayFacts {
   inquiries: number;
   /** Записи, которые СТОЯЛИ на этот день и уехали на другое время. */
   moves: MoveView[];
-  /** Записи, приехавшие на этот день с другого. */
-  movedIn: MoveView[];
   /** Разбор приёмов без отметки: перенос или забытая отметка. */
   unmarked: Record<string, UnmarkedView>;
   /**
@@ -78,32 +76,15 @@ export async function getDayFacts(dayKey: string): Promise<DayFacts> {
    * на другой вопрос — «когда выгрузка это увидела»: перенос вчерашней записи,
    * замеченный сегодня утром, попадал в сегодняшний день и был там не к месту.
    *
-   * Приехавшие НА этот день считаем отдельно: это другое событие и другое
-   * действие — их не ждут сегодня, их наоборот прибавилось.
+   * Записи, перенесённые НА этот день, отдельным числом больше не считаются
+   * (решение заказчика, сентябрь 2026): они и так стоят в расписании дня
+   * обычными приёмами, а число «приехало» рядом с «перенесли» только путало.
    */
-  const [totals, moves, movedIn, first] = await Promise.all([
+  const [totals, moves, first] = await Promise.all([
     countInquiriesFromDb(session.companyId, from, to),
     prisma.appointmentMove.findMany({
       where: { companyId: session.companyId, fromStartAt: { gte: from, lt: to } },
       orderBy: { fromStartAt: "asc" },
-      take: 50,
-      select: {
-        id: true,
-        fromStartAt: true,
-        toStartAt: true,
-        exact: true,
-        appointment: {
-          select: {
-            patient: { select: { name: true } },
-            primaryService: { select: { title: true } },
-            services: { select: { service: { select: { title: true } } } },
-          },
-        },
-      },
-    }),
-    prisma.appointmentMove.findMany({
-      where: { companyId: session.companyId, toStartAt: { gte: from, lt: to } },
-      orderBy: { toStartAt: "asc" },
       take: 50,
       select: {
         id: true,
@@ -199,22 +180,9 @@ export async function getDayFacts(dayKey: string): Promise<DayFacts> {
     }
   }
 
-  const asView = (m: (typeof moves)[number]): MoveView => ({
-    id: m.id,
-    patientName: m.appointment.patient?.name?.trim() || "Без имени",
-    service: visitTitle(
-      m.appointment.services.map((s) => ({ title: s.service.title })),
-      m.appointment.primaryService?.title ?? "",
-    ),
-    fromAt: m.fromStartAt.toISOString(),
-    toAt: m.toStartAt.toISOString(),
-    exact: m.exact,
-  });
-
   return {
     dayKey,
     inquiries: totals.total,
-    movedIn: movedIn.map(asView),
     unmarked,
     moves: moves.map((m) => ({
       id: m.id,

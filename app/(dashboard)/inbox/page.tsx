@@ -45,6 +45,7 @@ import { cancelDialogTask } from "./dialog-actions";
 import { SpecialistQueries } from "./specialist-queries";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { ContactPanel } from "./contact-panel";
+import { AdminAssistant } from "../_components/admin-assistant";
 import { PatientCardBody } from "../_components/patient-card";
 
 /**
@@ -462,13 +463,45 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
    * не начало: без этого администратор пролистывал всю историю вручную.
    * Мгновенно при смене диалога и плавно при новом сообщении.
    */
+  /**
+   * Прокручиваем САМ список сообщений, а не `scrollIntoView`.
+   *
+   * `scrollIntoView` двигает все прокручиваемые предки, включая страницу. На
+   * iPhone с открытой клавиатурой это сдвигало весь документ — ещё одна
+   * причина «нажимаешь на поле, и тебя сбрасывает».
+   */
+  const listRef = useRef<HTMLDivElement | null>(null);
+  /** Человек читает конец переписки — тогда и держим его у конца. */
+  const atEnd = useRef(true);
+  const toEnd = (smooth: boolean) => {
+    const box = listRef.current;
+    if (!box) return;
+    box.scrollTo({ top: box.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  };
+
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    atEnd.current = true;
+    toEnd(false);
   }, [dialog.id]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    toEnd(true);
   }, [dialog.messages.length]);
+
+  /**
+   * Клавиатура открылась — список стал ниже, и последнее сообщение уходило
+   * под поле ввода. Если человек был у конца переписки, возвращаем его туда;
+   * если листал историю — не трогаем.
+   */
+  useEffect(() => {
+    const box = listRef.current;
+    if (!box || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (atEnd.current) toEnd(false);
+    });
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -736,7 +769,14 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
 
 
-      <div className="flex-1 overflow-auto px-5 py-4">
+      <div
+        ref={listRef}
+        onScroll={(e) => {
+          const b = e.currentTarget;
+          atEnd.current = b.scrollHeight - b.scrollTop - b.clientHeight < 80;
+        }}
+        className="flex-1 overflow-auto px-5 py-4"
+      >
         <div className="flex flex-col gap-3">
           {dialog.totalMessages && dialog.totalMessages > dialog.messages.length ? (
             // История никуда не делась — просто не грузим её целиком каждые
@@ -979,7 +1019,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
       )}
 
       {/* Подпись под перепиской: заметка, передача коллеге, отложенное. */}
-      <DialogTools dialogId={dialog.id} onChanged={refresh} />
+      <DialogTools dialogId={dialog.id} patientId={dialog.patientId} onChanged={refresh} />
     </div>
   );
 }
@@ -1018,7 +1058,22 @@ export default function InboxPage() {
   }, []);
 
   useEffect(() => {
-    const timer = setInterval(refresh, 6000);
+    /**
+     * Скрытая вкладка опрашивает реже — раз в полминуты, а не раз в шесть
+     * секунд. Совсем не опрашивать нельзя: число ждущих стоит в заголовке
+     * вкладки, и по нему узнают о новом сообщении, не открывая платформу. Но
+     * для заголовка полминуты — не задержка, а каждый опрос тянет весь список
+     * переписок. Вернулись на вкладку — обновляемся сразу (ниже).
+     */
+    let lastAt = Date.now();
+    // Открыли «Диалоги» — список сразу, а не через первый круг.
+    refresh();
+    const timer = setInterval(() => {
+      const hidden = document.visibilityState === "hidden";
+      if (hidden && Date.now() - lastAt < 30_000) return;
+      lastAt = Date.now();
+      refresh();
+    }, 6000);
     // Вернулись в приложение или починилась сеть — обновляемся сразу, не ожидая
     // круга: заодно уходят отметки прочтения, накопившиеся, пока связи не было.
     const onBack = () => {
@@ -1252,7 +1307,7 @@ export default function InboxPage() {
         className="border-border w-[320px] flex-none overflow-auto border-l px-5 py-5 max-xl:hidden"
       >
         {patient ? (
-          <PatientCardBody patientId={patient.id} />
+          <PatientCardBody patientId={patient.id} dialogId={selected?.id} />
         ) : selected ? (
           <div>
             <div className="text-md font-medium">Пациент не опознан</div>
@@ -1263,6 +1318,10 @@ export default function InboxPage() {
             <Link href="/patients" className="text-accent-text mt-3 inline-block text-sm hover:underline">
               Найти пациента
             </Link>
+            <div className="border-border-soft mt-5 border-t pt-5">
+              <div className="text-text-subtle mb-2.5 text-2xs">Ассистент администратора</div>
+              <AdminAssistant key={selected.id} dialogId={selected.id} patient={null} />
+            </div>
           </div>
         ) : null}
       </div>

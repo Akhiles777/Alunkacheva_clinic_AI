@@ -36,6 +36,21 @@ import { reportMaybeStale } from "@/lib/client/stale-build";
 /** Как часто перечитываем при открытой вкладке. */
 const REFRESH_MS = 60_000;
 
+/**
+ * Переход между разделами перечитывает базу, только если данные старше этого.
+ *
+ * Прежде КАЖДЫЙ переход тянул заново всех пациентов, все переписки с сотней
+ * последних сообщений в каждой, записи дня и курсы. Администратор щёлкает
+ * «Сегодня → Диалоги → Пациенты» за пять секунд — и сервер трижды отдавал всю
+ * базу, а экран ждал этого, прежде чем успокоиться. Отсюда «грузится долго и
+ * тяжело». Свежесть не страдает: круг раз в минуту и возврат на вкладку
+ * остаются, а через двадцать секунд переход снова перечитывает всё.
+ */
+const NAV_FRESH_MS = 20_000;
+
+/** Когда база перечитывалась целиком — общее для всех переходов вкладки. */
+let lastLoadAt = 0;
+
 export function StoreHydrator() {
   const pathname = usePathname();
 
@@ -51,6 +66,7 @@ export function StoreHydrator() {
        * запрос был в пути: на экране это выглядело как исчезнувшая правка.
        */
       const at = Date.now();
+      lastLoadAt = at;
       /**
        * Курсы — после пациентов: они приклеиваются к уже загруженным
        * карточкам. Иначе первый круг раскладывал бы их по пустому списку.
@@ -64,11 +80,17 @@ export function StoreHydrator() {
           });
         })
         .catch(reportFailure);
-      getConversations()
-        .then((records) => {
-          if (alive) hydrateDialogs(records);
-        })
-        .catch(reportFailure);
+      /**
+       * В «Диалогах» список переписок перечитывает сам экран, раз в шесть
+       * секунд. Второй такой же запрос отсюда — та же работа дважды.
+       */
+      if (!pathname?.startsWith("/inbox")) {
+        getConversations()
+          .then((records) => {
+            if (alive) hydrateDialogs(records);
+          })
+          .catch(reportFailure);
+      }
       getAppointmentsForStore()
         .then((appts) => {
           if (alive) hydrateAppointments(appts);
@@ -76,7 +98,7 @@ export function StoreHydrator() {
         .catch(reportFailure);
     };
 
-    load();
+    if (Date.now() - lastLoadAt >= NAV_FRESH_MS) load();
     const timer = setInterval(load, REFRESH_MS);
     // Вернулись на вкладку — данные нужны сразу, а не через минуту.
     const onVisible = () => {

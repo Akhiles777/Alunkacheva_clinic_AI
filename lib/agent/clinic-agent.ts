@@ -88,7 +88,7 @@ import {
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
 import { withoutQuote } from "./quoted";
-import { inHandoverFlow, timeDetail } from "./handover-flow";
+import { inHandoverFlow, rescheduleAsked, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames, specialistQueryPending } from "./specialist";
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { complexMedical, managementTopic } from "./specialist-rules";
@@ -1614,9 +1614,12 @@ async function replyToQuestion(
      * создаёт, о самой теме не рассуждает. Вопрос про услугу и «взрослому или
      * ребёнку» персональных данных не касается (§7) и задаётся свободно.
      */
-    const slotAsk = scheduleTopic(own) && asksForSlot(own);
+    const moving = wantsReschedule(own) && !asksAboutOwnBooking(own);
+    const slotAsk = scheduleTopic(own) && asksForSlot(own) && !moving;
     return respond(ctx, conversation.id, {
-      text: slotAsk
+      text: moving
+        ? "Поняла, передал(а) администратору — он подберёт время из тех, что вы просите, и напишет здесь же."
+        : slotAsk
         ? await slotHandoverText(ctx.companyId, [
             own,
             ...(await recentTurns(conversation.id)).map((t) => t.content),
@@ -2153,7 +2156,15 @@ async function replyToQuestion(
      * названием услуги и врача — и услышала «на какую услугу и для кого». Всё
      * это было прямо в её сообщении, а ответить всё равно мог только человек.
      */
-    if (asksForSlot(own)) {
+    /**
+     * Просьба ПЕРЕНЕСТИ сильнее вопроса об окне.
+     *
+     * «Не будет возможности перенести запись через неделю или когда есть у вас
+     * окошко» — слово «окошко» здесь про новое время для СУЩЕСТВУЮЩЕЙ записи.
+     * Проверка окна стояла первой, и человек, уже записанный, услышал «на какую
+     * услугу записываемся?». Услуга известна: она в самой записи.
+     */
+    if (asksForSlot(own) && !wantsReschedule(own)) {
       /**
        * Время подберёт человек — но разговор на этом не заканчивается.
        *
@@ -2239,6 +2250,12 @@ async function replyToQuestion(
         });
       }
       const list = mine.length === 1 ? mine[0] : mine.map((l) => `• ${l}`).join("\n");
+      /**
+       * Уточнение к просьбе о переносе, а не новость о записи
+       * (`rescheduleAsked`). «Если появятся вопросы — я здесь» в ответ на него
+       * говорит человеку, что его просьбу забыли.
+       */
+      const moving = !asked && rescheduleAsked(said);
       const head = asked
         ? mine.length === 1
           ? "Ваша запись:"
@@ -2251,7 +2268,9 @@ async function replyToQuestion(
           `${head} ${mine.length === 1 ? list : `\n${list}`}\n\n` +
           (asked
             ? "Если нужно что-то изменить — напишите, передам администратору."
-            : "Если появятся вопросы — я здесь."),
+            : moving
+              ? "Просьбу перенести её передал(а) администратору — он предложит другое время и напишет здесь же."
+              : "Если появятся вопросы — я здесь."),
       });
     }
   }

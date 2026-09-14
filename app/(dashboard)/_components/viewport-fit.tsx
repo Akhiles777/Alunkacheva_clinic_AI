@@ -43,6 +43,16 @@ export function ViewportFit() {
       frame = 0;
       const height = Math.round(vv.height);
       root.style.setProperty("--app-h", `${height}px`);
+      /**
+       * Где видимая область начинается.
+       *
+       * Safari на iPhone при фокусе поля не только открывает клавиатуру, но и
+       * ПРОКРУЧИВАЕТ страницу вверх, чтобы поле оказалось на виду. Оболочка
+       * при этом оставалась на месте: верх переписки уезжал под часы, а под
+       * полем ввода открывалась пустота — «нажимаешь на поле, и тебя
+       * сбрасывает вниз». Высоты для этого мало, нужна ещё и точка отсчёта.
+       */
+      root.style.setProperty("--app-top", `${Math.round(vv.offsetTop)}px`);
       const hidden = Math.round(window.innerHeight - height);
       if (hidden >= KEYBOARD_MIN_PX) root.setAttribute("data-kb", "open");
       else root.removeAttribute("data-kb");
@@ -66,6 +76,7 @@ export function ViewportFit() {
       vv.removeEventListener("resize", schedule);
       vv.removeEventListener("scroll", schedule);
       root.style.removeProperty("--app-h");
+      root.style.removeProperty("--app-top");
       root.removeAttribute("data-kb");
     };
   }, []);

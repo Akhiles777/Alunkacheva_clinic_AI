@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inHandoverFlow, timeDetail } from "./handover-flow";
+import { inHandoverFlow, rescheduleAsked, timeDetail } from "./handover-flow";
 
 const turn = (role: "user" | "assistant", content: string) => ({ role, content });
 
@@ -55,5 +55,42 @@ describe("timeDetail", () => {
     for (const t of ["Сколько стоит приём остеопата", "Где вы находитесь", "У вас есть парковка"]) {
       expect(timeDetail(t), t).toBe(false);
     }
+  });
+});
+
+describe("rescheduleAsked", () => {
+  it("уточнение после просьбы перенести — часть переноса (живой диалог 14 сентября)", () => {
+    expect(
+      rescheduleAsked([
+        turn(
+          "user",
+          "Здравствуй\nЯ извиняюсь, ребенок начал температурить вчера вечером, 8 месяцев ему\n\nНе будет возможности перенести запись через неделю или когда есть у вас окошко",
+        ),
+        turn("assistant", "Поняла, передал(а) администратору — он подберёт время и напишет здесь же."),
+        turn("user", "На остеопатию были записаны к Ирине Алигаджиевне"),
+      ]),
+    ).toBe(true);
+  });
+
+  it("без просьбы о переносе — обычное упоминание записи", () => {
+    expect(
+      rescheduleAsked([
+        turn("user", "Сколько стоит остеопатия?"),
+        turn("assistant", "Детский приём — 6 000 ₽."),
+        turn("user", "Записана на 8 сентября"),
+      ]),
+    ).toBe(false);
+  });
+
+  it("старая просьба давно позади — не тянем её в новый разговор", () => {
+    expect(
+      rescheduleAsked([
+        turn("user", "Можно перенести запись?"),
+        turn("user", "Спасибо"),
+        turn("user", "А сколько стоит БОС?"),
+        turn("user", "Хорошо"),
+        turn("user", "Записана на 20 сентября"),
+      ]),
+    ).toBe(false);
   });
 });

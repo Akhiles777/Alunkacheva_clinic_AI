@@ -15,7 +15,8 @@ import {
   type DialogTaskView,
 } from "./dialog-actions";
 import { noteUse } from "../_components/usage-actions";
-import { dialogBriefAction, type DialogBriefView } from "./assistant-actions";
+import { AdminAssistant } from "../_components/admin-assistant";
+import { useDb } from "@/app/_data/store";
 
 /**
  * Заметка, передача коллеге и отложенная отправка — строкой под перепиской.
@@ -67,13 +68,15 @@ function nextMorning(): Date {
   return d;
 }
 
-type Panel = "notes" | "handoff" | "later" | "brief" | null;
+type Panel = "notes" | "handoff" | "later" | "assistant" | null;
 
 export function DialogTools({
   dialogId,
+  patientId,
   onChanged,
 }: {
   dialogId: string;
+  patientId: string | null;
   /** Список диалогов обновится: у переписки сменился хозяин или появилось отложенное. */
   onChanged: () => void;
 }) {
@@ -81,8 +84,8 @@ export function DialogTools({
   const [notes, setNotes] = useState<DialogNoteView[]>([]);
   const [tasks, setTasks] = useState<DialogTaskView[]>([]);
   const [colleagues, setColleagues] = useState<ColleagueView[]>([]);
-  /** Сводка переписки: считается у нас, наружу ничего не уходит (§7). */
-  const [brief, setBrief] = useState<DialogBriefView | null>(null);
+  const db = useDb();
+  const patient = patientId ? (db.patients.find((p) => p.id === patientId) ?? null) : null;
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
@@ -128,18 +131,6 @@ export function DialogTools({
     };
   }, [dialogId]);
 
-  /** Сводку считаем по нажатию: она нужна не в каждом разговоре. */
-  useEffect(() => {
-    if (panel !== "brief" || brief) return;
-    let alive = true;
-    void dialogBriefAction(dialogId)
-      .then((b) => alive && setBrief(b))
-      .catch(() => alive && setBrief({ lines: [], topics: [] }));
-    return () => {
-      alive = false;
-    };
-  }, [panel, brief, dialogId]);
-
   /** Коллеги нужны только для передачи — за ними ходим, когда открыли форму. */
   useEffect(() => {
     if (panel !== "handoff" || colleagues.length > 0) return;
@@ -160,12 +151,19 @@ export function DialogTools({
   }
 
   return (
-    <div className="border-border-soft flex-none border-t px-5 py-1.5">
+    <div className="dialog-tools border-border-soft flex-none border-t px-5 py-1.5">
       {/* Подпись, а не вкладки: три слова мелким шрифтом под полем ввода. */}
       <div className="text-text-subtle flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
-        <Word active={panel === "brief"} onClick={() => toggle("brief")}>
-          Что это за пациент
-        </Word>
+        {/*
+          Ассистент администратора живёт в правой колонке рядом с «Личным
+          делом». Здесь он только там, где этой колонки нет — на узком экране и
+          телефоне: иначе одна и та же сводка стояла бы на экране дважды.
+        */}
+        <span className="xl:hidden">
+          <Word active={panel === "assistant"} onClick={() => toggle("assistant")}>
+            Ассистент
+          </Word>
+        </span>
         <Word active={panel === "notes"} onClick={() => toggle("notes")}>
           Заметка{notes.length > 0 ? ` · ${notes.length}` : ""}
         </Word>
@@ -179,33 +177,9 @@ export function DialogTools({
         {error ? <span className="text-accent-text">{error}</span> : null}
       </div>
 
-      {panel === "brief" ? (
-        <div className="mt-2 mb-1 flex flex-col gap-1.5">
-          {!brief ? (
-            <p className="text-text-muted text-xs">Смотрим…</p>
-          ) : brief.lines.length === 0 ? (
-            <p className="text-text-muted text-xs leading-snug">
-              Рассказывать нечего: переписка короткая, всё видно глазами.
-            </p>
-          ) : (
-            <>
-              <ul className="flex flex-col gap-0.5">
-                {brief.lines.map((l) => (
-                  <li key={l} className="text-text-muted text-xs leading-snug">
-                    {l}
-                  </li>
-                ))}
-              </ul>
-              {brief.topics.length > 0 ? (
-                <p className="text-text-subtle text-2xs">
-                  Спрашивал про: {brief.topics.join(", ")}.
-                </p>
-              ) : null}
-              <p className="text-text-subtle text-2xs">
-                Посчитано у нас, из своих данных. Переписка во внешние сервисы не отправляется.
-              </p>
-            </>
-          )}
+      {panel === "assistant" ? (
+        <div className="mt-2 mb-1 xl:hidden">
+          <AdminAssistant dialogId={dialogId} patient={patient} />
         </div>
       ) : null}
 

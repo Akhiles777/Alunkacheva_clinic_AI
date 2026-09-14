@@ -6,6 +6,7 @@ import { getPatientRecord } from "@/app/(dashboard)/patients/actions";
 import { needsBreakdown, visitTitle } from "@/lib/visit-title";
 import { SourcePicker } from "./visit-source";
 import { PatientDossier } from "./patient-dossier";
+import { AdminAssistant } from "./admin-assistant";
 import { formatMoney } from "@/lib/format";
 import { glanceOf } from "@/lib/metrics/patient-glance";
 import {
@@ -193,9 +194,12 @@ const DAY_FMT = new Intl.DateTimeFormat("ru-RU", {
 export function PatientCardBody({
   patientId,
   editable = false,
+  dialogId,
 }: {
   patientId: string;
   editable?: boolean;
+  /** Карточка открыта рядом с перепиской — показываем ассистента администратора. */
+  dialogId?: string;
 }) {
   const db = useDb();
   const patient = db.patients.find((p) => p.id === patientId);
@@ -277,6 +281,18 @@ export function PatientCardBody({
       ) : null}
 
       <Glance patient={patient} />
+
+      {/*
+        Ассистент администратора — в колонке рядом с перепиской, а не ссылкой
+        под полем ввода: там его не находили. Только в «Диалогах»: сводка
+        считается по конкретной переписке.
+      */}
+      {dialogId ? (
+        <div className="border-border-soft mt-5 border-t pt-5">
+          <SectionLabel>Ассистент администратора</SectionLabel>
+          <AdminAssistant key={dialogId} dialogId={dialogId} patient={patient} />
+        </div>
+      ) : null}
 
       {/* телефоны */}
       <div className="border-border-soft mt-5 border-t pt-5">
