@@ -153,18 +153,33 @@ export async function getPatientRecords(): Promise<PatientRecord[]> {
   const session = await getSession();
   const scope = await patientScope(session);
   if (!scope) return [];
-  const patients = await prisma.patient.findMany({
-    where: { companyId: session.companyId, deletedAt: null, ...scope },
-    orderBy: { createdAt: "asc" },
-    include: {
-      source: { select: { title: true } },
-      phones: { orderBy: { createdAt: "asc" } },
-      notes: { orderBy: { createdAt: "asc" } },
-      relationsOut: true,
-      // Состоявшиеся визиты: по ним ставится метка «первичный/повторный».
-      _count: { select: { appointments: { where: { status: "ARRIVED", deletedAt: null } } } },
-    },
-  });
+  /**
+   * Состоявшиеся визиты — ОДНОЙ группировкой на всю базу, а не подзапросом на
+   * каждого пациента.
+   *
+   * Список перечитывается раз в минуту в каждой открытой вкладке, и счётчик на
+   * строку означал по запросу на пациента: семьсот карточек — семьсот
+   * подсчётов каждую минуту. Считается по тому же правилу («пришёл»), метка
+   * «первичный/повторный» от этого не меняется.
+   */
+  const [patients, arrived] = await Promise.all([
+    prisma.patient.findMany({
+      where: { companyId: session.companyId, deletedAt: null, ...scope },
+      orderBy: { createdAt: "asc" },
+      include: {
+        source: { select: { title: true } },
+        phones: { orderBy: { createdAt: "asc" } },
+        notes: { orderBy: { createdAt: "asc" } },
+        relationsOut: true,
+      },
+    }),
+    prisma.appointment.groupBy({
+      by: ["patientId"],
+      where: { companyId: session.companyId, deletedAt: null, status: "ARRIVED" },
+      _count: { _all: true },
+    }),
+  ]);
+  const arrivedBy = new Map(arrived.map((a) => [a.patientId, a._count._all]));
   // Полночь клиники, а не сервера: на UTC-хостинге «сегодня» начиналось в 03:00.
   const startOfToday = startOfClinicDay();
   return patients.map((p) => ({
@@ -174,7 +189,7 @@ export async function getPatientRecords(): Promise<PatientRecord[]> {
     sourceDerived: p.sourceConfidence === "DERIVED",
     firstSeenToday: p.firstSeenAt >= startOfToday,
     firstSeenAt: p.firstSeenAt.toISOString(),
-    visitStage: stageOf(p._count.appointments),
+    visitStage: stageOf(arrivedBy.get(p.id) ?? 0),
     phones: p.phones.map((ph) => ({
       id: ph.id,
       e164: ph.phone,

@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/db";
+import { sendInstagram } from "@/lib/integrations/instagram/client";
 import { startOfClinicDay } from "@/lib/clinic-time";
 import { isNewInquiryWaiting } from "@/lib/inbox/needs-reply";
 import { getSession } from "@/lib/server/session";
@@ -475,6 +476,32 @@ const ESCALATION_LABEL: Record<string, string> = {
 const MESSAGE_WINDOW = 100;
 
 /**
+ * Сколько переписок отдаём списком.
+ *
+ * Список читается сверху и обновляется раз в шесть секунд; каждая строка тянет
+ * за собой последние сто сообщений. Без границы запрос рос вместе с базой —
+ * год работы клиники означал бы несколько тысяч переписок и сотни тысяч
+ * сообщений на КАЖДЫЙ круг опроса. Это и есть «платформа грузится долго и
+ * сервер перегружается».
+ *
+ * Триста последних по времени сообщения — это заведомо больше, чем открытых
+ * разговоров у клиники; закрытые и старые ищутся поиском ⌘K и открываются из
+ * карточки пациента, и так это подписано на экране.
+ */
+const DIALOG_LIMIT = 300;
+
+/**
+ * Как часто чинить привязку диалогов к карточкам по номеру.
+ *
+ * Эта починка — ЗАПИСЬ внутри чтения списка, и она шла на каждом круге опроса:
+ * раз в шесть секунд у каждой вкладки. Новые сообщения привязываются сами при
+ * обработке, а здесь подхватываются диалоги, заведённые до появления правила,
+ * — им спешить некуда.
+ */
+const RELINK_EVERY_MS = 5 * 60_000;
+let relinkedAt = 0;
+
+/**
  * Текст сообщения без наших пометок о вложении.
  *
  * В базе пометка нужна: без неё сообщение с одной фотографией выглядит пустым
@@ -540,6 +567,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
      */
     where: { companyId: session.companyId, channel: { not: "TELEGRAM" } },
     orderBy: { lastMessageAt: "desc" },
+    take: DIALOG_LIMIT,
     include: {
       patient: {
         select: {
@@ -562,7 +590,14 @@ export async function getConversations(): Promise<DialogRecord[]> {
         orderBy: { createdAt: "desc" },
         take: MESSAGE_WINDOW,
       },
-      _count: { select: { messages: { where: { deletedAt: null, isDraft: false } } } },
+      /**
+       * Сколько всего сообщений в переписке — ТОЛЬКО когда их больше окна.
+       *
+       * Считалось подзапросом на каждую строку списка и на каждый круг опроса
+       * ради одной подписи «показаны последние 100 из 240». Теперь число
+       * приходит отдельным запросом ниже и только по тем перепискам, где
+       * окно действительно не вместило всё.
+       */
       escalations: {
         where: { status: { not: "RESOLVED" } },
         orderBy: { createdAt: "desc" },
@@ -589,12 +624,15 @@ export async function getConversations(): Promise<DialogRecord[]> {
    * Новые сообщения привязываются при обработке; здесь подхватываем диалоги,
    * заведённые раньше этого правила.
    */
-  await linkKnownPhones(
-    session.companyId,
-    convs
-      .filter((c) => !c.patientId && c.channel === "WHATSAPP")
-      .map((c) => ({ id: c.id, externalUserId: c.externalUserId, phoneE164: c.phoneE164 })),
-  );
+  if (Date.now() - relinkedAt > RELINK_EVERY_MS) {
+    relinkedAt = Date.now();
+    await linkKnownPhones(
+      session.companyId,
+      convs
+        .filter((c) => !c.patientId && c.channel === "WHATSAPP")
+        .map((c) => ({ id: c.id, externalUserId: c.externalUserId, phoneE164: c.phoneE164 })),
+    );
+  }
 
   const orphaned = convs.filter((c) => c.patient?.deletedAt).map((c) => c.id);
   if (orphaned.length > 0) {
@@ -627,6 +665,23 @@ export async function getConversations(): Promise<DialogRecord[]> {
         })
       : Promise.resolve([]),
   ]);
+  /**
+   * Полное число сообщений — только у переписок, где окно забилось целиком.
+   *
+   * Подпись «показаны последние 100 из 240» нужна ровно там; у остальных
+   * сотня сообщений в окне и есть вся переписка, и считать нечего.
+   */
+  const fullWindow = convs.filter((c) => c.messages.length >= MESSAGE_WINDOW).map((c) => c.id);
+  const totals = new Map<string, number>();
+  if (fullWindow.length > 0) {
+    const counted = await prisma.message.groupBy({
+      by: ["conversationId"],
+      where: { conversationId: { in: fullWindow }, deletedAt: null, isDraft: false },
+      _count: { _all: true },
+    });
+    for (const row of counted) totals.set(row.conversationId, row._count._all);
+  }
+
   const nowMs = Date.now();
   const dueReminder = new Map<string, { id: string; body: string }>();
   const scheduledCount = new Map<string, number>();
@@ -740,7 +795,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
        */
       preview: last ? splitQuote(stripMarks(last.body, attachmentsOf(last.attachments, last.id))).own : "",
       at: atLabel(c.lastMessageAt),
-      totalMessages: c._count.messages,
+      totalMessages: totals.get(c.id) ?? c.messages.length,
       practice: c.isPractice,
       reminder: dueReminder.get(c.id) ?? null,
       scheduled: scheduledCount.get(c.id) ?? 0,
@@ -1005,6 +1060,41 @@ export async function sendMessageDb(
       });
       return { ok: res.ok, externalId: res.externalId, error: res.error };
     }
+    if (conv.channel === "INSTAGRAM") {
+      /**
+       * Файлы в Instagram не отправляем, и это не «пока не сделали».
+       *
+       * Meta принимает вложение только ссылкой на открытый адрес. Снимок
+       * направления, доступный любому, кто ссылку узнал, — это разглашение
+       * сведений об обращении за помощью (§7, ст. 13 323-ФЗ). Пока Meta не
+       * даёт загрузку байтами, честнее отказать словами.
+       */
+      if (file) {
+        return {
+          ok: false,
+          error:
+            "Instagram принимает файлы только по открытой ссылке, а медицинские снимки так " +
+            "пересылать нельзя. Отправьте текстом или попросите номер для WhatsApp.",
+        };
+      }
+      /**
+       * Окно ответа — 24 часа с последнего сообщения пациента, и считает его
+       * сам клиент Instagram. Дату берём из переписки: это то же правило, что
+       * показывает экран до нажатия (§5).
+       */
+      const lastIn = await prisma.message.findFirst({
+        where: { conversationId, direction: "IN", deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      });
+      const res = await sendInstagram(
+        session.companyId,
+        conv.externalUserId,
+        caption,
+        lastIn?.createdAt ?? null,
+      );
+      return { ok: res.ok, externalId: res.externalId, error: res.error };
+    }
     return { ok: false, error: "Канал ещё не подключён" };
   };
 
@@ -1019,7 +1109,11 @@ export async function sendMessageDb(
      * тренироваться не на чем.
      */
     delivered = true;
-  } else if (conv.channel !== "TELEGRAM" && conv.channel !== "WHATSAPP") {
+  } else if (
+    conv.channel !== "TELEGRAM" &&
+    conv.channel !== "WHATSAPP" &&
+    conv.channel !== "INSTAGRAM"
+  ) {
     failure = media.length
       ? "В этом канале файлы не отправляются."
       : "Канал ещё не подключён — сообщение сохранено, но пациенту не ушло.";
