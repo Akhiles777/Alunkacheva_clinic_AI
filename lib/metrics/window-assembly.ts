@@ -133,21 +133,35 @@ export function moveIsSafe(
   return true;
 }
 
-/** Кого вообще можно предлагать двигать. */
-export function movable(booking: Booking, ctx: AssemblyContext, now: Date): boolean {
-  // Первичного не двигаем никогда: человека, который идёт впервые, нельзя
-  // просить перенести ради другого.
-  if (booking.isFirstVisit) return false;
-  // Тот, кто ходит редко и случайно, договариваться не обязан.
-  if (!booking.regular) return false;
-  // Завтра — поздно: договориться не успеют.
+/**
+ * Почему запись двигать нельзя — словами, а не «нет подходящего переноса».
+ *
+ * Панель отвечала одной общей фразой на все случаи сразу, и отличить «функция
+ * не работает» от «сегодня двигать некого» было нельзя. Причин четыре, и
+ * действия по ним разные: подождать другого дня, позвонить самому, заполнить
+ * настройку.
+ */
+export type Blocker = "first" | "rare" | "soon" | "called";
+
+export function blockerFor(booking: Booking, ctx: AssemblyContext, now: Date): Blocker | null {
+  if (booking.isFirstVisit) return "first";
+  if (!booking.regular) return "rare";
   const days = Math.round(
     (startOfDay(booking.date).getTime() - startOfDay(now).getTime()) / (24 * 3600 * 1000),
   );
-  if (days < MIN_DAYS_AHEAD) return false;
-  // Кому и так пишут — не трогаем: два повода в одном звонке путают обоих.
-  if (ctx.alreadyCalled.has(booking.patientId)) return false;
-  return true;
+  if (days < MIN_DAYS_AHEAD) return "soon";
+  if (ctx.alreadyCalled.has(booking.patientId)) return "called";
+  return null;
+}
+
+/** Кого вообще можно предлагать двигать. */
+export function movable(booking: Booking, ctx: AssemblyContext, now: Date): boolean {
+  /**
+   * Правила все до одного живут в `blockerFor`: первичного не двигаем никогда,
+   * редкого гостя просить неловко, завтрашнее не успеют согласовать, а тому,
+   * кому и так звонят, два повода в одном разговоре только мешают.
+   */
+  return blockerFor(booking, ctx, now) === null;
 }
 
 function startOfDay(d: Date): Date {

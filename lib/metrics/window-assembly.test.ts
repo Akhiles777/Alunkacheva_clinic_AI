@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assembleWindow,
+  blockerFor,
   freedWindow,
   MAX_SHIFT_MIN,
   MAX_SUGGESTIONS,
@@ -188,5 +189,29 @@ describe("собранное окно", () => {
     const freed = freedWindow(booking(), 940, c);
     // 9:00–14:00 свободно, дальше занято до 15:40 — окно 300 минут.
     expect(freed).toEqual({ startMinute: 540, endMinute: 880 });
+  });
+});
+
+
+/**
+ * Причина отказа должна быть НАЗВАНА: «собрать не получится» на все случаи
+ * сразу читается как «функция не работает».
+ */
+describe("blockerFor", () => {
+  it("называет причину, по которой запись не двигают", () => {
+    const c = ctx();
+    expect(blockerFor(booking({ isFirstVisit: true }), c, NOW)).toBe("first");
+    expect(blockerFor(booking({ regular: false }), c, NOW)).toBe("rare");
+    expect(blockerFor(booking({ date: new Date("2026-09-10T00:00:00+03:00") }), c, NOW)).toBe("soon");
+    expect(
+      blockerFor(booking({ patientId: "p9" }), { ...c, alreadyCalled: new Set(["p9"]) }, NOW),
+    ).toBe("called");
+  });
+
+  it("у подходящей записи причины нет — и её можно двигать", () => {
+    const c = ctx();
+    const b = booking();
+    expect(blockerFor(b, c, NOW)).toBeNull();
+    expect(movable(b, c, NOW)).toBe(true);
   });
 });

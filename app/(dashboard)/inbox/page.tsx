@@ -34,6 +34,7 @@ import {
   getConversations,
   getInboxTemplates,
   type ApprovedTemplate,
+  type InboxTemplates,
   type DialogAttachmentRecord,
 } from "./actions";
 import { Composer } from "./composer";
@@ -455,8 +456,12 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
   const [ping, setPing] = useState<{ dialogId: string; text: string } | null>(null);
   const [pinging, setPinging] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
-  const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
-  const [quickReplies, setQuickReplies] = useState<string[]>([]);
+  const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>(
+    () => templatesCache?.approved ?? [],
+  );
+  const [quickReplies, setQuickReplies] = useState<string[]>(() => templatesCache?.quickReplies ?? []);
+  /** Пока список не пришёл, меню «/» честно говорит об этом, а не молчит. */
+  const [templatesLoading, setTemplatesLoading] = useState(templatesCache === null);
 
   /**
    * Открыли переписку — сразу к последнему сообщению. Читают всегда конец, а
@@ -507,15 +512,19 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
     let alive = true;
     // Шаблоны и быстрые ответы приходят из раздела «Шаблоны»: раньше быстрые
     // ответы были зашиты в этом файле и настройки на них не влияли.
-    getInboxTemplates()
+    loadTemplates()
       .then((t) => {
         if (!alive) return;
         setApprovedTemplates(t.approved);
         setQuickReplies(t.quickReplies);
+        setTemplatesLoading(false);
       })
-      // Шаблоны не пришли — молча: без них поле ввода работает как обычно, а
-      // говорить об этом человеку нечего, делать он всё равно ничего не станет.
-      .catch(reportMaybeStale);
+      // Шаблоны не пришли — меню по «/» скажет об этом словами, а не покажет
+      // пустоту: администратор нажал «/» и ждёт список.
+      .catch((e: unknown) => {
+        if (alive) setTemplatesLoading(false);
+        reportMaybeStale(e);
+      });
     return () => {
       alive = false;
     };
@@ -969,6 +978,7 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           onCancelReply={() => setReplyTo(null)}
           onSend={submit}
           quickReplies={quickReplies}
+          templatesLoading={templatesLoading}
           templates={approvedTemplates}
           onSendTemplate={(templateId, title) =>
             void sendTemplate(dialog.id, templateId, title).then((res) => {
@@ -1024,6 +1034,40 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
   );
 }
 
+
+/**
+ * Шаблоны и быстрые ответы — один запрос на вкладку.
+ *
+ * Список запрашивался при каждом открытии переписки, и пока ответ шёл,
+ * нажатие «/» не показывало ничего: меню рисовалось только при непустом
+ * списке. Со стороны это «шаблоны выходят долго, а иногда не выходят вовсе,
+ * и помогает перезагрузка страницы».
+ *
+ * Держим ответ в памяти вкладки и перечитываем раз в пять минут: шаблоны
+ * меняют в настройках редко, а список нужен мгновенно.
+ */
+let templatesCache: InboxTemplates | null = null;
+let templatesAt = 0;
+let templatesInFlight: Promise<InboxTemplates> | null = null;
+const TEMPLATES_TTL_MS = 5 * 60_000;
+
+function loadTemplates(): Promise<InboxTemplates> {
+  if (templatesCache && Date.now() - templatesAt < TEMPLATES_TTL_MS) {
+    return Promise.resolve(templatesCache);
+  }
+  if (!templatesInFlight) {
+    templatesInFlight = getInboxTemplates()
+      .then((t) => {
+        templatesCache = t;
+        templatesAt = Date.now();
+        return t;
+      })
+      .finally(() => {
+        templatesInFlight = null;
+      });
+  }
+  return templatesInFlight;
+}
 
 export default function InboxPage() {
   const db = useDb();

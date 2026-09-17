@@ -2,7 +2,7 @@
 
 import { getSession } from "@/lib/server/session";
 import { windowCandidates, windowStillFree, type WindowOffer } from "@/lib/server/window-candidates";
-import { suggestAssembly, type AssemblySuggestion } from "@/lib/server/window-assembly";
+import { suggestAssembly, type AssemblyResult } from "@/lib/server/window-assembly";
 
 /**
  * Кого позвать в свободное окно.
@@ -50,8 +50,10 @@ export async function assemblyAction(input: {
   roomId: string;
   dayIso: string;
   needMin: number;
-}): Promise<AssemblySuggestion[]> {
+}): Promise<AssemblyResult> {
   const session = await getSession();
-  if (!Number.isFinite(input.needMin) || input.needMin <= 0) return [];
+  if (!Number.isFinite(input.needMin) || input.needMin <= 0) {
+    return { rows: [], note: "Длительность выбрана неверно." };
+  }
   return suggestAssembly(session.companyId, input);
 }

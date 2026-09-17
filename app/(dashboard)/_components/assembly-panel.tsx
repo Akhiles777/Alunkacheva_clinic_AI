@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { assemblyAction } from "./window-actions";
-import type { AssemblySuggestion } from "@/lib/server/window-assembly";
+import type { AssemblyResult } from "@/lib/server/window-assembly";
 
 /**
  * «Окна на 90 минут нет — но его можно собрать».
@@ -27,7 +27,7 @@ export function AssemblyPanel({
   onClose: () => void;
 }) {
   const [need, setNeed] = useState(90);
-  const [rows, setRows] = useState<AssemblySuggestion[] | null>(null);
+  const [result, setResult] = useState<AssemblyResult | null>(null);
   const [asked, setAsked] = useState(false);
 
   /**
@@ -40,8 +40,12 @@ export function AssemblyPanel({
     if (!asked) return;
     let alive = true;
     void assemblyAction({ roomId, dayIso, needMin: need })
-      .then((r) => alive && setRows(r))
-      .catch(() => alive && setRows([]));
+      .then((r) => alive && setResult(r))
+      .catch(
+        () =>
+          alive &&
+          setResult({ rows: [], note: "Не удалось посчитать — нет связи с сервером." }),
+      );
     return () => {
       alive = false;
     };
@@ -78,7 +82,7 @@ export function AssemblyPanel({
             value={need}
             onChange={(e) => {
               setNeed(Number(e.target.value));
-              setRows(null);
+              setResult(null);
               setAsked(true);
             }}
             className="border-border-input bg-surface rounded-md border px-2 py-1.5 text-sm outline-none"
@@ -92,7 +96,7 @@ export function AssemblyPanel({
           <button
             type="button"
             onClick={() => {
-              setRows(null);
+              setResult(null);
               setAsked(true);
             }}
             className="bg-accent text-accent-contrast rounded-md px-3 py-1.5 text-sm font-medium"
@@ -106,17 +110,19 @@ export function AssemblyPanel({
             Покажем, какой один перенос освободит столько времени в этом кабинете. Двигать будем
             только тех, кто ходит регулярно, и не завтрашние записи — договориться нужно успеть.
           </p>
-        ) : rows === null ? (
+        ) : result === null ? (
           <p className="text-text-muted mt-3 text-sm">Считаем…</p>
-        ) : rows.length === 0 ? (
-          <p className="text-text-muted mt-3 text-sm leading-snug">
-            Собрать не получится: подходящего переноса нет. Первичных и тех, кому и так звонят, мы
-            не двигаем, а сдвиг больше двух часов не предлагаем.
-          </p>
+        ) : result.rows.length === 0 ? (
+          /*
+            Причина — словами. «Собрать не получится» на все случаи сразу
+            читалось как «функция не работает»: администратор не знал, ждать
+            другого дня, звонить самому или это поломка.
+          */
+          <p className="text-text-muted mt-3 text-sm leading-snug">{result.note}</p>
         ) : (
           <>
             <ul className="mt-3 divide-border-soft divide-y">
-              {rows.map((r) => (
+              {result.rows.map((r) => (
                 <li key={r.bookingId} className="py-2.5">
                   <div className="text-sm">
                     Перенести <span className="font-medium">{r.patientName}</span> ({r.serviceTitle})

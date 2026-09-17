@@ -42,6 +42,8 @@ export interface ComposerProps {
   quickReplies: string[];
   /** Утверждённые шаблоны: они уходят с подстановкой, а не как текст. */
   templates: { id: string; title: string; body: string }[];
+  /** Список ещё не пришёл: меню «/» говорит об этом, а не показывает пустоту. */
+  templatesLoading?: boolean;
   onSendTemplate: (templateId: string, title: string) => void;
 }
 
@@ -61,6 +63,7 @@ export function Composer({
   onSend,
   quickReplies,
   templates,
+  templatesLoading = false,
   onSendTemplate,
 }: ComposerProps) {
   const [text, setText] = useState(() => draftOf(dialogId));
@@ -415,6 +418,20 @@ export function Composer({
         кнопку вслепую — а в половине случаев узнавал из переписки, что данных
         не хватило и не ушло ничего.
       */}
+      {/*
+        Меню открывается на «/» ВСЕГДА, даже когда список ещё не пришёл.
+        Прежде оно рисовалось только при непустом списке: администратор нажимал
+        «/», не видел ничего и перезагружал страницу.
+      */}
+      {slash !== null && found.length === 0 ? (
+        <div className="border-border bg-surface text-text-muted mb-2 rounded-md border px-3 py-2 text-xs">
+          {templatesLoading
+            ? "Загружаем шаблоны…"
+            : templates.length === 0
+              ? "Шаблонов пока нет — их заводят в «Настройки → Шаблоны»."
+              : "Ничего не нашлось по этому слову."}
+        </div>
+      ) : null}
       {slash !== null && found.length > 0 ? (
         <div className="border-border bg-surface mb-2 overflow-hidden rounded-md border">
           <ul className="max-h-52 overflow-auto">
