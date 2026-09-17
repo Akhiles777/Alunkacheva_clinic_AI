@@ -38,6 +38,17 @@ const MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
  */
 const WEEK_RE = /^w(\d{4})-(\d{2})-(\d{2})$/;
 
+/**
+ * Произвольный отрезок вида «d2026-09-01..2026-09-18» — обе даты включительно.
+ *
+ * Появился из-за живого разговора с аналитиком: владелец спросил загрузку
+ * кабинетов за 1–18 сентября, а готового среза за этот отрезок в сводке не
+ * было — ни месяц, ни неделя им не описываются. Своя арифметика модели
+ * запрещена (§8), и аналитик честно отказывался отвечать. Теперь такой отрезок
+ * — такой же период, как месяц: его считает тот же код, что и отчёты.
+ */
+const RANGE_RE = /^d(\d{4})-(\d{2})-(\d{2})\.\.(\d{4})-(\d{2})-(\d{2})$/;
+
 /** Календарный месяц вида «2026-05»? */
 export function isMonthKey(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -60,6 +71,55 @@ export function isWeekKey(value: unknown): value is string {
   return d.getUTCDay() === 1;
 }
 
+/** Произвольный отрезок вида «d2026-09-01..2026-09-18»? */
+export function isRangeKey(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const m = RANGE_RE.exec(value);
+  if (!m) return false;
+  const from = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`);
+  const to = new Date(`${m[4]}-${m[5]}-${m[6]}T00:00:00Z`);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return false;
+  // Конец не раньше начала и не длиннее года: отрезок в пять лет — это уже не
+  // «срез», а полный просмотр базы на каждый вопрос.
+  const days = (to.getTime() - from.getTime()) / (24 * 3600 * 1000);
+  return days >= 0 && days <= 366;
+}
+
+/** Границы отрезка в поясе клиники; верхняя — конец последних суток. */
+export function rangeBounds(key: string, offsetHours = 3): { from: Date; to: Date } {
+  const m = RANGE_RE.exec(key);
+  if (!m) throw new Error(`Неверный отрезок: ${key}`);
+  const from = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), -offsetHours));
+  const to = new Date(Date.UTC(Number(m[4]), Number(m[5]) - 1, Number(m[6]) + 1, -offsetHours));
+  return { from, to };
+}
+
+/** «d2026-09-01..2026-09-18» → «1–18 сен». Через месяц — оба месяца. */
+export function rangeLabel(key: string): string {
+  const m = RANGE_RE.exec(key);
+  if (!m) return key;
+  const from = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  const to = new Date(Date.UTC(Number(m[4]), Number(m[5]) - 1, Number(m[6])));
+  const toMonth = SHORT_MONTHS[to.getUTCMonth()];
+  if (from.getUTCFullYear() !== to.getUTCFullYear()) {
+    return `${from.getUTCDate()} ${SHORT_MONTHS[from.getUTCMonth()]} ${from.getUTCFullYear()} – ${to.getUTCDate()} ${toMonth} ${to.getUTCFullYear()}`;
+  }
+  if (from.getUTCMonth() !== to.getUTCMonth()) {
+    return `${from.getUTCDate()} ${SHORT_MONTHS[from.getUTCMonth()]} – ${to.getUTCDate()} ${toMonth}`;
+  }
+  return `${from.getUTCDate()}–${to.getUTCDate()} ${toMonth}`;
+}
+
+/** Ключ отрезка по двум датам. */
+export function rangeKeyOf(from: Date, to: Date, offsetHours = 3): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  const day = (d: Date) => {
+    const local = new Date(d.getTime() + offsetHours * 3600 * 1000);
+    return `${local.getUTCFullYear()}-${p(local.getUTCMonth() + 1)}-${p(local.getUTCDate())}`;
+  };
+  return `d${day(from)}..${day(to)}`;
+}
+
 /** Разбор периода из адресной строки: чужое значение до расчёта не доходит. */
 export function isPeriodKey(value: unknown): value is PeriodKey {
   return (
@@ -67,7 +127,8 @@ export function isPeriodKey(value: unknown): value is PeriodKey {
     value === "month" ||
     value === "quarter" ||
     isMonthKey(value) ||
-    isWeekKey(value)
+    isWeekKey(value) ||
+    isRangeKey(value)
   );
 }
 

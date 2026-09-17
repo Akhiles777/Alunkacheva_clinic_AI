@@ -19,7 +19,7 @@ const MODEL = process.env.ROUTER_AI_MODEL || "anthropic/claude-sonnet-4.5";
 
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
-import { buildClinicSnapshot } from "@/lib/assistant/server-context";
+import { buildAskedPeriod, buildClinicSnapshot } from "@/lib/assistant/server-context";
 import { personaFor } from "@/lib/assistant/personas";
 import { toPlainText } from "@/lib/assistant/plain-text";
 import { sanitizeError } from "@/lib/agent/run-log";
@@ -76,7 +76,23 @@ export async function askAI(
    * сейчас, и вопрос может быть про это.
    */
   const snapshot = await buildClinicSnapshot(session.companyId).catch(() => "");
-  const fullContext = snapshot ? `${snapshot}\n\n# Что открыто на экране\n${context}` : context;
+  /**
+   * Срез за отрезок, о котором спросили.
+   *
+   * Владелец спросил «загрузку кабинетов за 1–18 сентября» и получил отказ:
+   * готового итога за этот отрезок в сводке не было, а считать самому модели
+   * запрещено (§8). Теперь отрезок узнаётся в самом вопросе и считается нашим
+   * кодом — теми же функциями, что и отчёты. Периода в вопросе нет — ничего
+   * лишнего не считаем и не запрашиваем.
+   */
+  const asked = await buildAskedPeriod(session.companyId, question).catch(() => "");
+  const fullContext = [
+    snapshot,
+    asked,
+    context ? `# Что открыто на экране\n${context}` : "",
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
   // «owner» — отдельный экран кабинета владельца; там роль задана самим
   // разделом, но право на выручку всё равно проверяем.
   const role = persona === "owner" ? "OWNER" : session.role;

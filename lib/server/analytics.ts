@@ -15,6 +15,9 @@ import {
   weekBounds,
   weekKeyOf,
   weekLabel,
+  isRangeKey,
+  rangeBounds,
+  rangeLabel,
 } from "@/lib/metrics/types";
 import type {
   DashboardMetrics,
@@ -58,6 +61,8 @@ const PERIOD_LABEL: Record<string, string> = {
  */
 export function periodBounds(period: PeriodKey, now: Date = new Date()): { from: Date; to: Date } {
   if (isMonthKey(period)) return monthBounds(period);
+  // Произвольный отрезок — «1–18 сентября» из вопроса владельца аналитику.
+  if (isRangeKey(period)) return rangeBounds(period);
   // Календарная неделя: тот же отрезок, что показывает столбец графика.
   if (isWeekKey(period)) return weekBounds(period);
 
@@ -90,6 +95,7 @@ export function periodBounds(period: PeriodKey, now: Date = new Date()): { from:
 /** Подпись периода для экрана. */
 export function periodLabel(period: PeriodKey): string {
   if (isMonthKey(period)) return monthLabel(period);
+  if (isRangeKey(period)) return rangeLabel(period);
   if (isWeekKey(period)) return weekLabel(period);
   return PERIOD_LABEL[period] ?? period;
 }

@@ -10,6 +10,9 @@ import { clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
 import { closedDatesBetween } from "@/lib/server/clinic-day";
 import { revenueByDay } from "@/lib/server/daily-revenue";
 import { attendanceBetween, getDashboardMetricsDb } from "@/lib/server/analytics";
+import type { DashboardMetrics } from "@/lib/metrics/types";
+import { periodFromQuestion } from "@/lib/assistant/period-question";
+import { periodLabel } from "@/lib/server/analytics";
 
 /**
  * Снимок клиники для ИИ-аналитика — из базы.
@@ -33,6 +36,93 @@ const DAY = 24 * 3600 * 1000;
 
 function money(v: number): string {
   return `${Math.round(v).toLocaleString("ru-RU")} ₽`;
+}
+
+/**
+ * Разрез за период словами — одна функция на все периоды.
+ *
+ * Раньше эти строки собирались прямо в цикле по «неделя/месяц/квартал», и
+ * срез за произвольный отрезок было взять неоткуда: владелец спрашивал
+ * «1–18 сентября», а аналитик честно отвечал, что готового итога нет.
+ */
+function periodBlock(m: DashboardMetrics): string[] {
+  const out: string[] = [];
+  out.push("");
+    /**
+   * Даты — в сутках клиники, а не по Гринвичу.
+   *
+   * `period.from` хранится в UTC, и сентябрь начинался в заголовке «2026-08-31»:
+   * владелец читает это как чужой период и перестаёт верить числам под ним.
+   * Верхняя граница исключающая, поэтому последний день — минус миллисекунда.
+   */
+  const fromKey = clinicDateKey(new Date(m.period.from));
+  const toKey = clinicDateKey(new Date(new Date(m.period.to).getTime() - 1));
+  out.push(`# ${m.period.label} (${fromKey} — ${toKey}, рабочих дней ${m.period.workingDays})`);
+    out.push(
+      `Воронка: обращений ${m.funnel.inquiries}, записались ${m.funnel.booked}, пришли ${m.funnel.arrived}. ` +
+        (m.fromDialog ? `Из переписки с агентом: записались ${m.fromDialog.booked}, пришли ${m.fromDialog.arrived}.` : ""),
+    );
+    out.push(
+      `Выручка ${money(m.money.revenue)}; средний чек ${money(m.money.avgCheck)}; ` +
+        `новых пациентов ${m.money.newPatients}.`,
+    );
+    out.push(`Записалось за период по дате записи: ${m.bookedInPeriod}.`);
+    out.push(
+      `Состоявшиеся визиты: первичных ${m.visitMix.first}, курсовых ${m.visitMix.courseSession}, ` +
+        `повторных ${m.visitMix.returned}, всего ${m.visitMix.total}.`,
+    );
+
+    const sources = m.sources.filter((s) => s.inquiries > 0 || s.booked > 0);
+    if (sources.length) {
+      out.push(
+        "Обращения по источникам: " +
+          sources.map((s) => `${s.title} — ${s.inquiries} обращений, ${s.booked} записей`).join("; "),
+      );
+    }
+    /**
+     * Чем известен источник. Без этой строки аналитик выдавал бы разрез по
+     * источникам за измеренный факт, хотя большая его часть выведена из
+     * переписки, а часть записей источника не имеет вовсе.
+     */
+    if (m.sourceAttribution.total > 0) {
+      out.push(
+        `Источник записей: вручную ${m.sourceAttribution.manual}, выведено из переписки ` +
+          `${m.sourceAttribution.derived}, неизвестен ${m.sourceAttribution.unknown} из ` +
+          `${m.sourceAttribution.total}. Неизвестный источник — звонок или приход без ` +
+          `переписки; каналом его называть нельзя.`,
+      );
+    }
+
+    const staff = m.staff.filter((s) => s.appointments > 0);
+    if (staff.length) {
+      out.push(
+        "Специалисты: " +
+          staff.map((s) => `${s.name} — ${s.appointments} приёмов, ${money(s.revenue)}`).join("; "),
+      );
+      /**
+       * Курсы без специалиста называем и здесь.
+       *
+       * Иначе аналитик складывает строки, получает меньше итога и объясняет
+       * разницу как умеет — то есть выдумывает. На экране это число стоит
+       * отдельной строкой, и в разговоре оно должно быть тем же.
+       */
+      if (m.money.coursesWithoutStaff > 0) {
+        out.push(
+          `Ещё ${money(m.money.coursesWithoutStaff)} — курсы, у которых специалист не определился ` +
+            "(сеансов по ним пока не было, а услугу ведёт не один человек). Эти деньги есть в " +
+            "выручке и в разрезе по услугам, но ни у кого в строке специалиста.",
+        );
+      }
+    }
+
+    if (m.rooms.length) {
+      out.push(
+        "Загрузка кабинетов за период: " +
+          m.rooms.map((r) => `${r.roomName} — ${Math.round(r.periodOccupancy * 100)}%`).join("; "),
+      );
+    }
+
+  return out;
 }
 
 export async function buildClinicSnapshot(companyId: string, now = new Date()): Promise<string> {
@@ -680,72 +770,7 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   for (const period of ["week", "month", "quarter"] as const) {
     const m = await getDashboardMetricsDb(companyId, period).catch(() => null);
     if (!m) continue;
-
-    lines.push("");
-    lines.push(`# ${m.period.label} (${m.period.from.slice(0, 10)} — ${m.period.to.slice(0, 10)}, рабочих дней ${m.period.workingDays})`);
-    lines.push(
-      `Воронка: обращений ${m.funnel.inquiries}, записались ${m.funnel.booked}, пришли ${m.funnel.arrived}. ` +
-        (m.fromDialog ? `Из переписки с агентом: записались ${m.fromDialog.booked}, пришли ${m.fromDialog.arrived}.` : ""),
-    );
-    lines.push(
-      `Выручка ${money(m.money.revenue)}; средний чек ${money(m.money.avgCheck)}; ` +
-        `новых пациентов ${m.money.newPatients}.`,
-    );
-    lines.push(`Записалось за период по дате записи: ${m.bookedInPeriod}.`);
-    lines.push(
-      `Состоявшиеся визиты: первичных ${m.visitMix.first}, курсовых ${m.visitMix.courseSession}, ` +
-        `повторных ${m.visitMix.returned}, всего ${m.visitMix.total}.`,
-    );
-
-    const sources = m.sources.filter((s) => s.inquiries > 0 || s.booked > 0);
-    if (sources.length) {
-      lines.push(
-        "Обращения по источникам: " +
-          sources.map((s) => `${s.title} — ${s.inquiries} обращений, ${s.booked} записей`).join("; "),
-      );
-    }
-    /**
-     * Чем известен источник. Без этой строки аналитик выдавал бы разрез по
-     * источникам за измеренный факт, хотя большая его часть выведена из
-     * переписки, а часть записей источника не имеет вовсе.
-     */
-    if (m.sourceAttribution.total > 0) {
-      lines.push(
-        `Источник записей: вручную ${m.sourceAttribution.manual}, выведено из переписки ` +
-          `${m.sourceAttribution.derived}, неизвестен ${m.sourceAttribution.unknown} из ` +
-          `${m.sourceAttribution.total}. Неизвестный источник — звонок или приход без ` +
-          `переписки; каналом его называть нельзя.`,
-      );
-    }
-
-    const staff = m.staff.filter((s) => s.appointments > 0);
-    if (staff.length) {
-      lines.push(
-        "Специалисты: " +
-          staff.map((s) => `${s.name} — ${s.appointments} приёмов, ${money(s.revenue)}`).join("; "),
-      );
-      /**
-       * Курсы без специалиста называем и здесь.
-       *
-       * Иначе аналитик складывает строки, получает меньше итога и объясняет
-       * разницу как умеет — то есть выдумывает. На экране это число стоит
-       * отдельной строкой, и в разговоре оно должно быть тем же.
-       */
-      if (m.money.coursesWithoutStaff > 0) {
-        lines.push(
-          `Ещё ${money(m.money.coursesWithoutStaff)} — курсы, у которых специалист не определился ` +
-            "(сеансов по ним пока не было, а услугу ведёт не один человек). Эти деньги есть в " +
-            "выручке и в разрезе по услугам, но ни у кого в строке специалиста.",
-        );
-      }
-    }
-
-    if (m.rooms.length) {
-      lines.push(
-        "Загрузка кабинетов за период: " +
-          m.rooms.map((r) => `${r.roomName} — ${Math.round(r.periodOccupancy * 100)}%`).join("; "),
-      );
-    }
+    lines.push(...periodBlock(m));
   }
 
   /**
@@ -893,4 +918,30 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
   }
 
   return lines.join("\n");
+}
+
+/**
+ * Срез за период, о котором спросил владелец.
+ *
+ * «Сделай срез по загрузке кабинетов за 1–18 сентября» — такого отрезка нет ни
+ * в неделях, ни в месяцах, и аналитик отвечал отказом: складывать дневные
+ * строки ему запрещено (§8), и запрет правильный — он уже однажды ошибся на
+ * сотню тысяч. Считаем этот отрезок сами, тем же кодом, что и отчёты, и кладём
+ * готовые числа рядом со сводкой. Периода в вопросе нет — ничего не считаем.
+ */
+export async function buildAskedPeriod(
+  companyId: string,
+  question: string,
+  now = new Date(),
+): Promise<string> {
+  const key = periodFromQuestion(question, now);
+  if (!key) return "";
+  const m = await getDashboardMetricsDb(companyId, key).catch(() => null);
+  if (!m) return "";
+  return [
+    `# СРЕЗ ЗА СПРОШЕННЫЙ ПЕРИОД: ${periodLabel(key)}`,
+    "Посчитан нашим кодом — теми же функциями, что и отчёты. Это ГОТОВЫЙ итог:",
+    "бери числа отсюда дословно, складывать ничего не нужно.",
+    ...periodBlock(m),
+  ].join("\n");
 }
