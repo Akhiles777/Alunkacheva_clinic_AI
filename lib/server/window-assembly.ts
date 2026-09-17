@@ -33,7 +33,7 @@ import {
  */
 export interface AssemblyResult {
   rows: AssemblySuggestion[];
-  /** Почему пусто — словами. Пусто только когда `rows` непуст. */
+  /** Почему предложить нечего — словами. Заполнено только при пустом `rows`. */
   note: string | null;
 }
 
@@ -100,7 +100,7 @@ export async function suggestAssembly(
         courseId: true,
         primaryServiceId: true,
         primaryService: { select: { title: true } },
-        staff: { select: { name: true, workdays: true } },
+        staff: { select: { name: true } },
         patient: { select: { name: true } },
       },
     }),
@@ -128,11 +128,10 @@ export async function suggestAssembly(
   /**
    * Смена специалиста.
    *
-   * Дни приёма живут у сотрудника (`Staff.workdays`), а часов смены у нас нет
-   * — их клиника не заводила. Поэтому смена = рабочие часы клиники в тот
-   * день, но ТОЛЬКО если это его рабочий день; пустой список дней означает
-   * «не заполнено», и тогда мы не предлагаем ничего: догадка о чужом графике
-   * стоит человеку зря потраченного дня.
+   * Часов смены у нас нет ни в каком виде — клиника их не заводила, — поэтому
+   * границей служат рабочие часы клиники в этот день. Кто в этот день
+   * принимает, берём из расписания, а не из настройки «дни приёма»: у
+   * специалиста есть запись — значит он работает, и это факт, а не догадка.
    */
   const staffShift: Record<string, { startMinute: number; endMinute: number } | null> = {};
   for (const a of appts) {

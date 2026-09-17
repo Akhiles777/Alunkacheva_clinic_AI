@@ -136,6 +136,38 @@ export function periodFromQuestion(question: string, now: Date = new Date()): Pe
   }
 
   /**
+   * «За последние 10 дней» — отрезок от сегодня назад.
+   *
+   * Словами («за последние две недели») не разбираем намеренно: догадка о
+   * числе хуже отказа, а спросить датами человек умеет.
+   */
+  const lastDays = q.match(/(?:за\s+)?последн[а-яё]+\s+(\d{1,3})\s*(день|дня|дней|недел[а-яё]+)/);
+  if (lastDays) {
+    const n = Number(lastDays[1]) * (lastDays[2].startsWith("недел") ? 7 : 1);
+    if (n >= 1 && n <= 366) {
+      const to = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+      const from = new Date(to.getTime() - (n - 1) * 24 * 3600 * 1000);
+      return rangeKeyOf(from, to);
+    }
+  }
+
+  /**
+   * Один названный день: «за 5 сентября», «что было 5 сентября».
+   *
+   * Отрезок из одного дня — такой же период: в сводке есть дневные строки, но
+   * готового итога за конкретный день в ней нет, а складывать модели нельзя.
+   */
+  const oneDay = q.match(/(?:за\s+|в\s+)?(\d{1,2})\s+([а-яё]{3,})/);
+  if (oneDay) {
+    const month = monthOf(oneDay[2]);
+    const day = Number(oneDay[1]);
+    if (month !== null && day >= 1 && day <= 31) {
+      const at = new Date(Date.UTC(yearFor(month, now), month, day));
+      return rangeKeyOf(at, at);
+    }
+  }
+
+  /**
    * Просто месяц: «за август», «в сентябре».
    *
    * Проверяется последним: если рядом были числа, отрезок точнее месяца.

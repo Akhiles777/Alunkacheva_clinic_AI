@@ -50,7 +50,13 @@ export interface OwnerReport {
    * владелец сравнивал их с отчётами за другой отрезок. Даты обязательны —
    * окно скользящее, и «30 дней» без границ проверить нечем.
    */
-  period: { days: number; from: string; to: string; key: PeriodKey; label: string };
+  /**
+   * Период отчёта. Ключ — чтобы экран знал, какой месяц выбран; подпись и даты
+   * — чтобы число нельзя было принять за другой отрезок. Числа дней здесь
+   * больше нет: период стал календарным месяцем, и «за 30 дней» под августом
+   * читалось бы как скользящее окно.
+   */
+  period: { from: string; to: string; key: PeriodKey; label: string };
   revenue: number;
   appts: number;
   arrived: number;
@@ -126,10 +132,6 @@ function ownerPeriod(period: PeriodKey): { start: Date; end: Date } {
   return { start: from, end: to };
 }
 
-/** Сколько суток в периоде — для подписи «новых за N дней». */
-function periodDays(start: Date, end: Date): number {
-  return Math.max(1, Math.round((end.getTime() - start.getTime()) / (24 * 3600 * 1000)));
-}
 
 async function loadAppts(companyId: string, period: PeriodKey): Promise<Appt[]> {
   const { start, end } = ownerPeriod(period);
@@ -332,7 +334,6 @@ export async function getOwnerReport(periodKey?: PeriodKey): Promise<OwnerReport
     period: {
       key,
       label: periodLabel(key),
-      days: periodDays(period.start, period.end),
       from: dayLabel.format(period.start),
       // Конец периода — исключающая граница (полночь следующего дня): в
       // подписи показываем последний день периода, а не первый день после него.
@@ -480,11 +481,12 @@ export async function getWeeklyDynamics(): Promise<WeeklyDynamics> {
 }
 
 /** Текстовый срез базы для ИИ-аналитика владельца (только чтение). */
-export async function getOwnerAiContext(): Promise<string> {
+export async function getOwnerAiContext(periodKey?: string): Promise<string> {
   const session = await getSession();
   // Отчёт по выручке — только тем, кому это право выдано (§9).
   await requirePermission(session, "VIEW_REVENUE");
-  const key = currentMonthKey();
+  // Период приходит с экрана: справка обязана быть про то, что владелец видит.
+  const key: PeriodKey = isPeriodKey(periodKey) ? periodKey : currentMonthKey();
   const [report, appts] = await Promise.all([
     getOwnerReport(key),
     loadAppts(session.companyId, key),

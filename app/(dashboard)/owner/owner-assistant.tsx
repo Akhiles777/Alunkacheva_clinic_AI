@@ -44,7 +44,7 @@ const WELCOME: Msg = {
  * заказчика, август 2026): владелец читает разбор, а не слушает его. Голос
  * остаётся в чате сотрудников как голосовые сообщения.
  */
-export function OwnerAssistant() {
+export function OwnerAssistant({ period }: { period?: string }) {
   const [chats, setChats] = useState<AiChatSummary[]>([]);
   const [chatId, setChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([WELCOME]);
@@ -106,7 +106,14 @@ export function OwnerAssistant() {
     setThinking(true);
     let answer = "";
     try {
-      const context = await getOwnerAiContext();
+      /**
+       * Справка — за ТОТ месяц, что открыт на экране.
+       *
+       * Без этого владелец смотрел август, спрашивал «как дела» и получал
+       * разбор сентября: числа на экране и в ответе расходились, а понять,
+       * какое из них про что, было нельзя.
+       */
+      const context = await getOwnerAiContext(period);
       const res = await askAI(q, context, history, "owner");
       /**
        * Не ответил — так и говорим.

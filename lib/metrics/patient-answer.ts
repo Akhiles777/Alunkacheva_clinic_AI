@@ -26,6 +26,15 @@ export interface AnswerVisit extends GlanceVisit {
 export interface AnswerFacts {
   visits: AnswerVisit[];
   courses: GlanceCourse[];
+  /**
+   * История визитов пришла НЕ ЦЕЛИКОМ: карточка отдаёт последние сто.
+   *
+   * Без этой оговорки «пришёл 100 раз» у человека со ста двадцатью визитами
+   * выглядит посчитанным и врёт, а «первый визит» называет не первый, а самый
+   * ранний из показанных. Число, которое выглядит точным и точным не является,
+   * хуже отказа (§8).
+   */
+  truncated?: boolean;
 }
 
 export interface PatientAnswer {
@@ -147,9 +156,10 @@ const RULES: Rule[] = [
       );
       const missed = done.filter((v) => v.status === "no_show").length;
       if (done.length === 0) return "Прошедших визитов ещё не было — считать не из чего.";
+      const tail = f.truncated ? " Считано по последним ста визитам из карточки." : "";
       return missed === 0
-        ? `Неявок нет: пришёл все ${done.length} ${plural(done.length, "раз", "раза", "раз")}.`
-        : `Не пришёл ${times(missed)} из ${done.length}.`;
+        ? `Неявок нет: пришёл все ${done.length} ${plural(done.length, "раз", "раза", "раз")}.${tail}`
+        : `Не пришёл ${times(missed)} из ${done.length}.${tail}`;
     },
   },
   {
@@ -181,7 +191,10 @@ const RULES: Rule[] = [
       const first = f.visits
         .filter((v) => v.kind !== "purchase" && v.status === "arrived" && v.at)
         .sort((a, b) => new Date(a.at!).getTime() - new Date(b.at!).getTime())[0];
-      return first ? `Первый состоявшийся визит — ${describe(first)}.` : "Состоявшихся визитов ещё не было.";
+      if (!first) return "Состоявшихся визитов ещё не было.";
+      return f.truncated
+        ? `Самый ранний визит из показанных в карточке — ${describe(first)}. В карточку приходят последние сто визитов, более ранние могут быть в YCLIENTS.`
+        : `Первый состоявшийся визит — ${describe(first)}.`;
     },
   },
   {
@@ -198,7 +211,8 @@ const RULES: Rule[] = [
           ? `, купил ${purchases.length} ${plural(purchases.length, "курс", "курса", "курсов")}`
           : "") +
         `. По записям — ${rub(money)}` +
-        (purchases.length > 0 ? " (сеансы курса в записи идут нулём, их деньги — в покупке курса)." : ".")
+        (purchases.length > 0 ? " (сеансы курса в записи идут нулём, их деньги — в покупке курса)." : ".") +
+        (f.truncated ? " Это по последним ста визитам из карточки, а не за всю историю." : "")
       );
     },
   },

@@ -932,16 +932,25 @@ export async function buildClinicSnapshot(companyId: string, now = new Date()): 
 export async function buildAskedPeriod(
   companyId: string,
   question: string,
+  /**
+   * Право на выручку. Без него суммы в срез не попадают ВОВСЕ — не только не
+   * называются моделью: она не должна зависеть от того, что кто-то не забыл
+   * их отфильтровать (§7, §9).
+   */
+  canSeeRevenue = true,
   now = new Date(),
 ): Promise<string> {
   const key = periodFromQuestion(question, now);
   if (!key) return "";
   const m = await getDashboardMetricsDb(companyId, key).catch(() => null);
   if (!m) return "";
+  const block = canSeeRevenue
+    ? periodBlock(m)
+    : periodBlock(m).filter((line) => !line.includes("₽"));
   return [
     `# СРЕЗ ЗА СПРОШЕННЫЙ ПЕРИОД: ${periodLabel(key)}`,
     "Посчитан нашим кодом — теми же функциями, что и отчёты. Это ГОТОВЫЙ итог:",
     "бери числа отсюда дословно, складывать ничего не нужно.",
-    ...periodBlock(m),
+    ...block,
   ].join("\n");
 }

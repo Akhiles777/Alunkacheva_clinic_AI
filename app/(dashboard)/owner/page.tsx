@@ -386,7 +386,7 @@ export default async function OwnerPage({
         </section>
 
         <div className="mt-4">
-          <OwnerAssistant />
+          <OwnerAssistant period={period} />
         </div>
       </div>
     </>

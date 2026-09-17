@@ -66,6 +66,15 @@ describe("answerAboutPatient", () => {
     expect(answerAboutPatient("Покупал ли курс?", facts, NOW).text).toContain("4/10, записан ещё на 2");
   });
 
+  it("история пришла не целиком — говорим об этом, а не выдаём часть за целое", () => {
+    const many: AnswerFacts = { ...facts, truncated: true };
+    expect(answerAboutPatient("Сколько раз приходил и на какую сумму?", many, NOW).text).toContain(
+      "по последним ста визитам",
+    );
+    expect(answerAboutPatient("Когда был первый раз?", many, NOW).text).toContain("Самый ранний");
+    expect(answerAboutPatient("Сколько неявок?", many, NOW).text).toContain("последним ста");
+  });
+
   it("незнакомый вопрос — «не знаю», а не цифра", () => {
     const a = answerAboutPatient("Какой у него рост?", facts, NOW);
     expect(a.known).toBe(false);

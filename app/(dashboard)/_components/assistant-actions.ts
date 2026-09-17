@@ -75,7 +75,20 @@ export async function askAI(
    * Присланное экраном оставляем рядом: там есть то, что человек видит прямо
    * сейчас, и вопрос может быть про это.
    */
-  const snapshot = await buildClinicSnapshot(session.companyId).catch(() => "");
+  const raw = await buildClinicSnapshot(session.companyId).catch(() => "");
+  /**
+   * Без права на выручку суммы не доходят до модели ВООБЩЕ.
+   *
+   * Прежде право проверялось только в правилах роли: «суммы не называй». Но
+   * выжимка с выручкой всё равно уходила в запрос, то есть защита держалась на
+   * послушании модели. Так нельзя: права проверяются на данных (§7, §9).
+   */
+  const snapshot = canSeeRevenue
+    ? raw
+    : raw
+        .split("\n")
+        .filter((line) => !line.includes("₽"))
+        .join("\n");
   /**
    * Срез за отрезок, о котором спросили.
    *
@@ -85,7 +98,7 @@ export async function askAI(
    * кодом — теми же функциями, что и отчёты. Периода в вопросе нет — ничего
    * лишнего не считаем и не запрашиваем.
    */
-  const asked = await buildAskedPeriod(session.companyId, question).catch(() => "");
+  const asked = await buildAskedPeriod(session.companyId, question, canSeeRevenue).catch(() => "");
   const fullContext = [
     snapshot,
     asked,

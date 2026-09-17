@@ -455,7 +455,6 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
    */
   const [ping, setPing] = useState<{ dialogId: string; text: string } | null>(null);
   const [pinging, setPinging] = useState(false);
-  const endRef = useRef<HTMLDivElement | null>(null);
   const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>(
     () => templatesCache?.approved ?? [],
   );
@@ -489,8 +488,13 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
     toEnd(false);
   }, [dialog.id]);
 
+  /**
+   * Новое сообщение — к концу, но только если человек и так читал конец.
+   * Прежде список дёргался вниз посреди чтения истории: пациент прислал
+   * реплику, а администратор потерял место, на котором остановился.
+   */
   useEffect(() => {
-    toEnd(true);
+    if (atEnd.current) toEnd(true);
   }, [dialog.messages.length]);
 
   /**
@@ -904,7 +908,6 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
               </div>
             );
           })}
-          <div ref={endRef} />
         </div>
       </div>
 
