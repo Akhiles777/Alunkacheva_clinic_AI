@@ -1,6 +1,7 @@
 import { formatMoney, formatNumber } from "@/lib/format";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
+import Link from "next/link";
 import { getOwnerReport, getWeeklyDynamics } from "./actions";
 import { getWeeklyDigests } from "./digest-actions";
 import { WeeklyDigestBlock } from "./weekly-digest";
@@ -13,6 +14,7 @@ import { logTimings, timed } from "@/lib/server/timing";
 import { CourseEconomicsBlock } from "../_components/course-economics";
 import { getAgentSales } from "@/lib/server/agent-sales";
 import { periodBounds } from "@/lib/server/analytics";
+import { currentMonthKey, isPeriodKey, type PeriodKey } from "@/lib/metrics/types";
 import { AgentSales } from "./agent-sales";
 import { Adoption } from "./adoption";
 import { getAdoption } from "@/lib/server/adoption";
@@ -31,7 +33,38 @@ function Tile({ label, value, hint }: { label: string; value: string | number; h
   );
 }
 
-export default async function OwnerPage() {
+/**
+ * Месяцы для переключателя: текущий и одиннадцать прошлых.
+ *
+ * Дальше года назад владелец в кабинет не ходит — для этого есть «Отчёты», где
+ * период выбирается вручную; а длинный список месяцев сам по себе становится
+ * меню, в котором надо искать.
+ */
+function monthChoices(now: Date): { key: string; label: string }[] {
+  const out: { key: string; label: string }[] = [];
+  for (let back = 0; back < 12; back += 1) {
+    const d = new Date(now.getFullYear(), now.getMonth() - back, 1);
+    const p = (n: number) => String(n).padStart(2, "0");
+    const key = `${d.getFullYear()}-${p(d.getMonth() + 1)}`;
+    // Год в подписи — только у чужого года: двенадцать раз повторить «2026»
+    // значит занять строку тем, что и так известно.
+    const month = new Intl.DateTimeFormat("ru-RU", { month: "long", timeZone: "Europe/Moscow" })
+      .format(new Date(Date.UTC(d.getFullYear(), d.getMonth(), 15)));
+    const label = d.getFullYear() === now.getFullYear() ? month : `${month} ${d.getFullYear()}`;
+    out.push({ key, label });
+  }
+  return out;
+}
+
+export default async function OwnerPage({
+  searchParams,
+}: {
+  /**
+   * Период — в адресе: ссылку на нужный месяц можно переслать, а перезагрузка
+   * страницы не возвращает владельца в текущий месяц посреди разбора.
+   */
+  searchParams: Promise<{ p?: string }>;
+}) {
   /**
    * Отказ показываем понятной страницей, а не красным экраном ошибки: без
    * права на выручку этот раздел просто не для этого сотрудника, и это не
@@ -56,23 +89,31 @@ export default async function OwnerPage() {
    * Замер каждого блока — в журнал сервера. Какой из четырёх отчётов тянет,
    * по экрану не понять, а гадать по коду мы договорились не гадать.
    */
+  /**
+   * Какой месяц показываем. Чужое значение в адресе до расчётов не доходит:
+   * непонятный ключ — это текущий месяц (`isPeriodKey`).
+   */
+  const asked = (await searchParams).p;
+  const period: PeriodKey = isPeriodKey(asked) ? asked : currentMonthKey();
+  const months = monthChoices(new Date());
+
   const parts = await Promise.all([
-    timed("отчёт", () => getOwnerReport()),
+    timed("отчёт", () => getOwnerReport(period)),
     timed("динамика", () => getWeeklyDynamics()),
-    // Период тот же, что и у остального кабинета: «Месяц» из отчётов.
-    timed("ассистент", () => getAgentStats(session.companyId, "month")),
+    // Период тот же, что и у остального кабинета: выбранный месяц.
+    timed("ассистент", () => getAgentStats(session.companyId, period)),
     /**
      * Экономика курсов — теми же функциями, что во вкладке «Курсы» отчётов.
      * Одна метрика — одна функция (§8).
      */
-    timed("курсы", () => getCourseEconomics(session.companyId, "month")),
+    timed("курсы", () => getCourseEconomics(session.companyId, period)),
     /**
      * Что ассистент довёл до записи — тем же периодом, что и остальной
      * кабинет. Продажей считается доведённая до администратора заявка, а не
      * любая запись из переписки (lib/metrics/agent-sales.ts).
      */
     timed("продажи ассистента", () => {
-      const { from, to } = periodBounds("month");
+      const { from, to } = periodBounds(period);
       return getAgentSales(session.companyId, from, to);
     }),
     /**
@@ -116,9 +157,33 @@ export default async function OwnerPage() {
             Даты — тоже: окно скользящее, и «30 дней» без границ не проверить,
             а с отчётами за «Месяц» его сравнивают постоянно. */}
         <p className="text-text-muted mt-1 text-xs">
-          За {report.period.days} дней · {report.period.from} — {report.period.to} · операционная
+          {report.period.label} · {report.period.from} — {report.period.to} · операционная
           картина дня — на экране «Сегодня»
         </p>
+        {/*
+          Месяцы — ссылками, а не выпадающим списком: выбранный месяц виден
+          сразу, а ссылку на нужный месяц можно переслать. Текущий месяц —
+          неполный, и так он и подписан: сравнивать его с прошлым целиком
+          нельзя, а не сказать об этом — значит дать сравнить молча.
+        */}
+        <nav className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+          {months.map((m) => (
+            <Link
+              key={m.key}
+              href={`/owner?p=${m.key}`}
+              className={`rounded-md px-2 py-0.5 ${
+                m.key === report.period.key
+                  ? "bg-accent text-accent-contrast font-medium"
+                  : "text-text-muted hover:bg-hover"
+              }`}
+            >
+              {m.label}
+            </Link>
+          ))}
+          {report.period.key === currentMonthKey() ? (
+            <span className="text-text-subtle ml-1">месяц ещё идёт — числа неполные</span>
+          ) : null}
+        </nav>
       </header>
 
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
@@ -149,7 +214,7 @@ export default async function OwnerPage() {
           <Tile
             label="Пациентов в базе"
             value={report.patients.total}
-            hint={`новых за ${report.period.days} дней ${report.patients.primary} · без согласия ${report.patients.noConsent}`}
+            hint={`новых за период ${report.patients.primary} · без согласия ${report.patients.noConsent}`}
           />
         </div>
 
@@ -169,7 +234,7 @@ export default async function OwnerPage() {
             {/* Период у каждой таблицы свой подписью: без него владелец
                 сравнивал эти числа с отчётами за другой отрезок. */}
             <p className="text-text-subtle mb-4 text-2xs">
-              за {report.period.days} дней · {report.period.from} — {report.period.to}
+              {report.period.label} · {report.period.from} — {report.period.to}
             </p>
             <div className="-mx-1 overflow-x-auto px-1">
               <table className="w-full min-w-[440px] border-collapse text-sm">
@@ -222,7 +287,7 @@ export default async function OwnerPage() {
                 читаются как ошибка платформы. */}
             <h2 className="text-sm font-medium">Загрузка кабинетов</h2>
             <p className="text-text-subtle mb-4 text-2xs">
-              за {report.period.days} дней · {report.period.from} — {report.period.to}
+              {report.period.label} · {report.period.from} — {report.period.to}
             </p>
             <ul className="flex flex-col gap-3">
               {report.rooms.map((l) => (
@@ -259,7 +324,7 @@ export default async function OwnerPage() {
             <div>
               <h2 className="text-sm font-medium">Выручка по услугам</h2>
               <p className="text-text-subtle mt-0.5 text-2xs">
-                за {report.period.days} дней · {report.period.from} — {report.period.to}
+                {report.period.label} · {report.period.from} — {report.period.to}
               </p>
             </div>
             {/* Воронка — за тот же период. Прежде здесь стояли диалоги и звонки
@@ -292,7 +357,7 @@ export default async function OwnerPage() {
           </div>
         </section>
 
-        <AgentSales report={sales} periodLabel={`за ${report.period.days} дней`} />
+        <AgentSales report={sales} periodLabel={`за ${report.period.label.toLowerCase()}`} />
 
         {/*
           Перешли ли в систему. Главный вопрос цикла: пока администратор
@@ -304,7 +369,7 @@ export default async function OwnerPage() {
 
         <AgentSection
           stats={agent}
-          periodLabel={`за ${report.period.days} дней · ${report.period.from} — ${report.period.to}`}
+          periodLabel={`${report.period.label} · ${report.period.from} — ${report.period.to}`}
         />
 
         {/*

@@ -8,7 +8,8 @@ import { hypotheses, staffPerformance } from "@/lib/staff-analytics";
 import { coursePurchasesBetween } from "@/lib/server/course-revenue";
 import { revenueByService, type CourseSaleForRevenue } from "@/lib/metrics/service-revenue";
 import { averageCheck, noShowRate } from "@/lib/metrics/summary";
-import { periodBounds, roomOccupancyBetween } from "@/lib/server/analytics";
+import { periodBounds, periodLabel, roomOccupancyBetween } from "@/lib/server/analytics";
+import { currentMonthKey, isPeriodKey, type PeriodKey } from "@/lib/metrics/types";
 import { weekKeyOf } from "@/lib/metrics/types";
 import { revenueByDay } from "@/lib/server/daily-revenue";
 import { weeklyBuckets } from "@/lib/server/weekly-series";
@@ -49,7 +50,7 @@ export interface OwnerReport {
    * владелец сравнивал их с отчётами за другой отрезок. Даты обязательны —
    * окно скользящее, и «30 дней» без границ проверить нечем.
    */
-  period: { days: number; from: string; to: string };
+  period: { days: number; from: string; to: string; key: PeriodKey; label: string };
   revenue: number;
   appts: number;
   arrived: number;
@@ -119,15 +120,19 @@ function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
  * Теперь период кабинета владельца — ровно тот же «Месяц», что и в отчётах.
  */
 /** Сколько дней показывает кабинет владельца. То же окно, что «Месяц» в отчётах. */
-const OWNER_PERIOD_DAYS = 30;
 
-function ownerPeriod(): { start: Date; end: Date } {
-  const { from, to } = periodBounds("month");
+function ownerPeriod(period: PeriodKey): { start: Date; end: Date } {
+  const { from, to } = periodBounds(period);
   return { start: from, end: to };
 }
 
-async function loadAppts(companyId: string): Promise<Appt[]> {
-  const { start, end } = ownerPeriod();
+/** Сколько суток в периоде — для подписи «новых за N дней». */
+function periodDays(start: Date, end: Date): number {
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / (24 * 3600 * 1000)));
+}
+
+async function loadAppts(companyId: string, period: PeriodKey): Promise<Appt[]> {
+  const { start, end } = ownerPeriod(period);
   const rows = await prisma.appointment.findMany({
     where: {
       companyId,
@@ -185,8 +190,8 @@ async function loadAppts(companyId: string): Promise<Appt[]> {
  * же уходило ИИ-аналитику владельца. Один экран должен отвечать про один
  * период.
  */
-async function patientCounts(companyId: string) {
-  const { start } = ownerPeriod();
+async function patientCounts(companyId: string, period: PeriodKey) {
+  const { start } = ownerPeriod(period);
   const [total, primary, noConsent] = await Promise.all([
     prisma.patient.count({ where: { companyId, deletedAt: null } }),
     prisma.patient.count({
@@ -227,11 +232,16 @@ function serviceBreakdown(appts: Appt[], sales: CourseSaleForRevenue[]): OwnerSe
   ).map((r) => ({ service: r.name, count: r.count, revenue: r.revenue }));
 }
 
-export async function getOwnerReport(): Promise<OwnerReport> {
+export async function getOwnerReport(periodKey?: PeriodKey): Promise<OwnerReport> {
   const session = await getSession();
   // Отчёт по выручке — только тем, кому это право выдано (§9).
   await requirePermission(session, "VIEW_REVENUE");
-  const period = ownerPeriod();
+  /**
+   * Период приходит с экрана. Чужое значение до расчёта не доходит:
+   * непонятный ключ — это текущий месяц, а не «покажи всё подряд».
+   */
+  const key: PeriodKey = isPeriodKey(periodKey) ? periodKey : currentMonthKey();
+  const period = ownerPeriod(key);
   /**
    * Воронка — за тот же период, что и всё остальное на экране.
    *
@@ -245,7 +255,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
    * тут было бы почти ноль при живой переписке каждый день.
    */
   const [appts, attendance, patients, dialogs, calls] = await Promise.all([
-    loadAppts(session.companyId),
+    loadAppts(session.companyId, key),
     /**
      * Разобранность визитов — отдельным чтением, потому что отменённые в
      * `loadAppts` не попадают, а исходом они всё-таки являются. Считается той
@@ -253,7 +263,7 @@ export async function getOwnerReport(): Promise<OwnerReport> {
      * не должны.
      */
     attendanceBetween(session.companyId, period.start, period.end),
-    patientCounts(session.companyId),
+    patientCounts(session.companyId, key),
     prisma.conversation.count({
       where: {
         companyId: session.companyId,
@@ -320,7 +330,9 @@ export async function getOwnerReport(): Promise<OwnerReport> {
 
   return {
     period: {
-      days: OWNER_PERIOD_DAYS,
+      key,
+      label: periodLabel(key),
+      days: periodDays(period.start, period.end),
       from: dayLabel.format(period.start),
       // Конец периода — исключающая граница (полночь следующего дня): в
       // подписи показываем последний день периода, а не первый день после него.
@@ -472,7 +484,11 @@ export async function getOwnerAiContext(): Promise<string> {
   const session = await getSession();
   // Отчёт по выручке — только тем, кому это право выдано (§9).
   await requirePermission(session, "VIEW_REVENUE");
-  const [report, appts] = await Promise.all([getOwnerReport(), loadAppts(session.companyId)]);
+  const key = currentMonthKey();
+  const [report, appts] = await Promise.all([
+    getOwnerReport(key),
+    loadAppts(session.companyId, key),
+  ]);
   const lines: string[] = [];
   lines.push("# Сводка клиники");
   /**
@@ -482,7 +498,7 @@ export async function getOwnerAiContext(): Promise<string> {
    * «сколько было приёмов сегодня» уверенно называл цифру за тридцать дней.
    * Ошибиться так владелец мог только один раз — и в разговоре с клиентом.
    */
-  const { start: pStart, end: pEnd } = ownerPeriod();
+  const { start: pStart, end: pEnd } = ownerPeriod(key);
   const dayLabel = (d: Date) =>
     new Intl.DateTimeFormat("ru-RU", { timeZone: "Europe/Moscow", day: "numeric", month: "long" }).format(d);
   lines.push(

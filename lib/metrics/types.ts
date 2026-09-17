@@ -186,6 +186,20 @@ export function weekLabel(key: string): string {
   return `${from.getUTCDate()}–${to.getUTCDate()} ${month}`;
 }
 
+/**
+ * Ключ текущего месяца в поясе клиники.
+ *
+ * Кабинет владельца показывает МЕСЯЦ, а не скользящие тридцать дней: владелец
+ * сравнивает сентябрь с августом, и в разговоре с бухгалтером месяц называется
+ * месяцем. Скользящее окно осталось в «Отчётах» — оно отвечает на другой
+ * вопрос, «как идут дела прямо сейчас».
+ */
+export function currentMonthKey(at: Date = new Date(), offsetHours = 3): string {
+  const local = new Date(at.getTime() + offsetHours * 3600 * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${local.getUTCFullYear()}-${p(local.getUTCMonth() + 1)}`;
+}
+
 /** Ключ недели, в которую попадает дата. */
 export function weekKeyOf(at: Date, offsetHours = 3): string {
   const local = new Date(at.getTime() + offsetHours * 3600 * 1000);
