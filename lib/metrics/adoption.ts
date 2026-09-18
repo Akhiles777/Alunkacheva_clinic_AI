@@ -105,6 +105,8 @@ export const FEATURES: { key: string; label: string }[] = [
   { key: "later", label: "отложенная отправка" },
   { key: "bulk", label: "массовые действия" },
   { key: "dialog-open", label: "открытых переписок" },
+  { key: "assistant", label: "вопросы ассистенту" },
+  { key: "broadcast", label: "рассылка записанным" },
 ];
 
 export function isFeature(key: string): boolean {

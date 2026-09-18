@@ -45,6 +45,7 @@ import { noteUse } from "../_components/usage-actions";
 import { cancelDialogTask } from "./dialog-actions";
 import { SpecialistQueries } from "./specialist-queries";
 import { ComposeOverlay } from "../_components/compose-overlay";
+import { AssistantThread } from "./assistant-thread";
 import { ContactPanel } from "./contact-panel";
 import { AdminAssistant } from "../_components/admin-assistant";
 import { PatientCardBody } from "../_components/patient-card";
@@ -1072,6 +1073,12 @@ function loadTemplates(): Promise<InboxTemplates> {
   return templatesInFlight;
 }
 
+/**
+ * Чат ассистента живёт в том же выборе, что и переписки: одно поле состояния,
+ * один способ открыть. Идентификатор не может совпасть с cuid переписки.
+ */
+const ASSISTANT_ID = "assistant";
+
 export default function InboxPage() {
   const db = useDb();
 
@@ -1316,6 +1323,26 @@ export default function InboxPage() {
           </div>
         </div>
         <div data-tour="dialog-list" className="flex-1 overflow-auto">
+          {/*
+            Ассистент — отдельный разговор, а не кнопка в углу: администратор
+            спрашивает его тем же движением, каким открывает переписку, и
+            история вопросов остаётся на месте.
+          */}
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedId(ASSISTANT_ID);
+              void noteUse("assistant");
+            }}
+            className={`border-border-soft flex w-full flex-col gap-0.5 border-b px-4 py-3 text-left ${
+              selectedId === ASSISTANT_ID ? "bg-hover" : "hover:bg-hover"
+            }`}
+          >
+            <span className="text-sm font-medium">✦ Ассистент</span>
+            <span className="text-text-subtle text-xs">
+              день, врачи, пациенты, рассылка записанным
+            </span>
+          </button>
           {list.length === 0 ? (
             /* Пусто — значит разобрано всё. Заодно единственное место, где
                видно, что шпаргалка открывается клавишей «?». */
@@ -1339,8 +1366,10 @@ export default function InboxPage() {
         </div>
       </div>
 
-      <div className={`min-w-0 flex-1 ${selected ? "" : "max-md:hidden"}`}>
-        {selected ? (
+      <div className={`min-w-0 flex-1 ${selectedId ? "" : "max-md:hidden"}`}>
+        {selectedId === ASSISTANT_ID ? (
+          <AssistantThread onBack={() => setSelectedId(null)} />
+        ) : selected ? (
           <Thread dialog={selected} onBack={() => setSelectedId(null)} refresh={refresh} />
         ) : (
           <div className="flex h-full items-center justify-center">
@@ -1353,7 +1382,12 @@ export default function InboxPage() {
         data-tour="patient-card"
         className="border-border w-[320px] flex-none overflow-auto border-l px-5 py-5 max-xl:hidden"
       >
-        {patient ? (
+        {selectedId === ASSISTANT_ID ? (
+          <div className="text-text-muted text-sm leading-snug">
+            Здесь ассистент: он считает по данным клиники и готовит рассылки. Карточка пациента
+            появится, когда откроете переписку.
+          </div>
+        ) : patient ? (
           <PatientCardBody patientId={patient.id} dialogId={selected?.id} />
         ) : selected ? (
           <div>
