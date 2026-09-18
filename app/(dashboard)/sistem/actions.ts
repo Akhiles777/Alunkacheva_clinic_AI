@@ -94,23 +94,35 @@ export async function setDeviceExcluded(
   const match = candidates.find(
     (c) => deviceKey(parseDevice(c.userAgent).fingerprint, c.deviceId) === fingerprint,
   );
-  if (!match?.userAgent) return systemReport(windowDays);
 
-  const d = parseDevice(match.userAgent);
+  /**
+   * Строки журнала не нашлось — отметку всё равно ставим.
+   *
+   * Так бывает, когда действия этого устройства уехали за срок выборки или за
+   * предел в пятьдесят разных строк браузера. Прежде кнопка в таком случае
+   * молча не делала ничего: владелец нажимает «моё», ничего не меняется, и
+   * решить он может только одно — что раздел сломан. Скрытие работает по
+   * ключу устройства, а не по строке браузера, поэтому отметка верна и без
+   * неё; подпись при этом честно говорит, что аппарат нам неизвестен.
+   */
+  const d = match?.userAgent
+    ? parseDevice(match.userAgent)
+    : { label: "устройство без записей в журнале", platform: "—", browser: "—", kind: "unknown" as const, fingerprint };
   await prisma.knownDevice.create({
     data: {
       companyId,
       userId,
       fingerprint,
-      userAgent: match.userAgent,
+      userAgent: match?.userAgent ?? "",
       label: d.label,
       platform: d.platform,
       browser: d.browser,
       kind: d.kind,
       // Входов с него мы не считали: отметка о входе появилась позже журнала.
       logins: 0,
-      firstSeenAt: match.createdAt,
-      lastLoginAt: match.createdAt,
+      // Когда его видели: по журналу, а без него — сейчас, в момент отметки.
+      firstSeenAt: match?.createdAt ?? new Date(),
+      lastLoginAt: match?.createdAt ?? new Date(),
       excluded,
       excludedAt: excluded ? new Date() : null,
     },

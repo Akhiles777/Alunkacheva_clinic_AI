@@ -48,7 +48,7 @@ function money(v: number): string {
 function periodBlock(m: DashboardMetrics): string[] {
   const out: string[] = [];
   out.push("");
-    /**
+  /**
    * Даты — в сутках клиники, а не по Гринвичу.
    *
    * `period.from` хранится в UTC, и сентябрь начинался в заголовке «2026-08-31»:
@@ -58,69 +58,69 @@ function periodBlock(m: DashboardMetrics): string[] {
   const fromKey = clinicDateKey(new Date(m.period.from));
   const toKey = clinicDateKey(new Date(new Date(m.period.to).getTime() - 1));
   out.push(`# ${m.period.label} (${fromKey} — ${toKey}, рабочих дней ${m.period.workingDays})`);
-    out.push(
-      `Воронка: обращений ${m.funnel.inquiries}, записались ${m.funnel.booked}, пришли ${m.funnel.arrived}. ` +
-        (m.fromDialog ? `Из переписки с агентом: записались ${m.fromDialog.booked}, пришли ${m.fromDialog.arrived}.` : ""),
-    );
-    out.push(
-      `Выручка ${money(m.money.revenue)}; средний чек ${money(m.money.avgCheck)}; ` +
-        `новых пациентов ${m.money.newPatients}.`,
-    );
-    out.push(`Записалось за период по дате записи: ${m.bookedInPeriod}.`);
-    out.push(
-      `Состоявшиеся визиты: первичных ${m.visitMix.first}, курсовых ${m.visitMix.courseSession}, ` +
-        `повторных ${m.visitMix.returned}, всего ${m.visitMix.total}.`,
-    );
+  out.push(
+    `Воронка: обращений ${m.funnel.inquiries}, записались ${m.funnel.booked}, пришли ${m.funnel.arrived}. ` +
+      (m.fromDialog ? `Из переписки с агентом: записались ${m.fromDialog.booked}, пришли ${m.fromDialog.arrived}.` : ""),
+  );
+  out.push(
+    `Выручка ${money(m.money.revenue)}; средний чек ${money(m.money.avgCheck)}; ` +
+      `новых пациентов ${m.money.newPatients}.`,
+  );
+  out.push(`Записалось за период по дате записи: ${m.bookedInPeriod}.`);
+  out.push(
+    `Состоявшиеся визиты: первичных ${m.visitMix.first}, курсовых ${m.visitMix.courseSession}, ` +
+      `повторных ${m.visitMix.returned}, всего ${m.visitMix.total}.`,
+  );
 
-    const sources = m.sources.filter((s) => s.inquiries > 0 || s.booked > 0);
-    if (sources.length) {
-      out.push(
-        "Обращения по источникам: " +
-          sources.map((s) => `${s.title} — ${s.inquiries} обращений, ${s.booked} записей`).join("; "),
-      );
-    }
+  const sources = m.sources.filter((s) => s.inquiries > 0 || s.booked > 0);
+  if (sources.length) {
+    out.push(
+      "Обращения по источникам: " +
+        sources.map((s) => `${s.title} — ${s.inquiries} обращений, ${s.booked} записей`).join("; "),
+    );
+  }
+  /**
+   * Чем известен источник. Без этой строки аналитик выдавал бы разрез по
+   * источникам за измеренный факт, хотя большая его часть выведена из
+   * переписки, а часть записей источника не имеет вовсе.
+   */
+  if (m.sourceAttribution.total > 0) {
+    out.push(
+      `Источник записей: вручную ${m.sourceAttribution.manual}, выведено из переписки ` +
+        `${m.sourceAttribution.derived}, неизвестен ${m.sourceAttribution.unknown} из ` +
+        `${m.sourceAttribution.total}. Неизвестный источник — звонок или приход без ` +
+        `переписки; каналом его называть нельзя.`,
+    );
+  }
+
+  const staff = m.staff.filter((s) => s.appointments > 0);
+  if (staff.length) {
+    out.push(
+      "Специалисты: " +
+        staff.map((s) => `${s.name} — ${s.appointments} приёмов, ${money(s.revenue)}`).join("; "),
+    );
     /**
-     * Чем известен источник. Без этой строки аналитик выдавал бы разрез по
-     * источникам за измеренный факт, хотя большая его часть выведена из
-     * переписки, а часть записей источника не имеет вовсе.
+     * Курсы без специалиста называем и здесь.
+     *
+     * Иначе аналитик складывает строки, получает меньше итога и объясняет
+     * разницу как умеет — то есть выдумывает. На экране это число стоит
+     * отдельной строкой, и в разговоре оно должно быть тем же.
      */
-    if (m.sourceAttribution.total > 0) {
+    if (m.money.coursesWithoutStaff > 0) {
       out.push(
-        `Источник записей: вручную ${m.sourceAttribution.manual}, выведено из переписки ` +
-          `${m.sourceAttribution.derived}, неизвестен ${m.sourceAttribution.unknown} из ` +
-          `${m.sourceAttribution.total}. Неизвестный источник — звонок или приход без ` +
-          `переписки; каналом его называть нельзя.`,
+        `Ещё ${money(m.money.coursesWithoutStaff)} — курсы, у которых специалист не определился ` +
+          "(сеансов по ним пока не было, а услугу ведёт не один человек). Эти деньги есть в " +
+          "выручке и в разрезе по услугам, но ни у кого в строке специалиста.",
       );
     }
+  }
 
-    const staff = m.staff.filter((s) => s.appointments > 0);
-    if (staff.length) {
-      out.push(
-        "Специалисты: " +
-          staff.map((s) => `${s.name} — ${s.appointments} приёмов, ${money(s.revenue)}`).join("; "),
-      );
-      /**
-       * Курсы без специалиста называем и здесь.
-       *
-       * Иначе аналитик складывает строки, получает меньше итога и объясняет
-       * разницу как умеет — то есть выдумывает. На экране это число стоит
-       * отдельной строкой, и в разговоре оно должно быть тем же.
-       */
-      if (m.money.coursesWithoutStaff > 0) {
-        out.push(
-          `Ещё ${money(m.money.coursesWithoutStaff)} — курсы, у которых специалист не определился ` +
-            "(сеансов по ним пока не было, а услугу ведёт не один человек). Эти деньги есть в " +
-            "выручке и в разрезе по услугам, но ни у кого в строке специалиста.",
-        );
-      }
-    }
-
-    if (m.rooms.length) {
-      out.push(
-        "Загрузка кабинетов за период: " +
-          m.rooms.map((r) => `${r.roomName} — ${Math.round(r.periodOccupancy * 100)}%`).join("; "),
-      );
-    }
+  if (m.rooms.length) {
+    out.push(
+      "Загрузка кабинетов за период: " +
+        m.rooms.map((r) => `${r.roomName} — ${Math.round(r.periodOccupancy * 100)}%`).join("; "),
+    );
+  }
 
   return out;
 }
