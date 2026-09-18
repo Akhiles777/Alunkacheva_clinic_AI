@@ -89,6 +89,8 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
       staffId: plan.staffId,
       serviceId: plan.serviceId,
       text: plan.text,
+      patientId: plan.patientId,
+      sendAtIso: plan.sendAtIso,
     })
       .then((res) => {
         setTurns((t) => [...t, { role: "assistant", text: res.text }]);
@@ -173,14 +175,30 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
         */}
         {plan ? (
           <div className="border-accent-border bg-accent-tint mt-3 rounded-xl border p-3.5">
-            <div className="text-text text-sm font-medium">Проверьте рассылку</div>
+            <div className="text-text text-sm font-medium">
+              {plan.kind === "one" ? "Проверьте сообщение" : "Проверьте рассылку"}
+            </div>
             <div className="border-border-soft bg-surface mt-2 rounded-md border px-3 py-2 text-sm whitespace-pre-wrap">
               {plan.text}
             </div>
             <div className="text-text-muted mt-2 text-xs">
-              Уйдёт {willSend.length}{" "}
-              {willSend.length === 1 ? "пациенту" : "пациентам"}
-              {plan.staffName ? ` · ${plan.staffName}` : ""} · {plan.dateLabel}
+              {/*
+                Имя врача после слова «Получатель» читалось как адресат:
+                «Получатель · Ирина Алилгаджиевна», хотя писали пациентке.
+                Поэтому у письма одному человеку здесь стоит ЕГО имя, а врач
+                подписан отдельно.
+              */}
+              {plan.kind === "one"
+                ? `Получатель: ${plan.targets[0]?.name ?? "—"}`
+                : `Уйдёт ${willSend.length} ${willSend.length === 1 ? "пациенту" : "пациентам"}`}
+              {plan.staffName ? ` · врач ${plan.staffName}` : ""} · {plan.dateLabel}
+              {/*
+                Когда уйдёт — отдельной строкой и словами: «через пять часов»
+                администратор сказал, а увидеть он должен точный момент.
+              */}
+              {plan.sendAtLabel ? (
+                <span className="text-accent-text"> · отправлю {plan.sendAtLabel}</span>
+              ) : null}
             </div>
             <ul className="mt-1.5 flex max-h-40 flex-col gap-0.5 overflow-auto">
               {willSend.map((t) => (
@@ -202,7 +220,15 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
                 disabled={sending || willSend.length === 0}
                 className="bg-accent text-accent-contrast rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-45"
               >
-                {sending ? "Отправляю…" : `Отправить ${willSend.length}`}
+                {sending
+                  ? plan.sendAtIso
+                    ? "Откладываю…"
+                    : "Отправляю…"
+                  : plan.sendAtIso
+                    ? `Запланировать${plan.kind === "one" ? "" : ` ${willSend.length}`}`
+                    : plan.kind === "one"
+                      ? "Отправить"
+                      : `Отправить ${willSend.length}`}
               </button>
               <button
                 type="button"

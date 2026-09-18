@@ -137,6 +137,63 @@ describe("разбор вопроса администратора", () => {
     expect(intent.kind).not.toBe("patient");
   });
 
+  it("письмо одному пациенту с отложенной отправкой", () => {
+    const intent = parseAdminQuestion(
+      "через 5 часов напиши пожалуйста Патимат которая была записана сегодня на остеопатию что врач задерживается",
+      known,
+      NOW,
+    );
+    expect(intent.kind).toBe("message_one");
+    if (intent.kind === "message_one") {
+      expect(intent.name).toBe("Патимат");
+      expect(intent.situation).toBe("delay");
+      expect(intent.serviceId).toBe("srv1");
+      expect(intent.date.label).toBe("сегодня");
+      expect(new Date(intent.sendAtIso!).getTime()).toBe(NOW.getTime() + 5 * 3600 * 1000);
+    }
+  });
+
+  it("имя перед двоеточием — тоже имя", () => {
+    const intent = parseAdminQuestion("через час напиши Алиевой: Мы вас ждём", known, NOW);
+    expect(intent).toMatchObject({ kind: "message_one", name: "Алиевой", text: "Мы вас ждём" });
+  });
+
+  it("рассылку от письма одному отличаем по слову «всем»", () => {
+    expect(parseAdminQuestion("напиши всем записанным завтра: привет", known, NOW).kind).toBe(
+      "broadcast",
+    );
+    expect(parseAdminQuestion("напиши Алиевой что приём переносится", known, NOW).kind).toBe(
+      "message_one",
+    );
+  });
+
+  it("распоряжаться расписанием ассистент не берётся", () => {
+    for (const q of [
+      "запиши Магомедову на завтра в 15:00",
+      "отмени приём Алиевой",
+      "перенеси запись Гаджиевой на четверг",
+    ]) {
+      expect(parseAdminQuestion(q, known, NOW).kind, q).toBe("booking_refusal");
+    }
+  });
+
+  it("кабинеты, телефон, итоги периода", () => {
+    expect(parseAdminQuestion("покажи занятость кабинетов", known, NOW).kind).toBe("rooms");
+    expect(parseAdminQuestion("какой телефон у Алиевой?", known, NOW)).toMatchObject({
+      kind: "contacts",
+      name: "Алиевой",
+    });
+    expect(parseAdminQuestion("какая выручка за месяц?", known, NOW)).toMatchObject({
+      kind: "period",
+      period: "month",
+      money: true,
+    });
+    expect(parseAdminQuestion("сколько записей за неделю?", known, NOW)).toMatchObject({
+      kind: "period",
+      period: "week",
+    });
+  });
+
   it("непонятный вопрос — так и говорим", () => {
     expect(parseAdminQuestion("сколько будет дважды два", known, NOW).kind).toBe("unknown");
     expect(parseAdminQuestion("", known, NOW).kind).toBe("unknown");

@@ -17,6 +17,8 @@
  * есть, нет расчёта, и это разные вещи. Список того, что умеем, лежит рядом.
  */
 
+import { delayTextFrom, sendAtFrom, situationOf, type Situation } from "./admin-compose";
+
 export type AdminIntent =
   | { kind: "help" }
   /** Сколько записано: день, врач, услуга — любая комбинация. */
@@ -33,6 +35,32 @@ export type AdminIntent =
   | { kind: "attendance"; date: DateRef }
   /** Поимённый список записанных. */
   | { kind: "schedule"; date: DateRef; staffId: string | null; serviceId: string | null }
+  /**
+   * Написать ОДНОМУ пациенту: имя, текст (свой или собранный по ситуации) и
+   * когда отправить. День, врач и услуга помогают понять, о ком речь, когда
+   * тёзок несколько: «Патимат, которая была записана сегодня на остеопатию».
+   */
+  | {
+      kind: "message_one";
+      name: string;
+      text: string;
+      situation: Situation | null;
+      delayText: string | null;
+      sendAtIso: string | null;
+      date: DateRef;
+      staffId: string | null;
+      serviceId: string | null;
+    }
+  /** Сколько всего пациентов в базе. */
+  | { kind: "patients_total" }
+  /** Телефон и канал связи пациента. */
+  | { kind: "contacts"; name: string }
+  /** Итоги за неделю или месяц — не за день. */
+  | { kind: "period"; period: "week" | "month"; money: boolean }
+  /** Просьба создать, перенести или отменить запись — не наша зона (§6). */
+  | { kind: "booking_refusal" }
+  /** Занятость кабинетов за день — та же функция, что в отчётах. */
+  | { kind: "rooms"; date: DateRef }
   /** Кто из пациентов ждёт ответа в переписке. */
   | { kind: "waiting" }
   /** Кому стоит позвонить — та же очередь, что на экране «Кому позвонить». */
@@ -47,7 +75,12 @@ export type AdminIntent =
       date: DateRef;
       staffId: string | null;
       serviceId: string | null;
+      /** Свой текст администратора; пусто — соберём по ситуации. */
       text: string;
+      situation: Situation | null;
+      delayText: string | null;
+      /** Когда отправить; пусто — сейчас. */
+      sendAtIso: string | null;
     }
   /** Разобрать не удалось: покажем, что умеем. */
   | { kind: "unknown" };
@@ -230,7 +263,7 @@ export function broadcastText(question: string): string {
 }
 
 const ASKS_BROADCAST =
-  /(?:отправ\p{L}*|напиш\p{L}*|разошл\p{L}*|рассыл\p{L}*|сообщ\p{L}*|предупред\p{L}*|оповест\p{L}*)/iu;
+  /(?:отправ\p{L}*|напиш\p{L}*|разошл\p{L}*|рассыл\p{L}*|сообщ\p{L}*|предупред\p{L}*|оповест\p{L}*|напомн\p{L}*)/iu;
 
 /**
  * Разобрать вопрос.
@@ -249,9 +282,59 @@ export function parseAdminQuestion(
 
   if (/что\s+(?:ты\s+)?(?:умеешь|можешь)|помощь|справка|команд/.test(low)) return { kind: "help" };
 
+  /**
+   * Просьба распорядиться расписанием. Отвечаем честным отказом с причиной —
+   * записи, переносы и отмены ведёт администратор (§6), и делать вид, что
+   * ассистент это умеет, нельзя. Проверяем раньше всего: «отмени запись
+   * Алиевой» иначе разбиралось как вопрос про пациента.
+   */
+  const booksOrCancels =
+    /(?<!\p{L})(?:запиши|записать|запишите|перенеси|перенесите|перенести|отмени|отмените|отменить|удали|удалите)(?!\p{L})|добав\p{L}*\s+запис|создай\s+запис/iu.test(
+      low,
+    );
+  const aboutBooking =
+    /(?<!\p{L})(?:запис\p{L}*|при[её]м\p{L}*|визит\p{L}*)(?!\p{L})|\d{1,2}[:.]\d{2}|на\s+(?:сегодня|завтра|послезавтра|\d)/iu.test(
+      low,
+    );
+  if (booksOrCancels && aboutBooking) return { kind: "booking_refusal" };
+
   const date = dateFrom(low, now);
   const staff = staffIn(q, known.staff);
   const service = serviceIn(q, known.services);
+
+  /**
+   * Сообщение ОДНОМУ пациенту: «через 5 часов напиши Патимат, что врач
+   * задерживается». Отличаем от рассылки по отсутствию слова «всем» и по
+   * наличию имени человека.
+   */
+  /**
+   * Личное сообщение, а не рассылка: просьба написать есть, а «всем» нет.
+   *
+   * `\b` здесь не годится: в JavaScript он опирается на латинский `\w` и рядом
+   * с кириллицей не находится вовсе — «всем» не совпадало никогда, и рассылка
+   * разбиралась как письмо одному человеку. Границу задаём отсутствием буквы
+   * рядом. Слово «записана» в исключение не идёт: «напиши Патимат, которая
+   * была записана сегодня» — это письмо одному человеку.
+   */
+  const toEveryone = /(?<!\p{L})(?:всем|всех|все)(?!\p{L})|пациентам|записанным/iu.test(low);
+  const personal = ASKS_BROADCAST.test(low) && !toEveryone;
+  if (personal) {
+    const name = personName(q, known.staff);
+    if (name) {
+      const sendAt = sendAtFrom(q, now);
+      return {
+        kind: "message_one",
+        name,
+        text: broadcastText(q),
+        situation: situationOf(q),
+        delayText: delayTextFrom(q),
+        sendAtIso: sendAt ? sendAt.toISOString() : null,
+        date,
+        staffId: staff.one?.id ?? null,
+        serviceId: service?.id ?? null,
+      };
+    }
+  }
 
   /**
    * Рассылка. Требуем и просьбу отправить, и указание, кому: «отправь всем
@@ -259,16 +342,43 @@ export function parseAdminQuestion(
    * просто сообщение, и его отправляют из переписки.
    */
   if (ASKS_BROADCAST.test(low) && /(?:всем|запис\p{L}*|пациент\p{L}*)/iu.test(low)) {
+    const sendAt = sendAtFrom(q, now);
     return {
       kind: "broadcast",
       date,
       staffId: staff.one?.id ?? null,
       serviceId: service?.id ?? null,
       text: broadcastText(q),
+      situation: situationOf(q),
+      delayText: delayTextFrom(q),
+      sendAtIso: sendAt ? sendAt.toISOString() : null,
     };
   }
 
   // Текст уже без «ё»: «ждёт» здесь выглядит как «ждет», поэтому корень «жд».
+  if (/сколько\s+(?:всего\s+)?пациентов\s+(?:в\s+базе|всего)|размер\s+базы/.test(low)) {
+    return { kind: "patients_total" };
+  }
+
+  if (/телефон|номер\s+телефона|как\s+связаться/.test(low)) {
+    const name = personName(q, known.staff);
+    if (name) return { kind: "contacts", name };
+  }
+
+  /**
+   * Итоги за неделю или месяц. Спрашивают их редко — для этого есть «Отчёты»,
+   * — но ответить «сегодня принято 0 ₽» на вопрос про месяц нельзя: число
+   * верное, а вопрос был не про это.
+   */
+  const longPeriod = /(?:за|на)\s+(недел\p{L}+|месяц\p{L}*)/iu.exec(low);
+  if (longPeriod) {
+    return {
+      kind: "period",
+      period: longPeriod[1].startsWith("недел") ? "week" : "month",
+      money: /сумм|денег|выручк|средний\s+чек/.test(low),
+    };
+  }
+
   if (/жд\p{L}*\s+ответа|неотвеч|кому\s+не\s+ответили|кто\s+пишет/u.test(low)) {
     return { kind: "waiting" };
   }
@@ -283,6 +393,10 @@ export function parseAdminQuestion(
 
   if (/кто\s+сейчас|сейчас\s+на\s+при[её]ме|кто\s+следующ|следующий\s+пациент/.test(low)) {
     return { kind: "now", staffId: staff.one?.id ?? null };
+  }
+
+  if (/занятост|загрузк\p{L}*\s+кабинет|кабинет\p{L}*\s+заняt?|по\s+кабинетам/iu.test(low)) {
+    return { kind: "rooms", date };
   }
 
   if (/окн[оа]|окошк|свободн/.test(low)) {
@@ -301,7 +415,11 @@ export function parseAdminQuestion(
     return { kind: "day_money", date, staffId: staff.one?.id ?? null };
   }
 
-  if (/^кто\s+запис|список\s+запис|покажи\s+запис|кто\s+идет|кто\s+ид[её]т|распис/.test(low)) {
+  if (
+    /^кто\s+запис|список\s+запис|покажи\s+запис|кто\s+идет|кто\s+ид[её]т|распис|перв\p{L}*\s+(?:по\s+запис|при[её]м|пациент)|во\s+сколько\s+начина/iu.test(
+      low,
+    )
+  ) {
     return {
       kind: "schedule",
       date,
@@ -337,7 +455,12 @@ export function parseAdminQuestion(
  * складывает регистры, поэтому регистр проверяем без него.
  */
 function personName(question: string, staff: KnownStaff[]): string | null {
-  const words = question.split(/[\s,.!?]+/).filter(Boolean);
+  /**
+   * Разделители включают двоеточие и кавычки: «напиши Алиевой: Мы вас ждём» —
+   * без этого «Алиевой:» оставалось одним словом и именем не считалось, а
+   * просьба разбиралась как непонятная.
+   */
+  const words = question.split(/[\s,.!?:;«»"()]+/).filter(Boolean);
   const staffWords = new Set(
     staff.flatMap((s) => s.name.toLowerCase().replace(/ё/g, "е").split(/\s+/)),
   );
@@ -365,6 +488,8 @@ export interface BroadcastTarget {
 }
 
 export interface BroadcastPlan {
+  /** Кому: всем записанным или одному названному пациенту. */
+  kind: "broadcast" | "one";
   /** Что именно уйдёт пациенту — дословно. */
   text: string;
   targets: BroadcastTarget[];
@@ -374,6 +499,12 @@ export interface BroadcastPlan {
   serviceId: string | null;
   staffName: string | null;
   dateLabel: string;
+  /** Одному — кому именно. Пересчитывать список не нужно, адресат один. */
+  patientId: string | null;
+  /** Когда отправить; пусто — сразу по подтверждению. */
+  sendAtIso: string | null;
+  /** «сегодня в 17:40» — как момент отправки выглядит на экране. */
+  sendAtLabel: string | null;
 }
 
 export interface AdminAnswer {
@@ -395,5 +526,11 @@ export const ADMIN_ABILITIES = [
   "кому позвонить — та же очередь, что на экране",
   "сколько новых пациентов за день",
   "справка по пациенту: долг, последний визит, курс, ближайшая запись",
+  "телефон пациента и канал связи",
+  "итоги за неделю или месяц",
+  "сколько всего пациентов в базе",
+  "письмо одному пациенту: «через 5 часов напиши Патимат, что врач задерживается» — с подтверждением",
   "рассылка записанным: «отправь всем, кто записан сегодня к Ирине: текст» — с подтверждением",
+  "готовые ситуации для письма: врач задерживается, заболел, приём переносится, напоминание, клиника не работает",
+  "отложенная отправка: «через час», «в 18:00», «завтра утром»",
 ];
