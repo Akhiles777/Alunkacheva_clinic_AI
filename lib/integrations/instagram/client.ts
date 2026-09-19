@@ -1,10 +1,11 @@
-import { prisma } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
-import { GRAPH_BASE_URL, INSTAGRAM_PROVIDER, RATE_LIMIT, isInstagramEnabled, windowOpen } from "./config";
+import { RATE_LIMIT, isInstagramEnabled, windowOpen } from "./config";
+import { instagramKey } from "./credentials";
+import { describeProxyFailure, graphRequest } from "./graph";
 
 /**
  * Отправка в Instagram Direct. Единственное место, откуда уходят запросы к
- * Meta: бизнес-логика про HTTP ничего не знает (§5).
+ * Meta: бизнес-логика про HTTP ничего не знает (§5). Идут они через наш прокси
+ * на Vercel — с российского сервера Meta не открывается (graph.ts).
  *
  * Как и в WhatsApp, отправку не повторяем вслепую: если запрос оборвался на
  * таймауте, сообщение могло уйти, и повтор пришлёт пациенту второе.
@@ -39,20 +40,6 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function pageToken(companyId: string): Promise<string | null> {
-  const row = await prisma.credential.findFirst({
-    where: { companyId, provider: INSTAGRAM_PROVIDER, keyName: "page_token" },
-    select: { valueEncrypted: true },
-  });
-  if (!row) return null;
-  try {
-    return decryptSecret(row.valueEncrypted);
-  } catch {
-    // Сменившийся мастер-ключ или повреждённый шифртекст — считаем ненастроенным.
-    return null;
-  }
-}
-
 /** Понятное объяснение вместо кода ответа. */
 function describeError(status: number, body: string): string {
   if (/outside.*24|message.*window|#10\b/i.test(body)) {
@@ -84,7 +71,7 @@ export async function sendText(
     };
   }
 
-  const token = await pageToken(companyId);
+  const token = await instagramKey(companyId, "page_token");
   if (!token) return { ok: false, error: "Не задан токен страницы Instagram" };
 
   const body = text.trim();
@@ -92,37 +79,33 @@ export async function sendText(
 
   let attempt = 0;
   for (;;) {
-    let res: Response;
-    try {
-      res = await fetch(`${GRAPH_BASE_URL}/me/messages?access_token=${encodeURIComponent(token)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          recipient: { id: recipientId },
-          message: { text: body.slice(0, 1000) },
-        }),
-        signal: AbortSignal.timeout(20_000),
-      });
-    } catch (e) {
-      // Обрыв на отправке не повторяем: сообщение могло уйти.
-      return {
-        ok: false,
-        error: (e as Error).name === "TimeoutError" ? "Instagram не ответил вовремя" : "нет связи с Instagram",
-      };
-    }
+    const out = await graphRequest({
+      path: "me/messages",
+      method: "POST",
+      token,
+      body: { recipient: { id: recipientId }, message: { text: body.slice(0, 1000) } },
+    });
 
-    // 429 — Meta прямо просит подождать и заведомо ничего не выполнила.
-    if (res.status === 429 && attempt < RATE_LIMIT.maxRetries) {
-      await sleep(RATE_LIMIT.baseDelayMs * 2 ** attempt);
-      attempt += 1;
-      continue;
-    }
+    /**
+     * Прокси недоступен, отказал или не настроен. Обрыв на отправке не
+     * повторяем: запрос мог дойти до Meta, и повтор пришлёт пациенту второе.
+     */
+    const proxyFailure = describeProxyFailure(out);
+    if (proxyFailure) return { ok: false, error: proxyFailure };
 
-    const raw = await res.text().catch(() => "");
-    if (!res.ok) return { ok: false, error: describeError(res.status, raw) };
+    if (out.kind === "meta_error") {
+      // 429 — Meta прямо просит подождать и заведомо ничего не выполнила.
+      if (out.status === 429 && attempt < RATE_LIMIT.maxRetries) {
+        await sleep(RATE_LIMIT.baseDelayMs * 2 ** attempt);
+        attempt += 1;
+        continue;
+      }
+      return { ok: false, error: describeError(out.status, out.raw) };
+    }
+    if (out.kind !== "ok") return { ok: false, error: "нет связи с Instagram" };
 
     try {
-      const json = JSON.parse(raw) as { message_id?: string };
+      const json = JSON.parse(out.raw) as { message_id?: string };
       return { ok: true, externalId: json.message_id };
     } catch {
       // Ответ без разбираемого тела: сообщение, скорее всего, ушло. Второго не

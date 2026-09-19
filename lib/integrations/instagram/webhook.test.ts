@@ -1,5 +1,5 @@
-import { describe, expect, it, afterEach } from "vitest";
-import { parseWebhook, verifyChallenge, verifySignature } from "./webhook";
+import { describe, expect, it } from "vitest";
+import { fromOurProxy, parseWebhook, verifyChallenge, verifySignature } from "./webhook";
 import { windowOpen } from "./config";
 import crypto from "node:crypto";
 
@@ -14,11 +14,6 @@ const text = (over: Record<string, unknown> = {}) =>
     recipient: { id: "ig-page-1" },
     message: { mid: "mid.1", text: "Здравствуйте", ...over },
   });
-
-afterEach(() => {
-  delete process.env.INSTAGRAM_APP_SECRET;
-  delete process.env.INSTAGRAM_VERIFY_TOKEN;
-});
 
 describe("разбор сообщений Instagram", () => {
   it("обычное сообщение разбирается", () => {
@@ -72,36 +67,60 @@ describe("разбор сообщений Instagram", () => {
 
 describe("подпись Meta", () => {
   const body = '{"object":"instagram"}';
+  const secret = "секрет-приложения";
 
   it("верная подпись принимается", () => {
-    process.env.INSTAGRAM_APP_SECRET = "секрет-приложения";
-    const sig = crypto.createHmac("sha256", "секрет-приложения").update(body, "utf8").digest("hex");
-    expect(verifySignature(body, `sha256=${sig}`)).toBe(true);
+    const sig = crypto.createHmac("sha256", secret).update(body, "utf8").digest("hex");
+    expect(verifySignature(body, `sha256=${sig}`, secret)).toBe(true);
   });
 
   it("чужая подпись отклоняется", () => {
-    process.env.INSTAGRAM_APP_SECRET = "секрет-приложения";
-    const sig = crypto.createHmac("sha256", "другой", ).update(body, "utf8").digest("hex");
-    expect(verifySignature(body, `sha256=${sig}`)).toBe(false);
+    const sig = crypto.createHmac("sha256", "другой").update(body, "utf8").digest("hex");
+    expect(verifySignature(body, `sha256=${sig}`, secret)).toBe(false);
+  });
+
+  it("мусор вместо подписи — отказ, а не исключение", () => {
+    expect(verifySignature(body, "sha256=deadbeef", secret)).toBe(false);
+    expect(verifySignature(body, `sha256=${"z".repeat(64)}`, secret)).toBe(false);
+    expect(verifySignature(body, null, secret)).toBe(false);
   });
 
   it("без секрета не принимаем ничего", () => {
     // Открытый вебхук означал бы, что подделать сообщение пациента может кто угодно.
-    expect(verifySignature(body, "sha256=deadbeef")).toBe(false);
+    const sig = crypto.createHmac("sha256", "").update(body, "utf8").digest("hex");
+    expect(verifySignature(body, `sha256=${sig}`, "")).toBe(false);
+    expect(verifySignature(body, `sha256=${sig}`, null)).toBe(false);
   });
 });
 
 describe("подключение вебхука", () => {
+  const params = (token: string) =>
+    new URLSearchParams({ "hub.mode": "subscribe", "hub.verify_token": token, "hub.challenge": "12345" });
+
   it("возвращает challenge при верном токене", () => {
-    process.env.INSTAGRAM_VERIFY_TOKEN = "проверка";
-    const p = new URLSearchParams({ "hub.mode": "subscribe", "hub.verify_token": "проверка", "hub.challenge": "12345" });
-    expect(verifyChallenge(p)).toBe("12345");
+    expect(verifyChallenge(params("проверка"), "проверка")).toBe("12345");
   });
 
   it("чужой токен не подтверждается", () => {
-    process.env.INSTAGRAM_VERIFY_TOKEN = "проверка";
-    const p = new URLSearchParams({ "hub.mode": "subscribe", "hub.verify_token": "чужой", "hub.challenge": "12345" });
-    expect(verifyChallenge(p)).toBeNull();
+    expect(verifyChallenge(params("чужой"), "проверка")).toBeNull();
+  });
+
+  it("токен не заведён — не подтверждается ничего, даже пустой", () => {
+    expect(verifyChallenge(params(""), "")).toBeNull();
+    expect(verifyChallenge(params(""), null)).toBeNull();
+  });
+});
+
+describe("секрет прокси", () => {
+  it("принимается только точное совпадение", () => {
+    expect(fromOurProxy("s3cret", "s3cret")).toBe(true);
+    expect(fromOurProxy("s3cre", "s3cret")).toBe(false);
+    expect(fromOurProxy(null, "s3cret")).toBe(false);
+  });
+
+  it("секрет у нас не задан — не принимаем никого", () => {
+    expect(fromOurProxy("", "")).toBe(false);
+    expect(fromOurProxy("anything", "")).toBe(false);
   });
 });
 

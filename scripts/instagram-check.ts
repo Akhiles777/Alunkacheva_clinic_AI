@@ -1,19 +1,27 @@
 /**
  * Готов ли Instagram Direct — цепочка целиком, до первой ошибки.
  *
- * Половина настройки канала живёт в переменных окружения, половина в базе, а
- * остальное — в кабинете Meta, куда у нас доступа нет. Поэтому скрипт называет
- * каждое звено словами: что задано у нас, что мы видим из переписок и что
- * остаётся проверить глазами.
+ * Ключи клиники живут в базе («Интеграции»), адрес прокси и его секрет — в
+ * окружении, остальное — в кабинете Meta и на Vercel, куда у нас доступа нет.
+ * Поэтому скрипт называет каждое звено словами: что задано у нас, проходит ли
+ * связь через прокси, что видно из переписок и что проверить глазами.
  *
- * Ничего не меняет и никому не пишет: только читает.
+ * Ничего не меняет и никому не пишет. Единственные запросы наружу — проверка
+ * прокси: к Meta без токена и к нашему же вебхуку через прокси.
  *
  *   npx tsx scripts/instagram-check.ts
  */
 import "dotenv/config";
 import { prisma } from "../lib/db";
-import { INSTAGRAM_PROVIDER, isInstagramEnabled, windowOpen } from "../lib/integrations/instagram/config";
-import { absoluteUrl } from "../lib/server/app-url";
+import {
+  INSTAGRAM_PROVIDER,
+  graphBase,
+  isInstagramEnabled,
+  proxySecret,
+  proxyWebhookUrl,
+  windowOpen,
+} from "../lib/integrations/instagram/config";
+import { checkProxy } from "../lib/integrations/instagram/proxy-health";
 
 const WHEN = (d: Date) =>
   new Intl.DateTimeFormat("ru-RU", {
@@ -30,16 +38,25 @@ async function main() {
   const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
   console.log(`клиника: ${company.name}\n`);
 
-  const token = await prisma.credential.count({
-    where: { companyId: company.id, provider: INSTAGRAM_PROVIDER, keyName: "page_token" },
+  const keys = await prisma.credential.findMany({
+    where: { companyId: company.id, provider: INSTAGRAM_PROVIDER },
+    select: { keyName: true },
   });
+  const has = (k: string) => keys.some((r) => r.keyName === k);
 
   console.log("── ЧТО ЗАДАНО У НАС");
-  console.log(`  токен страницы в «Интеграциях»: ${mark(token > 0)}`);
-  console.log(`  INSTAGRAM_APP_SECRET: ${mark(Boolean(process.env.INSTAGRAM_APP_SECRET?.trim()))}`);
-  console.log(`  INSTAGRAM_VERIFY_TOKEN: ${mark(Boolean(process.env.INSTAGRAM_VERIFY_TOKEN?.trim()))}`);
+  console.log(`  токен страницы в «Интеграциях»: ${mark(has("page_token"))}`);
+  console.log(`  секрет приложения в «Интеграциях»: ${mark(has("app_secret"))}`);
+  console.log(`  слово проверки в «Интеграциях»: ${mark(has("verify_token"))}`);
+  console.log(`  INSTAGRAM_GRAPH_BASE: ${graphBase() ?? "НЕТ"}`);
+  console.log(`  INSTAGRAM_PROXY_SECRET: ${mark(Boolean(proxySecret()))}`);
   console.log(`  INSTAGRAM_ENABLED: ${isInstagramEnabled() ? "true" : "false — вебхук отвечает отказом"}`);
-  console.log(`  адрес для кабинета Meta: ${absoluteUrl("/api/webhooks/instagram") || "не задан APP_URL"}`);
+  console.log(`  адрес для кабинета Meta (прокси): ${proxyWebhookUrl() ?? "не собрать — нет адреса прокси"}`);
+
+  console.log("\n── СВЯЗЬ ЧЕРЕЗ ПРОКСИ");
+  const probe = await checkProxy();
+  console.log(`  мы → прокси → Meta: ${probe.outbound ?? "работает"}`);
+  console.log(`  прокси → сервер клиники: ${probe.inbound ?? "работает"}`);
 
   const convs = await prisma.conversation.findMany({
     where: { companyId: company.id, channel: "INSTAGRAM" },
@@ -79,8 +96,8 @@ async function main() {
   console.log("  1. Аккаунт Instagram — Business и привязан к странице Facebook.");
   console.log("  2. Приложение прошло review на переписку (instagram_manage_messages).");
   console.log("     Без review пишут только тестовые пользователи — это ограничение Meta, не наше.");
-  console.log("  3. Вебхук указывает на адрес выше, поле messages включено,");
-  console.log("     слово проверки совпадает с INSTAGRAM_VERIFY_TOKEN.");
+  console.log("  3. Вебхук указывает на адрес ПРОКСИ выше, поле messages включено,");
+  console.log("     слово проверки совпадает с заведённым в «Интеграциях».");
   console.log("  4. В настройках аккаунта разрешён доступ к сообщениям для приложения.");
 }
 

@@ -18,8 +18,58 @@
 /** Провайдер в таблице Credential — той же строкой, что пишет раздел «Интеграции». */
 export const INSTAGRAM_PROVIDER = "instagram";
 
-export const GRAPH_BASE_URL =
-  process.env.INSTAGRAM_GRAPH_URL?.replace(/\/+$/, "") || "https://graph.instagram.com/v21.0";
+/** Версия Graph API — часть пути, а не адреса: прокси пробрасывает путь как есть. */
+export const GRAPH_VERSION = "v21.0";
+
+/**
+ * Куда ходят запросы к Instagram API.
+ *
+ * Адреса Meta в коде нет намеренно. С российского сервера graph.instagram.com
+ * не открывается, и запросы идут через наш прокси на Vercel
+ * (`https://…vercel.app/api/graph`, docs/INSTAGRAM-PROXY.md). Зашитый адрес
+ * Meta по умолчанию означал бы, что забытая переменная выглядит как «Instagram
+ * не отвечает», а не как «не настроено».
+ */
+export function graphBase(): string | null {
+  const raw = process.env.INSTAGRAM_GRAPH_BASE?.trim().replace(/\/+$/, "");
+  return raw || null;
+}
+
+/** Полный адрес метода Graph API: `graphUrl("me/messages")`. */
+export function graphUrl(path: string): string | null {
+  const base = graphBase();
+  return base ? `${base}/${GRAPH_VERSION}/${path.replace(/^\/+/, "")}` : null;
+}
+
+/** Общий секрет с прокси: им подписан каждый наш запрос и каждое событие от него. */
+export function proxySecret(): string {
+  return process.env.INSTAGRAM_PROXY_SECRET?.trim() ?? "";
+}
+
+/** Заголовок, без которого прокси не пропустит запрос к Meta. */
+export const PROXY_SECRET_HEADER = "X-Proxy-Secret";
+
+/** Метка собственных ответов прокси — чтобы отличать его отказ от ответа Meta. */
+export const PROXY_OWN_HEADER = "x-ig-proxy";
+
+/**
+ * Адрес вебхука на прокси — его вставляют в кабинете Meta.
+ *
+ * Выводится из INSTAGRAM_GRAPH_BASE: прокси один, и второй переменной с тем же
+ * хостом однажды разъехаться с первой. Если база указывает прямо на Meta,
+ * прокси нет — и адреса тоже.
+ */
+export function proxyWebhookUrl(): string | null {
+  const base = graphBase();
+  if (!base) return null;
+  try {
+    const url = new URL(base);
+    if (/(^|\.)(instagram|facebook)\.com$/i.test(url.hostname)) return null;
+    return `${url.origin}/api/webhook`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Рубильник интеграции. Пока выключен, вебхук отвечает отказом и ни одного

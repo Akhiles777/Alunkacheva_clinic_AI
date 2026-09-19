@@ -3,10 +3,11 @@ import { getInstagramReadiness } from "./actions";
 /**
  * Готовность Instagram Direct.
  *
- * Половина настройки канала живёт не в базе, а в переменных окружения на
- * сервере. На экране их не было видно: токен заведён, галочка стоит, а
- * сообщения не приходят — и понять почему можно было только зайдя по ssh.
- * Здесь видно каждое условие и адрес, который вставляют в кабинете Meta.
+ * Ключи клиники живут в полях ниже, а адрес прокси, его секрет и рубильник —
+ * в переменных окружения на сервере. На экране их не было видно: токен
+ * заведён, галочка стоит, а сообщения не приходят — и понять почему можно было
+ * только зайдя по ssh. Здесь видно каждое условие, состояние связи через
+ * прокси и адрес, который вставляют в кабинете Meta.
  *
  * Значения не показываем никогда, только факт «задано» (§7).
  */
@@ -39,7 +40,7 @@ export async function InstagramBlock() {
               <span className="text-sm">
                 {item.label}
                 <span className={`ml-2 text-2xs ${item.ok ? "text-accent-text" : "text-text-subtle"}`}>
-                  {item.ok ? "задано" : "не задано"}
+                  {item.ok ? (item.okText ?? "задано") : (item.failText ?? "не задано")}
                 </span>
               </span>
               <span className="text-text-subtle block text-xs">{item.hint}</span>
@@ -49,12 +50,15 @@ export async function InstagramBlock() {
       </ul>
 
       <div className="border-border-soft mt-4 border-t pt-3.5">
-        <div className="text-text-subtle text-2xs">Адрес вебхука — вставляется в кабинете Meta</div>
+        <div className="text-text-subtle text-2xs">
+          Адрес вебхука — вставляется в кабинете Meta. Это адрес прокси, а не сервера клиники: Meta до
+          сервера в РФ не доходит.
+        </div>
         {state.webhookUrl ? (
           <code className="num text-text mt-1 block break-all text-xs">{state.webhookUrl}</code>
         ) : (
           <p className="text-text-muted mt-1 text-xs">
-            Не задан домен (DOMAIN) на сервере — адрес собрать не из чего.
+            Не задан адрес прокси (INSTAGRAM_GRAPH_BASE) на сервере — адрес собрать не из чего.
           </p>
         )}
       </div>

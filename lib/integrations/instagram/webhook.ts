@@ -137,16 +137,23 @@ function parseOne(m: z.infer<typeof Messaging>): ParsedInstagramEvent {
  * от исходного пробелами и порядком ключей, и подпись бы не сошлась.
  * Сравнение — постоянное по времени: обычное сравнение строк подсказывает
  * длину совпавшего префикса.
+ *
+ * Секрет приходит параметром: он хранится в «Интеграциях» зашифрованным, а не
+ * в окружении, и достаёт его вебхук.
  */
-export function verifySignature(rawBody: string, header: string | null | undefined): boolean {
-  const secret = process.env.INSTAGRAM_APP_SECRET ?? "";
+export function verifySignature(
+  rawBody: string,
+  header: string | null | undefined,
+  secret: string | null | undefined,
+): boolean {
   if (!secret) return false;
 
   const provided = (header ?? "").replace(/^sha256=/i, "").trim();
-  if (!provided) return false;
+  // Не шестнадцатеричная строка дала бы буфер другой длины, и сравнение
+  // бросило бы исключение вместо честного «нет».
+  if (!/^[0-9a-f]{64}$/i.test(provided)) return false;
 
   const expected = crypto.createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
-  if (provided.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
 }
 
@@ -154,10 +161,34 @@ export function verifySignature(rawBody: string, header: string | null | undefin
  * Проверка адреса при подключении вебхука: Meta присылает GET с токеном,
  * который мы задали в настройках приложения, и ждёт обратно challenge.
  */
-export function verifyChallenge(params: URLSearchParams): string | null {
-  const token = process.env.INSTAGRAM_VERIFY_TOKEN ?? "";
+export function verifyChallenge(params: URLSearchParams, token: string | null | undefined): string | null {
   if (!token) return null;
   if (params.get("hub.mode") !== "subscribe") return null;
   if (params.get("hub.verify_token") !== token) return null;
   return params.get("hub.challenge");
 }
+
+/**
+ * Запрос пришёл от нашего прокси.
+ *
+ * Прямых запросов от Meta на сервер клиники нет — Meta до него не доходит, —
+ * значит всё, что пришло без секрета прокси, пришло не от Meta. Секрет не
+ * задан у нас — не принимаем ничего: открытая дверь хуже закрытой.
+ * Сравниваем хэши, а не строки: так длина секрета не влияет на время ответа.
+ */
+export function fromOurProxy(header: string | null | undefined, secret: string): boolean {
+  if (!secret || !header) return false;
+  const a = crypto.createHash("sha256").update(header).digest();
+  const b = crypto.createHash("sha256").update(secret).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Проверка связи от прокси: `?hub.mode=ping`.
+ *
+ * Планировщик раз в пять минут проходит цепочку «мы → прокси → мы». Отвечать
+ * на неё без секрета нельзя: иначе адрес подтверждает посторонним, что за ним
+ * живой вебхук.
+ */
+export const PING_MODE = "ping";
+export const PING_REPLY = "pong";

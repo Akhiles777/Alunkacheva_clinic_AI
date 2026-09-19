@@ -1,8 +1,9 @@
 "use server";
 
 import { prisma } from "@/lib/db";
-import { absoluteUrl } from "@/lib/server/app-url";
-import { isInstagramEnabled } from "@/lib/integrations/instagram/config";
+import { graphBase, isInstagramEnabled, proxySecret, proxyWebhookUrl } from "@/lib/integrations/instagram/config";
+import { proxyWatchState } from "@/lib/server/instagram-proxy-watch";
+import { reasonOf } from "@/lib/integrations/instagram/proxy-health";
 import { encryptSecret } from "@/lib/crypto";
 import { getSession } from "@/lib/server/session";
 import { requirePermission } from "@/lib/server/authz";
@@ -31,7 +32,16 @@ const PROVIDERS: {
       { keyName: "company_id", label: "ID филиала" },
     ],
   },
-  { provider: "instagram", title: "Instagram", fields: [{ keyName: "page_token", label: "Токен страницы" }] },
+  {
+    provider: "instagram",
+    title: "Instagram",
+    fields: [
+      { keyName: "page_token", label: "Токен страницы" },
+      // Были в .env: менять их можно было только по ssh (docs/INSTAGRAM-PROXY.md).
+      { keyName: "app_secret", label: "Секрет приложения Meta" },
+      { keyName: "verify_token", label: "Слово проверки вебхука" },
+    ],
+  },
   {
     provider: "whatsapp",
     title: "WhatsApp (Green API)",
@@ -67,7 +77,8 @@ export interface ChannelReadiness {
   enabled: boolean;
   /** Адрес, который вставляют в кабинете провайдера. Без домена — null. */
   webhookUrl: string | null;
-  items: { label: string; ok: boolean; hint: string }[];
+  /** Подписи состояния: у настроек это «задано», у проверки связи — «работает». */
+  items: { label: string; ok: boolean; hint: string; okText?: string; failText?: string }[];
   ready: boolean;
 }
 
@@ -124,30 +135,59 @@ export async function getIntegrations(): Promise<IntegrationView[]> {
  */
 export async function getInstagramReadiness(): Promise<ChannelReadiness> {
   const session = await getSession();
-  const token = await prisma.credential.count({
-    where: { companyId: session.companyId, provider: "instagram", keyName: "page_token" },
+  const keys = await prisma.credential.findMany({
+    where: { companyId: session.companyId, provider: "instagram" },
+    select: { keyName: true },
   });
+  const has = (k: string) => keys.some((r) => r.keyName === k);
+  const watch = proxyWatchState().last;
 
   const items = [
     {
       label: "Токен страницы",
-      ok: token > 0,
+      ok: has("page_token"),
       hint: "Заводится здесь же, в полях ниже. Без него платформа не может отвечать пациенту.",
     },
     {
-      label: "Секрет приложения (INSTAGRAM_APP_SECRET)",
-      ok: Boolean(process.env.INSTAGRAM_APP_SECRET?.trim()),
-      hint: "Задаётся на сервере. Им подписаны входящие события: без него мы отвергаем всё как чужое.",
+      label: "Секрет приложения Meta",
+      ok: has("app_secret"),
+      hint: "Заводится в полях ниже. Им подписаны входящие события: без него мы отвергаем всё как чужое.",
     },
     {
-      label: "Слово проверки (INSTAGRAM_VERIFY_TOKEN)",
-      ok: Boolean(process.env.INSTAGRAM_VERIFY_TOKEN?.trim()),
-      hint: "Задаётся на сервере и повторяется в кабинете Meta при подключении вебхука.",
+      label: "Слово проверки вебхука",
+      ok: has("verify_token"),
+      hint: "Заводится в полях ниже и повторяется в кабинете Meta при подключении вебхука.",
+    },
+    {
+      label: "Адрес прокси (INSTAGRAM_GRAPH_BASE)",
+      ok: Boolean(graphBase()) && Boolean(proxyWebhookUrl()),
+      hint: "Задаётся на сервере. Meta до сервера в РФ не доходит — всё идёт через прокси на Vercel.",
+    },
+    {
+      label: "Секрет прокси (INSTAGRAM_PROXY_SECRET)",
+      ok: Boolean(proxySecret()),
+      hint: "Задаётся на сервере и на Vercel (PROXY_SECRET) одной и той же строкой.",
     },
     {
       label: "Интеграция включена (INSTAGRAM_ENABLED)",
       ok: isInstagramEnabled(),
       hint: "Рубильник. Пока выключен, ни одного обращения к Meta не происходит — так задумано.",
+    },
+    /**
+     * Связь проверяется раз в пять минут. «Всё задано» без неё обещало бы
+     * работающий канал там, где прокси лежит, — ровно та тишина, ради которой
+     * проверка и заведена.
+     */
+    {
+      label: "Связь через прокси",
+      ok: watch?.ok ?? false,
+      okText: "работает",
+      failText: watch ? "нет связи" : "не проверялась",
+      hint: !watch
+        ? "Ещё не проверялась: первая проверка — через полминуты после запуска, дальше раз в пять минут."
+        : watch.ok
+          ? `Проверено ${fmtWhen(new Date(watch.checkedAt))}: в обе стороны работает.`
+          : `Проверено ${fmtWhen(new Date(watch.checkedAt))}: ${reasonOf(watch)}`,
     },
   ];
 
@@ -155,7 +195,7 @@ export async function getInstagramReadiness(): Promise<ChannelReadiness> {
     provider: "instagram",
     title: "Instagram Direct",
     enabled: isInstagramEnabled(),
-    webhookUrl: absoluteUrl("/api/webhooks/instagram"),
+    webhookUrl: proxyWebhookUrl(),
     items,
     ready: items.every((i) => i.ok),
   };
@@ -169,7 +209,16 @@ export async function saveCredential(
   const session = await getSession();
   await requirePermission(session, "EDIT_SETTINGS");
 
-  const valueEncrypted = encryptSecret(plaintext);
+  /**
+   * Только поля, которые экран и показывает: иначе через это действие можно
+   * завести в Credential любой ключ, и его не будет видно нигде.
+   */
+  const known = PROVIDERS.find((p) => p.provider === provider)?.fields.some((f) => f.keyName === keyName);
+  if (!known) throw new Error("Неизвестный ключ интеграции");
+  const value = plaintext.trim();
+  if (!value) throw new Error("Пустое значение не сохраняется");
+
+  const valueEncrypted = encryptSecret(value);
   await prisma.credential.upsert({
     where: { companyId_provider_keyName: { companyId: session.companyId, provider, keyName } },
     update: { valueEncrypted, status: "UNKNOWN", lastCheckedAt: null },

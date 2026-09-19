@@ -18,6 +18,7 @@ import { handBackAndRemind } from "@/lib/agent/handback";
 import { runQualityCheck } from "@/lib/server/agent-quality";
 import { deliverWeeklyDigest } from "@/lib/server/weekly-digest-delivery";
 import { CLINIC_TZ } from "@/lib/clinic-time";
+import { PROXY_CHECK_INTERVAL_MIN, runProxyWatch } from "@/lib/server/instagram-proxy-watch";
 
 /**
  * Синхронизация с YCLIENTS по расписанию — внутри приложения.
@@ -114,6 +115,8 @@ interface SchedulerShared {
   nightTimer: NodeJS.Timeout | null;
   nightRunning: boolean;
   nightHistory: SyncRunInfo[];
+  /** Проверка прокси Instagram: свой таймер, состояние — в instagram-proxy-watch. */
+  proxyTimer?: NodeJS.Timeout | null;
 }
 
 const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clinicScheduler ??= {
@@ -561,6 +564,19 @@ export function startScheduler(): void {
         `при SYNC_INTERVAL_MIN=${INTERVAL_MIN} (нужно значение больше нуля и меньше полного круга)`,
     );
   }
+
+  /**
+   * Прокси Instagram — отдельным таймером, а не в круге выгрузки: круг может
+   * идти минуту и ждать YCLIENTS, а проверка связи обязана идти по часам.
+   * Выключенный Instagram проверка пропускает сама.
+   */
+  shared.proxyTimer = setInterval(
+    () => void runProxyWatch().catch((e) => console.error("[scheduler] проверка прокси Instagram:", e)),
+    PROXY_CHECK_INTERVAL_MIN * 60_000,
+  );
+  shared.proxyTimer.unref?.();
+  // Первая проверка — вскоре после старта: экрану «Интеграции» нужно состояние сразу.
+  setTimeout(() => void runProxyWatch().catch(() => {}), 30_000).unref?.();
 
   shared.nightTimer = setInterval(() => void runNightCycle(), NIGHT_TICK_MIN * 60_000);
   shared.nightTimer.unref?.();

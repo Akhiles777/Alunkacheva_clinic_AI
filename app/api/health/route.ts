@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { proxyWatchState } from "@/lib/server/instagram-proxy-watch";
+import { reasonOf } from "@/lib/integrations/instagram/proxy-health";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { prisma } from "@/lib/db";
@@ -102,8 +104,8 @@ export async function GET() {
     YCLIENTS_WEBHOOK_SECRET: Boolean(process.env.YCLIENTS_WEBHOOK_SECRET),
     DOMAIN: Boolean(process.env.DOMAIN),
     INSTAGRAM_ENABLED: process.env.INSTAGRAM_ENABLED === "true",
-    INSTAGRAM_APP_SECRET: Boolean(process.env.INSTAGRAM_APP_SECRET),
-    INSTAGRAM_VERIFY_TOKEN: Boolean(process.env.INSTAGRAM_VERIFY_TOKEN),
+    INSTAGRAM_GRAPH_BASE: Boolean(process.env.INSTAGRAM_GRAPH_BASE?.trim()),
+    INSTAGRAM_PROXY_SECRET: Boolean(process.env.INSTAGRAM_PROXY_SECRET?.trim()),
   };
 
   /**
@@ -215,13 +217,24 @@ export async function GET() {
       "YCLIENTS включён, но нет YCLIENTS_WEBHOOK_SECRET — вебхук закрыт, изменения из YCLIENTS не дойдут",
     );
   }
-  if (env.INSTAGRAM_ENABLED && !env.INSTAGRAM_APP_SECRET) {
+  /**
+   * Секрет приложения и слово проверки живут в «Интеграциях» (Credential), их
+   * готовность видна там. Здесь — то, что задаётся на сервере: без адреса
+   * прокси и общего с ним секрета Instagram не работает ни в одну сторону.
+   */
+  if (env.INSTAGRAM_ENABLED && !env.INSTAGRAM_GRAPH_BASE) {
+    warnings.push("Instagram включён, но нет INSTAGRAM_GRAPH_BASE — запросам к Instagram идти некуда");
+  }
+  if (env.INSTAGRAM_ENABLED && !env.INSTAGRAM_PROXY_SECRET) {
     warnings.push(
-      "Instagram включён, но нет INSTAGRAM_APP_SECRET — вебхук закрыт, сообщения пациентов не дойдут",
+      "Instagram включён, но нет INSTAGRAM_PROXY_SECRET — вебхук отклоняет всё, прокси не пропускает наши запросы",
     );
   }
-  if (env.INSTAGRAM_ENABLED && !env.INSTAGRAM_VERIFY_TOKEN) {
-    warnings.push("Instagram включён, но нет INSTAGRAM_VERIFY_TOKEN — Meta не сможет подтвердить адрес вебхука");
+  const igProxy = proxyWatchState();
+  if (env.INSTAGRAM_ENABLED && igProxy.last && !igProxy.last.ok) {
+    warnings.push(
+      `Прокси Instagram не прошёл проверку: ${reasonOf(igProxy.last)}`,
+    );
   }
   if (!env.DOMAIN) {
     warnings.push(
@@ -258,5 +271,16 @@ export async function GET() {
     );
   }
 
-  return NextResponse.json({ ok: warnings.length === 0, версия, env, push, models, db, warnings });
+  return NextResponse.json({
+    ok: warnings.length === 0,
+    версия,
+    env,
+    push,
+    models,
+    db,
+    прокси_instagram: igProxy.last
+      ? { ok: igProxy.last.ok, проверено: igProxy.last.checkedAt, неудачПодряд: igProxy.failures }
+      : null,
+    warnings,
+  });
 }

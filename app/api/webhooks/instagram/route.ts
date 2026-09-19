@@ -2,8 +2,16 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { markDelivery } from "@/lib/agent/unanswered";
-import { isInstagramEnabled, INSTAGRAM_PROVIDER } from "@/lib/integrations/instagram/config";
-import { parseWebhook, verifyChallenge, verifySignature } from "@/lib/integrations/instagram/webhook";
+import { isInstagramEnabled, proxySecret } from "@/lib/integrations/instagram/config";
+import {
+  PING_MODE,
+  PING_REPLY,
+  fromOurProxy,
+  parseWebhook,
+  verifyChallenge,
+  verifySignature,
+} from "@/lib/integrations/instagram/webhook";
+import { instagramKey, resolveInstagramCompany } from "@/lib/integrations/instagram/credentials";
 import { sendInstagram } from "@/lib/integrations/instagram/client";
 
 /**
@@ -16,13 +24,32 @@ import { sendInstagram } from "@/lib/integrations/instagram/client";
  * Идемпотентность: сообщение сохраняется с mid от Meta, а на паре
  * (channel, externalId) стоит уникальный индекс. Повторная доставка того же
  * сообщения не создаёт второй записи и не запускает второй ответ.
+ *
+ * Meta до российского сервера не доходит, поэтому события приходят только
+ * через наш прокси на Vercel (docs/INSTAGRAM-PROXY.md). Всё без его секрета —
+ * 403: от Meta напрямую здесь ничего быть не может. Подпись Meta при этом
+ * проверяется как прежде: секрет прокси говорит «пришло через наш прокси», а
+ * подпись — «это написала Meta». Одно другого не заменяет.
  */
 export const runtime = "nodejs";
 export const maxDuration = 20;
 
-/** Подключение вебхука: Meta присылает GET и ждёт обратно challenge. */
+function notFromProxy() {
+  return NextResponse.json({ error: "proxy secret" }, { status: 403 });
+}
+
+/** Подключение вебхука: Meta присылает GET через прокси и ждёт обратно challenge. */
 export async function GET(req: Request) {
-  const challenge = verifyChallenge(new URL(req.url).searchParams);
+  if (!fromOurProxy(req.headers.get("x-proxy-secret"), proxySecret())) return notFromProxy();
+
+  const params = new URL(req.url).searchParams;
+  if (params.get("hub.mode") === PING_MODE) {
+    return new NextResponse(PING_REPLY, { headers: { "Content-Type": "text/plain" } });
+  }
+
+  const companyId = await resolveInstagramCompany();
+  const token = companyId ? await instagramKey(companyId, "verify_token") : null;
+  const challenge = verifyChallenge(params, token);
   if (!challenge) return NextResponse.json({ error: "verification failed" }, { status: 403 });
   return new NextResponse(challenge, { headers: { "Content-Type": "text/plain" } });
 }
@@ -32,12 +59,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "instagram disabled" }, { status: 503 });
   }
 
+  if (!fromOurProxy(req.headers.get("x-proxy-secret"), proxySecret())) return notFromProxy();
+
+  /**
+   * Клиника-адресат и её секрет приложения: ключи Instagram хранятся в
+   * «Интеграциях» по клинике, и подпись проверить без неё нечем.
+   */
+  const companyId = await resolveInstagramCompany();
+  if (!companyId) return NextResponse.json({ ok: true, ignored: "в базе нет ни одной клиники" });
+
   /**
    * Тело читаем строкой: подпись считается по исходным байтам. Пересобранный
    * JSON отличается пробелами и порядком ключей, и подпись бы не сошлась.
    */
   const raw = await req.text();
-  if (!verifySignature(raw, req.headers.get("x-hub-signature-256"))) {
+  const appSecret = await instagramKey(companyId, "app_secret");
+  if (!verifySignature(raw, req.headers.get("x-hub-signature-256"), appSecret)) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
@@ -47,15 +84,6 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json({ ok: true, ignored: "invalid json" });
   }
-
-  /**
-   * Клиника-адресат: та, у которой заведён токен страницы. При
-   * неоднозначности берём самую раннюю — как и во всём остальном интерфейсе.
-   * Требовать «ровно одну клинику» нельзя: лишняя строка в таблице однажды
-   * уже стоила потерянных сообщений в WhatsApp.
-   */
-  const companyId = await resolveCompany();
-  if (!companyId) return NextResponse.json({ ok: true, ignored: "в базе нет ни одной клиники" });
 
   const events = parseWebhook(body);
   const outcome: Record<string, number> = { принято: 0, повтор: 0, пропущено: 0 };
@@ -128,16 +156,4 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ ok: true, ...outcome });
-}
-
-async function resolveCompany(): Promise<string | null> {
-  const configured = await prisma.credential.findMany({
-    where: { provider: INSTAGRAM_PROVIDER, keyName: "page_token" },
-    select: { companyId: true },
-    take: 2,
-  });
-  if (configured.length === 1) return configured[0].companyId;
-
-  const oldest = await prisma.company.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
-  return oldest?.id ?? null;
 }
