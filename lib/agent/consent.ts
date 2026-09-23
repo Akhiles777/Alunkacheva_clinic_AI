@@ -306,11 +306,22 @@ export function asksForConsent(text: string): boolean {
 }
 
 export function withoutConsentRequest(text: string): string {
-  return text
-    .split(/(?<=[.!?\n])/)
-    .filter((sentence) => !CONSENT_ASK.test(sentence))
-    .join("")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+  return (
+    text
+      .split(/(?<=[.!?\n])/)
+      .filter((sentence) => !CONSENT_ASK.test(sentence))
+      .join("")
+      /**
+       * Ссылка на политику уходит вместе с просьбой.
+       *
+       * Просьбу вырезали, а строка «Политика: https://…» оставалась висеть
+       * сама по себе: пациент получал голую ссылку без единого слова о том,
+       * зачем она. На живом прогоне это выглядело так: цена, пустая строка,
+       * ссылка на политику, и следом наш собственный запрос согласия.
+       */
+      .replace(/^[ \t]*политика\s*:.*$/gim, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim()
+  );
 }

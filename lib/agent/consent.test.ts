@@ -93,3 +93,19 @@ describe("asksForConsent", () => {
     }
   });
 });
+
+describe("ссылка на политику без просьбы", () => {
+  it("уходит вместе с вырезанной просьбой, а не висит голой строкой", () => {
+    const text =
+      "Детский приём — 5 000 ₽, 40 минут.\n\n" +
+      "Нужно ваше согласие на обработку персональных данных.\n" +
+      "Политика: https://alunkachevaclinic.ru/policy";
+    const kept = withoutConsentRequest(text);
+    expect(kept).toBe("Детский приём — 5 000 ₽, 40 минут.");
+  });
+
+  it("текст без согласия не трогаем", () => {
+    const text = "Детский приём — 5 000 ₽, 40 минут.";
+    expect(withoutConsentRequest(text)).toBe(text);
+  });
+});

@@ -439,6 +439,47 @@ async function main() {
   }
 
   /**
+   * Остеопатию в клинике ведут ДВОЕ, и в песочнице должно быть так же.
+   *
+   * Пока визиты были только у Ирины Алилгаджиевны, платформа считала, что
+   * остеопат один, и не предлагала выбрать врача — а заказчик жаловался ровно
+   * на это: «он должен был ознакомить с ценами обоих, а после выбора
+   * записывать». На песочнице с одним остеопатом такую проверку не провести.
+   */
+  const secondOsteopath = await prisma.staff.findFirstOrThrow({
+    where: { companyId: company.id, yclientsStaffId: 2 },
+  });
+  const osteoPatient = await prisma.patient.findFirstOrThrow({
+    where: { companyId: company.id, phones: { some: { phone: "+79280000002" } } },
+  });
+  await prisma.appointment.deleteMany({
+    where: { companyId: company.id, staffId: secondOsteopath.id },
+  });
+  for (const [i, s] of [service, adult].entries()) {
+    const at = new Date(Date.now() - (30 + i) * 86_400_000);
+    const price = s.id === service.id ? 4000 : 7000;
+    await prisma.appointment.create({
+      data: {
+        companyId: company.id,
+        patientId: osteoPatient.id,
+        staffId: secondOsteopath.id,
+        primaryServiceId: s.id,
+        startAt: at,
+        endAt: new Date(at.getTime() + 40 * 60_000),
+        createdAtYclients: at,
+        updatedAtYclients: at,
+        durationMin: 40,
+        status: "ARRIVED",
+        revenue: price,
+        services: {
+          create: { companyId: company.id, serviceId: s.id, priceCharged: price, durationMin: 40 },
+        },
+      },
+    });
+  }
+  console.log(`остеопатию ведут двое: ${staff.name} и ${secondOsteopath.name}`);
+
+  /**
    * Кто ведёт БОС-терапию, платформа узнаёт из визитов, а не из настройки.
    * Без истории агент не знает, что специалист по БОС один, и переспрашивает
    * «к кому вас записать» — ровно то, на что жаловался заказчик.

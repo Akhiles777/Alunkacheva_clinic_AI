@@ -85,6 +85,7 @@ import {
   looksLikeIntake,
   nameFromIntake,
   withoutPersonalDataRequest,
+  asksToChoose,
 } from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
@@ -704,6 +705,27 @@ function channelLabel(channel: AgentChannel): string {
   return channel === "WHATSAPP" ? "WhatsApp" : channel === "INSTAGRAM" ? "Instagram" : "Telegram";
 }
 
+/**
+ * Заходила ли в этом диалоге речь о записи.
+ *
+ * Согласие нужно под сбор данных, а данные собираются ради записи. Пациент,
+ * спросивший цену, ничего не записывает — и требовать от него согласия не за
+ * что: «А ребёнку 6 лет сколько?» получало цену и следом юридический текст.
+ * Смотрим последние реплики пациента: просьба записаться могла прозвучать
+ * раньше, чем модель дошла до данных.
+ */
+async function bookingAsked(conversationId: string): Promise<boolean> {
+  const rows = await prisma.message
+    .findMany({
+      where: { conversationId, direction: "IN", deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      select: { body: true },
+    })
+    .catch(() => []);
+  return rows.some((m) => wantsToBook(m.body) || wantsReschedule(m.body));
+}
+
 async function respond(
   ctx: AgentContext,
   conversationId: string,
@@ -765,7 +787,41 @@ async function respond(
     const granted = await prisma.conversation
       .findUnique({ where: { id: conversationId }, select: { consentGrantedAt: true } })
       .catch(() => null);
-    if (granted && !granted.consentGrantedAt) {
+    /**
+     * Согласие идёт ВМЕСТЕ с просьбой о данных, а не вместо разговора.
+     *
+     * Просьбу о данных мы отсюда вырезаем — и если после этого ответ всё ещё
+     * спрашивает, на какую услугу или к какому врачу, значит шаг с данными не
+     * наступил: человек только выбирает. Согласие рядом с таким вопросом
+     * выглядит стеной на пустом месте и сбивает порядок клиники (услуга и
+     * цена → согласие → данные).
+     *
+     * Живой диалог: «Хотела девочку записать к остеопату» → «к какому врачу
+     * хотите? Прежде чем продолжить: нам нужно ваше согласие…» → «Да» → и
+     * разговор перескочил сразу к ФИО, минуя цены и выбор врача.
+     *
+     * Молчим здесь совсем: `consentRequestFor` пометил бы диалог спрошенным, и
+     * на настоящем шаге данных вопрос уже не задался бы.
+     */
+    const stillChoosing = asksToChoose(
+      withoutConsentRequest(withoutPersonalDataRequest(reply.text)),
+    );
+    /**
+     * Согласие спрашиваем только там, где речь о записи.
+     *
+     * «Сколько стоит остеопатия?» → цена → «А ребёнку 6 лет сколько?» → цена
+     * И ЮРИДИЧЕСКИЙ ТЕКСТ: модель приписала к ответу просьбу прислать данные,
+     * мы её вырезали, а согласие осталось. Человек ничего не записывал и
+     * данных не присылал — спрашивать его не о чем (§7).
+     */
+    const aboutBooking =
+      (ctx.incomingText ? wantsToBook(ctx.incomingText) : false) || (await bookingAsked(conversationId));
+    if (granted && !granted.consentGrantedAt && (stillChoosing || !aboutBooking)) {
+      // Вопрос о выборе короткий («Для взрослого или для ребёнка?»), и порога
+      // длины здесь быть не должно: иначе просьба о данных осталась бы в тексте.
+      const kept = withoutConsentRequest(withoutPersonalDataRequest(reply.text));
+      if (kept) reply = { ...reply, text: kept };
+    } else if (granted && !granted.consentGrantedAt) {
       const request = await consentRequestFor(ctx.companyId, conversationId).catch(() => null);
       // Свой пациент: согласие могло проставиться прямо сейчас — перечитываем.
       const after = await prisma.conversation
@@ -1502,6 +1558,76 @@ async function osteopathyInTalk(
   return /остеопат/i.test(found[0]?.title ?? "");
 }
 
+/**
+ * Врача выбирает пациент — и до выбора данных мы не просим.
+ *
+ * Живой диалог: «Хотела девочку записать к остеопату» → «к какому врачу
+ * хотите — к Ирине Алилгаджиевне или к Разият Ризвановне?» и тут же согласие
+ * на обработку данных. Цен человек при этом не видел, хотя у врачей они
+ * разные, а согласие по порядку клиники берётся на шаг позже. Заказчик описал
+ * ожидаемое прямо: сначала цены ОБОИХ, потом выбор, и только потом запись.
+ *
+ * Поэтому вопрос задаём кодом, а не надеемся на модель: пока услугу ведут
+ * двое и человек никого не назвал, разговор остаётся на шаге выбора.
+ * Возвращаем null, когда выбирать не из чего: услуга одна, специалист один или
+ * врач уже назван.
+ */
+async function doctorChoice(
+  companyId: string,
+  query: string,
+  patientTexts: string[],
+): Promise<{ prices: string; question: string } | null> {
+  const staff = await prisma.staff
+    .findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { id: true, name: true } })
+    .catch(() => []);
+  // Врача назвали сами — выбор состоялся.
+  if (patientTexts.some((t) => uniqueStaffAsked(t, staff) !== null)) return null;
+
+  const services = await getServices(companyId).catch(() => []);
+  const found = dedupeServices(patientServices(matchServices(query, services, 4, 0.5)));
+  if (found.length === 0) return null;
+
+  /**
+   * Кто ведёт услугу — по визитам, как и везде: справочник знает это сам и не
+   * расходится с действительностью.
+   */
+  const names = new Set<string>();
+  for (const s of found) {
+    for (const name of await staffNamesForService(companyId, s.id).catch(() => [])) names.add(name);
+  }
+  if (names.size < 2) return null;
+
+  const list = [...names];
+  return {
+    prices: found.map(priceLine).join("\n"),
+    question: `К кому хотите записаться — ${list.slice(0, -1).join(", ")} или ${list[list.length - 1]}?`,
+  };
+}
+
+/**
+ * Цены называем ДО того, как человек выбирает врача.
+ *
+ * «Хотела девочку записать к остеопату» — и в ответ только «к какому врачу
+ * хотите: к Ирине Алилгаджиевне или к Разият Ризвановне?». Выбирать предложено
+ * вслепую: цены у врачей разные, и человек их не видел. По порядку клиники
+ * цена и длительность называются на втором шаге, до всего остального.
+ *
+ * Дописываем кодом, а не просьбой в промпте: модель это правило нарушает
+ * через раз. Услуги подбираются тем же кодом, что и везде, поэтому детский
+ * вопрос получает детские цены — взрослые в список не попадают (§6,
+ * `matchServices`). Ничего не нашли — молчим: выдумывать цены нельзя.
+ */
+async function withChoicePrices(companyId: string, answer: string, query: string): Promise<string> {
+  if (!asksToChoose(answer)) return answer;
+  // Цена в ответе уже есть — второй раз не повторяем.
+  if (/₽/.test(answer)) return answer;
+  const found = dedupeServices(
+    patientServices(matchServices(query, await getServices(companyId).catch(() => []), 4, 0.5)),
+  );
+  if (found.length === 0) return answer;
+  return `${answer}\n\n${found.map(priceLine).join("\n")}`;
+}
+
 function intakeAsk(whom: Whom, needsWeight = false): string {
   /**
    * Ребёнка записывают на имя родителя.
@@ -1516,7 +1642,12 @@ function intakeAsk(whom: Whom, needsWeight = false): string {
     whom === "child"
       ? `ФИО ребёнка, его возраст${weight}, имя родителя и кратко причину обращения`
       : `ФИО, возраст${weight} и кратко причину обращения`;
-  return `Время подберёт администратор — передал(а) ему вашу просьбу. Чтобы не терять время, пришлите, пожалуйста, одним сообщением: ${who}.`;
+  /**
+   * «Передал(а) вашу просьбу» здесь неправда: человек только что ответил
+   * «Да» на согласие и ни о чём администратора не просил. Ему ещё предстоит
+   * прислать данные — с них и начинается работа администратора.
+   */
+  return `Спасибо! Время подберёт администратор — он напишет здесь же. Чтобы не терять время, пришлите, пожалуйста, одним сообщением: ${who}.`;
 }
 
 /**
@@ -2682,22 +2813,48 @@ async function replyToQuestion(
      * Только для НОВОЙ записи: у переноса и отмены данные уже есть, и просить
      * их там — значит показать, что предыдущий разговор забыт.
      */
+    /**
+     * Данные просим, когда спрашивать больше нечего.
+     *
+     * Пока ответ уточняет услугу или врача, просьба о ФИО в том же сообщении
+     * — это два шага сразу и, следом, преждевременное согласие (respond).
+     * Человек ещё не выбрал, к кому идёт.
+     */
+    /**
+     * Выбор врача без цен — выбор вслепую. Дописываем их сами (см.
+     * `withChoicePrices` и `doctorChoice`).
+     */
+    const mineSaid = said.filter((t) => t.role === "user").map((t) => t.content).concat(own);
+    const choice =
+      wantsToBook(own) || mineSaid.some((t) => wantsToBook(t))
+        ? await doctorChoice(ctx.companyId, query, mineSaid).catch(() => null)
+        : null;
+    const shown = choice
+      ? [answer, /₽/.test(answer) ? "" : choice.prices, choice.question].filter(Boolean).join("\n\n")
+      : await withChoicePrices(ctx.companyId, answer, query);
+
     const needsData =
-      wantsToBook(own) && !intakeSent && !inIntakeFlow(said) && !asksForIntake(answer);
+      wantsToBook(own) &&
+      !intakeSent &&
+      !inIntakeFlow(said) &&
+      !asksForIntake(answer) &&
+      !asksToChoose(answer) &&
+      // Пока выбирают врача, данные просить рано (`doctorChoice`).
+      !choice;
 
     return respond(ctx, conversation.id, {
       // Приветствие добавит respond — одно место на все ветки.
       text: intakeSent
-        ? `${answer}\n\n${INTAKE_ACCEPTED}`
+        ? `${shown}\n\n${INTAKE_ACCEPTED}`
         : dayTail
-          ? `${answer}\n\n${dayTail}`
+          ? `${shown}\n\n${dayTail}`
           : needsData
-          ? `${answer}\n\nЧтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ${
+          ? `${shown}\n\nЧтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ${
               whomFor(query) === "child"
                 ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
                 : "ФИО того, кто придёт на приём, возраст и кратко причину обращения"
             }.`
-          : answer,
+          : shown,
       buttons: mainMenu(),
     });
   }
