@@ -74,7 +74,8 @@ describe("что засчитывается в продажу", () => {
     bot(1, "Пришлите, пожалуйста, ФИО, возраст и кратко причину обращения."),
     patient(5, "Магомедова Гульбара Халитовна, 34 года, боли в пояснице"),
   ];
-  const base = { conversationId: "c1", patientId: "p1", messages };
+  // Новый пациент: до этой заявки у клиники на него ничего нет.
+  const base = { conversationId: "c1", patientId: "p1", messages, earliestActivityAt: null };
 
   it("запись после сбора данных — продажа", () => {
     const sales = salesOf(
@@ -183,5 +184,85 @@ describe("сводка по услугам", () => {
     ]);
     expect(totals.revenue).toBe(13000);
     expect(totals.byService.map((s) => s.revenue)).toEqual([6500, 6500]);
+  });
+});
+
+/**
+ * Продажа — это НОВЫЙ пациент (решение заказчика, сентябрь 2026).
+ *
+ * Постоянный человек, записавшийся снова, пришёл бы и без ассистента.
+ */
+describe("только новый пациент", () => {
+  const messages = [
+    patient(0, "Хочу записаться к остеопату"),
+    bot(1, "Пришлите, пожалуйста, ФИО, возраст и кратко причину обращения."),
+    patient(5, "Магомедова Гульбара Халитовна, 34 года, боли в пояснице"),
+  ];
+  const appointments = [
+    {
+      id: "a1",
+      createdAt: at(30),
+      status: "ARRIVED",
+      revenue: 8000,
+      serviceTitles: ["Взрослый прием - остеопатия"],
+    },
+  ];
+  const base = { conversationId: "c1", patientId: "p1", messages, appointments };
+
+  it("ничего до заявки — продажа", () => {
+    expect(salesOf({ ...base, earliestActivityAt: null }, looksLikeIntake)).toHaveLength(1);
+    // Самая ранняя запись — она же и есть: человек появился этой заявкой.
+    expect(salesOf({ ...base, earliestActivityAt: at(30) }, looksLikeIntake)).toHaveLength(1);
+  });
+
+  it("был визит раньше — не продажа", () => {
+    expect(salesOf({ ...base, earliestActivityAt: at(-60 * 24 * 30) }, looksLikeIntake)).toHaveLength(0);
+  });
+
+  it("была отменённая запись раньше — тоже не продажа", () => {
+    // Отмена означает, что человек уже обращался, и привёл его кто-то другой.
+    expect(salesOf({ ...base, earliestActivityAt: at(-10) }, looksLikeIntake)).toHaveLength(0);
+  });
+});
+
+/**
+ * Просьба о данных узнаётся тем же правилом, что и везде на платформе.
+ *
+ * Узкий образец видел только «пришлите … ФИО», а модель просит иначе — и
+ * собранные ассистентом заявки не попадали в статистику владельца.
+ */
+describe("как узнаётся просьба о данных", () => {
+  const sale = (ask: string, gap: SaleMessage[] = []) =>
+    salesOf(
+      {
+        conversationId: "c1",
+        patientId: "p1",
+        earliestActivityAt: null,
+        messages: [patient(0, "Хочу записаться к остеопату"), bot(1, ask), ...gap, patient(9, "Магомедова Гульбара Халитовна, 34 года, боли в пояснице")],
+        appointments: [
+          { id: "a1", createdAt: at(30), status: "ARRIVED", revenue: 8000, serviceTitles: ["Приём"] },
+        ],
+      },
+      looksLikeIntake,
+    );
+
+  it("узнаёт живые формулировки модели", () => {
+    for (const ask of [
+      "Пришлите, пожалуйста, одним сообщением: ФИО, возраст и кратко причину обращения.",
+      "Для записи мне нужны ФИО и возраст ребёнка, а также кратко причина обращения.",
+      "Напишите, как зовут ребёнка и сколько ему лет.",
+      "Чтобы записать вас, назовите ФИО и возраст.",
+    ]) {
+      expect(sale(ask), ask).toHaveLength(1);
+    }
+  });
+
+  it("цена — не просьба о данных", () => {
+    expect(sale("Детский приём — 5000 ₽, 40 минут.")).toHaveLength(0);
+  });
+
+  it("вопрос пациента между просьбой и анкетой заявку не теряет", () => {
+    const gap = [patient(3, "А сколько длится приём?"), bot(4, "Сорок минут.")];
+    expect(sale("Пришлите, пожалуйста, ФИО, возраст и кратко причину обращения.", gap)).toHaveLength(1);
   });
 });

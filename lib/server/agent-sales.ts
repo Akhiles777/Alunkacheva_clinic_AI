@@ -19,6 +19,9 @@ import {
  *
  * Считается по фактам переписки за любой прошлый период: заказчик просил
  * разобрать и прошлые разговоры, чтобы не начинать счёт с нуля.
+ *
+ * Засчитываются только НОВЫЕ пациенты: у постоянного, записавшегося снова,
+ * заслуги ассистента нет — клиника его уже знает.
  */
 
 export interface AgentSalesReport extends AgentSalesTotals {
@@ -80,6 +83,33 @@ export async function getAgentSales(
       })
     : [];
 
+  /**
+   * Самое раннее, что у клиники есть на каждого пациента.
+   *
+   * Продажей считается только НОВЫЙ человек (решение заказчика, сентябрь
+   * 2026): до этой заявки у него нет ни визитов, ни записей. Берём минимум по
+   * ДВУМ датам сразу — создания и начала приёма: история из YCLIENTS создана в
+   * базе днём выгрузки, а состоялась раньше, и по одному `createdAt`
+   * постоянный пациент выглядел бы новым.
+   *
+   * Одна группировка на всех пациентов: тянуть их истории целиком ради двух
+   * дат незачем.
+   */
+  const earliest = patientIds.length
+    ? await prisma.appointment.groupBy({
+        by: ["patientId"],
+        where: { companyId, patientId: { in: patientIds }, deletedAt: null },
+        _min: { createdAt: true, startAt: true },
+      })
+    : [];
+  const earliestAt = new Map<string, Date>();
+  for (const row of earliest) {
+    const dates = [row._min.createdAt, row._min.startAt].filter((d): d is Date => d !== null);
+    if (dates.length > 0) {
+      earliestAt.set(row.patientId, new Date(Math.min(...dates.map((d) => d.getTime()))));
+    }
+  }
+
   const byPatient = new Map<string, typeof appointments>();
   for (const a of appointments) {
     const list = byPatient.get(a.patientId) ?? [];
@@ -94,6 +124,7 @@ export async function getAgentSales(
       {
         conversationId: conv.id,
         patientId: conv.patientId,
+        earliestActivityAt: conv.patientId ? (earliestAt.get(conv.patientId) ?? null) : null,
         /**
          * Цитату снимаем: отвечая свайпом, человек присылает и текст клиники,
          * а анкету надо узнавать по его собственным словам (lib/agent/quoted).

@@ -19,7 +19,7 @@ async function main() {
 
   const report = await getAgentSales(company.id, from, to);
   console.log(`клиника: ${company.name}, период: ${days} дней\n`);
-  console.log(`заявок собрал ассистент: ${report.bookings}`);
+  console.log(`новых пациентов довёл до записи: ${report.bookings}`);
   console.log(`из них состоялось:       ${report.arrived}`);
   console.log(`деньги состоявшихся:     ${report.revenue.toLocaleString("ru-RU")} ₽\n`);
 
@@ -39,8 +39,10 @@ async function main() {
     }
   }
   if (report.bookings === 0) {
-    console.log("\nНи одной заявки. Считается только та, где данные собрал сам ассистент:");
-    console.log("если разговор с начала вёл администратор, запись в счёт не идёт.");
+    console.log("\nНи одной заявки. Условий три, и все обязательны:");
+    console.log("  1. данные попросил сам ассистент, и пациент их прислал;");
+    console.log("  2. до этого в разговор не вмешивался сотрудник;");
+    console.log("  3. пациент новый: до заявки у клиники нет на него ни визитов, ни записей.");
   }
 }
 
