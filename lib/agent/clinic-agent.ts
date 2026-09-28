@@ -50,6 +50,7 @@ import {
   wantsToBook,
   wantsHuman,
   wantsReschedule,
+  wasToldToCome,
 } from "./triggers";
 import {
   CONSENT_ACCEPT,
@@ -2797,6 +2798,37 @@ async function replyToQuestion(
         text:
           "Поняла, передал(а) администратору — он подберёт время из тех, что вы просите, " +
           "и напишет здесь же.",
+      });
+    }
+
+    /**
+     * Врачу уже сказали прийти — человеку нужно время, а не ответ.
+     *
+     * «Мне Ирина Алилгаджиевна говорила, если проблема повторится, то надо
+     * прийти сразу не ждать следующего приёма». Заказчик сказал об этом прямо:
+     * врач уже знает и сама назначила прийти, это только про запись. Сначала
+     * агент отвечал справкой про приём мужчин, потом шёл с этим к врачу — и то
+     * и другое лишнее.
+     *
+     * Запись впереди называем: человеку важно видеть, что мы её видим, и просит
+     * он обычно время пораньше. Есть запись — вопросов не задаём вовсе: услуга
+     * и врач в ней уже стоят.
+     */
+    if (wasToldToCome(own) && !asksAboutOwnBooking(own) && !statesOwnBooking(own)) {
+      const mine = await upcomingBookingLines(ctx.companyId, conversation.patientId, 1);
+      if (mine.length > 0) {
+        return respond(ctx, conversation.id, {
+          text:
+            `Вижу вашу запись: ${mine[0]}. Если нужно прийти раньше — передал(а) администратору, ` +
+            "он подберёт время и напишет здесь же.",
+        });
+      }
+      return respond(ctx, conversation.id, {
+        text: await slotHandoverText(
+          ctx.companyId,
+          [own, ...said.filter((t) => t.role === "user").map((t) => t.content)],
+          "Передал(а) администратору — он подберёт ближайшее время и напишет здесь же.",
+        ),
       });
     }
 
