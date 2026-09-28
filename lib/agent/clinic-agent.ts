@@ -79,6 +79,7 @@ import { inventedIndication } from "./indications";
 import { ungroundedAgeLimit } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
 import { matchServices, onlyWhomStated, whomFor, type Whom } from "./service-match";
+import { bookingStep, type BookingStep } from "./booking-flow";
 import {
   asksForIntake,
   asksForPersonalData,
@@ -88,6 +89,8 @@ import {
   looksLikeIntake,
   nameFromIntake,
   withoutPersonalDataRequest,
+  asksDoctor,
+  asksService,
   asksToChoose,
   asksWhom,
 } from "./intake";
@@ -1760,64 +1763,117 @@ async function osteopathyInTalk(
 }
 
 /**
- * Врача выбирает пациент — и до выбора данных мы не просим.
+ * Что дописать к ответу модели на шаге записи: цены и ОДИН вопрос.
  *
- * Живой диалог: «Хотела девочку записать к остеопату» → «к какому врачу
- * хотите — к Ирине Алилгаджиевне или к Разият Ризвановне?» и тут же согласие
- * на обработку данных. Цен человек при этом не видел, хотя у врачей они
- * разные, а согласие по порядку клиники берётся на шаг позже. Заказчик описал
- * ожидаемое прямо: сначала цены ОБОИХ, потом выбор, и только потом запись.
- *
- * Поэтому вопрос задаём кодом, а не надеемся на модель: пока услугу ведут
- * двое и человек никого не назвал, разговор остаётся на шаге выбора.
- * Возвращаем null, когда выбирать не из чего: услуга одна, специалист один или
- * врач уже назван.
+ * Раньше это были три независимые дописки (цены, выбор врача, просьба о
+ * данных), и каждая проверяла свои условия. Они спорили: «взрослый или
+ * ребёнок?» приходил с одними взрослыми ценами, выбор врача исчезал, если
+ * модель обещала передать администратору, а согласие вставало на шаге выбора.
+ * Порядок теперь решает одна функция (`bookingStep`), а здесь только факты из
+ * базы и текст.
  */
-async function doctorChoice(
+async function bookingTail(
   companyId: string,
-  query: string,
-  patientTexts: string[],
-): Promise<{ prices: string; question: string } | null> {
+  input: {
+    /** Ответ модели — по нему видно, о чём она уже спросила. */
+    answer: string;
+    /** Слова пациента за разговор, свежие первыми. */
+    patientTexts: string[];
+    booking: boolean;
+    dataDone: boolean;
+    refused: boolean;
+    /** Для кого приём, если это уже сказано. */
+    whom: Whom;
+  },
+): Promise<{ text: string; step: BookingStep | null }> {
+  const services = await getServices(companyId).catch(() => []);
   const staff = await prisma.staff
     .findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { id: true, name: true } })
     .catch(() => []);
-  // Врача назвали сами — выбор состоялся.
-  if (patientTexts.some((t) => uniqueStaffAsked(t, staff) !== null)) return null;
 
-  const services = await getServices(companyId).catch(() => []);
-  const found = dedupeServices(patientServices(matchServices(query, services, 4, 0.5)));
-  if (found.length === 0) return null;
+  const doctorNamed =
+    input.patientTexts.map((t) => uniqueStaffAsked(t, staff)?.name ?? null).find((n) => n !== null) ?? null;
 
   /**
-   * Кто ведёт услугу — по визитам, как и везде: справочник знает это сам и не
-   * расходится с действительностью.
+   * Услуга: ищем в КАЖДОЙ реплике пациента отдельно — склеенный разговор
+   * разбавляет название до нуля. Возраст в подбор не пускаем, пока он не
+   * назван: иначе догадка «взрослый» скрывает детские цены.
    */
-  const names = new Set<string>();
-  for (const s of found) {
-    for (const name of await staffNamesForService(companyId, s.id).catch(() => [])) names.add(name);
-  }
-  if (names.size < 2) return null;
+  const anyAge = dedupeServices(
+    patientServices(
+      input.patientTexts
+        .map((t) => matchServices(t, services, 4, 0.5, "unknown"))
+        .find((found) => found.length > 0) ?? [],
+    ),
+  );
+  const forWhom =
+    input.whom === "unknown"
+      ? anyAge
+      : dedupeServices(
+          patientServices(
+            input.patientTexts
+              .map((t) => matchServices(t, services, 4, 0.5, input.whom))
+              .find((found) => found.length > 0) ?? [],
+          ),
+        );
 
-  const list = [...names];
-  return {
-    prices: found.map(priceLine).join("\n"),
-    question: `К кому хотите записаться — ${list.slice(0, -1).join(", ")} или ${list[list.length - 1]}?`,
-  };
+  /**
+   * Возраст важен только там, где у услуги есть оба варианта: детский приём и
+   * взрослый. Вариант один — спрашивать нечего, цена от ответа не изменится.
+   */
+  const childish = (title: string) => /(?<!\p{L})(дет[си]|ребен|ребён|подрост)/iu.test(title.toLowerCase());
+  const whomMatters = anyAge.some((s) => childish(s.title)) && anyAge.some((s) => !childish(s.title));
+
+  /** Кто ведёт подходящие услуги — по визитам, как и везде. */
+  const providers = new Set<string>();
+  for (const s of forWhom.length > 0 ? forWhom : anyAge) {
+    for (const name of await staffNamesForService(companyId, s.id).catch(() => [])) providers.add(name);
+  }
+
+  const { step, ask } = bookingStep({
+    booking: input.booking,
+    service: anyAge.length > 0 || doctorNamed !== null,
+    whom: input.whom !== "unknown",
+    whomMatters,
+    doctorMatters: providers.size >= 2,
+    doctor: doctorNamed !== null,
+    dataDone: input.dataDone,
+    refused: input.refused,
+    askedByModel: {
+      service: asksService(input.answer),
+      whom: asksWhom(input.answer),
+      doctor: asksDoctor(input.answer),
+      data: asksForIntake(input.answer) || asksForPersonalData(input.answer),
+    },
+  });
+  if (!step) return { text: input.answer, step: null };
+
+  /**
+   * Цены — ровно те, что относятся к шагу: на вопросе о возрасте обе, на выборе
+   * врача те, что подходят названному возрасту. Цена, уже названная моделью,
+   * второй раз не печатается.
+   */
+  const shown = step === "whom" ? anyAge : step === "doctor" ? (forWhom.length > 0 ? forWhom : anyAge) : [];
+  const prices = hasPrice(input.answer) || shown.length === 0 ? "" : shown.map(priceLine).join("\n");
+
+  const names = [...providers];
+  const question = !ask
+    ? ""
+    : step === "service"
+      ? "Подскажите, пожалуйста, на какую услугу записываемся?"
+      : step === "whom"
+        ? "Приём для взрослого или для ребёнка?"
+        : step === "doctor"
+          ? `К кому хотите записаться — ${names.slice(0, -1).join(", ")} или ${names[names.length - 1]}?`
+          : `Чтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ${
+              input.whom === "child"
+                ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
+                : "ФИО того, кто придёт на приём, возраст и кратко причину обращения"
+            }.`;
+
+  return { text: [input.answer, prices, question].filter(Boolean).join("\n\n"), step };
 }
 
-/**
- * Цены называем ДО того, как человек выбирает врача.
- *
- * «Хотела девочку записать к остеопату» — и в ответ только «к какому врачу
- * хотите: к Ирине Алилгаджиевне или к Разият Ризвановне?». Выбирать предложено
- * вслепую: цены у врачей разные, и человек их не видел. По порядку клиники
- * цена и длительность называются на втором шаге, до всего остального.
- *
- * Дописываем кодом, а не просьбой в промпте: модель это правило нарушает
- * через раз. Услуги подбираются тем же кодом, что и везде, поэтому детский
- * вопрос получает детские цены — взрослые в список не попадают (§6,
- * `matchServices`). Ничего не нашли — молчим: выдумывать цены нельзя.
- */
 /**
  * Цена в тексте уже названа.
  *
@@ -1827,30 +1883,6 @@ async function doctorChoice(
  */
 function hasPrice(text: string): boolean {
   return /₽|руб(?:\.|л\p{L}*)?(?!\p{L})/iu.test(text);
-}
-
-async function withChoicePrices(companyId: string, answer: string, query: string): Promise<string> {
-  if (!asksToChoose(answer)) return answer;
-  // Цена в ответе уже есть — второй раз не повторяем.
-  if (hasPrice(answer)) return answer;
-  /**
-   * Агент сам спросил «для взрослого или для ребёнка?» — значит он не знает, и
-   * цены называем ОБЕ. Иначе в одном сообщении вопрос и ответ только про
-   * взрослых (`asksWhom`).
-   */
-  const found = dedupeServices(
-    patientServices(
-      matchServices(
-        query,
-        await getServices(companyId).catch(() => []),
-        4,
-        0.5,
-        asksWhom(answer) ? "unknown" : undefined,
-      ),
-    ),
-  );
-  if (found.length === 0) return answer;
-  return `${answer}\n\n${found.map(priceLine).join("\n")}`;
 }
 
 function intakeAsk(whom: Whom, needsWeight = false): string {
@@ -3161,70 +3193,25 @@ async function replyToQuestion(
      * Выбор врача без цен — выбор вслепую. Дописываем их сами (см.
      * `withChoicePrices` и `doctorChoice`).
      */
-    const mineSaid = said.filter((t) => t.role === "user").map((t) => t.content).concat(own);
     /**
-     * Отказал — значит не записываем.
-     *
-     * «Приём для детей старше 10 лет не проводится» и следом «к кому хотите
-     * записаться?» в одном сообщении — неразбериха, обесценивающая честный
-     * отказ (`refusesService`).
+     * Шаг записи и то, что к ответу дописать, решает одна функция
+     * (`bookingTail` + `bookingStep`): услуга → для кого → врач → данные.
      */
+    const patientTexts = [own, ...said.filter((t) => t.role === "user").map((t) => t.content)];
     const refused = refusesService(answer);
-    /**
-     * Модель обещала разобраться через администратора — выбор врача не
-     * спрашиваем.
-     *
-     * «Уточню у администратора, какой врач сможет принять вашего ребёнка» и
-     * следом наш вопрос «к кому хотите записаться?» — два разных плана в одном
-     * сообщении. Человек не знает, кого слушать.
-     */
-    const handedOver = promisesHuman(answer);
-    /**
-     * Пока не знаем, для кого приём, врача не выбирают.
-     *
-     * Агент спросил «это взрослый приём или для ребёнка?» — и код тут же
-     * дописал цены (только взрослые) и вопрос «к кому хотите записаться?». Два
-     * вопроса подряд, и второй перебивает первый; лишний вопрос срезался
-     * правилом об одном вопросе, а взрослая цена оставалась — рядом с вопросом,
-     * на который её называть рано (`asksWhom`).
-     */
-    const choice =
-      !refused &&
-      !handedOver &&
-      !asksWhom(answer) &&
-      (wantsToBook(own) || mineSaid.some((t) => wantsToBook(t)))
-        ? await doctorChoice(ctx.companyId, query, mineSaid).catch(() => null)
-        : null;
-    const shown = choice
-      ? [answer, hasPrice(answer) ? "" : choice.prices, choice.question].filter(Boolean).join("\n\n")
-      : refused
-        ? answer
-        : await withChoicePrices(ctx.companyId, answer, query);
-
-    const needsData =
-      wantsToBook(own) &&
-      !intakeSent &&
-      !inIntakeFlow(said) &&
-      !asksForIntake(answer) &&
-      !asksToChoose(answer) &&
-      // Пока выбирают врача, данные просить рано (`doctorChoice`).
-      !choice &&
-      // Отказали в услуге — данные тем более не просим.
-      !refused;
+    const tail = await bookingTail(ctx.companyId, {
+      answer,
+      patientTexts,
+      booking: wantsToBook(own) || patientTexts.some((t) => wantsToBook(t)),
+      dataDone: intakeSent || inIntakeFlow(said),
+      refused,
+      whom: patientTexts.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown",
+    }).catch(() => ({ text: answer, step: null as BookingStep | null }));
+    const shown = tail.text;
 
     return respond(ctx, conversation.id, {
       // Приветствие добавит respond — одно место на все ветки.
-      text: intakeSent
-        ? `${shown}\n\n${INTAKE_ACCEPTED}`
-        : dayTail
-          ? `${shown}\n\n${dayTail}`
-          : needsData
-          ? `${shown}\n\nЧтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ${
-              whomFor(query) === "child"
-                ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
-                : "ФИО того, кто придёт на приём, возраст и кратко причину обращения"
-            }.`
-          : shown,
+      text: intakeSent ? `${shown}\n\n${INTAKE_ACCEPTED}` : dayTail ? `${shown}\n\n${dayTail}` : shown,
       buttons: mainMenu(),
     });
   }
