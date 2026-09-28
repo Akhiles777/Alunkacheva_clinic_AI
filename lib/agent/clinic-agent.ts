@@ -756,7 +756,7 @@ async function bookingAsked(conversationId: string): Promise<boolean> {
  * назван. Ничего, кроме этого, — суммы и названия берутся из справочника, а не
  * из слов модели (§6.2).
  */
-async function chosenLine(companyId: string, conversationId: string): Promise<string | null> {
+async function chosenFacts(companyId: string, conversationId: string): Promise<string | null> {
   const rows = await prisma.message
     .findMany({
       where: { conversationId, direction: "IN", deletedAt: null },
@@ -805,7 +805,13 @@ async function chosenLine(companyId: string, conversationId: string): Promise<st
   else if (whom === "adult") parts.push("взрослый приём");
 
   if (parts.length === 0) return null;
-  return `${parts.join(", ")}. Передам администратору — он подберёт время.`;
+  return `${parts.join(", ")}.`;
+}
+
+/** Та же строка с хвостом про администратора — для ответа перед согласием. */
+async function chosenLine(companyId: string, conversationId: string): Promise<string | null> {
+  const facts = await chosenFacts(companyId, conversationId);
+  return facts ? `${facts} Передам администратору — он подберёт время.` : null;
 }
 
 async function respond(
@@ -1107,7 +1113,20 @@ export async function handlePatientMessage(
    * жалоба в процитированном тексте — не жалоба этого сообщения (lib/agent/quoted).
    */
   const askedByPatient = withoutQuote(input.text ?? "");
-  const askedForAdmin = personalTopic(askedByPatient) || wantsHuman(askedByPatient);
+  /**
+   * Присланная анкета — не просьба позвать человека, а данные для записи.
+   *
+   * Живой диалог: мама прислала данные второго и третьего ребёнка —
+   * «Аламова Айша Гамзатовна, 15 лет. Жалобы на спину» — и агент промолчал.
+   * Слово «жалобы» здесь про симптомы, а не про жалобу на клинику, но правило
+   * читало его как просьбу человека и, поскольку эскалация уже была открыта,
+   * молчало. Данные приняты, а человек об этом не узнал: он ждёт хотя бы
+   * «передал(а) администратору».
+   */
+  const staffForIntake = await staffNamesOf(ctx.companyId).catch(() => []);
+  const askedForAdmin =
+    !looksLikeIntake(askedByPatient, staffForIntake) &&
+    (personalTopic(askedByPatient) || wantsHuman(askedByPatient));
 
   /**
    * Агент выключен в этом диалоге насовсем — решением человека.
@@ -3223,8 +3242,17 @@ async function replyToQuestion(
   // Модель недоступна и подходящей справки нет. Про запись отвечаем по делу,
   // остальное честно передаём человеку.
   if (scheduleTopic(own)) {
+    /**
+     * Запасной путь тоже называет цену, если она известна.
+     *
+     * Живой диалог: «хотела детей записать к Ирине Алункачевой» — и в ответ
+     * только «время подбирает администратор». Врач назван, приём детский, цена
+     * у нас есть — человек вправе её услышать, даже когда модель не ответила.
+     */
+    const facts = await chosenFacts(ctx.companyId, conversation.id).catch(() => null);
     return respond(ctx, conversation.id, {
       text:
+        (facts ? `${facts} ` : "") +
         "Время приёма подбирает администратор — передал(а) ему ваш вопрос, он ответит здесь же. " +
         /**
          * Что просим прислать — по инструкции клиники: ФИО, возраст, кратко

@@ -110,8 +110,33 @@ export function staffAsked<T extends { name: string }>(text: string, staff: T[])
  * БОС-терапевт, — и там услуга остаётся неизвестной: угадывать врача нельзя.
  */
 export function uniqueStaffAsked<T extends { name: string }>(text: string, staff: T[]): T | null {
-  const hits = staff.filter((s) => staffAsked(text, [s]) !== null);
-  return hits.length === 1 ? hits[0] : null;
+  const norm = text.toLowerCase().replace(/ё/g, "е");
+  /**
+   * Сколько слов имени нашлось в тексте.
+   *
+   * Живой диалог: «хотела детей записать к Ирине Алункачевой». Фамилия названа,
+   * и ошибиться нельзя — но по ОДНОМУ совпавшему слову подходили двое: Ирина
+   * Алункачева и Ирина Омарова. Врач считался неназванным, и агент переспрашивал
+   * «на какую услугу записываемся», хотя человек уже всё сказал.
+   *
+   * Поэтому сравниваем по числу совпавших слов: «Ирине Алункачевой» — два слова
+   * у одной и одно у другой. Ровно то же правило, которым ассистент
+   * администратора различает двух Ирин.
+   */
+  const score = (name: string) =>
+    name
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .split(/\s+/)
+      .filter((w) => w.length >= 4)
+      .filter((w) => norm.includes(w.slice(0, 5))).length;
+
+  const scored = staff.map((s) => ({ s, hits: score(s.name) })).filter((x) => x.hits > 0);
+  if (scored.length === 0) return null;
+  const best = Math.max(...scored.map((x) => x.hits));
+  const top = scored.filter((x) => x.hits === best);
+  // Ровно столько же совпало у нескольких — угадывать нельзя («к Ирине»).
+  return top.length === 1 ? top[0].s : null;
 }
 
 /**
