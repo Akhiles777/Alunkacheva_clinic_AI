@@ -78,6 +78,7 @@ import { ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
 import { ungroundedAgeLimit } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
+import { audienceMentioned, unaskedAudience, withoutUnaskedAudience } from "./unasked-group";
 import { matchServices, onlyWhomStated, whomFor, type Whom } from "./service-match";
 import { bookingStep, type BookingStep } from "./booking-flow";
 import {
@@ -819,6 +820,27 @@ async function chosenLine(companyId: string, conversationId: string): Promise<st
 }
 
 /**
+ * Что сказал сам пациент в этом разговоре.
+ *
+ * Только его слова: цитату нашего же текста снимаем (`withoutQuote`), иначе
+ * ответ на справку про мужчин «подтверждал» бы, что про мужчин спрашивали —
+ * той же ошибкой, из-за которой «Ок» однажды сошло за согласие на обработку
+ * данных. Текущее сообщение передаём отдельно: в базу оно к этому моменту
+ * попасть успело, но полагаться на это нельзя.
+ */
+async function patientWords(conversationId: string, incoming?: string | null): Promise<string[]> {
+  const rows = await prisma.message
+    .findMany({
+      where: { conversationId, direction: "IN", deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      select: { body: true },
+    })
+    .catch(() => []);
+  return [incoming ?? "", ...rows.map((m) => withoutQuote(m.body))].filter(Boolean);
+}
+
+/**
  * Администратор уже ответил на это сообщение.
  *
  * Сравниваем последнюю реплику сотрудника с последним входящим: если сотрудник
@@ -973,6 +995,45 @@ async function respond(
           buttons: request?.buttons ?? consentButtons(),
         };
       }
+    }
+  }
+
+  /**
+   * Справка о тех, о ком не спрашивали, наружу не уходит.
+   *
+   * Запись «Приём мужчин» ушла пациентам три раза подряд, и ни один из них про
+   * мужчин не говорил: женщина, записанная на остеопатию, прочитала, что
+   * клиника взрослых мужчин не принимает, и получила телефон чужого врача. В
+   * промпте правило «отвечай на заданный вопрос, а не пересказывай запись»
+   * стоит дважды — и нарушалось всё равно, поэтому проверка кодовая и стоит
+   * здесь, у единственного выхода наружу: какой бы ветка ни составила текст —
+   * модель, дословная справка или запасной путь, — проверяется он один раз
+   * (lib/agent/unasked-group).
+   *
+   * Убираем только такие предложения: модель успевает в одном сообщении
+   * назвать цену по делу и приписать абзац из чужой записи. Не осталось
+   * ничего — зовём администратора, а не отправляем обрывок.
+   */
+  if (audienceMentioned(reply.text)) {
+    const spoken = await patientWords(conversationId, ctx.incomingText);
+    const unasked = unaskedAudience(reply.text, spoken);
+    if (unasked) {
+      console.error(`[agent] из ответа убрана справка не по делу: «${unasked}»`);
+      await escalate(
+        ctx.companyId,
+        conversationId,
+        "MISUNDERSTOOD",
+        "Ассистент ответил справкой не по вопросу",
+      ).catch(() => {});
+      const kept = withoutUnaskedAudience(reply.text, spoken);
+      reply = {
+        ...reply,
+        text:
+          kept.length >= MEANINGFUL_ANSWER_CHARS
+            ? kept
+            : "Уточню у администратора и напишу здесь же. " +
+              "Могу пока рассказать про услуги, цены, адрес и часы работы.",
+      };
     }
   }
 
