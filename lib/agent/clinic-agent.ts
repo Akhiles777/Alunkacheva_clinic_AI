@@ -89,6 +89,7 @@ import {
   nameFromIntake,
   withoutPersonalDataRequest,
   asksToChoose,
+  asksWhom,
 } from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
@@ -814,11 +815,40 @@ async function chosenLine(companyId: string, conversationId: string): Promise<st
   return facts ? `${facts} Передам администратору — он подберёт время.` : null;
 }
 
+/**
+ * Администратор уже ответил на это сообщение.
+ *
+ * Сравниваем последнюю реплику сотрудника с последним входящим: если сотрудник
+ * написал ПОЗЖЕ, разговор уже у него. Так правило работает и для добора
+ * неотвеченных, где сообщение пациента старое: пауза после перехвата
+ * проверяется на входе, а этот случай виден только у выхода.
+ */
+async function staffAnsweredMeanwhile(conversationId: string): Promise<boolean> {
+  const [staff, incoming] = await Promise.all([
+    prisma.message
+      .findFirst({
+        where: { conversationId, authorType: "STAFF", deletedAt: null, isDraft: false },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      })
+      .catch(() => null),
+    prisma.message
+      .findFirst({
+        where: { conversationId, direction: "IN", deletedAt: null, isDraft: false },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      })
+      .catch(() => null),
+  ]);
+  if (!staff || !incoming) return false;
+  return staff.createdAt > incoming.createdAt;
+}
+
 async function respond(
   ctx: AgentContext,
   conversationId: string,
   reply: AgentReply,
-): Promise<AgentReply> {
+): Promise<AgentReply | null> {
   /**
    * Согласие — перед запросом персональных данных, и ни минутой раньше (§7).
    *
@@ -941,6 +971,26 @@ async function respond(
         };
       }
     }
+  }
+
+  /**
+   * Администратор ответил, пока агент думал, — молчим.
+   *
+   * Живой диалог: пациентка спросила «К остеопату записаться можно?», через
+   * секунды администратор написал «Добрый день Марият» — и следом пришёл ответ
+   * агента. Пауза после перехвата проверяется на ВХОДЕ, а ответ модели идёт
+   * несколько секунд: к моменту отправки сотрудник уже в разговоре. Бот,
+   * перебивающий администратора, — худший дефект этой системы (§6.4), и
+   * единственное место, где это можно поймать, — выход наружу.
+   */
+  if (await staffAnsweredMeanwhile(conversationId)) {
+    await logAgentRun({
+      companyId: ctx.companyId,
+      conversationId,
+      outcome: "SUPPRESSED",
+      error: "администратор ответил раньше — агент не перебивает",
+    });
+    return null;
   }
 
   /**
@@ -1783,8 +1833,21 @@ async function withChoicePrices(companyId: string, answer: string, query: string
   if (!asksToChoose(answer)) return answer;
   // Цена в ответе уже есть — второй раз не повторяем.
   if (hasPrice(answer)) return answer;
+  /**
+   * Агент сам спросил «для взрослого или для ребёнка?» — значит он не знает, и
+   * цены называем ОБЕ. Иначе в одном сообщении вопрос и ответ только про
+   * взрослых (`asksWhom`).
+   */
   const found = dedupeServices(
-    patientServices(matchServices(query, await getServices(companyId).catch(() => []), 4, 0.5)),
+    patientServices(
+      matchServices(
+        query,
+        await getServices(companyId).catch(() => []),
+        4,
+        0.5,
+        asksWhom(answer) ? "unknown" : undefined,
+      ),
+    ),
   );
   if (found.length === 0) return answer;
   return `${answer}\n\n${found.map(priceLine).join("\n")}`;
@@ -3116,9 +3179,19 @@ async function replyToQuestion(
      * сообщении. Человек не знает, кого слушать.
      */
     const handedOver = promisesHuman(answer);
+    /**
+     * Пока не знаем, для кого приём, врача не выбирают.
+     *
+     * Агент спросил «это взрослый приём или для ребёнка?» — и код тут же
+     * дописал цены (только взрослые) и вопрос «к кому хотите записаться?». Два
+     * вопроса подряд, и второй перебивает первый; лишний вопрос срезался
+     * правилом об одном вопросе, а взрослая цена оставалась — рядом с вопросом,
+     * на который её называть рано (`asksWhom`).
+     */
     const choice =
       !refused &&
       !handedOver &&
+      !asksWhom(answer) &&
       (wantsToBook(own) || mineSaid.some((t) => wantsToBook(t)))
         ? await doctorChoice(ctx.companyId, query, mineSaid).catch(() => null)
         : null;
@@ -3470,7 +3543,11 @@ function mainMenu() {
   ];
 }
 
-async function handleCallback(ctx: AgentContext, conversationId: string, data: string): Promise<AgentReply> {
+async function handleCallback(
+  ctx: AgentContext,
+  conversationId: string,
+  data: string,
+): Promise<AgentReply | null> {
   if (data === CONSENT_ACCEPT) {
     await grantConsent(ctx.companyId, conversationId);
     // Первая фраза после согласия — по сути и есть приветствие клиники: до

@@ -69,6 +69,14 @@ async function assertNoLiveClinic() {
  */
 const SERVICES = [
   { title: "Взрослый прием - остеопатия", price: 8000, durationMin: 45, yclientsServiceId: 1 },
+  /**
+   * «Остео бьюти» — косметическая услуга, и она НЕ остеопатия.
+   *
+   * Живой ответ: на «К остеопату записаться можно?» она встала первой строкой в
+   * списке цен — четырёхбуквенного «осте» хватало, чтобы весить столько же,
+   * сколько «Остеопатия». Держим её в песочнице ради этой проверки.
+   */
+  { title: "Остео бьюти", price: 2000, durationMin: 30, yclientsServiceId: 30 },
   { title: "Детский прием до 10 л - остеопатия", price: 5000, durationMin: 40, yclientsServiceId: 2 },
   { title: "БОС-терапия", price: 2800, durationMin: 40, yclientsServiceId: 3, isCourse: true, defaultSessions: 10 },
   { title: "Консультация", price: 1000, durationMin: 30, yclientsServiceId: 4 },

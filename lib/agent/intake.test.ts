@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { intakePrompt, looksLikeIntake, DEFAULT_INTAKE_PROMPT, MAX_INSTRUCTION_CHARS, asksForIntake, inIntakeFlow, nameFromIntake,
   asksForPersonalData,
   asksToChoose,
+  asksWhom,
   withoutPersonalDataRequest,
 } from "./intake";
 
@@ -394,5 +395,22 @@ describe("возраст ребёнка — персональные данны�
 
   it("возрастная группа персональными данными не является", () => {
     expect(asksForPersonalData("Приём для взрослого или для ребёнка?")).toBe(false);
+  });
+});
+
+describe("вопрос «для кого» узнаётся отдельно", () => {
+  it("«это взрослый приём или для ребёнка?» — вопрос про возраст", () => {
+    for (const t of [
+      "Это взрослый приём или для ребёнка?",
+      "Уточню: приём для взрослого или для ребёнка?",
+      "Для кого приём?",
+    ]) {
+      expect(asksWhom(t), t).toBe(true);
+    }
+  });
+
+  it("выбор врача вопросом про возраст не считается", () => {
+    expect(asksWhom("К кому хотите записаться — Ирина или Разият?")).toBe(false);
+    expect(asksWhom("Детский приём — 5000 ₽, 40 минут.")).toBe(false);
   });
 });
