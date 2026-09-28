@@ -76,6 +76,7 @@ import { forMessenger } from "./messenger-text";
 import { keepOneQuestion } from "./one-question";
 import { ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
+import { ungroundedAgeLimit } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
 import { matchServices, onlyWhomStated, whomFor, type Whom } from "./service-match";
 import {
@@ -91,7 +92,7 @@ import {
 } from "./intake";
 import { smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
-import { withoutQuote } from "./quoted";
+import { splitQuote, withoutQuote } from "./quoted";
 import { inHandoverFlow, rescheduleAsked, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames, specialistQueryPending } from "./specialist";
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
@@ -501,6 +502,17 @@ async function clinicContext(
   const matched = question ? matchServices(question, services) : [];
   if (matched.length > 0) {
     lines.push("", "ПОДХОДИТ ПОД ВОПРОС (цену и длительность бери только отсюда):");
+    /**
+     * Название услуги — ценник, а не регламент.
+     *
+     * В прайсе стоит «Детский прием до 10 л», чтобы отличить две цены. Агент
+     * прочитал это как правило приёма и отказал ребёнку 11 лет, хотя в справке
+     * клиники написано «мальчиков принимаем до 14 лет включительно».
+     */
+    lines.push(
+      "Возраст в названии услуги — это только про цену. Кого принимают и с какого возраста, " +
+        "бери ТОЛЬКО из справки клиники ниже; нет там — передай администратору, не отказывай сам.",
+    );
     for (const s of patientServices(matched)) lines.push(priceLine(s));
 
     /**
@@ -1183,6 +1195,12 @@ export async function handlePatientMessage(
    * целиком: там цитата помогает понять, о какой услуге речь.
    */
   const own = withoutQuote(text);
+  /**
+   * На какую реплику отвечают свайпом. Нужна дважды: чтобы «Ок» на справку не
+   * стало согласием на обработку данных и чтобы вежливость осталась
+   * вежливостью (ниже).
+   */
+  const { quote } = splitQuote(text);
   // Дальше все ответы проходят через respond, а он добавит приветствие, если
   // человек поздоровался. Одно место на все ветки.
   ctx.incomingText = own;
@@ -1274,7 +1292,17 @@ export async function handlePatientMessage(
    * как обычно: спросил один раз — и ведёт разговор дальше.
    */
   if (conversation.consentAskedAt && !conversation.consentGrantedAt) {
-    const answer = consentFromText(own);
+    /**
+     * «Ок» в ответ на справку — не согласие на обработку данных.
+     *
+     * Живой диалог: пациентка свайпом ответила «Ок» на справку о том, что
+     * входит в приём. Слово «ок» стоит в списке согласий, и платформа зачла
+     * его как согласие — при том что отвечали на другую реплику. Согласие
+     * должно быть осознанным (§7): если в цитате не наш вопрос о согласии,
+     * это ответ не нам.
+     */
+    const toConsentQuestion = !quote || /соглас|персональн|политик/i.test(quote);
+    const answer = toConsentQuestion ? consentFromText(own) : null;
     if (answer) return handleCallback(ctx, conversation.id, answer);
   }
 
@@ -1297,12 +1325,26 @@ export async function handlePatientMessage(
    * человек отвечает свайпом на конкретную реплику, и точка в ответ на свою
    * же анкету — это «вот мои данные», а не «спасибо».
    */
-  const withQuote = own.trim() !== text.trim();
-  if (!withQuote && nothingToAnswer(own)) {
+  /**
+   * Цитата не превращает «Ок» в вопрос.
+   *
+   * Прежде любое сообщение с цитатой считалось не-вежливостью, и правило
+   * молчания его не разбирало вовсе. Живой диалог: человек свайпом ответил
+   * «Ок» на справку о том, что входит в приём, — и получил запись про то, что
+   * взрослых мужчин на остеопатию не принимают. Ни одного повода для такого
+   * ответа в переписке не было.
+   *
+   * Смотреть надо на ТУ реплику, на которую отвечают: если в цитате был вопрос
+   * — «Ок» это ответ, и молчать нельзя; если справка без вопроса — это жест
+   * вежливости, и отвечать нечего.
+   */
+  if (nothingToAnswer(own)) {
     const pending = await specialistQueryPending(ctx.companyId, conversation.id);
     const lastAgent = pending
       ? undefined
-      : [...(await recentTurns(conversation.id))].reverse().find((t) => t.role === "assistant");
+      : quote
+        ? { content: quote }
+        : [...(await recentTurns(conversation.id))].reverse().find((t) => t.role === "assistant");
     if (pending || (lastAgent && !agentAskedSomething(lastAgent.content))) {
       await logAgentRun({
         companyId: ctx.companyId,
@@ -2740,6 +2782,34 @@ async function replyToQuestion(
   const wrongDay = answer ? wrongDayIn(answer) : null;
   if (wrongDay) return handOverWrongDay(wrongDay);
 
+  /**
+   * Отказ по возрасту, взятый из названия услуги, пациенту не уходит.
+   *
+   * «Детский приём до 10 лет — 5000 ₽» — это ценник, а агент прочитал его как
+   * регламент: ребёнку 11 лет, «приём не предусмотрен». В справке клиники при
+   * этом написано, что мальчиков принимают до 14 лет. Сверяем только со
+   * СПРАВКОЙ: прайс сюда передавать нельзя — из него и берётся выдумка.
+   */
+  const knowledgeText = knowledgeRows
+    .map((r) => `${r.topic} ${r.question} ${r.answer}`)
+    .join("\n");
+  const badAge = answer ? ungroundedAgeLimit(answer, knowledgeText) : null;
+  if (badAge) {
+    console.error(`[agent] ответ отклонён: возрастной границы «${badAge}» нет в справке`);
+    await escalate(
+      ctx.companyId,
+      conversation.id,
+      "PATIENT_REQUEST",
+      "Ассистент отказал по возрасту, которого нет в справке",
+    ).catch(() => {});
+    return respond(ctx, conversation.id, {
+      text:
+        "Уточню у администратора, с какого возраста идёт приём, — он напишет здесь же. " +
+        "Могу пока рассказать про услуги, цены, адрес и часы работы.",
+      buttons: mainMenu(),
+    });
+  }
+
   const madeUp = answer ? inventedIndication(answer, reference) : null;
   if (madeUp) {
     console.error(`[agent] ответ отклонён: показание не из справки — «${madeUp}»`);
@@ -2962,10 +3032,29 @@ async function replyToQuestion(
    * Ирины Алункачевой» пациент получал блок про двоих. Оставляем часть про
    * того, о ком спросили; ничего не дописываем, только убираем чужие абзацы.
    */
-  const asked = whomFor(query);
   const staffNames = await staffNamesOf(ctx.companyId);
+  /**
+   * По кому режем запись — по названному ВРАЧУ.
+   *
+   * Здесь передавалось `whomFor(query)` — «adult» или «child», то есть слово,
+   * которого в записи справочника нет никогда. Обрезка поэтому не срабатывала
+   * ни разу: пациентка ответила «Взрослый Разият Резванова» — то есть уже
+   * выбрала врача — и получила в ответ всю запись про обоих остеопатов и все
+   * четыре цены. Имя ищем в словах пациента за весь разговор: выбор он мог
+   * назвать раньше.
+   */
+  const staffRows = await prisma.staff
+    .findMany({
+      where: { companyId: ctx.companyId, isActive: true, deletedAt: null },
+      select: { id: true, name: true },
+    })
+    .catch(() => []);
+  const askedPerson =
+    [own, ...said.filter((t) => t.role === "user").map((t) => t.content)]
+      .map((t) => uniqueStaffAsked(t, staffRows)?.name ?? null)
+      .find((n) => n !== null) ?? null;
   if (confidentMatch(exact)) {
-    const trimmed = focusedAnswer(exact!.row.answer, asked, staffNames);
+    const trimmed = focusedAnswer(exact!.row.answer, askedPerson, staffNames);
     const badDay = wrongDayIn(trimmed);
     if (badDay) return handOverWrongDay(badDay);
     if (!alreadySaid(said, trimmed)) {
@@ -3004,7 +3093,7 @@ async function replyToQuestion(
    */
   const meaningful = best && (best.hits >= 2 || (best.specificCoverage ?? 0) >= 0.5);
   if (best && meaningful) {
-    const trimmed = focusedAnswer(best.row.answer, asked, staffNames);
+    const trimmed = focusedAnswer(best.row.answer, askedPerson, staffNames);
     const badDay = wrongDayIn(trimmed);
     if (badDay) return handOverWrongDay(badDay);
     if (!alreadySaid(said, trimmed)) {
