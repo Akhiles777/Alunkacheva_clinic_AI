@@ -1795,6 +1795,16 @@ async function bookingTail(
     input.patientTexts.map((t) => uniqueStaffAsked(t, staff)?.name ?? null).find((n) => n !== null) ?? null;
 
   /**
+   * Агент СПРОСИЛ, для кого приём, — значит наша догадка не в счёт.
+   *
+   * «К остеопату записаться можно?» даёт «взрослый» из возвратного глагола, и
+   * шаг возраста считался пройденным: рядом с вопросом модели «это взрослый
+   * приём или для ребёнка?» стояла одна взрослая цена. Пациент при этом ничего
+   * не говорил — отвечать ему нечем, кроме обеих цен.
+   */
+  const whom: Whom = asksWhom(input.answer) ? "unknown" : input.whom;
+
+  /**
    * Услуга: ищем в КАЖДОЙ реплике пациента отдельно — склеенный разговор
    * разбавляет название до нуля. Возраст в подбор не пускаем, пока он не
    * назван: иначе догадка «взрослый» скрывает детские цены.
@@ -1807,12 +1817,12 @@ async function bookingTail(
     ),
   );
   const forWhom =
-    input.whom === "unknown"
+    whom === "unknown"
       ? anyAge
       : dedupeServices(
           patientServices(
             input.patientTexts
-              .map((t) => matchServices(t, services, 4, 0.5, input.whom))
+              .map((t) => matchServices(t, services, 4, 0.5, whom))
               .find((found) => found.length > 0) ?? [],
           ),
         );
@@ -1830,23 +1840,36 @@ async function bookingTail(
     for (const name of await staffNamesForService(companyId, s.id).catch(() => [])) providers.add(name);
   }
 
+  const askedByModel = {
+    service: asksService(input.answer),
+    whom: asksWhom(input.answer),
+    doctor: asksDoctor(input.answer),
+    data: asksForIntake(input.answer) || asksForPersonalData(input.answer),
+  };
   const { step, ask } = bookingStep({
     booking: input.booking,
     service: anyAge.length > 0 || doctorNamed !== null,
-    whom: input.whom !== "unknown",
+    whom: whom !== "unknown",
     whomMatters,
     doctorMatters: providers.size >= 2,
     doctor: doctorNamed !== null,
     dataDone: input.dataDone,
     refused: input.refused,
-    askedByModel: {
-      service: asksService(input.answer),
-      whom: asksWhom(input.answer),
-      doctor: asksDoctor(input.answer),
-      data: asksForIntake(input.answer) || asksForPersonalData(input.answer),
-    },
+    askedByModel,
   });
   if (!step) return { text: input.answer, step: null };
+
+  /**
+   * Модель спросила СВОЁ — ничего не дописываем.
+   *
+   * Правило об одном вопросе срезало бы наш вопрос, а цены шага оставались бы
+   * рядом с чужим вопросом: «вы хотите записаться сами или записываете
+   * ребёнка?» и под ним одна взрослая цена. Если модель спрашивает не про этот
+   * шаг, разговор ведёт она — молчим и не мешаем.
+   */
+  if (/\?/.test(input.answer) && !askedByModel[step]) {
+    return { text: input.answer, step };
+  }
 
   /**
    * Цены — ровно те, что относятся к шагу: на вопросе о возрасте обе, на выборе
@@ -1866,7 +1889,7 @@ async function bookingTail(
         : step === "doctor"
           ? `К кому хотите записаться — ${names.slice(0, -1).join(", ")} или ${names[names.length - 1]}?`
           : `Чтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ${
-              input.whom === "child"
+              whom === "child"
                 ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
                 : "ФИО того, кто придёт на приём, возраст и кратко причину обращения"
             }.`;
