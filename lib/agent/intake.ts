@@ -87,6 +87,9 @@ const NOT_A_NAME = new Set([
   "здравствуйте", "здраствуйте", "добрый", "доброе", "доброго", "привет",
   "спасибо", "пожалуйста", "подскажите", "скажите", "можно", "хочу",
   "ребенок", "ребенку", "сын", "сыну", "дочь", "дочери", "внук", "внуку",
+  // «Взрослый Разият Резванова» — это вид приёма и имя ВРАЧА, а не ФИО пациента.
+  "взрослый", "взрослая", "взрослого", "взрослому", "детский", "детская", "детского",
+  "первичный", "повторный", "прием", "приём",
   "мама", "маме", "папа", "папе", "муж", "мужу", "жена", "жене", "брат", "сестра",
 ]);
 
@@ -96,13 +99,38 @@ const NOT_A_NAME = new Set([
  * Приветствие впереди («Здравствуйте Ирина Алилгаджиевна») именем не делает:
  * слова из NOT_A_NAME в счёт не идут.
  */
-function fullName(text: string): boolean {
+/**
+ * Слова из имён сотрудников клиники — по ним ФИО пациента не опознаётся.
+ *
+ * «Взрослый Разият Резванова» — три слова с заглавной буквы, и правило приняло
+ * это за присланное ФИО: агент завёл эскалацию «прислал данные до согласия» и
+ * ответил юридическим текстом вместо подтверждения выбора. Человек назвал вид
+ * приёма и ВРАЧА. Имя врача — не персональные данные пациента.
+ *
+ * Сравниваем по началу слова: пациент пишет и «Резванова» вместо
+ * «Ризвановна», и «Алункачевой» вместо «Алункачева».
+ */
+function staffWordsOf(names: string[]): string[] {
+  return names
+    .flatMap((n) => n.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u))
+    .filter((w) => w.length >= 4)
+    .map((w) => w.slice(0, 5));
+}
+
+function isStaffWord(word: string, staffWords: string[]): boolean {
+  const w = word.toLowerCase().replace(/ё/g, "е");
+  return staffWords.some((s) => w.startsWith(s));
+}
+
+function fullName(text: string, staffWords: string[] = []): boolean {
   const words = text.split(/[\s,;:—-]+/).filter(Boolean);
   let run = 0;
   for (const w of words) {
     const bare = w.replace(/[^\p{L}]/gu, "");
     const isName =
-      /^\p{Lu}\p{Ll}{2,}$/u.test(bare) && !NOT_A_NAME.has(bare.toLowerCase().replace(/ё/g, "е"));
+      /^\p{Lu}\p{Ll}{2,}$/u.test(bare) &&
+      !NOT_A_NAME.has(bare.toLowerCase().replace(/ё/g, "е")) &&
+      !isStaffWord(bare, staffWords);
     run = isName ? run + 1 : 0;
     if (run >= 3) return true;
   }
@@ -110,18 +138,35 @@ function fullName(text: string): boolean {
 }
 
 /** «Ислам 8 лет» — имя и возраст рядом; «Опыт 5 лет» — нет. */
-function nameWithAge(text: string): boolean {
-  const re = /(?:^|[\s,;:—-])(\p{Lu}\p{Ll}+)\s+\d{1,2}\s*(?:лет|года|год)(?!\p{L})/gu;
+/**
+ * Два слова с заглавной буквы подряд — имя и фамилия. Имена сотрудников в счёт
+ * не идут: «Разият Резванова» это врач, а не пациент.
+ */
+function twoNames(text: string, staffWords: string[]): boolean {
+  const re = /(?:^|[\s,;:—-])(\p{Lu}\p{Ll}+)[\s,;:—-]+(\p{Lu}\p{Ll}+)/gu;
   for (const m of text.matchAll(re)) {
-    const word = m[1].toLowerCase().replace(/ё/g, "е");
-    if (!NOT_A_NAME.has(word)) return true;
+    if (!isStaffWord(m[1], staffWords) && !isStaffWord(m[2], staffWords)) return true;
   }
   return false;
 }
 
-export function looksLikeIntake(text: string): boolean {
+function nameWithAge(text: string, staffWords: string[] = []): boolean {
+  const re = /(?:^|[\s,;:—-])(\p{Lu}\p{Ll}+)\s+\d{1,2}\s*(?:лет|года|год)(?!\p{L})/gu;
+  for (const m of text.matchAll(re)) {
+    const word = m[1].toLowerCase().replace(/ё/g, "е");
+    if (!NOT_A_NAME.has(word) && !isStaffWord(word, staffWords)) return true;
+  }
+  return false;
+}
+
+export function looksLikeIntake(
+  text: string,
+  /** Имена сотрудников клиники: их пациент называет, выбирая врача. */
+  staffNames: string[] = [],
+): boolean {
   const t = text.trim();
   if (t.length < 12) return false;
+  const staffWords = staffWordsOf(staffNames);
 
   /**
    * Два слова с заглавной буквы подряд — фамилия и имя.
@@ -140,17 +185,17 @@ export function looksLikeIntake(text: string): boolean {
    * без согласия на обработку. Три слова подряд с заглавной буквы — это ФИО, и
    * ничего другого в переписке с клиникой так не пишут.
    */
-  if (fullName(t)) return true;
+  if (fullName(t, staffWords)) return true;
 
   const hasName =
-    /(?:^|[\s,;:—-])\p{Lu}\p{Ll}+[\s,;:—-]+\p{Lu}\p{Ll}+/u.test(t) ||
+    twoNames(t, staffWords) ||
     // «Ислам 8 лет» — имя и возраст рядом, фамилия могла остаться выше.
     /*
      * Без флага `i` намеренно: с ним `\p{Lu}` в JavaScript совпадает и со
      * строчными буквами (регистронезависимое сопоставление складывает
      * регистры), и «ему 8 лет» проходило как имя с возрастом.
      */
-    nameWithAge(t);
+    nameWithAge(t, staffWords);
   if (!hasName) return false;
 
   // Возраст или вес: число рядом со словом или просто отдельным числом.
@@ -266,8 +311,13 @@ const CHOICE_QUESTIONS = [
   /к\s+как(?:ому|ой)\s+(?:врач|специалист|доктор|остеопат|из)/iu,
   /как(?:ая|ую|ой)\s+(?:именно\s+)?услуг/iu,
   /к\s+кому\s+(?:из|вы|хотите|бы|записыва)/iu,
-  // «Для взрослого или ДЛЯ ребёнка?» — предлог между половинами обычен.
-  /(?:взросл\p{L}*\s+или\s+(?:для\s+)?(?:ребён|ребен)|(?:ребён|ребен)\p{L}*\s+или\s+(?:для\s+)?взросл)/iu,
+  /**
+   * «Для взрослого или ДЛЯ ребёнка?» — предлог между половинами обычен, и не
+   * только предлог: «вы хотите записаться на взрослый ПРИЁМ или это для
+   * ребёнка?» — тот же вопрос, а правило его не видело, и человек получал
+   * согласие на шаге выбора.
+   */
+  /(?:взросл\p{L}*(?:\s+\p{L}+){0,2}\s+или\s+(?:это\s+)?(?:для\s+)?(?:ребён|ребен)|(?:ребён|ребен)\p{L}*(?:\s+\p{L}+){0,2}\s+или\s+(?:это\s+)?(?:для\s+)?взросл)/iu,
   /для\s+кого\s+(?:приём|прием|запис|услуг)/iu,
   /кого\s+(?:записыва|будем\s+записыва)/iu,
 ];

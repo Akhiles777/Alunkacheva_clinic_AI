@@ -740,6 +740,74 @@ async function bookingAsked(conversationId: string): Promise<boolean> {
   return rows.some((m) => wantsToBook(m.body) || wantsReschedule(m.body));
 }
 
+/**
+ * Что человек выбрал — одной строкой и только фактами.
+ *
+ * Живой диалог: пациентка ответила «Взрослый Разият Резванова», то есть назвала
+ * и врача, и вид приёма, — и получила в ответ ОДИН юридический текст про
+ * согласие. Выбор она озвучила, а подтверждения не услышала: со стороны это
+ * выглядит так, будто её не поняли, и следующий шаг непонятен.
+ *
+ * Так получилось не из-за пропущенного правила: модель уложила подтверждение и
+ * просьбу о данных в одно предложение, а просьбу мы до согласия вырезаем — и
+ * вместе с ней уходило подтверждение.
+ *
+ * Строку собираем сами из прайса: услуга, цена, длительность и врач, если он
+ * назван. Ничего, кроме этого, — суммы и названия берутся из справочника, а не
+ * из слов модели (§6.2).
+ */
+async function chosenLine(companyId: string, conversationId: string): Promise<string | null> {
+  const rows = await prisma.message
+    .findMany({
+      where: { conversationId, direction: "IN", deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { body: true },
+    })
+    .catch(() => []);
+  const mine = rows.map((m) => withoutQuote(m.body)).reverse();
+  if (mine.length === 0) return null;
+
+  const services = await getServices(companyId).catch(() => []);
+  /**
+   * Услугу ищем в КАЖДОЙ реплике отдельно, от последней к первой.
+   *
+   * Склеенный разговор разбавляет название до нуля — та же беда, из-за которой
+   * когда-то уезжал весь прайс: «доброе утро сколько стоит приём астепот
+   * взрослый разият» даёт долю совпавших букв ниже любого порога.
+   */
+  const newest = [...mine].reverse();
+  const service = newest
+    .map((t) => dedupeServices(patientServices(matchServices(t, services, 1, 0.5)))[0])
+    .find((s) => s !== undefined);
+
+  const staff = await prisma.staff
+    .findMany({
+      where: { companyId, isActive: true, deletedAt: null },
+      select: { id: true, name: true },
+    })
+    .catch(() => []);
+  const doctor = newest.map((t) => uniqueStaffAsked(t, staff)?.name ?? null).find((n) => n !== null) ?? null;
+  const whom = newest.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown";
+
+  /**
+   * Подтверждаем то, что человек сказал сам: врача и вид приёма. Цену
+   * добавляем только когда услуга опознана — придуманная сумма хуже её
+   * отсутствия (§6.2). Название услуги пациент пишет и с опечатками
+   * («астепот»), и тогда подтверждение остаётся без цены, но остаётся.
+   */
+  const parts: string[] = [];
+  if (doctor) parts.push(doctor);
+  if (service) {
+    const duration = service.durationMin > 0 ? `, ${service.durationMin} мин` : "";
+    parts.push(`${service.title} — ${service.price} ₽${duration}`);
+  } else if (whom === "child") parts.push("детский приём");
+  else if (whom === "adult") parts.push("взрослый приём");
+
+  if (parts.length === 0) return null;
+  return `${parts.join(", ")}. Передам администратору — он подберёт время.`;
+}
+
 async function respond(
   ctx: AgentContext,
   conversationId: string,
@@ -853,9 +921,16 @@ async function respond(
          */
         const kept = withoutConsentRequest(withoutPersonalDataRequest(reply.text));
         const ask = request ? request.text + consentHint(ctx.channel) : CONSENT_REMINDER;
+        /**
+         * Пустой остаток — значит вырезали весь ответ, и человек увидит одно
+         * согласие. Подтверждаем выбор фактами из прайса (`chosenLine`): он
+         * назвал врача и вид приёма, и услышать это обратно он вправе.
+         */
+        const confirm = kept ? null : await chosenLine(ctx.companyId, conversationId).catch(() => null);
+        const body = kept || confirm;
         reply = {
           ...reply,
-          text: kept ? `${kept}\n\n${ask}` : ask,
+          text: body ? `${body}\n\n${ask}` : ask,
           buttons: request?.buttons ?? consentButtons(),
         };
       }
@@ -1248,7 +1323,20 @@ export async function handlePatientMessage(
    * Вызов с `ask = false` не молчаливый: он узнаёт своего пациента и
    * переносит согласие из карточки на диалог, как раньше.
    */
-  const consent = await consentRequestFor(ctx.companyId, conversation.id, looksLikeIntake(own));
+  /**
+   * Имена сотрудников — чтобы выбор врача не приняли за присланное ФИО.
+   *
+   * «Взрослый Разият Резванова» — три слова с заглавной буквы, и разбор анкеты
+   * счёл это персональными данными пациента: завелась эскалация «прислал данные
+   * до согласия», а человек получил юридический текст вместо подтверждения
+   * выбора.
+   */
+  const clinicStaffNames = await staffNamesOf(ctx.companyId).catch(() => []);
+  const consent = await consentRequestFor(
+    ctx.companyId,
+    conversation.id,
+    looksLikeIntake(own, clinicStaffNames),
+  );
   if (consent) {
     const alreadyWithHuman = await callHumanWhileWaitingConsent(
       ctx,
@@ -1834,6 +1922,11 @@ async function replyToQuestion(
    * контекст, из неё видно, о какой услуге и о каком враче речь.
    */
   const own = withoutQuote(text);
+  /**
+   * Имена сотрудников: по ним отличаем выбор врача от присланного ФИО
+   * («Взрослый Разият Резванова» — это врач, а не персональные данные).
+   */
+  const clinicStaffNames = await staffNamesOf(ctx.companyId).catch(() => []);
 
   // Режим «выключен»: агент молчит полностью, диалог ведёт человек.
   if (settings.mode === "off") {
@@ -1974,7 +2067,7 @@ async function replyToQuestion(
    * Отвечаем коротко и зовём администратора: дальше нужно поставить время, а
    * это его работа. Сами данные уже в переписке, повторять их незачем.
    */
-  const intakeSent = looksLikeIntake(own);
+  const intakeSent = looksLikeIntake(own, clinicStaffNames);
   if (intakeSent) {
     /**
      * Данные прислали, а согласия нет — принимать их нельзя (§7).
@@ -2407,7 +2500,16 @@ async function replyToQuestion(
    */
   if (
     onlyWhomStated(own) &&
-    !looksLikeIntake(own) &&
+    /**
+     * Назвал врача — значит это ВЫБОР, а не голое «для кого».
+     *
+     * «Взрослый Разият Резванова» получало в ответ «на какую услугу вы хотите
+     * записаться?» — при том что человек только что выбрал и вид приёма, и
+     * врача, а цены услышал репликой раньше. Переспрос здесь читается как «вас
+     * не слушали».
+     */
+    uniqueStaffAsked(own, clinicStaffNames.map((name) => ({ name }))) === null &&
+    !looksLikeIntake(own, clinicStaffNames) &&
     !scheduleTopic(own) &&
     !wantsToBook(own) &&
     !inIntakeFlow(said) &&
@@ -2986,8 +3088,19 @@ async function replyToQuestion(
      * отказ (`refusesService`).
      */
     const refused = refusesService(answer);
+    /**
+     * Модель обещала разобраться через администратора — выбор врача не
+     * спрашиваем.
+     *
+     * «Уточню у администратора, какой врач сможет принять вашего ребёнка» и
+     * следом наш вопрос «к кому хотите записаться?» — два разных плана в одном
+     * сообщении. Человек не знает, кого слушать.
+     */
+    const handedOver = promisesHuman(answer);
     const choice =
-      !refused && (wantsToBook(own) || mineSaid.some((t) => wantsToBook(t)))
+      !refused &&
+      !handedOver &&
+      (wantsToBook(own) || mineSaid.some((t) => wantsToBook(t)))
         ? await doctorChoice(ctx.companyId, query, mineSaid).catch(() => null)
         : null;
     const shown = choice
