@@ -98,7 +98,9 @@ async function main() {
           ? "окошко, врач неоднозначен — будет передаваться администратору"
           : "окошко без врача — будет передаваться администратору"
         : `окошко: ${offer.staff.name}, время ${offer.times.map((m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`).join(", ")}`;
-    console.log(`  ${WHEN(s.at)} · «${s.text.slice(0, 80)}» → ${verdict}`);
+    // Текст статуса — клиники, персональных данных в нём нет: показываем целиком.
+    console.log(`\n  ${WHEN(s.at)} → ${verdict}`);
+    console.log(s.text.split("\n").map((line) => `    │ ${line}`).join("\n"));
   }
 
   console.log("\n── 3. ЗАКРЕПЛЁННЫЕ ОКОШКИ");

@@ -477,27 +477,35 @@ async function agentQuote(
   if (!q?.text) return null;
   if (!looksLikeOffer(q.text)) return { id: q.id, text: q.text, byClinic: false };
 
-  let byClinic = await isKnownClinicStatus(companyId, q.id);
-  if (!byClinic && q.id) {
-    const ours = await prisma.message
-      .findFirst({ where: { channel: "WHATSAPP", externalId: q.id, direction: "OUT" }, select: { id: true } })
-      .catch(() => null);
-    byClinic = ours !== null;
+  /**
+   * Сначала — кто автор по словам провайдера. Если это сам пациент, цитата не
+   * от клиники, чем бы ни совпадал её текст: скопировать текст статуса в своё
+   * сообщение и ответить на него может любой.
+   */
+  const author = quoteAuthor({
+    participant: q.participant,
+    clinicWid: await instanceWid(companyId).catch(() => null),
+    patientIds: [event.chatId, event.sender, event.phoneE164, knownPhone],
+  });
+  let byClinic = author === "clinic";
+  if (!byClinic && author !== "patient") {
+    // Автор не определился — подтверждаем по нашим данным: известный статус клиники или наше сообщение.
+    byClinic = await isKnownClinicStatus(companyId, q.id, q.text);
+    if (!byClinic && q.id) {
+      const ours = await prisma.message
+        .findFirst({ where: { channel: "WHATSAPP", externalId: q.id, direction: "OUT" }, select: { id: true } })
+        .catch(() => null);
+      byClinic = ours !== null;
+    }
   }
-  if (!byClinic) {
-    const author = quoteAuthor({
-      participant: q.participant,
-      clinicWid: await instanceWid(companyId).catch(() => null),
-      patientIds: [event.chatId, event.sender, event.phoneE164, knownPhone],
-    });
-    byClinic = author === "clinic";
-    /**
-     * В журнал — только вывод и вид адреса, без номеров: номер пациента в
-     * общих логах — персональные данные (§7).
-     */
-    const kind = q.participant?.includes("@") ? q.participant.slice(q.participant.indexOf("@")) : "нет";
-    console.log(`[whatsapp] ответ на окошко: автор цитаты — ${author ?? "не определён"} (${kind})`);
-  }
+  /**
+   * В журнал — только вывод и вид адреса, без номеров: номер пациента в общих
+   * логах — персональные данные (§7).
+   */
+  const kind = q.participant?.includes("@") ? q.participant.slice(q.participant.indexOf("@")) : "нет";
+  console.log(
+    `[whatsapp] ответ на окошко: автор цитаты — ${author ?? "не определён"} (${kind}), от клиники: ${byClinic ? "да" : "нет"}`,
+  );
   return { id: q.id, text: q.text, byClinic };
 }
 

@@ -56,48 +56,88 @@ export async function recordClinicStatuses(
   }
 }
 
-/**
- * Не чаще раза в минуту на клинику.
- *
- * На один статус отвечают многие, и каждый ответ без этого предела шёл бы к
- * провайдеру за списком статусов — лишняя нагрузка на тариф ради одного и
- * того же ответа.
- */
 const lastFetch = new Map<string, number>();
-const FETCH_EVERY_MS = 60_000;
+/**
+ * Не чаще раза в 20 секунд на клинику. Первый же ответ на новый статус
+ * забирает у провайдера все статусы за сутки, и следующие ответы находят его
+ * в базе; предел нужен против цитат, которых у провайдера нет вовсе.
+ */
+const FETCH_EVERY_MS = 20_000;
+
+/** Статус живёт сутки — ищем с запасом. */
+const STATUS_WINDOW_MS = 26 * 3600_000;
+
+/** Текст статуса в сравнимом виде: регистр, «ё» и переносы строк не важны. */
+function statusKey(text: string | null | undefined): string {
+  return (text ?? "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Время публикации — по номеру статуса, а если номер не совпал, по тексту.
+ *
+ * Номер надёжнее, но цитата и список статусов приходят от провайдера разными
+ * путями, и полагаться только на их совпадение нельзя. Текст годится, если за
+ * сутки такой статус был ровно один: вчерашний и сегодняшний «Окошко на
+ * завтра … 15:00» дословно одинаковы, и тогда день не угадываем.
+ */
+async function knownPostedAt(companyId: string, externalId: string | null, text: string | null): Promise<Date | null> {
+  if (externalId) {
+    const byId = await prisma.clinicStatus
+      .findUnique({ where: { companyId_externalId: { companyId, externalId } }, select: { postedAt: true } })
+      .catch(() => null);
+    if (byId) return byId.postedAt;
+  }
+  const key = statusKey(text);
+  if (!key) return null;
+  const rows = await prisma.clinicStatus
+    .findMany({
+      where: { companyId, postedAt: { gt: new Date(Date.now() - STATUS_WINDOW_MS) } },
+      select: { text: true, postedAt: true },
+    })
+    .catch(() => []);
+  // Один статус, сохранённый дважды (вебхуком и запросом), — одна публикация.
+  const times = [...new Set(rows.filter((r) => statusKey(r.text) === key).map((r) => r.postedAt.getTime()))];
+  return times.length === 1 ? new Date(times[0]) : null;
+}
 
 /**
  * Когда выложен статус, на который ответили.
  *
- * Сначала — то, что пришло вебхуком; потом — вопрос провайдеру. null значит
+ * Сначала — то, что уже сохранено; потом — вопрос провайдеру. null значит
  * «не знаем», и тогда «на завтра» переспрашивается у пациента, а не
  * угадывается.
  */
-export async function statusPostedAt(companyId: string, externalId: string | null): Promise<Date | null> {
-  if (!externalId) return null;
-  const known = await prisma.clinicStatus
-    .findUnique({ where: { companyId_externalId: { companyId, externalId } }, select: { postedAt: true } })
-    .catch(() => null);
-  if (known) return known.postedAt;
+export async function statusPostedAt(
+  companyId: string,
+  externalId: string | null,
+  text: string | null = null,
+): Promise<Date | null> {
+  const known = await knownPostedAt(companyId, externalId, text);
+  if (known) return known;
 
   const last = lastFetch.get(companyId) ?? 0;
-  if (Date.now() - last < FETCH_EVERY_MS) return null;
-  lastFetch.set(companyId, Date.now());
-
-  // Статус живёт сутки — берём с запасом.
-  const rows = await fetchOutgoingStatuses(companyId, 26 * 60).catch(() => null);
-  if (!rows) return null;
-  await recordClinicStatuses(companyId, rows, "api");
-  return rows.find((r) => r.externalId === externalId)?.postedAt ?? null;
+  if (Date.now() - last >= FETCH_EVERY_MS) {
+    lastFetch.set(companyId, Date.now());
+    const rows = await fetchOutgoingStatuses(companyId, STATUS_WINDOW_MS / 60_000).catch(() => null);
+    if (rows) await recordClinicStatuses(companyId, rows, "api");
+  }
+  const found = await knownPostedAt(companyId, externalId, text);
+  /**
+   * В журнал — только вывод, без текста статуса и номеров: по нему видно,
+   * работает ли на боевом аккаунте определение дня, а больше в журнале ничего
+   * не нужно.
+   */
+  console.log(`[agent] окошко из статуса: время публикации ${found ? "найдено" : "не найдено — день уточним у пациента"}`);
+  return found;
 }
 
 /** Цитата — это известный нам статус клиники: значит, её автор точно клиника. */
-export async function isKnownClinicStatus(companyId: string, externalId: string | null): Promise<boolean> {
-  if (!externalId) return false;
-  const row = await prisma.clinicStatus
-    .findUnique({ where: { companyId_externalId: { companyId, externalId } }, select: { id: true } })
-    .catch(() => null);
-  return row !== null;
+export async function isKnownClinicStatus(
+  companyId: string,
+  externalId: string | null,
+  text: string | null = null,
+): Promise<boolean> {
+  return (await knownPostedAt(companyId, externalId, text)) !== null;
 }
 
 // ───────────────────────────────────────── занятость
@@ -117,12 +157,26 @@ export interface SlotRef {
  */
 export type SlotState = "free" | "taken" | "mine" | "booked";
 
-async function slotState(db: Db, s: SlotRef): Promise<SlotState> {
-  const end = new Date(s.startAt.getTime() + s.durationMin * 60_000);
+/**
+ * «На это время кто-то есть» — окно вокруг начала окошка.
+ *
+ * Длительность услуги из прайса для этого не годится. У клиники окошки стоят
+ * плотно — 15:00 и 15:40, 16:30 и 16:50, — а приём по прайсу 45 минут: по
+ * длительности 15:00 считалось бы занятым, стоило кому-то взять 15:40. Сетку
+ * знает администратор, и оба окошка он выложил сам. Поэтому занято — это
+ * запись, которая идёт в момент начала окошка или начинается в первые
+ * двадцать минут после него, и другое закреплённое окошко ближе двадцати
+ * минут к этому.
+ */
+export const SLOT_WINDOW_MIN = 20;
+
+async function slotState(db: Db, s: SlotRef, excludeHoldId?: string): Promise<SlotState> {
+  const windowMs = Math.min(s.durationMin, SLOT_WINDOW_MIN) * 60_000;
+  const end = new Date(s.startAt.getTime() + windowMs);
 
   /**
-   * Записи врача, пересекающиеся с окошком. Отменённые и удалённые не мешают:
-   * отменённая запись и есть то, что освобождает окошко.
+   * Записи врача на это время. Отменённые и удалённые не мешают: отменённая
+   * запись и есть то, что освобождает окошко.
    */
   const visits = await db.appointment.findMany({
     where: {
@@ -138,24 +192,22 @@ async function slotState(db: Db, s: SlotRef): Promise<SlotState> {
   if (s.patientId && visits.some((v) => v.patientId === s.patientId)) return "booked";
   if (visits.length > 0) return "taken";
 
-  /**
-   * Окошки, закреплённые агентом. Конец у них вычисляемый, поэтому берём с
-   * запасом по началу и пересечение проверяем здесь.
-   */
+  /** Окошки, закреплённые агентом: занято, если начало ближе двадцати минут. */
   const holds = await db.slotHold.findMany({
     where: {
       companyId: s.companyId,
       staffId: s.staffId,
       state: "HELD",
-      startAt: { gt: new Date(s.startAt.getTime() - 12 * 3600_000), lt: end },
+      ...(excludeHoldId ? { id: { not: excludeHoldId } } : {}),
+      startAt: {
+        gt: new Date(s.startAt.getTime() - SLOT_WINDOW_MIN * 60_000),
+        lt: new Date(s.startAt.getTime() + SLOT_WINDOW_MIN * 60_000),
+      },
     },
-    select: { conversationId: true, startAt: true, durationMin: true },
+    select: { conversationId: true },
   });
-  const overlapping = holds.filter(
-    (h) => h.startAt < end && new Date(h.startAt.getTime() + h.durationMin * 60_000) > s.startAt,
-  );
-  if (overlapping.some((h) => h.conversationId === s.conversationId)) return "mine";
-  if (overlapping.length > 0) return "taken";
+  if (holds.some((h) => h.conversationId === s.conversationId)) return "mine";
+  if (holds.length > 0) return "taken";
   return "free";
 }
 
@@ -229,6 +281,54 @@ export async function holdSlot(
           data: { companyId: s.companyId, conversationId: s.conversationId, ...data },
           select: { id: true },
         });
+    return { kind: "held" as const, id: row.id };
+  });
+}
+
+/**
+ * Пациент передумал: другое время из того же статуса.
+ *
+ * Новое закрепляется и старое снимается в ОДНОЙ транзакции под той же
+ * блокировкой врача: снять старое раньше значило бы на мгновение отдать его
+ * другому, а закрепить новое, не сняв старое, — держать за человеком два окошка.
+ */
+export async function switchHold(
+  held: OpenSlot & { companyId: string; conversationId: string; patientId: string | null },
+  startAt: Date,
+  now: Date = new Date(),
+): Promise<HoldResult> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey(held.companyId, held.staffId)})`;
+    const state = await slotState(
+      tx,
+      {
+        companyId: held.companyId,
+        conversationId: held.conversationId,
+        patientId: held.patientId,
+        staffId: held.staffId,
+        startAt,
+        durationMin: held.durationMin,
+      },
+      held.id,
+    );
+    if (state !== "free") return { kind: state };
+    const row = await tx.slotHold.create({
+      data: {
+        companyId: held.companyId,
+        conversationId: held.conversationId,
+        patientId: held.patientId,
+        staffId: held.staffId,
+        serviceId: held.serviceId,
+        startAt,
+        durationMin: held.durationMin,
+        statusText: held.statusText,
+        statusExternalId: held.statusExternalId,
+        state: "HELD",
+        heldAt: now,
+      },
+      select: { id: true },
+    });
+    await tx.slotHold.update({ where: { id: held.id }, data: { state: "RELEASED" } });
     return { kind: "held" as const, id: row.id };
   });
 }
@@ -310,6 +410,35 @@ export async function openSlotRows(
       },
     });
   }
+}
+
+/** Последнее закреплённое окошко диалога за сутки — пациент мог передумать. */
+export async function recentHeld(conversationId: string, now: Date = new Date()): Promise<OpenSlot | null> {
+  return prisma.slotHold
+    .findFirst({
+      where: {
+        conversationId,
+        state: "HELD",
+        startAt: { gt: now },
+        heldAt: { gt: new Date(now.getTime() - OPEN_TTL_MS) },
+      },
+      orderBy: { heldAt: "desc" },
+      select: {
+        id: true,
+        staffId: true,
+        serviceId: true,
+        startAt: true,
+        durationMin: true,
+        statusText: true,
+        statusExternalId: true,
+      },
+    })
+    .catch(() => null);
+}
+
+/** Снять закрепление: пациент отказался или выбрал другое время. */
+export async function releaseHeld(id: string): Promise<void> {
+  await prisma.slotHold.update({ where: { id }, data: { state: "RELEASED" } }).catch(() => {});
 }
 
 /** Выбранный вариант становится предложенным: окошко свободно, ждём данные. */

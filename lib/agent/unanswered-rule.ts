@@ -65,6 +65,9 @@ const COURTESY = [
  */
 const FILLER = ["вас", "тебя", "вам", "тебе", "большое", "огромное", "всё", "все", "очень"];
 
+/** Благодарность, рядом с которой «нет» — вежливость, а не отказ. */
+const THANKS = ["спасибо", "спс", "благодарю"];
+
 export function nothingToAnswer(raw: string | undefined): boolean {
   /**
    * Цитату снимаем: сердечко в ответ на сообщение клиники — то же сердечко.
@@ -97,7 +100,16 @@ export function nothingToAnswer(raw: string | undefined): boolean {
   if (meaningful.length === 0) return true;
   // Больше трёх слов — уже сообщение, а не жест вежливости.
   if (meaningful.length > 3) return false;
-  return meaningful.every((w) => COURTESY.includes(w));
+  /**
+   * «Нет, спасибо» — вежливое завершение, когда спрашивать было не о чем.
+   *
+   * Пациентка с закреплённым окошком спросила адрес, получила ответ и
+   * написала «Нет, спасибо». Модель прочла это как отказ и ответила «окошко
+   * сняли» — окошко при этом оставалось за ней. Голое «нет» сюда не входит:
+   * «Нет» на «Подтверждаете?» — ответ, и молчать на него нельзя.
+   */
+  const polite = meaningful.some((w) => THANKS.includes(w)) ? meaningful.filter((w) => w !== "нет") : meaningful;
+  return polite.every((w) => COURTESY.includes(w));
 }
 
 /**

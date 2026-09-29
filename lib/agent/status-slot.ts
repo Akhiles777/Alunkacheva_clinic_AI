@@ -59,6 +59,9 @@ const OFFER_WORDS =
  * Напоминание о записи и наши собственные ответы («окошко уже заняли»,
  * «закреплено за вами»): пациент отвечает на них свайпом, и принять такой
  * ответ за новую просьбу значило бы разбирать собственную реплику агента.
+ * Остальные наши реплики об окошке узнаются точнее — по совпадению с тем, что
+ * агент сам отправил (`clinic-agent`): общие слова вроде «удобнее» или
+ * «запишем» бывают и в настоящем статусе клиники.
  */
 const NOT_OFFER =
   /(?<!\p{L})(?:записаны|записан[аоы]?|ваша\s+запись|напомина\p{L}*|подтвердите|уже\s+заняли|закреплен\p{L}*|закрепили|уже\s+прошло)(?!\p{L})/iu;
@@ -507,9 +510,18 @@ export function hhmm(minute: number): string {
  */
 export function staffPhrase(statusText: string, staff: SlotStaff): string {
   const stems = nameStems(staff.name);
-  for (const m of statusText.matchAll(/(?<!\p{L})[кК]\s+(\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2})/gu)) {
-    const words = norm(m[1]).split(/\s+/);
-    if (words.every((w) => stems.some((st) => w.startsWith(st)))) return `к ${m[1]}`;
+  /**
+   * Между «к» и именем бывает специальность со строчной буквы: «Окошки на
+   * завтра к остеопату Разият Ризвановне» — так пишет клиника. Берём оборот
+   * целиком, вместе со специальностью: это её слова, и склонены они верно.
+   */
+  for (const m of statusText.matchAll(
+    /(?<!\p{L})[кК]\s+((?:\p{Ll}+\s+){0,2})(\p{Lu}\p{Ll}+(?:\s+\p{Lu}\p{Ll}+){0,2})/gu,
+  )) {
+    const words = norm(m[2]).split(/\s+/);
+    if (words.every((w) => stems.some((st) => w.startsWith(st)))) {
+      return `к ${m[1].replace(/\s+/g, " ")}${m[2].replace(/\s+/g, " ")}`;
+    }
   }
   return `(${staff.name})`;
 }

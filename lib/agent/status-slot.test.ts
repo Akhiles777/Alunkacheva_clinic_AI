@@ -75,6 +75,15 @@ describe("разбор статуса", () => {
     }
   });
 
+  it("общие слова статус не прячут: «удобнее», «запишем» бывают и у клиники", () => {
+    for (const text of [
+      "Окошки на завтра к Разият Ризвановне 10:00 и 13:00. Кому удобнее — пишите!",
+      "Свободное окошко на завтра 15:00 к Ирине Алилгаджиевне, запишем по ответу на статус",
+    ]) {
+      expect(parseStatusOffer(text, STAFF), text).not.toBeNull();
+    }
+  });
+
   it("без времени — не окошко", () => {
     expect(parseStatusOffer("Есть свободные окошки на завтра, пишите!", STAFF)).toBeNull();
   });
@@ -234,6 +243,23 @@ describe("как агент называет окошко", () => {
     const irina = STAFF[0];
     expect(staffPhrase("Окошко на завтра к Ирине Алилгаджиевне ✅ 09:40", irina)).toBe("к Ирине Алилгаджиевне");
     expect(staffPhrase("Окошко к Алункачевой на сегодня 16:00", irina)).toBe("к Алункачевой");
+  });
+
+  it("настоящие статусы клиники — со специальностью и с переносами строк", () => {
+    // Дословно с боевого аккаунта, 29 сентября.
+    const raziyat = "Окошки на завтра к остеопату \nРазият Ризвановне\nв 10:00\n10:50\n13:00\n13:50\nСтоимость приёма 8000";
+    const offer = parseStatusOffer(raziyat, STAFF);
+    expect(offer!.staff?.id).toBe("raziyat");
+    expect(offer!.times).toEqual([600, 650, 780, 830]);
+    expect(offer!.day).toEqual({ kind: "relative", offset: 1 });
+    expect(staffPhrase(raziyat, STAFF[1])).toBe("к остеопату Разият Ризвановне");
+
+    const irina = "Окошко на завтра к Ирине Алилгаджиевне :\n\n✅15:00 (взрослый)";
+    const second = parseStatusOffer(irina, STAFF);
+    expect(second!.staff?.id).toBe("irina-a");
+    expect(second!.times).toEqual([900]);
+    expect(second!.audience).toBe("adult");
+    expect(staffPhrase(irina, STAFF[0])).toBe("к Ирине Алилгаджиевне");
   });
 
   it("нет такого оборота — имя как в справочнике, без склонения кодом", () => {

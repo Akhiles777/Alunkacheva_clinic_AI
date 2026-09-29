@@ -97,3 +97,10 @@ describe("приветствие узнаётся с обращением", () =
     expect(alreadyGreeted([turn("Взрослый приём — 8000 ₽, 45 минут.")])).toBe(false);
   });
 });
+
+describe("ответный салам — тоже приветствие", () => {
+  it("«Ва алейкум ассалам!» второй раз не дописывается", () => {
+    expect(alreadyGreeted([{ role: "assistant", content: "Ва алейкум ассалам! Это клиника Алункачевой. Чем могу помочь?" }])).toBe(true);
+    expect(alreadyGreeted([{ role: "assistant", content: "Доброй ночи! Слушаю вас." }])).toBe(true);
+  });
+});
