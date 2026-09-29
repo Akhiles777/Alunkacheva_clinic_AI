@@ -98,7 +98,26 @@ export type ParsedEvent =
       isMedia: boolean;
       /** Файлы сообщения: по ним администратор откроет голосовое или снимок. */
       attachments: IncomingAttachment[];
+      /**
+       * Цитата — как её прислал провайдер, а не строкой в тексте.
+       *
+       * Строку «В ответ на: «…»» пациент может напечатать и сам. Окошко из
+       * статуса закрепляется только по цитате, пришедшей от провайдера, и
+       * только если её автор — клиника (`quoteAuthor`). Текст здесь полный:
+       * в переписку он идёт обрезанным до 120 знаков, а статус с тремя
+       * окошками длиннее.
+       */
+      quote: QuotedRef | null;
+      /** Адрес отправителя из события — нужен, чтобы отличить его цитату от клиники. */
+      sender: string | null;
     }
+  /**
+   * Статус, выложенный клиникой: «Окошко на завтра к Ирине ✅ 09:40».
+   *
+   * Пациенту он не адресован и в переписку не идёт. Нужен ради времени
+   * публикации: «на завтра» без него не превращается в дату (lib/agent/status-slot).
+   */
+  | { kind: "clinicStatus"; externalId: string; text: string; postedAt: Date }
   /**
    * Наше же исходящее, но отправленное не платформой: администратор ответил
    * пациенту прямо в WhatsApp на телефоне. Такое сообщение надо сохранить и
@@ -140,6 +159,15 @@ export function parseWebhook(raw: unknown): ParsedEvent {
   if (!parsed.success) return { kind: "ignored", reason: "не разобрано" };
   const e = parsed.data;
 
+  /**
+   * Статус, выложенный клиникой, приходит исходящим сообщением в адрес
+   * «status@broadcast». Прежде он отбрасывался вместе с рассылками — и время
+   * публикации терялось. Входящие статусы (чужие, контактов клиники) нам не
+   * нужны вовсе.
+   */
+  const outgoing = e.typeWebhook === "outgoingMessageReceived" || e.typeWebhook === "outgoingAPIMessageReceived";
+  if (outgoing && e.senderData?.chatId?.startsWith("status@")) return parseClinicStatus(e);
+
   switch (e.typeWebhook) {
     case "incomingMessageReceived":
       return parseMessage(e);
@@ -179,6 +207,22 @@ export function parseWebhook(raw: unknown): ParsedEvent {
     default:
       return { kind: "ignored", reason: `неизвестный тип: ${e.typeWebhook}` };
   }
+}
+
+/** Статус клиники: текст и момент публикации. */
+function parseClinicStatus(e: GreenWebhook): ParsedEvent {
+  if (!e.idMessage) return { kind: "ignored", reason: "статус без идентификатора" };
+  const text = (
+    e.messageData?.textMessageData?.textMessage ??
+    e.messageData?.extendedTextMessageData?.text ??
+    e.messageData?.fileMessageData?.caption ??
+    ""
+  ).trim();
+  // Картинка без подписи: прочитать её нечем, и сохранять пустое незачем.
+  if (!text) return { kind: "ignored", reason: "статус без текста" };
+  // Провайдер шлёт секунды; без отметки времени статус бесполезен.
+  if (!e.timestamp || !Number.isFinite(e.timestamp)) return { kind: "ignored", reason: "статус без времени" };
+  return { kind: "clinicStatus", externalId: e.idMessage, text: text.slice(0, 2000), postedAt: new Date(e.timestamp * 1000) };
 }
 
 /** Ответ администратора, набранный в WhatsApp на телефоне. */
@@ -271,6 +315,9 @@ function parseMessage(e: GreenWebhook): ParsedEvent {
   const body = quoted ? `${quoted}\n${withMarks}` : withMarks;
   if (!body.trim()) return { kind: "ignored", reason: "пустое сообщение" };
 
+  const q = e.messageData?.quotedMessage;
+  const quoteText = (q?.textMessage ?? q?.caption ?? "").trim();
+
   return {
     kind: "message",
     externalId: e.idMessage,
@@ -280,7 +327,51 @@ function parseMessage(e: GreenWebhook): ParsedEvent {
     text: body.slice(0, 4000),
     isMedia,
     attachments,
+    quote: q
+      ? { id: q.stanzaId?.trim() || null, participant: q.participant?.trim() || null, text: quoteText.slice(0, 2000) }
+      : null,
+    sender: e.senderData?.sender?.trim() || null,
   };
+}
+
+/** Цитата, как её прислал провайдер. */
+export interface QuotedRef {
+  /** Идентификатор цитируемого сообщения (для статуса — идентификатор статуса). */
+  id: string | null;
+  /** Автор цитируемого сообщения. */
+  participant: string | null;
+  /** Текст или подпись цитаты, полностью. */
+  text: string;
+}
+
+/** Часть адреса до «@»: у телефона это цифры, у скрытого идентификатора — его номер. */
+function userOf(address: string): string {
+  return address.split("@")[0]?.replace(/\D/g, "") ?? "";
+}
+
+/**
+ * Кто написал цитируемое сообщение: клиника, сам пациент или неизвестно.
+ *
+ * В личной переписке их двое. Но решать «не пациент — значит клиника» нельзя:
+ * WhatsApp перешёл на скрытые идентификаторы, и один и тот же человек бывает
+ * виден под номером и под «@lid». Приняв собственное сообщение пациента за
+ * статус клиники, агент закрепил бы окошко, которого клиника не предлагала.
+ * Поэтому клиника — только при положительном совпадении с её номером; всё
+ * остальное — «неизвестно», и окошко тогда не закрепляется, а передаётся
+ * администратору.
+ */
+export function quoteAuthor(input: {
+  participant: string | null;
+  /** Номер клиники (wid инстанса). null — узнать не удалось. */
+  clinicWid: string | null;
+  /** Адреса и телефон пациента: chatId, sender, номер в E.164. */
+  patientIds: (string | null | undefined)[];
+}): "clinic" | "patient" | null {
+  const who = input.participant ? userOf(input.participant) : "";
+  if (!who) return null;
+  if (input.clinicWid && userOf(input.clinicWid) === who) return "clinic";
+  if (input.patientIds.some((id) => id && userOf(id) === who)) return "patient";
+  return null;
 }
 
 /**

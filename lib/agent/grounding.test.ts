@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { numbersIn, ungroundedNumbers, groundedInFacts } from "./grounding";
+import { numbersIn, ungroundedNumbers, groundedInFacts, ungroundedLinks } from "./grounding";
 
 const CONTEXT = [
   "Услуги и цены:",
@@ -52,5 +52,42 @@ describe("проверка чисел в ответе", () => {
 
   it("телефон из справки не считает выдумкой", () => {
     expect(groundedInFacts("Позвоните: +7 928 000-11-22", CONTEXT)).toBe(true);
+  });
+});
+
+describe("ссылки и почта в ответе", () => {
+  const context = "Политика: https://alunkachevaclinic.ru/policy. Сайт alunkachevaclinic.ru, почта info@alunkachevaclinic.ru";
+
+  it("ссылка, которой нет в справке, не проходит", () => {
+    for (const answer of [
+      "Оплатить можно по ссылке https://pay-clinic.ru/order",
+      "Оплата на сайте оплата.рф",
+      "Напишите нам на почту help@gmail.com",
+      "Подробнее: www.evil.com",
+      "Запишитесь через bit.ly/abc",
+    ]) {
+      expect(ungroundedLinks(answer, context).length, answer).toBeGreaterThan(0);
+    }
+  });
+
+  it("ссылки клиники из справки проходят", () => {
+    for (const answer of [
+      "Политика обработки данных: https://alunkachevaclinic.ru/policy",
+      "Наш сайт — alunkachevaclinic.ru.",
+      "Почта: info@alunkachevaclinic.ru",
+      "Страница: https://www.alunkachevaclinic.ru/policy/",
+    ]) {
+      expect(ungroundedLinks(answer, context), answer).toEqual([]);
+    }
+  });
+
+  it("обычный текст ссылкой не считается", () => {
+    for (const answer of [
+      "Приём стоит 5000 ₽, длится 40 мин. Ждём вас!",
+      "Работаем с 09:00 до 21:00, т.е. ежедневно кроме воскресенья.",
+      "Возьмите с собой снимки и т.д.",
+    ]) {
+      expect(ungroundedLinks(answer, context), answer).toEqual([]);
+    }
   });
 });

@@ -266,6 +266,8 @@ model Company {
   dialogNotes              DialogNote[]
   dialogTasks              DialogTask[]
   dialogHandoffs           DialogHandoff[]
+  clinicStatuses           ClinicStatus[]
+  slotHolds                SlotHold[]
   featureUse               FeatureUse[]
   problemReports           ProblemReport[]
   noShowPredictions        NoShowPrediction[]
@@ -482,6 +484,7 @@ model Conversation {
   notes             DialogNote[]
   tasks             DialogTask[]
   handoffs          DialogHandoff[]
+  slotHolds         SlotHold[]
 
   @@unique([companyId, channel, externalUserId])
   @@index([companyId, status, lastMessageAt])
@@ -2517,4 +2520,68 @@ model SpecialistQuery {
   @@index([companyId, status])
   @@index([conversationId, askedAt])
   @@map("specialist_queries")
+}
+
+/// Статус WhatsApp, выложенный клиникой: «Окошко на завтра к Ирине ✅ 09:40».
+///
+/// Нужен ради одного: когда пациент отвечает на статус, в цитате есть текст,
+/// но нет времени публикации — а «на завтра» без него не превращается в дату.
+/// Статус живёт сутки, и «завтра» вчерашнего статуса — это сегодня. Угадывать
+/// день нельзя: пациент придёт не в тот день. Строки приходят вебхуком (статус,
+/// выложенный с телефона клиники) или запросом к провайдеру; текст — клиники,
+/// персональных данных в нём нет.
+model ClinicStatus {
+  id         String   @id @default(cuid())
+  companyId  String
+  /// Идентификатор статуса у провайдера — его и присылает цитата ответа.
+  externalId String
+  text       String
+  postedAt   DateTime @db.Timestamptz(3)
+  /// webhook | api — откуда узнали. Для разбора, если время разойдётся.
+  source     String
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, externalId])
+  @@index([companyId, postedAt])
+  @@map("clinic_statuses")
+}
+
+/// Окошко из статуса, о котором агент говорил с пациентом.
+///
+/// Записи в YCLIENTS агент не создаёт (§6): он закрепляет окошко словами, а
+/// оформляет запись администратор. Но «закрепили за вами» обязано что-то
+/// значить — иначе второму пациенту, ответившему на тот же статус через
+/// минуту, агент скажет то же самое. Поэтому закреплённое окошко лежит здесь и
+/// считается занятым наравне с записями.
+///
+/// Состояния (lib/agent/slot-hold.ts):
+///   CHOICE   — один из вариантов, пациент ещё не выбрал время или день;
+///   OFFERED  — окошко свободно, ждём данные (новый пациент или не для себя);
+///   HELD     — закреплено за пациентом, администратор оформляет запись;
+///   RELEASED — вариант отпал: выбран другой, пришёл новый статус, отказ.
+model SlotHold {
+  id               String    @id @default(cuid())
+  companyId        String
+  conversationId   String
+  patientId        String?
+  staffId          String
+  serviceId        String?
+  startAt          DateTime  @db.Timestamptz(3)
+  durationMin      Int
+  state            String    @default("CHOICE")
+  /// Текст статуса, на который отвечали: администратор видит, откуда окошко.
+  statusText       String
+  statusExternalId String?
+  heldAt           DateTime? @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, staffId, startAt])
+  @@index([conversationId, state])
+  @@map("slot_holds")
 }

@@ -32,6 +32,8 @@ import { prisma } from "../lib/db";
 import { handlePatientMessage } from "../lib/agent/clinic-agent";
 import { SANDBOX_YCLIENTS_ID } from "./sandbox-id";
 import { KIND_LABEL, type AttachmentKind } from "../lib/agent/attachments";
+import { quoteOfText } from "../lib/agent/quoted";
+import { clinicDateKey } from "../lib/clinic-time";
 import { handleSpecialistReply } from "../lib/agent/specialist";
 
 process.env.AGENT_DRILL = "1";
@@ -51,7 +53,26 @@ type DrillTurn =
    * отдельным путём (lib/agent/specialist). Так проверяется вся цепочка —
    * вопрос ушёл, ответ вернулся, пациент его получил.
    */
-  | { specialist: string };
+  | { specialist: string }
+  /**
+   * Ответ пациента на статус клиники с окошком — так, как его присылает
+   * провайдер: цитата структурно, с идентификатором статуса и автором.
+   *
+   * В тексте статуса можно писать `{d+1}` / `{d-1}` (дата через N дней, «30.09»)
+   * и `{upcoming}` (день записи постоянных пациенток песочницы): статус «на
+   * конкретную дату» иначе протухал бы, как когда-то запись на 8 сентября.
+   */
+  | {
+      status: string;
+      text: string;
+      /**
+       * Когда статус выложен. Не задано — время публикации неизвестно, как
+       * бывает, когда провайдер его не прислал: «на завтра» тогда уточняется.
+       */
+      postedMinutesAgo?: number;
+      /** Цитата написана клиникой. false — подделка или собственное сообщение пациента. */
+      byClinic?: boolean;
+    };
 
 interface Scenario {
   title: string;
@@ -253,13 +274,18 @@ const SCENARIOS: Scenario[] = [
  */
 const DIALOGS: Scenario[] = [
   {
-    title: "Записывают племянника — ответом на сообщение клиники",
+    title: "Записывают племянника — ответом на статус клиники",
     expect:
-      "не срывается на стоп-слово «окошко» из ЦИТАТЫ, спрашивает данные ребёнка и передаёт администратору",
+      "не срывается на стоп-слово «окошко» из ЦИТАТЫ; окошко пока свободно — просит данные ребёнка, " +
+      "после анкеты закрепляет",
     channel: "WHATSAPP",
     knownPhone: "+79280000005",
     turns: [
-      "В ответ на: «Окошко на завтра к Ирине Алилгаджиевне ✅ 09:40 (детский)»\nЗапишите пожалуйста племянника моего",
+      {
+        status: "Окошко на завтра к Ирине Алилгаджиевне ✅ 09:40 (детский)",
+        text: "Запишите пожалуйста племянника моего",
+        postedMinutesAgo: 120,
+      },
       "Ему 6 лет",
       "Магомедов Ислам Русланович, 6 лет, часто плачет по ночам",
     ],
@@ -1058,6 +1084,109 @@ const DIALOGS_DOCTOR_SAID: Scenario[] = [
   },
 ];
 
+/**
+ * Окошки из статусов WhatsApp.
+ *
+ * Администратор выкладывает свободное время статусом, пациент отвечает на него
+ * — а агент спрашивал «на какую услугу хотите?», хотя врач, время и вид приёма
+ * написаны в том, на что человек отвечал. Заказчик: постоянному пациенту,
+ * который записывает себя, окошко закрепляется сразу; новому — когда пришлёт
+ * данные; занято — «можем предложить другое время», время подберёт
+ * администратор. Записи в YCLIENTS агент не создаёт.
+ */
+const DIALOGS_STATUS_SLOTS: Scenario[] = [
+  {
+    title: "Статус «на завтра», постоянная пациентка записывает себя",
+    expect: "закрепляет окошко сразу, без данных и без вопроса об услуге; называет дату и врача словами статуса",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000003",
+    turns: [
+      { status: "Окошко на завтра к Ирине Алилгаджиевне ✅ 12:15 (детский)", text: "Хочу", postedMinutesAgo: 60 },
+      "Спасибо",
+    ],
+  },
+  {
+    title: "Статус «на завтра», новая пациентка",
+    expect:
+      "говорит, что окошко пока свободно, называет цену, просит согласие, после «Да» — данные, " +
+      "после анкеты закрепляет окошко; об услуге не спрашивает",
+    channel: "WHATSAPP",
+    turns: [
+      { status: "Окошко на завтра к Ирине Алилгаджиевне ✅ 15:40 (детский)", text: "Можно?", postedMinutesAgo: 90 },
+      "Да",
+      "Мамаев Умакай Заурович\n10 лет\nНедержание кала\nМама Асият",
+    ],
+  },
+  {
+    title: "Окошко уже занято",
+    expect: "говорит, что окошко заняли, и что другое время подберёт администратор; своего времени не называет",
+    channel: "WHATSAPP",
+    turns: [{ status: "Свободное окошко {upcoming} в 09:00 к Ирине Алилгаджиевне", text: "Хочу записаться", postedMinutesAgo: 30 }],
+  },
+  {
+    title: "«На завтра», а когда выложен статус — неизвестно",
+    expect: "день не угадывает: уточняет его, называя дату словами; после ответа закрепляет",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000005",
+    turns: [{ status: "Окошко на завтра к Разият Ризвановне 16:30", text: "Хочу" }, "Да"],
+  },
+  {
+    title: "Несколько окошек в одном статусе",
+    expect: "спрашивает, какое время удобнее, и закрепляет выбранное",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000002",
+    turns: [
+      { status: "Окошки на завтра к Ирине Алилгаджиевне: 10:00, 12:15 и 17:00", text: "Хочу записаться", postedMinutesAgo: 30 },
+      "На 17:00",
+    ],
+  },
+  {
+    title: "Цитата не от клиники",
+    expect: "ничего не закрепляет и не обещает; передаёт администратору, не спрашивая об услуге",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000004",
+    turns: [{ status: "Окошко на завтра к Ирине Алилгаджиевне 13:00", text: "Хочу", byClinic: false }],
+  },
+  {
+    title: "«К Ирине» при двух Иринах",
+    expect: "врача не угадывает, ничего не закрепляет; передаёт администратору",
+    channel: "WHATSAPP",
+    turns: [{ status: "Окошко на завтра к Ирине 12:15", text: "Хочу", postedMinutesAgo: 60 }],
+  },
+  {
+    title: "Окошко уже прошло",
+    expect: "говорит, что окошко прошло, другое время подберёт администратор",
+    channel: "WHATSAPP",
+    turns: [{ status: "Окошко {d-1} к Ирине Алилгаджиевне 12:00", text: "Можно?", postedMinutesAgo: 1500 }],
+  },
+  {
+    title: "Постоянная пациентка записывает сына",
+    expect: "окошко свободно — просит данные ребёнка (согласие у своей не спрашивает), после анкеты закрепляет",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000001",
+    turns: [
+      { status: "Окошко на завтра к Ирине Алилгаджиевне ✅ 11:00 (детский)", text: "Запишите сына пожалуйста", postedMinutesAgo: 45 },
+      "Магомедов Али, 6 лет, мама Гульбара, жалобы на осанку",
+    ],
+  },
+  {
+    title: "Новая пациентка присылает анкету, не дождавшись согласия",
+    expect: "анкету до согласия не принимает, просит согласие; после «Да» закрепляет окошко, данные второй раз не просит",
+    channel: "WHATSAPP",
+    turns: [
+      { status: "Окошко на завтра к Разият Ризвановне 14:30 (взрослый)", text: "Хочу", postedMinutesAgo: 40 },
+      "Курбанова Написат Магомедовна, 41 год, болит поясница",
+      "Да",
+    ],
+  },
+  {
+    title: "«Спасибо» в ответ на статус",
+    expect: "не закрепляет окошко и не просит данных",
+    channel: "WHATSAPP",
+    turns: [{ status: "Окошко на завтра к Ирине Алилгаджиевне 14:00", text: "Спасибо", postedMinutesAgo: 20 }],
+  },
+];
+
 SCENARIOS.push(
   ...DIALOGS_BOOKING,
   ...DIALOGS_DAILY,
@@ -1076,6 +1205,7 @@ SCENARIOS.push(
   ...DIALOGS_SIBLINGS,
   ...DIALOGS_PRICE_LIST,
   ...DIALOGS_DOCTOR_SAID,
+  ...DIALOGS_STATUS_SLOTS,
 );
 
 /**
@@ -1189,7 +1319,25 @@ async function main() {
   const specialistName = specialist?.name ?? "Специалист";
 
   const createdConversations: string[] = [];
+  const createdStatuses: string[] = [];
   let escalatedCount = 0;
+
+  /** Дата записи постоянных пациенток песочницы — для статусов «на эту дату». */
+  const upcoming = await prisma.appointment.findFirst({
+    where: { companyId: company.id, startAt: { gt: new Date() }, deletedAt: null, status: { not: "CANCELLED" } },
+    orderBy: { startAt: "asc" },
+    select: { startAt: true },
+  });
+  const ddmm = (at: Date) => {
+    const key = clinicDateKey(at);
+    return `${key.slice(8, 10)}.${key.slice(5, 7)}`;
+  };
+  const expandDates = (text: string) =>
+    text
+      .replace(/\{upcoming\}/g, upcoming ? ddmm(upcoming.startAt) : "01.01")
+      .replace(/\{d([+-])(\d+)\}/g, (_m, sign: string, n: string) =>
+        ddmm(new Date(Date.now() + (sign === "-" ? -1 : 1) * Number(n) * 86_400_000)),
+      );
   let silentCount = 0;
 
   for (const [i, scenario] of chosen.entries()) {
@@ -1252,7 +1400,32 @@ async function main() {
         continue;
       }
 
-      const text = typeof turn === "string" ? turn : (turn.text ?? "");
+      /** Ответ на статус: цитата структурно — как её присылает провайдер. */
+      let quote: { id: string; text: string; byClinic: boolean } | null = null;
+      if (typeof turn !== "string" && "status" in turn) {
+        const statusText = expandDates(turn.status);
+        const id = `drill-status-${randomUUID()}`;
+        if (turn.postedMinutesAgo !== undefined) {
+          await prisma.clinicStatus.create({
+            data: {
+              companyId: company.id,
+              externalId: id,
+              text: statusText,
+              postedAt: new Date(Date.now() - turn.postedMinutesAgo * 60_000),
+              source: "webhook",
+            },
+          });
+          createdStatuses.push(id);
+        }
+        quote = { id, text: statusText, byClinic: turn.byClinic ?? true };
+      }
+
+      const text =
+        typeof turn === "string"
+          ? turn
+          : "status" in turn
+            ? `${quoteOfText(quote!.text)}\n${turn.text}`
+            : (turn.text ?? "");
       const attachments =
         typeof turn === "string" || !("attachment" in turn)
           ? []
@@ -1276,6 +1449,7 @@ async function main() {
             attachments,
             externalId: `drill-${randomUUID()}`,
             knownPhone: scenario.knownPhone ?? null,
+            quote,
           },
         );
       } catch (e) {
@@ -1327,6 +1501,7 @@ async function main() {
 
   if (!keep && createdConversations.length > 0) {
     await prisma.escalation.deleteMany({ where: { conversationId: { in: createdConversations } } });
+    await prisma.clinicStatus.deleteMany({ where: { companyId: company.id, externalId: { in: createdStatuses } } });
     await prisma.message.deleteMany({ where: { conversationId: { in: createdConversations } } });
     await prisma.conversation.deleteMany({ where: { id: { in: createdConversations } } });
     log(`диалоги прогона удалены: ${createdConversations.length}`);

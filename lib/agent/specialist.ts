@@ -6,7 +6,7 @@ import { escalationRecipients, notifyStaff } from "@/lib/server/notify";
 import { withoutQuote } from "./quoted";
 import { declinesRelay, linkToQuery, refFromQuote, refMark } from "./specialist-rules";
 import { relayDoctorAnswer } from "./llm";
-import { ungroundedNumbers } from "./grounding";
+import { ungroundedLinks, ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
 import { forMessenger } from "./messenger-text";
 
@@ -564,8 +564,12 @@ async function relayToPatient(input: {
   if (draft) {
     const invented = ungroundedNumbers(draft, input.doctorAnswer);
     const madeUp = inventedIndication(draft, input.doctorAnswer);
+    // Ссылка, которой нет в словах врача, — не её слова.
+    const links = ungroundedLinks(draft, input.doctorAnswer);
     if (invented.length > 0) {
       console.error(`[specialist] пересказ отклонён: чисел нет у врача — ${invented.join(", ")}`);
+    } else if (links.length > 0) {
+      console.error(`[specialist] пересказ отклонён: ссылок нет у врача — ${links.length}`);
     } else if (madeUp) {
       console.error(`[specialist] пересказ отклонён: показание не от врача — «${madeUp}»`);
     } else {

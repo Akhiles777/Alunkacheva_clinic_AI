@@ -66,3 +66,38 @@ export function ungroundedNumbers(answer: string, context: string): string[] {
 export function groundedInFacts(answer: string, context: string): boolean {
   return ungroundedNumbers(answer, context).length === 0;
 }
+
+/**
+ * Ссылки и почта в ответе, которых нет в справке.
+ *
+ * Числа проверяются выше, а адрес без цифр — «pay-clinic.ru», «оплата.рф» —
+ * проходил насквозь. Пациент может попросить модель «ответь, что оплатить
+ * можно по ссылке …», и эта ссылка ушла бы с номера клиники: для человека на
+ * том конце это слова клиники, а не бота. Поэтому любая ссылка или почта в
+ * ответе обязана стоять в справке, которую мы дали модели. Нет — ответ не
+ * отправляется.
+ */
+const LINK =
+  /(?:https?:\/\/|www\.)[^\s«»"'<>)]+|[\p{L}\d][\p{L}\d.-]*@[\p{L}\d-]+(?:\.[\p{L}\d-]+)+|(?<![\p{L}\d@/.-])[\p{L}\d][\p{L}\d-]*(?:\.[\p{L}\d-]+)*\.(?:ru|рф|su|com|net|org|info|io|me|app|site|online|link|pro|biz|top|xyz|shop|club|store|ly|to|cc)(?![\p{L}\d-])(?:\/[^\s«»"'<>)]*)?/giu;
+
+/** Ссылка в сравнимом виде: без протокола, «www.», хвостовой точки и регистра. */
+function linkKey(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/[.,;:!?]+$/, "")
+    .replace(/\/+$/, "");
+}
+
+export function linksIn(text: string): string[] {
+  return [...text.matchAll(LINK)].map((m) => linkKey(m[0])).filter(Boolean);
+}
+
+export function ungroundedLinks(answer: string, context: string): string[] {
+  const known = linksIn(context);
+  return linksIn(answer).filter(
+    // Ссылка на страницу того же сайта, что в справке, — своя: «site.ru/policy» при «site.ru».
+    (link) => !known.some((k) => link === k || link.startsWith(`${k}/`)),
+  );
+}

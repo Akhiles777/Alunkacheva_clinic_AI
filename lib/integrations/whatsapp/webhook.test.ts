@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWebhook, verifyWebhookSecret } from "./webhook";
+import { parseWebhook, quoteAuthor, verifyWebhookSecret } from "./webhook";
 import { withoutQuote } from "@/lib/agent/quoted";
 import { chatIdFromPhone, isGroupChat, phoneFromChatId } from "./chat-id";
 
@@ -335,5 +335,89 @@ describe("чат со скрытым идентификатором", () => {
     });
     if (e.kind !== "message") throw new Error("ожидалось сообщение");
     expect(e.phoneE164).toBeNull();
+  });
+});
+
+/**
+ * Окошко из статуса: статус клиники приходит исходящим в «status@broadcast»,
+ * а ответ пациента на него — цитатой с автором. Закрепить окошко можно только
+ * по цитате, написанной клиникой, а не по строке, которую пациент напечатал сам.
+ */
+describe("статусы клиники и ответы на них", () => {
+  const STATUS = "Окошко на завтра к Ирине Алилгаджиевне ✅ 09:40 (детский)";
+
+  it("статус, выложенный с телефона клиники, — не сообщение пациента", () => {
+    const e = parseWebhook({
+      typeWebhook: "outgoingMessageReceived",
+      idMessage: "STATUS1",
+      timestamp: 1790000000,
+      senderData: { chatId: "status@broadcast" },
+      messageData: { typeMessage: "extendedTextMessage", extendedTextMessageData: { text: STATUS } },
+    });
+    expect(e.kind).toBe("clinicStatus");
+    if (e.kind !== "clinicStatus") return;
+    expect(e.externalId).toBe("STATUS1");
+    expect(e.text).toBe(STATUS);
+    expect(e.postedAt.getTime()).toBe(1790000000 * 1000);
+  });
+
+  it("статус-картинка без подписи и статус без времени не сохраняются", () => {
+    const noText = parseWebhook({
+      typeWebhook: "outgoingMessageReceived",
+      idMessage: "S2",
+      timestamp: 1790000000,
+      senderData: { chatId: "status@broadcast" },
+      messageData: { typeMessage: "imageMessage", fileMessageData: { downloadUrl: "x" } },
+    });
+    expect(noText.kind).toBe("ignored");
+    const noTime = parseWebhook({
+      typeWebhook: "outgoingMessageReceived",
+      idMessage: "S3",
+      senderData: { chatId: "status@broadcast" },
+      messageData: { typeMessage: "textMessage", textMessageData: { textMessage: STATUS } },
+    });
+    expect(noTime.kind).toBe("ignored");
+  });
+
+  it("чужие статусы (входящие) по-прежнему не обрабатываются", () => {
+    const e = parseWebhook({
+      typeWebhook: "incomingMessageReceived",
+      idMessage: "S4",
+      senderData: { chatId: "status@broadcast" },
+      messageData: { typeMessage: "textMessage", textMessageData: { textMessage: "Моя новая кухня" } },
+    });
+    expect(e.kind).toBe("ignored");
+  });
+
+  it("ответ на статус несёт цитату целиком — с идентификатором и автором", () => {
+    const long = `${STATUS}. Также окошки в 12:15 и 16:30, пишите в ответ на статус, закрепим за вами время.`;
+    const e = parseWebhook({
+      typeWebhook: "incomingMessageReceived",
+      idMessage: "R1",
+      senderData: { chatId: "79280000001@c.us", sender: "79280000001@c.us" },
+      messageData: {
+        typeMessage: "quotedMessage",
+        extendedTextMessageData: { text: "Хочу на 12:15" },
+        quotedMessage: { stanzaId: "STATUS1", participant: "79280009999@c.us", typeMessage: "extendedTextMessage", textMessage: long },
+      },
+    });
+    if (e.kind !== "message") throw new Error("ожидалось сообщение");
+    expect(e.quote).toEqual({ id: "STATUS1", participant: "79280009999@c.us", text: long });
+    expect(e.sender).toBe("79280000001@c.us");
+    // В переписку цитата идёт укороченной, агенту — целиком: иначе 16:30 потерялось бы.
+    expect(e.text.length).toBeLessThan(long.length + 20);
+  });
+
+  it("автор цитаты: клиника — только по её номеру", () => {
+    const clinicWid = "79280009999@c.us";
+    const patientIds = ["79280000001@c.us", null, "+79280000001"];
+    expect(quoteAuthor({ participant: "79280009999@c.us", clinicWid, patientIds })).toBe("clinic");
+    // Пациент процитировал собственное сообщение — не клиника, даже если в нём «окошко».
+    expect(quoteAuthor({ participant: "79280000001@c.us", clinicWid, patientIds })).toBe("patient");
+    // Скрытый идентификатор без совпадений — неизвестно, и окошко не закрепляется.
+    expect(quoteAuthor({ participant: "123456789012345@lid", clinicWid, patientIds })).toBeNull();
+    // Номер клиники не узнали — не угадываем.
+    expect(quoteAuthor({ participant: "79280009999@c.us", clinicWid: null, patientIds })).toBeNull();
+    expect(quoteAuthor({ participant: null, clinicWid, patientIds })).toBeNull();
   });
 });

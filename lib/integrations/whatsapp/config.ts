@@ -61,7 +61,18 @@ export const ENDPOINTS = {
    * чатах ничего нет».
    */
   checkWhatsapp: (id: string, token: string) => `/waInstance${id}/checkWhatsapp/${token}`,
+  /** Настройки инстанса; из них берём wid — номер самой клиники. */
   getSettings: (id: string, token: string) => `/waInstance${id}/getSettings/${token}`,
+  /**
+   * Статусы, выложенные клиникой, с временем публикации.
+   *
+   * Ответ пациента на статус несёт текст статуса, но не время его публикации,
+   * а «окошко на завтра» без него не превращается в дату. Методы статусов у
+   * провайдера помечены как бета — поэтому это запасной путь: сначала смотрим
+   * статусы, пришедшие вебхуком, и только потом спрашиваем.
+   */
+  getOutgoingStatuses: (id: string, token: string, minutes: number) =>
+    `/waInstance${id}/getOutgoingStatuses/${token}?minutes=${Math.max(1, Math.round(minutes))}`,
   /**
    * История переписки с одним собеседником.
    *

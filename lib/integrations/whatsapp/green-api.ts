@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { chatIdFromPhone } from "./chat-id";
@@ -564,4 +565,79 @@ export async function fetchContactPhone(companyId: string, chatId: string): Prom
   const raw = res.data?.phoneNumber;
   if (raw === undefined || raw === null || raw === "") return null;
   return normalizePhone(String(raw));
+}
+
+/**
+ * Номер самой клиники — адрес инстанса («79…@c.us»).
+ *
+ * Нужен, чтобы узнать цитату клиники: пациент отвечает на статус, и провайдер
+ * присылает автора цитаты. Совпал с номером клиники — значит отвечают на то,
+ * что написала клиника, а не на собственное сообщение пациента.
+ *
+ * Номер не меняется, поэтому запоминаем его надолго; неудачу — ненадолго,
+ * чтобы сбой провайдера не выключил закрепление окошек до перезапуска.
+ */
+const widCache = new Map<string, { wid: string | null; until: number }>();
+const WID_TTL_MS = 12 * 3600_000;
+const WID_RETRY_MS = 5 * 60_000;
+
+export async function instanceWid(companyId: string): Promise<string | null> {
+  const cached = widCache.get(companyId);
+  if (cached && cached.until > Date.now()) return cached.wid;
+  if (!isWhatsappEnabled()) return null;
+  const creds = await loadCredentials(companyId);
+  if (!creds) return null;
+
+  const res = await enqueue(() => call<{ wid?: unknown }>(ENDPOINTS.getSettings(creds.idInstance, creds.apiToken)));
+  const wid = res.ok && typeof res.data?.wid === "string" && res.data.wid.includes("@") ? res.data.wid : null;
+  widCache.set(companyId, { wid, until: Date.now() + (wid ? WID_TTL_MS : WID_RETRY_MS) });
+  return wid;
+}
+
+const OutgoingStatus = z
+  .object({
+    idMessage: z.string(),
+    timestamp: z.number(),
+    chatId: z.string().optional(),
+    textMessage: z.string().optional(),
+    caption: z.string().optional(),
+    extendedTextMessage: z.object({ text: z.string().optional() }).partial().optional(),
+  })
+  .passthrough();
+
+export interface ClinicStatusRow {
+  externalId: string;
+  text: string;
+  postedAt: Date;
+}
+
+/**
+ * Статусы, выложенные клиникой за последние `minutes` минут.
+ *
+ * null — узнать не удалось (метод недоступен, сбой, интеграция выключена); это
+ * не «статусов нет», и вызывающая сторона обязана отличать одно от другого.
+ * Строки, которые не разобрались, пропускаем: одна непонятная не должна
+ * лишать нас остальных.
+ */
+export async function fetchOutgoingStatuses(companyId: string, minutes: number): Promise<ClinicStatusRow[] | null> {
+  if (!isWhatsappEnabled()) return null;
+  const creds = await loadCredentials(companyId);
+  if (!creds) return null;
+
+  const res = await enqueue(() =>
+    call<unknown>(ENDPOINTS.getOutgoingStatuses(creds.idInstance, creds.apiToken, minutes)),
+  );
+  if (!res.ok || !Array.isArray(res.data)) return null;
+
+  const out: ClinicStatusRow[] = [];
+  for (const raw of res.data) {
+    const row = OutgoingStatus.safeParse(raw);
+    if (!row.success) continue;
+    const text = (row.data.textMessage ?? row.data.extendedTextMessage?.text ?? row.data.caption ?? "").trim();
+    if (!text) continue;
+    // Провайдер отдаёт секунды. Миллисекунды здесь означали бы 1970 год.
+    const seconds = row.data.timestamp > 1e12 ? row.data.timestamp / 1000 : row.data.timestamp;
+    out.push({ externalId: row.data.idMessage, text: text.slice(0, 2000), postedAt: new Date(seconds * 1000) });
+  }
+  return out;
 }

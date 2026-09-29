@@ -3,9 +3,11 @@ import { deliveryPatch, stageOf } from "@/lib/integrations/delivery";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { isWhatsappEnabled, WHATSAPP_PROVIDER } from "@/lib/integrations/whatsapp/config";
-import { parseWebhook, verifyWebhookSecret } from "@/lib/integrations/whatsapp/webhook";
-import { fetchContactPhone, sendText } from "@/lib/integrations/whatsapp/green-api";
-import { humanTakeoverUntil } from "@/lib/agent/clinic-agent";
+import { parseWebhook, quoteAuthor, verifyWebhookSecret } from "@/lib/integrations/whatsapp/webhook";
+import { fetchContactPhone, instanceWid, sendText } from "@/lib/integrations/whatsapp/green-api";
+import { humanTakeoverUntil, type AgentQuote } from "@/lib/agent/clinic-agent";
+import { isKnownClinicStatus, recordClinicStatuses } from "@/lib/agent/slot-hold";
+import { looksLikeOffer } from "@/lib/agent/status-slot";
 import { messageBody } from "@/lib/agent/attachments";
 import { runSerial } from "@/lib/server/background";
 import { importWhatsappHistory } from "@/lib/integrations/whatsapp/history";
@@ -76,6 +78,22 @@ export async function POST(req: Request) {
     const patch = deliveryPatch(msg, stage, new Date());
     if (patch) await prisma.message.update({ where: { id: msg.id }, data: patch });
     return NextResponse.json({ ok: true, kind: "status", applied: Boolean(patch) });
+  }
+
+  /**
+   * Статус, выложенный клиникой. В переписку не идёт — только в справочник
+   * статусов: по нему «окошко на завтра» из ответа пациента превращается в дату.
+   */
+  if (event.kind === "clinicStatus") {
+    const companyId = await resolveCompany();
+    if (companyId) {
+      await recordClinicStatuses(
+        companyId,
+        [{ externalId: event.externalId, text: event.text, postedAt: event.postedAt }],
+        "webhook",
+      );
+    }
+    return NextResponse.json({ ok: true, kind: "clinicStatus" });
   }
 
   if (event.kind !== "message" && event.kind !== "outgoing") {
@@ -296,6 +314,7 @@ async function handleIncoming(
     console.error("[whatsapp] история чата не загрузилась:", e);
   }
 
+  const knownPhone = await resolvePhone(companyId, event);
   const reply = await handlePatientMessage(
     {
       companyId,
@@ -307,7 +326,8 @@ async function handleIncoming(
       text: event.text,
       externalId: event.externalId,
       attachments: event.attachments,
-      knownPhone: await resolvePhone(companyId, event),
+      knownPhone,
+      quote: await agentQuote(companyId, event, knownPhone),
     },
   );
   if (!reply?.text) return;
@@ -435,6 +455,50 @@ async function resolvePhone(
       .catch(() => {});
   }
   return phone;
+}
+
+/**
+ * Цитата для агента: текст и то, написала ли её клиника.
+ *
+ * Автор проверяется положительно: известный нам статус клиники, наше же
+ * отправленное сообщение или совпадение с номером клиники. Всё прочее —
+ * «не клиника»: принять собственное сообщение пациента за статус значит
+ * закрепить окошко, которого клиника не предлагала.
+ *
+ * Сетевые запросы (номер клиники) делаются только для цитат, похожих на
+ * окошко: ради обычного ответа свайпом ходить к провайдеру незачем.
+ */
+async function agentQuote(
+  companyId: string,
+  event: Extract<ReturnType<typeof parseWebhook>, { kind: "message" }>,
+  knownPhone: string | null,
+): Promise<AgentQuote | null> {
+  const q = event.quote;
+  if (!q?.text) return null;
+  if (!looksLikeOffer(q.text)) return { id: q.id, text: q.text, byClinic: false };
+
+  let byClinic = await isKnownClinicStatus(companyId, q.id);
+  if (!byClinic && q.id) {
+    const ours = await prisma.message
+      .findFirst({ where: { channel: "WHATSAPP", externalId: q.id, direction: "OUT" }, select: { id: true } })
+      .catch(() => null);
+    byClinic = ours !== null;
+  }
+  if (!byClinic) {
+    const author = quoteAuthor({
+      participant: q.participant,
+      clinicWid: await instanceWid(companyId).catch(() => null),
+      patientIds: [event.chatId, event.sender, event.phoneE164, knownPhone],
+    });
+    byClinic = author === "clinic";
+    /**
+     * В журнал — только вывод и вид адреса, без номеров: номер пациента в
+     * общих логах — персональные данные (§7).
+     */
+    const kind = q.participant?.includes("@") ? q.participant.slice(q.participant.indexOf("@")) : "нет";
+    console.log(`[whatsapp] ответ на окошко: автор цитаты — ${author ?? "не определён"} (${kind})`);
+  }
+  return { id: q.id, text: q.text, byClinic };
 }
 
 /** Клиника, которой адресовано сообщение WhatsApp. */

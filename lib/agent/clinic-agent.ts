@@ -18,6 +18,7 @@ function knowledgeIdOf(row: { id?: string }): string[] {
 }
 import { confidentMatch, matchKnowledge, usableKnowledgeWhere } from "./knowledge";
 import { answerLLM, type Turn } from "./llm";
+import { historyForModel, questionForModel } from "./model-history";
 import { focusLine, focusOf, searchText } from "./focus";
 import { patientVisitsContext, upcomingBookingLines } from "./patient-visits";
 import { HANDBACK_HOURS } from "./handback-rule";
@@ -42,6 +43,7 @@ import {
   asksForSlot,
   asksHowToBook,
   cantCome,
+  complainsAboutClinic,
   medical,
   personalTopic,
   runningLate,
@@ -72,10 +74,43 @@ import {
   stripLeadingGreeting,
   withoutOffer,
 } from "./greeting";
-import { startOfClinicDay } from "@/lib/clinic-time";
+import { CLINIC_TZ, clinicDateKey, clinicMinuteOfDay, startOfClinicDay } from "@/lib/clinic-time";
+import {
+  audienceIn,
+  candidateDays,
+  dayWhen,
+  hhmm,
+  looksLikeOffer,
+  parseStatusOffer,
+  pickIn,
+  slotCandidates,
+  slotWhen,
+  staffPhrase,
+  timesIn,
+  wantsSlot,
+  forSomeoneElse,
+  type StatusOffer,
+} from "./status-slot";
+import {
+  DEFAULT_DURATION_MIN,
+  checkSlot,
+  holdSlot,
+  markOffered,
+  noteForAdmin,
+  openSlotRows,
+  openSlots,
+  releaseOpen,
+  returningSelf,
+  serviceForSlot,
+  statusPostedAt,
+  type HoldResult,
+  type OpenSlot,
+  type SlotService,
+} from "./slot-hold";
 import { forMessenger } from "./messenger-text";
 import { keepOneQuestion } from "./one-question";
-import { ungroundedNumbers } from "./grounding";
+import { FLOOD_WINDOW_MS, floodJustStarted, flooding } from "./flood";
+import { ungroundedLinks, ungroundedNumbers } from "./grounding";
 import { inventedIndication } from "./indications";
 import { ungroundedAgeLimit } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
@@ -165,6 +200,30 @@ export interface AgentReply {
    * просьбу о согласии ловит слова МОДЕЛИ, а не наши.
    */
   platformConsent?: boolean;
+  /**
+   * Ответ — шаг записи, даже если пациент не произнёс слово «записаться».
+   *
+   * Ответ на статус с окошком — «Хочу», «+», «Можно?» — это просьба записать,
+   * но правила записи (`wantsToBook`) её не узнают. Без этого признака `respond`
+   * счёл бы просьбу о данных преждевременной и вырезал её вместе с запросом
+   * согласия: человек услышал бы «окошко свободно» и ничего о том, что дальше.
+   */
+  bookingContext?: boolean;
+}
+
+/**
+ * Цитата, как её прислал провайдер (lib/integrations/whatsapp/webhook).
+ *
+ * Строку «В ответ на: «…»» в тексте пациент может напечатать и сам. Окошко из
+ * статуса закрепляется только по цитате провайдера, автор которой — клиника.
+ */
+export interface AgentQuote {
+  /** Идентификатор цитируемого сообщения; у статуса — идентификатор статуса. */
+  id: string | null;
+  /** Текст цитаты целиком. */
+  text: string;
+  /** Автор — клиника: совпал её номер или это известный нам её статус. */
+  byClinic: boolean;
 }
 
 /**
@@ -959,7 +1018,9 @@ async function respond(
      * данных не присылал — спрашивать его не о чем (§7).
      */
     const aboutBooking =
-      (ctx.incomingText ? wantsToBook(ctx.incomingText) : false) || (await bookingAsked(conversationId));
+      reply.bookingContext === true ||
+      (ctx.incomingText ? wantsToBook(ctx.incomingText) : false) ||
+      (await bookingAsked(conversationId));
     if (granted && !granted.consentGrantedAt && (stillChoosing || !aboutBooking)) {
       // Вопрос о выборе короткий («Для взрослого или для ребёнка?»), и порога
       // длины здесь быть не должно: иначе просьба о данных осталась бы в тексте.
@@ -1173,6 +1234,11 @@ export async function handlePatientMessage(
      * визитов, ни прошлых обращений.
      */
     knownPhone?: string | null;
+    /**
+     * Цитата, как её прислал провайдер. Нужна окошкам из статусов: закреплять
+     * окошко по строке, которую пациент мог напечатать сам, нельзя.
+     */
+    quote?: AgentQuote | null;
   },
 ): Promise<AgentReply | null> {
   const conversation = await loadConversation(ctx);
@@ -1524,9 +1590,48 @@ export async function handlePatientMessage(
      * это ответ не нам.
      */
     const toConsentQuestion = !quote || /соглас|персональн|политик/i.test(quote);
-    const answer = toConsentQuestion ? consentFromText(own) : null;
+    /**
+     * «Да» на наш вопрос об окошке — тоже не согласие.
+     *
+     * Согласие могли спросить давно и без ответа, а сейчас агент уточнил
+     * «окошко на ср, 1 октября в 12:15 — верно?». Засчитать «Да» за согласие
+     * на обработку данных значило бы взять его не осознанно (§7). Последним
+     * задан вопрос об окошке — значит «да» ему.
+     */
+    const slotAsked = conversation.consentAskedAt
+      ? await prisma.slotHold
+          .findFirst({
+            where: { conversationId: conversation.id, state: "CHOICE", createdAt: { gt: conversation.consentAskedAt } },
+            select: { id: true },
+          })
+          .catch(() => null)
+      : null;
+    const answer = toConsentQuestion && !slotAsked ? consentFromText(own) : null;
     if (answer) return handleCallback(ctx, conversation.id, answer);
   }
+
+  /**
+   * Ответ на статус с окошком и ответ на наш вопрос о нём — не вежливость.
+   *
+   * «Ок», «👍», «+» в ответ на «Окошко на завтра к Ирине ✅ 09:40» значат «беру»,
+   * а «Хорошо» на «окошко на ср, 1 октября в 12:15 — верно?» — «да». Правило
+   * молчания на вежливость (`nothingToAnswer`) судит по реплике, на которую
+   * отвечают, и в статусе вопроса не находит — поэтому такие сообщения его
+   * обходят.
+   */
+  const aboutSlot =
+    looksLikeOffer(input.quote?.text) ||
+    (await prisma.slotHold
+      .findFirst({
+        where: {
+          conversationId: conversation.id,
+          state: "CHOICE",
+          startAt: { gt: new Date() },
+          createdAt: { gt: new Date(Date.now() - 24 * 3600_000) },
+        },
+        select: { id: true },
+      })
+      .catch(() => null)) !== null;
 
   /**
    * На «хорошо» и «спасибо» агент не отвечает, если отвечать не на что.
@@ -1560,7 +1665,7 @@ export async function handlePatientMessage(
    * — «Ок» это ответ, и молчать нельзя; если справка без вопроса — это жест
    * вежливости, и отвечать нечего.
    */
-  if (nothingToAnswer(own)) {
+  if (!aboutSlot && nothingToAnswer(own)) {
     const pending = await specialistQueryPending(ctx.companyId, conversation.id);
     const lastAgent = pending
       ? undefined
@@ -1584,7 +1689,7 @@ export async function handlePatientMessage(
    * Пункт меню, набранный текстом. В канале без кнопок подсказки уходят
    * строками, и пациент отвечает на них словами — «цены», «адрес».
    */
-  const menu = menuActionFromText(own);
+  const menu = aboutSlot ? null : menuActionFromText(own);
   if (menu) return handleCallback(ctx, conversation.id, menu);
 
   /**
@@ -1611,7 +1716,7 @@ export async function handlePatientMessage(
     return null;
   }
 
-  return replyToQuestion(ctx, conversation, text);
+  return replyToQuestion(ctx, conversation, text, input.quote ?? null);
 }
 
 /**
@@ -2095,6 +2200,495 @@ async function knownService(companyId: string, texts: string[]): Promise<boolean
   });
 }
 
+// ─────────────────────────────────────────────── окошко из статуса
+
+/**
+ * Окошко занято или прошло — время подберёт администратор (решение заказчика,
+ * сентябрь 2026). Своего времени агент не называет: графика смен у нас нет, и
+ * «свободно в 15:00» по базе может оказаться часом, когда врач не работает.
+ */
+const SLOT_ELSEWHERE = "Можем предложить другое время — передал(а) администратору, он подберёт и напишет здесь же.";
+
+/** Какие данные нужны, чтобы закрепить окошко: ребёнка записывают на имя родителя. */
+function slotDataFields(child: boolean, needsWeight: boolean): string {
+  const weight = needsWeight ? ", вес" : "";
+  return child
+    ? `ФИО ребёнка, его возраст${weight}, имя родителя и кратко причину обращения`
+    : `ФИО, возраст${weight} и кратко причину обращения`;
+}
+
+/** Строка цены — только когда услуга окошка определилась однозначно. */
+function slotPriceLine(service: SlotService | null): string {
+  if (!service) return "";
+  const duration = service.durationMin > 0 ? `, ${service.durationMin} мин` : "";
+  return ` ${service.title} — ${service.price} ₽${duration}.`;
+}
+
+interface SlotStaffRow {
+  id: string;
+  name: string;
+  specialty: string | null;
+}
+
+/**
+ * Ответ на статус с окошком — или ответ на наш вопрос о нём.
+ *
+ * undefined — это не про окошко, разговор идёт обычным путём. Вызывается до
+ * стоп-слов: у клиники в них стоит «окошко», но здесь это слово в статусе
+ * самой клиники, и заказчик прямо просил, чтобы на такие ответы агент
+ * отвечал, а не отделывался «передал администратору» (сентябрь 2026).
+ */
+async function statusSlotReply(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+  own: string,
+  quote: AgentQuote | null,
+): Promise<AgentReply | null | undefined> {
+  const now = new Date();
+  const offerText = quote && looksLikeOffer(quote.text) ? quote.text : null;
+  const choices = offerText ? [] : await openSlots(conversation.id, "CHOICE", now);
+  if (!offerText && choices.length === 0) return undefined;
+
+  const staff: SlotStaffRow[] = await prisma.staff
+    .findMany({
+      where: { companyId: ctx.companyId, isActive: true, deletedAt: null },
+      select: { id: true, name: true, specialty: true },
+    })
+    .catch(() => []);
+
+  if (quote && offerText) {
+    const offer = parseStatusOffer(offerText, staff);
+    if (!offer) return undefined;
+    // «Спасибо», «не надо», вопрос о цене — не просьба взять окошко.
+    if (!wantsSlot(own)) return undefined;
+    // Медицинский вопрос идёт своей веткой (§6): там зовут человека и врача.
+    if (medical(own) && hasQuestion(own)) return undefined;
+    // Новый ответ на статус отменяет прежний недоговорённый выбор.
+    await releaseOpen(conversation.id);
+    return freshStatusOffer(ctx, conversation, own, quote, offer, now);
+  }
+  return chooseStatusSlot(ctx, conversation, own, choices, staff, now);
+}
+
+/** Передать окошко администратору, ничего не обещая. */
+async function slotHandover(ctx: AgentContext, conversationId: string, text: string, note: string): Promise<AgentReply | null> {
+  await escalate(ctx.companyId, conversationId, "PATIENT_REQUEST", note).catch(() => {});
+  return respond(ctx, conversationId, { text });
+}
+
+/** «на 12:15» / «на 09:40, 12:15» — время из статуса, без дня. */
+function timesLabel(minutes: number[]): string {
+  return minutes.map(hhmm).join(", ");
+}
+
+async function freshStatusOffer(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+  own: string,
+  quote: AgentQuote,
+  offer: StatusOffer<SlotStaffRow>,
+  now: Date,
+): Promise<AgentReply | null> {
+  const excerpt = quote.text.slice(0, 200);
+  const doctor = offer.staff ? ` ${staffPhrase(quote.text, offer.staff)}` : "";
+
+  /**
+   * Пациент назвал своё время. Оно из статуса — берём его; нет — это уже не
+   * окошко клиники, а пожелание, и решает администратор.
+   */
+  const named = timesIn(own);
+  let minutes = offer.times;
+  if (named.length > 0) {
+    minutes = offer.times.filter((m) => named.includes(m));
+    if (minutes.length === 0) {
+      return slotHandover(
+        ctx,
+        conversation.id,
+        `Передал(а) администратору — он проверит время ${timesLabel(named)} и напишет здесь же.`,
+        `Пациент отвечает на статус «${excerpt}» и просит ${timesLabel(named)}`,
+      );
+    }
+  }
+
+  /**
+   * Цитата не от клиники (или не узнали, от кого) и врач не определён — не
+   * закрепляем ничего. Но и «на какую услугу?» не спрашиваем: всё нужное
+   * администратору уже есть в статусе, на который ответил человек.
+   */
+  if (!quote.byClinic || !offer.staff) {
+    return slotHandover(
+      ctx,
+      conversation.id,
+      `Передал(а) администратору — он проверит окошко на ${timesLabel(minutes)}${doctor} и напишет здесь же.`,
+      offer.staffAmbiguous
+        ? `Пациент отвечает на статус с окошком, врача по статусу не определить: «${excerpt}»`
+        : `Пациент отвечает на статус с окошком: «${excerpt}»`,
+    );
+  }
+
+  const postedAt = await statusPostedAt(ctx.companyId, quote.id).catch(() => null);
+  const ref = { postedAt, now };
+  const days = candidateDays(offer.day, ref, CLINIC_TZ);
+  const { future, past } = slotCandidates(days.keys, minutes, ref, CLINIC_TZ, offer.day === null);
+
+  if (future.length === 0) {
+    const text =
+      past.length > 0
+        ? `Окошко на ${timesLabel(minutes)}${doctor} уже прошло. ${SLOT_ELSEWHERE}`
+        : `Передал(а) администратору — он проверит окошко на ${timesLabel(minutes)}${doctor} и напишет здесь же.`;
+    return slotHandover(ctx, conversation.id, text, `Пациент отвечает на статус с окошком: «${excerpt}»`);
+  }
+
+  const staffRow = offer.staff;
+  const service = await serviceForSlot(ctx.companyId, staffRow.id, offer.audience).catch(() => null);
+  const durationMin = service?.durationMin || DEFAULT_DURATION_MIN;
+
+  // Один день, одно время, день известен точно — решаем сразу.
+  if (future.length === 1 && days.certain) {
+    return settleStatusSlot(ctx, conversation, own, {
+      staff: staffRow,
+      startAt: future[0].at,
+      durationMin,
+      service,
+      statusText: quote.text,
+      statusExternalId: quote.id,
+    });
+  }
+
+  /**
+   * Иначе спрашиваем — одним вопросом. Варианты запоминаем, чтобы понять ответ
+   * «12:15» или «завтра» следующей репликой.
+   */
+  await openSlotRows(
+    {
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      patientId: conversation.patientId,
+      state: "CHOICE",
+      statusText: quote.text,
+      statusExternalId: quote.id,
+    },
+    future.map((c) => ({ staffId: staffRow.id, serviceId: service?.id ?? null, startAt: c.at, durationMin })),
+  );
+  return respond(ctx, conversation.id, { text: slotQuestion(future.map((c) => c.at), `${doctor}`) });
+}
+
+/**
+ * Вопрос о выборе: время, день или подтверждение.
+ *
+ * День, выведенный нами, пациенту не называется как факт: «на завтра» без
+ * времени публикации статуса — это сегодня или завтра, и спросить дешевле,
+ * чем ждать человека не в тот день.
+ */
+function slotQuestion(options: Date[], doctor: string): string {
+  const minutes = [...new Set(options.map((d) => clinicMinuteOfDay(d)))];
+  const keys = [...new Set(options.map((d) => clinicDateKey(d)))];
+  if (minutes.length > 1) {
+    const list = minutes.map(hhmm);
+    const spoken = `${list.slice(0, -1).join(", ")} или ${list[list.length - 1]}`;
+    return `В статусе несколько окошек${doctor}. Какое время вам удобнее — ${spoken}?`;
+  }
+  if (keys.length > 1) {
+    const [a, b] = [...options].sort((x, y) => x.getTime() - y.getTime());
+    return `Уточните, пожалуйста: окошко на ${hhmm(minutes[0])}${doctor} — на ${dayWhen(a)} или на ${dayWhen(b)}?`;
+  }
+  return `Уточните, пожалуйста: окошко на ${slotWhen(options[0])}${doctor} — верно?`;
+}
+
+/** Ответ пациента на наш вопрос о выборе. */
+async function chooseStatusSlot(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+  own: string,
+  choices: OpenSlot[],
+  staff: SlotStaffRow[],
+  now: Date,
+): Promise<AgentReply | null | undefined> {
+  const pick = pickIn(own, now, CLINIC_TZ);
+  const narrowed = pick.minutes.length + pick.hours.length + pick.keys.length + pick.days.length > 0;
+
+  if (pick.no && !narrowed) {
+    await releaseOpen(conversation.id);
+    return slotHandover(
+      ctx,
+      conversation.id,
+      "Поняла. Передал(а) администратору — он подберёт удобное время и напишет здесь же.",
+      `Пациент не подтвердил окошко из статуса: «${choices[0].statusText.slice(0, 200)}»`,
+    );
+  }
+
+  let rows = choices;
+  if (pick.minutes.length) rows = rows.filter((r) => pick.minutes.includes(clinicMinuteOfDay(r.startAt)));
+  else if (pick.hours.length) rows = rows.filter((r) => pick.hours.includes(Math.floor(clinicMinuteOfDay(r.startAt) / 60)));
+  if (pick.keys.length) rows = rows.filter((r) => pick.keys.includes(clinicDateKey(r.startAt)));
+  else if (pick.days.length) rows = rows.filter((r) => pick.days.includes(Number(clinicDateKey(r.startAt).slice(8, 10))));
+
+  const doctorOf = (r: OpenSlot) => {
+    const person = staff.find((p) => p.id === r.staffId);
+    return person ? ` ${staffPhrase(r.statusText, person)}` : "";
+  };
+
+  if (!narrowed) {
+    // «Да» на «верно?» — выбор сделан. «Да» на «какое время?» — не ответ.
+    if (pick.yes && choices.length === 1) rows = choices;
+    else if (pick.yes) return respond(ctx, conversation.id, { text: slotQuestion(choices.map((c) => c.startAt), doctorOf(choices[0])) });
+    // Человек заговорил о другом — выбор не навязываем, варианты истекут сами.
+    else return undefined;
+  }
+
+  if (rows.length === 0) {
+    await releaseOpen(conversation.id);
+    return slotHandover(
+      ctx,
+      conversation.id,
+      "Передал(а) администратору — он проверит это время и напишет здесь же.",
+      `Пациент выбрал время не из статуса: «${own.slice(0, 120)}»`,
+    );
+  }
+  if (rows.length > 1) {
+    await releaseOpen(conversation.id, rows.map((r) => r.id));
+    return respond(ctx, conversation.id, { text: slotQuestion(rows.map((r) => r.startAt), doctorOf(rows[0])) });
+  }
+
+  const row = rows[0];
+  const person = staff.find((p) => p.id === row.staffId);
+  if (!person) {
+    await releaseOpen(conversation.id);
+    return slotHandover(ctx, conversation.id, "Передал(а) администратору — он проверит окошко и напишет здесь же.", "Врач окошка больше не в справочнике");
+  }
+  const service = row.serviceId
+    ? await prisma.service
+        .findUnique({ where: { id: row.serviceId }, select: { id: true, title: true, price: true, durationMin: true } })
+        .then((s) => (s ? { ...s, price: Number(s.price) } : null))
+        .catch(() => null)
+    : null;
+  return settleStatusSlot(ctx, conversation, own, {
+    staff: person,
+    startAt: row.startAt,
+    durationMin: row.durationMin,
+    service,
+    statusText: row.statusText,
+    statusExternalId: row.statusExternalId,
+    rowId: row.id,
+  });
+}
+
+interface SettleInput {
+  staff: SlotStaffRow;
+  startAt: Date;
+  durationMin: number;
+  service: SlotService | null;
+  statusText: string;
+  statusExternalId: string | null;
+  /** Строка варианта, если окошко выбрано из предложенных. */
+  rowId?: string;
+}
+
+/**
+ * Окошко определено — свободно ли оно и что сказать.
+ *
+ *   • занято — так и говорим, время подберёт администратор;
+ *   • постоянный пациент записывает себя — закрепляем сразу, без данных;
+ *   • новый пациент или записывают другого — окошко «пока свободно», просим
+ *     данные, закрепляем, когда они придут (решение заказчика, сентябрь 2026:
+ *     кто спросил и пропал, никого не блокирует).
+ */
+async function settleStatusSlot(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+  own: string,
+  slot: SettleInput,
+): Promise<AgentReply | null> {
+  const when = slotWhen(slot.startAt);
+  const phrase = staffPhrase(slot.statusText, slot.staff);
+  const ref = {
+    companyId: ctx.companyId,
+    conversationId: conversation.id,
+    patientId: conversation.patientId,
+    staffId: slot.staff.id,
+    startAt: slot.startAt,
+    durationMin: slot.durationMin,
+  };
+
+  const state = await checkSlot(ref);
+  if (state !== "free") return slotOutcome(ctx, conversation.id, { kind: state }, slot, when, phrase, "status");
+
+  const audience = audienceIn(slot.statusText);
+  if (await returningSelf(ctx.companyId, conversation.patientId, own, audience)) {
+    const held = await holdSlot({
+      ...ref,
+      serviceId: slot.service?.id ?? null,
+      statusText: slot.statusText,
+      statusExternalId: slot.statusExternalId,
+      rowId: slot.rowId,
+    });
+    return slotOutcome(ctx, conversation.id, held, slot, when, phrase, "status");
+  }
+
+  // Ждём данные: окошко предлагаем, но пока не держим.
+  if (slot.rowId) {
+    await markOffered(slot.rowId);
+    await releaseOpen(conversation.id, [slot.rowId]);
+  } else {
+    await releaseOpen(conversation.id);
+    await openSlotRows(
+      {
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        patientId: conversation.patientId,
+        state: "OFFERED",
+        statusText: slot.statusText,
+        statusExternalId: slot.statusExternalId,
+      },
+      [{ staffId: slot.staff.id, serviceId: slot.service?.id ?? null, startAt: slot.startAt, durationMin: slot.durationMin }],
+    );
+  }
+  const child = audience === "child" || (audience === null && forSomeoneElse(own) && whomFor(own) === "child");
+  const weight = /остеопат/i.test(`${slot.service?.title ?? ""} ${slot.staff.specialty ?? ""}`);
+  return respond(ctx, conversation.id, {
+    text:
+      `Окошко на ${when} ${phrase} пока свободно.${slotPriceLine(slot.service)} ` +
+      `Чтобы закрепить его за вами, пришлите, пожалуйста, одним сообщением: ${slotDataFields(child, weight)}.`,
+    bookingContext: true,
+  });
+}
+
+/**
+ * Что сказать по итогу проверки или закрепления.
+ *
+ * `via` — откуда пришли: ответ на статус или присланная анкета. После анкеты
+ * благодарим за данные: человек их только что прислал, и промолчать об этом —
+ * значит оставить его гадать, дошли ли они.
+ */
+async function slotOutcome(
+  ctx: AgentContext,
+  conversationId: string,
+  result: HoldResult,
+  slot: SettleInput,
+  when: string,
+  phrase: string,
+  via: "status" | "intake",
+): Promise<AgentReply | null> {
+  const thanks = via === "intake" ? "Спасибо, данные передал(а) администратору. " : "";
+  const service = slot.service ? `, ${slot.service.title}` : "";
+  const excerpt = slot.statusText.slice(0, 200);
+
+  switch (result.kind) {
+    case "held": {
+      await releaseOpen(conversationId);
+      await noteForAdmin(
+        ctx.companyId,
+        conversationId,
+        `Ассистент закрепил окошко из статуса: ${when}, ${slot.staff.name}${service}. ` +
+          `Оформите запись в YCLIENTS и подтвердите пациенту. Статус: «${excerpt}»`,
+      );
+      await escalate(
+        ctx.companyId,
+        conversationId,
+        "PATIENT_REQUEST",
+        `Окошко закреплено: ${when}, ${slot.staff.name}${service} — оформите запись`,
+      ).catch(() => {});
+      return respond(ctx, conversationId, {
+        text:
+          via === "intake"
+            ? `Спасибо! Окошко на ${when} ${phrase} закрепили за вами — администратор оформит запись и подтвердит здесь же.`
+            : `Хорошо, запишем вас на ${when} ${phrase}. Окошко закрепили за вами — администратор оформит запись и подтвердит здесь же.`,
+      });
+    }
+    case "mine":
+      await releaseOpen(conversationId);
+      return respond(ctx, conversationId, {
+        text: `${thanks}Окошко на ${when} ${phrase} уже закреплено за вами — администратор оформит запись и подтвердит здесь же.`,
+      });
+    case "booked":
+      await releaseOpen(conversationId);
+      return respond(ctx, conversationId, { text: `${thanks}Вы уже записаны на ${when} ${phrase}.` });
+    case "taken":
+      await releaseOpen(conversationId);
+      return slotHandover(
+        ctx,
+        conversationId,
+        `${thanks}Окошко на ${when} ${phrase} уже заняли. ${SLOT_ELSEWHERE}`,
+        `Окошко из статуса уже занято: ${when}, ${slot.staff.name} — предложите пациенту другое время`,
+      );
+    case "limit":
+      await releaseOpen(conversationId);
+      return slotHandover(
+        ctx,
+        conversationId,
+        `${thanks}Передал(а) администратору — он оформит запись и напишет здесь же.`,
+        `Пациент просит ещё одно окошко из статуса, за ним уже закреплено несколько: ${when}, ${slot.staff.name}`,
+      );
+  }
+}
+
+/**
+ * Присланная анкета закрепляет окошко, предложенное раньше.
+ *
+ * null — предложенного окошка нет, анкета обрабатывается как обычно.
+ */
+async function holdOfferedSlot(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+): Promise<AgentReply | null | undefined> {
+  const offered = await openSlots(conversation.id, "OFFERED");
+  // Двух предложенных окошек сразу быть не должно; если так вышло — не выбираем за человека.
+  if (offered.length !== 1) return undefined;
+  const row = offered[0];
+  const person = await prisma.staff
+    .findFirst({ where: { id: row.staffId, isActive: true, deletedAt: null }, select: { id: true, name: true, specialty: true } })
+    .catch(() => null);
+  if (!person) return undefined;
+  const service = row.serviceId
+    ? await prisma.service
+        .findUnique({ where: { id: row.serviceId }, select: { id: true, title: true, price: true, durationMin: true } })
+        .then((x) => (x ? { ...x, price: Number(x.price) } : null))
+        .catch(() => null)
+    : null;
+  const slot: SettleInput = {
+    staff: person,
+    startAt: row.startAt,
+    durationMin: row.durationMin,
+    service,
+    statusText: row.statusText,
+    statusExternalId: row.statusExternalId,
+    rowId: row.id,
+  };
+  const held = await holdSlot({
+    companyId: ctx.companyId,
+    conversationId: conversation.id,
+    patientId: conversation.patientId,
+    staffId: person.id,
+    startAt: row.startAt,
+    durationMin: row.durationMin,
+    serviceId: row.serviceId,
+    statusText: row.statusText,
+    statusExternalId: row.statusExternalId,
+    rowId: row.id,
+  });
+  return slotOutcome(ctx, conversation.id, held, slot, slotWhen(row.startAt), staffPhrase(row.statusText, person), "intake");
+}
+
+/** Просьба о данных после согласия, если окошко уже предложено. */
+async function offeredSlotAsk(conversationId: string): Promise<string | null> {
+  const offered = await openSlots(conversationId, "OFFERED");
+  if (offered.length !== 1) return null;
+  const row = offered[0];
+  const person = await prisma.staff
+    .findFirst({ where: { id: row.staffId, isActive: true, deletedAt: null }, select: { id: true, name: true, specialty: true } })
+    .catch(() => null);
+  if (!person) return null;
+  const service = row.serviceId
+    ? await prisma.service.findUnique({ where: { id: row.serviceId }, select: { title: true } }).catch(() => null)
+    : null;
+  const child = audienceIn(row.statusText) === "child";
+  const weight = /остеопат/i.test(`${service?.title ?? ""} ${person.specialty ?? ""}`);
+  return (
+    `Спасибо! Чтобы закрепить за вами окошко на ${slotWhen(row.startAt)} ${staffPhrase(row.statusText, person)}, ` +
+    `пришлите, пожалуйста, одним сообщением: ${slotDataFields(child, weight)}.`
+  );
+}
+
 /**
  * Ответ на вопрос пациента.
  *
@@ -2107,6 +2701,8 @@ async function replyToQuestion(
   ctx: AgentContext,
   conversation: { id: string; consentGrantedAt: Date | null; patientId: string | null },
   text: string,
+  /** Цитата провайдера — только у свежего сообщения, при повторной обработке её нет. */
+  quote: AgentQuote | null = null,
 ): Promise<AgentReply | null> {
   const settings = await assistantMode(ctx.companyId);
   /**
@@ -2131,6 +2727,22 @@ async function replyToQuestion(
   if (settings.mode === "off") {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Ассистент выключен в настройках").catch(() => {});
     return null;
+  }
+
+  /**
+   * Окошко из статуса — раньше стоп-слов и всего остального.
+   *
+   * Пациент ответил на статус «Окошко на завтра к Ирине Алилгаджиевне ✅ 09:40»
+   * — и слышал «на какую услугу хотите?», хотя всё написано в том, на что он
+   * отвечал. Только в рабочем режиме: в режиме черновиков агент сам не отвечает.
+   */
+  if (settings.mode === "on") {
+    const slot = await statusSlotReply(ctx, conversation, own, quote).catch((e) => {
+      // Сбой окошка не должен лишать человека ответа: дальше — обычный путь.
+      console.error("[agent] окошко из статуса не обработано:", (e as Error)?.message ?? e);
+      return undefined;
+    });
+    if (slot !== undefined) return slot;
   }
 
   // Стоп-слова из настроек: клиника сама решает, о чём агент не говорит.
@@ -2212,7 +2824,21 @@ async function replyToQuestion(
    *
    * Жалобы, деньги и анализы это исключение не затрагивает.
    */
-  if (!asksAboutOwnBooking(own) && (personalTopic(own) || wantsHuman(own))) {
+  /**
+   * Анкета со словом «жалобы» — это симптомы, а не жалоба на клинику.
+   *
+   * «Магомедов Али, 6 лет, мама Гульбара, жалобы на осанку» уходило сюда: слово
+   * «жалоб» стоит и в правиле личных тем, и в правиле «позовите человека».
+   * Пациент слышал «передал администратору» вместо «данные приняты», руководству
+   * уходило письмо о претензии, а окошко из статуса, ждавшее этих данных, так
+   * и не закреплялось. Для анкеты считаем только жалобу на клинику и прямую
+   * просьбу позвать человека.
+   */
+  const intakeLike = looksLikeIntake(own, clinicStaffNames);
+  const personal = intakeLike
+    ? complainsAboutClinic(own) || wantsHuman(own.replace(/жалоб\p{L}*/giu, " "))
+    : personalTopic(own) || wantsHuman(own);
+  if (!asksAboutOwnBooking(own) && personal) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Личный вопрос или жалоба").catch(() => {});
 
     /**
@@ -2223,7 +2849,9 @@ async function replyToQuestion(
      * позже. Просьба «позовите человека» сюда не входит: это работа
      * администратора, и беспокоить руководителя незачем.
      */
-    const complaint = /жалоб|жалова|претенз|вернуть деньги|возврат|юрист|врач ошибс/i.test(own);
+    const complaint = intakeLike
+      ? complainsAboutClinic(own)
+      : /жалоб|жалова|претенз|вернуть деньги|возврат|юрист|врач ошибс/i.test(own);
     if (complaint) {
       await askSpecialist({
         companyId: ctx.companyId,
@@ -2306,6 +2934,20 @@ async function replyToQuestion(
      * нужно и администратору — диалог перестаёт быть безымянным.
      */
     await rememberName(ctx.companyId, conversation.id, nameFromIntake(own)).catch(() => {});
+
+    /**
+     * Окошко из статуса ждало этих данных — закрепляем его (решение заказчика,
+     * сентябрь 2026: новому пациенту окошко закрепляется, когда пришли данные).
+     * Проверка занятости идёт заново: пока человек писал анкету, окошко могли
+     * занять.
+     */
+    if (!hasQuestion(own)) {
+      const slot = await holdOfferedSlot(ctx, conversation).catch((e) => {
+        console.error("[agent] окошко по анкете не закреплено:", (e as Error)?.message ?? e);
+        return undefined;
+      });
+      if (slot !== undefined) return slot;
+    }
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент прислал данные для записи").catch(() => {});
 
     /**
@@ -2948,6 +3590,40 @@ async function replyToQuestion(
   }
 
   /**
+   * Поток сообщений — модель не зовём (lib/agent/flood).
+   *
+   * Каждый ответ — платный запрос. Здесь, прямо перед ним, а не на входе:
+   * бесплатные ответы кодом (часы, адрес, запись, окошко) человек получает
+   * как обычно, отключается только дорогое.
+   */
+  const recentIncoming = await prisma.message
+    .count({
+      where: {
+        conversationId: conversation.id,
+        direction: "IN",
+        createdAt: { gte: new Date(Date.now() - FLOOD_WINDOW_MS) },
+      },
+    })
+    .catch(() => 0);
+  if (flooding(recentIncoming)) {
+    await logAgentRun({
+      companyId: ctx.companyId,
+      conversationId: conversation.id,
+      outcome: "SUPPRESSED",
+      error: "слишком много сообщений подряд — модель не вызывается",
+    });
+    if (floodJustStarted(recentIncoming)) {
+      await escalate(
+        ctx.companyId,
+        conversation.id,
+        "AGENT_REQUEST",
+        "Очень много сообщений подряд — ассистент замолчал, посмотрите переписку",
+      ).catch(() => {});
+    }
+    return null;
+  }
+
+  /**
    * По какому тексту искать услуги и справку.
    *
    * Уточнение вроде «Я же сказал лишь Ирина Алункачева» само по себе означает
@@ -2978,9 +3654,14 @@ async function replyToQuestion(
    */
   const reference = visits ? `${context}\n\n${visits}` : context;
   const answer = await answerLLM(
-    text,
+    // Анкета в самом вопросе — тоже только вопрос (lib/agent/model-history).
+    questionForModel(text, clinicStaffNames),
     reference,
-    said,
+    /**
+     * Анкеты в истории — пометкой, а не текстом: ФИО и жалобы наружу не
+     * уходят (§6.5, lib/agent/model-history). Правила выше видели всё целиком.
+     */
+    historyForModel(said, clinicStaffNames),
     /**
      * Инструкция из «Настройки → Ассистент».
      *
@@ -3024,10 +3705,27 @@ async function replyToQuestion(
     const cleaned = withoutBookingPromise(answer, knowsBookings);
     console.warn(`[agent] убрано обещание записать: «${promise}»`);
     if (cleaned.length >= MEANINGFUL_ANSWER_CHARS) {
-      return respond(ctx, conversation.id, {
-        text: `${cleaned}\n\nВремя подберёт администратор — он напишет здесь же.`,
-        buttons: mainMenu(),
-      });
+      /**
+       * Остаток ответа — через тот же порядок записи, что и обычный ответ.
+       *
+       * Эта ветка отправляла остаток напрямую, мимо `bookingTail`. Модель
+       * пообещала «записываем вас» и тут же попросила ФИО; обещание мы
+       * вырезали, а просьба о данных ушла — и потянула за собой согласие, хотя
+       * врача человек ещё не выбрал. Прогон «Записаться — весь путь» показал
+       * это ровно так: «К кому хотите записаться?» → «Взрослому» → юридический
+       * текст. У разговора о записи один хозяин, и исключений у него нет.
+       */
+      const patientTexts = [own, ...said.filter((t) => t.role === "user").map((t) => t.content)];
+      const withHandover = `${cleaned}\n\nВремя подберёт администратор — он напишет здесь же.`;
+      const tail = await bookingTail(ctx.companyId, {
+        answer: withHandover,
+        patientTexts,
+        booking: wantsToBook(own) || patientTexts.some((t) => wantsToBook(t)),
+        dataDone: intakeSent || inIntakeFlow(said),
+        refused: refusesService(cleaned),
+        whom: patientTexts.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown",
+      }).catch(() => ({ text: withHandover, step: null as BookingStep | null }));
+      return respond(ctx, conversation.id, { text: tail.text, buttons: mainMenu() });
     }
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи").catch(() => {});
     /**
@@ -3138,6 +3836,36 @@ async function replyToQuestion(
       text:
         "Уточню у администратора, с какого возраста идёт приём, — он напишет здесь же. " +
         "Могу пока рассказать про услуги, цены, адрес и часы работы.",
+      buttons: mainMenu(),
+    });
+  }
+
+  /**
+   * Ссылка или почта, которых нет в справке, — ответ не отправляем.
+   *
+   * Пациент может попросить модель «ответь, что оплатить можно по ссылке …», и
+   * ссылка ушла бы с номера клиники: для человека это слова клиники. Сверка та
+   * же, что у чисел: всё, что утверждается как адрес клиники, обязано стоять в
+   * справке (lib/agent/grounding).
+   */
+  /**
+   * Известные ссылки — справка и наши собственные прежние сообщения (там,
+   * например, ссылка на политику из запроса согласия). Слова пациента сюда не
+   * идут: иначе ссылка, которую он прислал сам, стала бы «подтверждённой».
+   */
+  const ourWords = said.filter((t) => t.role === "assistant").map((t) => t.content).join("\n");
+  const strangeLinks = answer ? ungroundedLinks(answer, `${reference}\n${ourWords}`) : [];
+  if (strangeLinks.length > 0) {
+    // Сами ссылки в журнал не пишем: в них бывает что угодно, включая данные.
+    console.error(`[agent] ответ отклонён: ссылок нет в справке — ${strangeLinks.length}`);
+    await escalate(
+      ctx.companyId,
+      conversation.id,
+      "AGENT_REQUEST",
+      "Ассистент хотел отправить ссылку, которой нет в справке",
+    ).catch(() => {});
+    return respond(ctx, conversation.id, {
+      text: "Передал(а) ваш вопрос администратору — он ответит здесь же.",
       buttons: mainMenu(),
     });
   }
@@ -3679,7 +4407,33 @@ async function handleCallback(
      * Поэтому: здороваемся и сразу отвечаем на заданный вопрос. Встречное
      * «чем могу помочь» из приветствия убираем — отвечать есть на что.
      */
+    /**
+     * Окошко из статуса уже предложено — просим данные под него.
+     *
+     * Иначе «Да» на согласие переигрывало бы первый вопрос, а цитаты статуса при
+     * повторе уже нет: агент заново спросил бы «на какую услугу?» человека,
+     * который ответил на статус с врачом, временем и видом приёма.
+     */
     const pending = await pendingQuestion(conversationId);
+    /**
+     * Анкета ли это — по словам самого пациента, без цитаты и с именами врачей.
+     *
+     * Цитата статуса «Окошко на завтра к Ирине Алилгаджиевне ✅ 15:40» — это
+     * два слова с заглавной и число, то есть по форме «ФИО с возрастом». Судя
+     * по сообщению вместе с цитатой, ответ «Можно?» на статус считался
+     * присланной анкетой, и после «Да» вместо просьбы о данных отвечала модель.
+     */
+    const pendingOwn = pending ? withoutQuote(pending) : null;
+    const pendingIsIntake = pendingOwn ? looksLikeIntake(pendingOwn, await staffNamesOf(ctx.companyId).catch(() => [])) : false;
+    /**
+     * Анкету прислали ДО согласия — данные уже у нас. Просить их второй раз
+     * нельзя: ниже анкета пойдёт обычным путём и сама закрепит окошко.
+     */
+    const slotAsk = pendingIsIntake ? null : await offeredSlotAsk(conversationId).catch(() => null);
+    if (slotAsk) {
+      return respond(ctx, conversationId, { text: `${withoutOffer(hello)}\n\n${slotAsk}`, bookingContext: true });
+    }
+
     /**
      * После согласия продолжаем запись, а не начинаем разговор заново.
      *
@@ -3696,7 +4450,7 @@ async function handleCallback(
      * Исключение — присланная анкета: там данные уже у нас, и отвечать надо
      * на них, а не просить снова.
      */
-    if (pending && !looksLikeIntake(pending)) {
+    if (pending && !pendingIsIntake) {
       const said = await recentTurns(conversationId);
       const mine = said.filter((t) => t.role === "user").map((t) => t.content);
       if (mine.some((t) => wantsToBook(t) || scheduleTopic(t))) {

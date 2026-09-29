@@ -12,6 +12,7 @@ import {
   sendText,
 } from "@/lib/integrations/telegram/client";
 import { attachmentsFrom, TelegramAttachmentFields } from "@/lib/integrations/telegram/attachments";
+import { ownContactPhone, secretMatches } from "@/lib/integrations/telegram/contact";
 
 /**
  * Вебхук Telegram.
@@ -38,9 +39,12 @@ const Update = z.object({
     .object({
       message_id: z.number(),
       chat: z.object({ id: z.union([z.number(), z.string()]) }),
-      from: z.object({ first_name: z.string().optional(), last_name: z.string().optional() }).optional(),
+      from: z
+        .object({ id: z.number().optional(), first_name: z.string().optional(), last_name: z.string().optional() })
+        .optional(),
       text: z.string().optional(),
-      contact: z.object({ phone_number: z.string() }).optional(),
+      /** user_id — чей это контакт: свой номер присылают кнопкой, и он совпадает с отправителем. */
+      contact: z.object({ phone_number: z.string(), user_id: z.number().optional() }).optional(),
       /**
        * Вложения. Без них zod молча отбрасывал голосовые, фото и видео:
        * сообщение приходило без текста, агент выходил на первой проверке, и
@@ -81,7 +85,7 @@ export async function POST(req: Request) {
     console.error("TELEGRAM_WEBHOOK_SECRET не задан — вебхук отключён");
     return NextResponse.json({ ok: false }, { status: 503 });
   }
-  if (req.headers.get("x-telegram-bot-api-secret-token") !== secret) {
+  if (!secretMatches(req.headers.get("x-telegram-bot-api-secret-token"), secret)) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
 
@@ -134,13 +138,30 @@ export async function POST(req: Request) {
      * же самое, что случалось в WhatsApp, где пациенту приходилось писать
      * второй и третий раз.
      */
+    /**
+     * Чужой контакт — не повод привязывать переписку к чужой карточке.
+     *
+     * Ни номер, ни сам контакт не сохраняем: это персональные данные третьего
+     * человека, и нам они ни к чему. Просим нажать кнопку — она пришлёт свой.
+     */
+    const contact = ownContactPhone({ contact: msg?.contact, fromId: msg?.from?.id ?? null });
+    if (contact && "foreign" in contact) {
+      runSerial(`telegram:${chatId}`, async () => {
+        await requestPhone(
+          chatId,
+          "Чтобы оставить номер для записи, нажмите кнопку «📱 Отправить мой номер» — так мы будем уверены, что номер ваш.",
+        );
+      });
+      return ok();
+    }
+
     runSerial(`telegram:${chatId}`, async () => {
       const reply = await handlePatientMessage(
         { companyId: company.id, channel: "TELEGRAM", externalUserId: String(chatId), displayName },
         {
           // Подпись к фото или видео — тоже текст пациента, и терять её нельзя.
           text: msg?.text ?? msg?.caption,
-          phone: msg?.contact?.phone_number,
+          phone: contact && "phone" in contact ? contact.phone : undefined,
           callbackData: cb?.data,
           attachments: attachmentsFrom(msg),
           externalId: msg ? `tg:${chatId}:${msg.message_id}` : undefined,
