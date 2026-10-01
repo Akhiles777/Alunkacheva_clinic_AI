@@ -120,7 +120,8 @@ import { inventedIndication } from "./indications";
 import { ungroundedAgeLimit } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
 import { audienceMentioned, unaskedAudience, withoutUnaskedAudience } from "./unasked-group";
-import { matchServices, onlyWhomStated, whomFor, type Whom } from "./service-match";
+import { matchServices, onlyWhomStated, whomAcross, whomFor, type Whom } from "./service-match";
+import { addressableName } from "./person-name";
 import { bookingStep, type BookingStep } from "./booking-flow";
 import {
   asksForIntake,
@@ -525,6 +526,8 @@ async function clinicContext(
    * человека это выглядит как неисправная программа.
    */
   consentGranted = false,
+  /** Слова пациента за разговор, свежие первыми: врач и возраст, названные раньше. */
+  talk: string[] = [],
 ): Promise<string> {
   const [services, knowledge, schedule, staff] = await Promise.all([
     getServices(companyId),
@@ -569,7 +572,27 @@ async function clinicContext(
    * работа для кода: подходящие отбираем сами, модель формулирует ответ, но
    * цену не выбирает.
    */
-  const matched = question ? matchServices(question, services) : [];
+  let matched = question ? matchServices(question, services) : [];
+  /**
+   * Вопрос о цене без названной услуги — про приём врача, названного раньше.
+   *
+   * «В какую стоимость консультация» само по себе совпадает с позицией прайса
+   * «Консультация — 1000 ₽», и модель назвала её, хотя разговор шёл об Ирине
+   * Алилгаджиевне и двухмесячном ребёнке. Если услуга в вопросе названа
+   * конкретно («а БОС сколько?») — отвечаем про неё, разговор не мешает.
+   */
+  const namedHere = question
+    ? matchServices(question.replace(GENERIC_SERVICE_WORDS, " "), services, 6, 0.5).length > 0
+    : false;
+  let chosenDoctor: string | null = null;
+  if (!namedHere && talk.length > 0) {
+    const offer = await doctorOffer(companyId, talk).catch(() => null);
+    if (offer) {
+      const fit = forAge(offer.services, whomAcross(talk));
+      matched = fit.length > 0 ? fit : offer.services;
+      chosenDoctor = offer.doctor;
+    }
+  }
   if (matched.length > 0) {
     lines.push("", "ПОДХОДИТ ПОД ВОПРОС (цену и длительность бери только отсюда):");
     /**
@@ -584,6 +607,17 @@ async function clinicContext(
         "бери ТОЛЬКО из справки клиники ниже; нет там — передай администратору, не отказывай сам.",
     );
     for (const s of patientServices(matched)) lines.push(priceLine(s));
+    /**
+     * Врач выбран — чужие строки прайса к нему не относятся. Без этой строки
+     * модель отвечала «приём 5000 ₽, а консультация отдельно — 1000 ₽», хотя
+     * у этого врача отдельной консультации нет: 1000 ₽ — чужая позиция прайса.
+     */
+    if (chosenDoctor) {
+      lines.push(
+        `Пациент записывается к врачу: ${chosenDoctor}. Выше — все услуги этого врача. ` +
+          "Цены других строк прайса к нему не относятся: не называй их и не говори, что у этого врача есть что-то ещё.",
+      );
+    }
 
     /**
      * Кто ведёт эти услуги — чтобы агент не спрашивал о том, что знает.
@@ -629,7 +663,18 @@ async function clinicContext(
    * зачитывала: незаполненное поле выглядело как длительность приёма.
    */
   lines.push("", "Все услуги и цены:");
-  for (const s of patientServices(services)) lines.push(priceLine(s));
+  /**
+   * Врач выбран, а вопрос общий («сколько стоит консультация») — чужие строки с
+   * тем же общим словом модели не показываем. Просьба «не называй чужие цены»
+   * не держалась: модель отвечала «приём 5000 ₽, а консультация как отдельная
+   * услуга — 1000 ₽», и человек снова видел цену, к его врачу не относящуюся.
+   */
+  const generic = /консультаци|при[её]м/iu;
+  const ownIds = new Set(matched.map((m) => m.id));
+  for (const s of patientServices(services)) {
+    if (chosenDoctor && generic.test(s.title) && !ownIds.has(s.id)) continue;
+    lines.push(priceLine(s));
+  }
   lines.push("", "Часы работы:");
   for (const d of schedule) lines.push(`${days[d.weekday]}: ${hhmm(d.startMinute)}–${hhmm(d.endMinute)}`);
   const closed = [1, 2, 3, 4, 5, 6, 7].filter((w) => !schedule.some((d) => d.weekday === w));
@@ -894,9 +939,19 @@ async function chosenFacts(companyId: string, conversationId: string): Promise<s
    * взрослый разият» даёт долю совпавших букв ниже любого порога.
    */
   const newest = [...mine].reverse();
-  const service = newest
-    .map((t) => dedupeServices(patientServices(matchServices(t, services, 1, 0.5)))[0])
+  /**
+   * «Приём» и «консультация» услугу не называют (`GENERIC_SERVICE_WORDS`): «как
+   * записаться на приём к Ирине» находило по слову «приём» первую попавшуюся
+   * строку прайса. Не названа — берём приём названного врача под возраст.
+   */
+  let service = newest
+    .map((t) => dedupeServices(patientServices(matchServices(t.replace(GENERIC_SERVICE_WORDS, " "), services, 1, 0.5)))[0])
     .find((s) => s !== undefined);
+  if (!service) {
+    const offer = await doctorOffer(companyId, newest).catch(() => null);
+    const fit = offer ? forAge(offer.services, whomAcross(newest)) : [];
+    if (fit.length === 1) service = fit[0];
+  }
 
   const staff = await prisma.staff
     .findMany({
@@ -905,7 +960,7 @@ async function chosenFacts(companyId: string, conversationId: string): Promise<s
     })
     .catch(() => []);
   const doctor = newest.map((t) => uniqueStaffAsked(t, staff)?.name ?? null).find((n) => n !== null) ?? null;
-  const whom = newest.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown";
+  const whom = whomAcross(newest);
 
   /**
    * Подтверждаем то, что человек сказал сам: врача и вид приёма. Цену
@@ -1101,8 +1156,21 @@ async function respond(
          * согласие. Подтверждаем выбор фактами из прайса (`chosenLine`): он
          * назвал врача и вид приёма, и услышать это обратно он вправе.
          */
-        const confirm = kept ? null : await chosenLine(ctx.companyId, conversationId).catch(() => null);
-        const body = kept || confirm;
+        /**
+         * И остаток без цены — тоже. Порядок клиники: цена, потом согласие.
+         * Модель после выбора врача писала «Время подберёт администратор» и
+         * просьбу о данных; просьбу мы вырезаем, и человек получал согласие,
+         * так и не услышав, сколько стоит приём у выбранного врача. Строку из
+         * прайса ставим, только если в ней есть цена: без неё она ничего не
+         * добавляет.
+         */
+        let body: string | null = kept || null;
+        if (!kept) {
+          body = await chosenLine(ctx.companyId, conversationId).catch(() => null);
+        } else if (!hasPrice(kept)) {
+          const facts = await chosenFacts(ctx.companyId, conversationId).catch(() => null);
+          if (facts && hasPrice(facts)) body = `${kept}\n${facts}`;
+        }
         reply = {
           ...reply,
           text: body ? `${body}\n\n${ask}` : ask,
@@ -1828,6 +1896,48 @@ async function workdayFacts(companyId: string, days: number[]): Promise<string |
  * специалист один. Берём из визитов, а не из настройки: справочник знает это
  * сам и не расходится с действительностью.
  */
+/**
+ * Услуги врача, которого назвал пациент, — по визитам, как и всё «кто что ведёт».
+ *
+ * Живой диалог 1 октября: «как записаться на приём к Ирине Алункачевой» →
+ * «Малышу 2 месяца» → «В какую стоимость консультация» — и агент назвал
+ * «Консультация — 1000 ₽», чужую позицию прайса. У Ирины Алилгаджиевны
+ * отдельной консультации нет, детский приём стоит 5000 ₽; администратору
+ * пришлось извиняться за бота. Подбор смотрел на одну последнюю реплику, а
+ * врача и возраст человек назвал раньше. Когда врач назван, общий вопрос о
+ * цене — про ЕГО приём.
+ */
+async function doctorOffer(
+  companyId: string,
+  patientTextsNewestFirst: string[],
+): Promise<{ doctor: string; services: Awaited<ReturnType<typeof getServices>> } | null> {
+  const staff = await prisma.staff
+    .findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { id: true, name: true } })
+    .catch(() => []);
+  const doctor = patientTextsNewestFirst.map((t) => uniqueStaffAsked(t, staff)).find((x) => x !== null) ?? null;
+  if (!doctor) return null;
+  const rows = await prisma.appointmentService
+    .groupBy({
+      by: ["serviceId"],
+      where: { companyId, appointment: { staffId: doctor.id, deletedAt: null } },
+      _count: { _all: true },
+    })
+    .catch(() => []);
+  if (rows.length === 0) return null;
+  const ids = new Set(rows.map((r) => r.serviceId));
+  const services = dedupeServices(
+    patientServices((await getServices(companyId).catch(() => [])).filter((s) => ids.has(s.id))),
+  );
+  return services.length > 0 ? { doctor: doctor.name, services } : null;
+}
+
+/** Услуги под возраст: «детский» в названии — для ребёнка, остальные — для взрослого. */
+function forAge<T extends { title: string }>(services: T[], whom: Whom): T[] {
+  if (whom === "unknown") return services;
+  const child = (t: string) => /(?<!\p{L})(дет[си]|ребен|ребён|подрост)/iu.test(t.toLowerCase());
+  return services.filter((s) => (whom === "child" ? child(s.title) : !child(s.title)));
+}
+
 async function staffNamesForService(companyId: string, serviceId: string): Promise<string[]> {
   const rows = await prisma.appointment.groupBy({
     by: ["staffId"],
@@ -1950,14 +2060,22 @@ async function referenceAnswer(companyId: string, text: string): Promise<string 
  * администратору всё равно понадобятся, и спросить их лучше сейчас, пока
  * человек в переписке, чем заставлять его отвечать на те же вопросы завтра.
  */
-/** Для кого приём — по словам пациента во всём разговоре, а не в одной реплике. */
+/**
+ * Для кого приём — по словам пациента во ВСЁМ разговоре, а не в одной реплике.
+ *
+ * Прежде здесь стоял `searchText`, а он приклеивает прошлые реплики только к
+ * обрывку. Живой диалог 1 октября: «Малышу 2 месяца» → «В какую стоимость
+ * консультация» → «Да» — последний вопрос законченный, прошлое к нему не
+ * приклеилось, и после согласия ушла ВЗРОСЛАЯ анкета: без имени родителя и
+ * без веса, хотя речь шла о двухмесячном ребёнке.
+ */
 function whomInTalk(own: string, said: { role: string; content: string }[]): Whom {
-  return whomFor(
-    searchText(
-      own,
-      said.filter((t) => t.role === "user").map((t) => t.content),
-    ),
-  );
+  return talkWhom([own, ...said.filter((t) => t.role === "user").map((t) => t.content)]);
+}
+
+/** То же по готовому списку: текущая реплика, затем прошлые по порядку. */
+function talkWhom(patientTexts: string[]): Whom {
+  return whomAcross([patientTexts[0] ?? "", ...patientTexts.slice(1).reverse()]);
 }
 
 /**
@@ -1972,13 +2090,26 @@ async function osteopathyInTalk(
   own: string,
   said: { role: string; content: string }[],
 ): Promise<boolean> {
-  const query = searchText(
-    own,
-    said.filter((t) => t.role === "user").map((t) => t.content),
-  );
-  if (/остеопат/i.test(query)) return true;
-  const found = matchServices(query, await getServices(companyId).catch(() => []), 1, 0.5);
-  return /остеопат/i.test(found[0]?.title ?? "");
+  return osteopathyInTexts(companyId, [own, ...said.filter((t) => t.role === "user").map((t) => t.content)]);
+}
+
+/**
+ * Остеопатия ли — по всему разговору и по названному врачу.
+ *
+ * Смотрело только последнюю реплику (`searchText` приклеивает прошлое лишь к
+ * обрывку). Живой диалог 1 октября: «к Ирине Алункачевой» → «Малышу 2 месяца»
+ * → «В какую стоимость консультация» → «Да» — и анкета ушла без веса, хотя
+ * клиника на остеопатии его требует: в последней реплике слова «остеопат» нет.
+ */
+async function osteopathyInTexts(companyId: string, patientTexts: string[]): Promise<boolean> {
+  const texts = patientTexts.map((t) => withoutQuote(t));
+  if (texts.some((t) => /остеопат/i.test(t))) return true;
+  const services = await getServices(companyId).catch(() => []);
+  const named = texts.map((t) => matchServices(t.replace(GENERIC_SERVICE_WORDS, " "), services, 1, 0.5)[0]);
+  if (named.some((s) => /остеопат/i.test(s?.title ?? ""))) return true;
+  const newestFirst = [texts[0] ?? "", ...texts.slice(1).reverse()];
+  const offer = await doctorOffer(companyId, newestFirst).catch(() => null);
+  return offer ? forAge(offer.services, whomAcross(newestFirst)).some((s) => /остеопат/i.test(s.title)) : false;
 }
 
 /**
@@ -2099,6 +2230,9 @@ async function bookingTail(
   const prices = hasPrice(input.answer) || shown.length === 0 ? "" : shown.map(priceLine).join("\n");
 
   const names = [...providers];
+  // Вес — только на остеопатии, по требованию клиники (как и в `intakeAsk`).
+  const weight =
+    step === "data" && ask && (await osteopathyInTexts(companyId, input.patientTexts).catch(() => false)) ? ", вес" : "";
   const question = !ask
     ? ""
     : step === "service"
@@ -2109,8 +2243,8 @@ async function bookingTail(
           ? `К кому хотите записаться — ${names.slice(0, -1).join(", ")} или ${names[names.length - 1]}?`
           : `Чтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ${
               whom === "child"
-                ? "ФИО ребёнка, его возраст, имя родителя и кратко причину обращения"
-                : "ФИО того, кто придёт на приём, возраст и кратко причину обращения"
+                ? `ФИО ребёнка, его возраст${weight}, имя родителя и кратко причину обращения`
+                : `ФИО того, кто придёт на приём, возраст${weight} и кратко причину обращения`
             }.`;
 
   return { text: [input.answer, prices, question].filter(Boolean).join("\n\n"), step };
@@ -2170,6 +2304,42 @@ function intakeAsk(whom: Whom, needsWeight = false): string {
  * человек воспринимает как форму и бросает. ФИО и возраст здесь не просим
  * никогда: это персональные данные, их собирают после согласия (§7).
  */
+/**
+ * Следующий шаг записи — кодом, без модели: строка выбора из прайса и то, что
+ * дальше по порядку (`bookingTail`: врач, данные; согласие ставит `respond`).
+ *
+ * Живой диалог 1 октября: мама назвала врача, следом «Малышу 2 месяца» — и
+ * модель ответила «К сожалению… нужно уточнить, сможет ли Ирина принять
+ * малыша», хотя справка клиники принимает детей с первого месяца, а цены
+ * человек так и не услышал. Здесь отвечать нечего, кроме фактов прайса, и
+ * модель для этого не нужна.
+ *
+ * undefined — фактов нет (врач и услуга не опознаны), пусть отвечает модель.
+ */
+async function bookingByCode(
+  ctx: AgentContext,
+  conversationId: string,
+  own: string,
+  said: Turn[],
+  lead = "",
+): Promise<AgentReply | null | undefined> {
+  const facts = await chosenFacts(ctx.companyId, conversationId).catch(() => null);
+  // Без цены строка выбора — «детский приём.» и только: такой ответ хуже модели.
+  if (!lead && !(facts && hasPrice(facts))) return undefined;
+  const patientTexts = [own, ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content))];
+  const booking = await bookingRequestOpen(conversationId, own).catch(() => false);
+  const answer = [lead, facts].filter(Boolean).join(" ");
+  const tail = await bookingTail(ctx.companyId, {
+    answer,
+    patientTexts,
+    booking,
+    dataDone: inIntakeFlow(said),
+    refused: false,
+    whom: talkWhom(patientTexts),
+  }).catch(() => ({ text: answer, step: null as BookingStep | null }));
+  return respond(ctx, conversationId, { text: tail.text, buttons: mainMenu(), bookingContext: booking || undefined });
+}
+
 async function slotHandoverText(
   companyId: string,
   /**
@@ -2208,7 +2378,7 @@ async function slotHandoverText(
    * Взрослый или ребёнок — по всему разговору, а не по последней реплике.
    * Человек назвал это в первом сообщении, а спросил про окно во втором.
    */
-  const whom = patientTexts.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown";
+  const whom = talkWhom(patientTexts);
   const hasWhom = whom !== "unknown";
 
   /**
@@ -3723,7 +3893,13 @@ async function replyToQuestion(
      * врача, а цены услышал репликой раньше. Переспрос здесь читается как «вас
      * не слушали».
      */
-    uniqueStaffAsked(own, clinicStaffNames.map((name) => ({ name }))) === null &&
+    /**
+     * И врач, названный раньше: «как записаться к Ирине Алункачевой?» →
+     * «Малышу 2 месяца» получало «на какую услугу хотите записать ребёнка?».
+     */
+    [own, ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content))].every(
+      (t) => uniqueStaffAsked(t, clinicStaffNames.map((name) => ({ name }))) === null,
+    ) &&
     !looksLikeIntake(own, clinicStaffNames) &&
     !scheduleTopic(own) &&
     !wantsToBook(own) &&
@@ -3739,6 +3915,23 @@ async function replyToQuestion(
         "назову цену и длительность, а время подберёт администратор.",
       buttons: mainMenu(),
     });
+  }
+
+  /**
+   * «Для кого» назван, а услуга или врач известны раньше — это ответ на шаг
+   * записи, а не вопрос: называем приём из прайса и идём дальше по порядку.
+   * Модель здесь сочиняла сомнения («нужно уточнить, сможет ли Ирина принять
+   * малыша»), которых в справке клиники нет.
+   */
+  if (
+    onlyWhomStated(own) &&
+    !looksLikeIntake(own, clinicStaffNames) &&
+    !scheduleTopic(own) &&
+    !inIntakeFlow(said) &&
+    !(await specialistQueryPending(ctx.companyId, conversation.id).catch(() => false))
+  ) {
+    const next = await bookingByCode(ctx, conversation.id, own, said);
+    if (next !== undefined) return next;
   }
 
   if (scheduleTopic(own)) {
@@ -3793,13 +3986,24 @@ async function replyToQuestion(
      * неизвестное (`slotHandoverText`).
      */
     if (asksHowToBook(own) && !asksAboutOwnBooking(own)) {
-      return respond(ctx, conversation.id, {
-        text: await slotHandoverText(
-          ctx.companyId,
-          [own, ...said.filter((t) => t.role === "user").map((t) => t.content)],
-          "Записывает администратор — он подберёт время и напишет здесь же.",
-        ),
-      });
+      const lead = "Записывает администратор — он подберёт время и напишет здесь же.";
+      const text = await slotHandoverText(
+        ctx.companyId,
+        [own, ...said.filter((t) => t.role === "user").map((t) => t.content)],
+        lead,
+      );
+      /**
+       * Всё известно — разговор не кончается на «записывает администратор».
+       *
+       * «Как записать ребёнка к Ирине?» получало одну фразу и тишину: услуга и
+       * возраст названы, спрашивать «нечего». Но цена ещё не прозвучала, а
+       * данные администратор всё равно спросит — это и есть следующий шаг.
+       */
+      if (text === lead) {
+        const next = await bookingByCode(ctx, conversation.id, own, said, lead);
+        if (next !== undefined) return next;
+      }
+      return respond(ctx, conversation.id, { text });
     }
 
     /**
@@ -4008,7 +4212,13 @@ async function replyToQuestion(
     text,
     said.filter((t) => t.role === "user").map((t) => t.content),
   );
-  const context = await clinicContext(ctx.companyId, query, conversation.consentGrantedAt !== null);
+  const context = await clinicContext(
+    ctx.companyId,
+    query,
+    conversation.consentGrantedAt !== null,
+    // Только слова пациента: «Клиника доктора Алункачевой» в цитате — не выбор врача.
+    [own, ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content)).reverse()],
+  );
   /**
    * Записи самого пациента — если карточка привязана.
    *
@@ -4045,7 +4255,7 @@ async function replyToQuestion(
      * пациента. Длина обрезана, чтобы длинный регламент не вытеснил их.
      */
     intakePrompt(settings.prompt),
-    await patientNameFor(conversation.id),
+    await addressNameFor(conversation.id),
     // Журнал попыток: по нему считается надёжность агента (§«Работа ассистента»).
     { companyId: ctx.companyId, conversationId: conversation.id },
   );
@@ -4092,7 +4302,7 @@ async function replyToQuestion(
         booking: await bookingRequestOpen(conversation.id, own),
         dataDone: intakeSent || inIntakeFlow(said),
         refused: refusesService(cleaned),
-        whom: patientTexts.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown",
+        whom: talkWhom(patientTexts),
       }).catch(() => ({ text: withHandover, step: null as BookingStep | null }));
       return respond(ctx, conversation.id, { text: tail.text, buttons: mainMenu() });
     }
@@ -4424,7 +4634,7 @@ async function replyToQuestion(
       booking: await bookingRequestOpen(conversation.id, own),
       dataDone: intakeSent || inIntakeFlow(said),
       refused,
-      whom: patientTexts.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown",
+      whom: talkWhom(patientTexts),
     }).catch(() => ({ text: answer, step: null as BookingStep | null }));
     const shown = tail.text;
 
@@ -4701,6 +4911,19 @@ async function patientNameFor(conversationId: string): Promise<string | null> {
     select: { contactName: true, patient: { select: { name: true } } },
   });
   return conv?.patient?.name?.trim() || conv?.contactName?.trim() || null;
+}
+
+/**
+ * Как обращаться к человеку в ответе. Имя карточки — из YCLIENTS, ему верим;
+ * имя контакта — только если это имя, а не ник («amikomiko»). Врачу при
+ * пересылке вопроса уходит `patientNameFor`: там и ник помогает узнать, о ком речь.
+ */
+async function addressNameFor(conversationId: string): Promise<string | null> {
+  const conv = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { contactName: true, patient: { select: { name: true } } },
+  });
+  return conv?.patient?.name?.trim() || addressableName(conv?.contactName) || null;
 }
 
 /**
