@@ -3,6 +3,13 @@ import { handlePatientMessage, type AgentChannel } from "./clinic-agent";
 import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api";
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS } from "./unanswered-rule";
+import { needsHuman, type IncomingAttachment } from "./attachments";
+
+/** Вложение, которое ассистент не прочтёт (стикер — не в счёт). */
+function carriesAttachment(raw: unknown): boolean {
+  if (!Array.isArray(raw) || raw.length === 0) return false;
+  return needsHuman(raw.filter((a): a is IncomingAttachment => typeof a === "object" && a !== null && "kind" in a));
+}
 
 /**
  * Добор неотвеченных сообщений.
@@ -132,7 +139,7 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
         where: { deletedAt: null, isDraft: false },
         orderBy: { createdAt: "desc" },
         take: 1,
-        select: { direction: true, body: true, externalId: true, createdAt: true },
+        select: { direction: true, body: true, externalId: true, createdAt: true, attachments: true },
       },
     },
   });
@@ -176,7 +183,15 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
     if (
       !last ||
       !needsAnswer(
-        { last: { ...last, body: last.body }, botPausedUntil: conv.botPausedUntil },
+        {
+          last: {
+            direction: last.direction,
+            createdAt: last.createdAt,
+            body: last.body,
+            withAttachment: carriesAttachment(last.attachments),
+          },
+          botPausedUntil: conv.botPausedUntil,
+        },
         new Date(),
       )
     ) {

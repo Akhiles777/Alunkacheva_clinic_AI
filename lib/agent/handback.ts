@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { notifyStaff, escalationRecipients } from "@/lib/server/notify";
-import { shouldHandBack, shouldRemind, HANDBACK_HOURS, REMIND_AFTER_MIN } from "./handback-rule";
+import { shouldHandBack, shouldRemind, handbackBoundary, HANDBACK_HOURS, REMIND_AFTER_MIN } from "./handback-rule";
 
 /**
  * Диалоги, которые ведёт человек: вернуть агенту и напомнить о забытых.
@@ -57,6 +57,7 @@ export async function handBackAndRemind(companyId: string): Promise<HandbackResu
       contactName: true,
       remindedAt: true,
       reminderCount: true,
+      botPausedUntil: true,
       patient: { select: { name: true } },
       messages: {
         where: { deletedAt: null, isDraft: false },
@@ -88,9 +89,13 @@ export async function handBackAndRemind(companyId: string): Promise<HandbackResu
            * По ней добор отличает новое сообщение от старого — иначе агент,
            * получив диалог обратно, отвечает на реплику четырёхчасовой
            * давности, на которую администратор уже ответил.
+           *
+           * Если эскалацию завёл сам агент, отметки не было вовсе, и граница
+           * ставится сейчас (`handbackBoundary`).
            */
           data: {
             status: "BOT_ACTIVE",
+            botPausedUntil: handbackBoundary(d.botPausedUntil, now),
             remindedAt: null,
             reminderCount: 0,
           },

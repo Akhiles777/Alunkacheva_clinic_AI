@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldHandBack, shouldRemind, HANDBACK_HOURS, MAX_REMINDERS } from "./handback-rule";
+import { shouldHandBack, shouldRemind, handbackBoundary, HANDBACK_HOURS, MAX_REMINDERS } from "./handback-rule";
 
 const NOW = new Date("2026-08-19T15:00:00+03:00");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -72,5 +72,28 @@ describe("напоминание сотрудникам", () => {
     expect(
       shouldRemind({ last: waiting(HANDBACK_HOURS * HOUR + 60), remindedAt: null }, NOW),
     ).toBe(false);
+  });
+});
+
+/**
+ * Живой случай 30 сентября: фото в 14:34, агент позвал человека, через четыре
+ * часа диалог вернулся — и добор ответил на ту же фотографию. Эскалацию завёл
+ * сам агент, отметки паузы не было, и границы «досюда вёл человек» тоже.
+ */
+describe("граница после возврата агенту", () => {
+  const now = new Date("2026-09-30T15:34:00Z");
+
+  it("отметки не было — граница в момент возврата", () => {
+    expect(handbackBoundary(null, now)).toEqual(now);
+    expect(handbackBoundary(undefined, now)).toEqual(now);
+  });
+
+  it("отметка в прошлом — граница сдвигается к возврату", () => {
+    expect(handbackBoundary(new Date("2026-09-29T14:00:00Z"), now)).toEqual(now);
+  });
+
+  it("пауза ещё идёт — её не укорачиваем", () => {
+    const later = new Date("2026-09-30T17:00:00Z");
+    expect(handbackBoundary(later, now)).toEqual(later);
   });
 });

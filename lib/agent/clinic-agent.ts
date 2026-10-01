@@ -761,6 +761,53 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
 }
 
 /**
+ * Открыта ли просьба записать — та, которую ещё никто из людей не подхватил.
+ *
+ * Живой диалог 30 сентября: администратор предложил время, пациентка ответила
+ * «Да, запиши пожалуйста», администратор записал и прислал подтверждение. На
+ * следующий день агент ответил ей по другому поводу и дописал «пришлите ФИО,
+ * возраст и причину обращения»: вчерашнее «запиши» в истории считалось
+ * незакрытой просьбой. Человек уже записан — и получает анкету, будто его
+ * забыли.
+ *
+ * Просьба, после которой в переписке ответил живой сотрудник (с платформы или
+ * с телефона клиники — вебхук пишет их как STAFF), — в руках человека. Порядок
+ * записи ведём только по просьбам ПОСЛЕ последнего ответа сотрудника.
+ */
+async function bookingRequestOpen(conversationId: string, own: string): Promise<boolean> {
+  if (wantsToBook(own)) return true;
+  const conv = await prisma.conversation
+    .findUnique({ where: { id: conversationId }, select: { patientId: true, companyId: true } })
+    .catch(() => null);
+  const since = new Date(Date.now() - HISTORY_DAYS * 24 * 3600 * 1000);
+  const scope = conv?.patientId
+    ? { companyId: conv.companyId, conversation: { patientId: conv.patientId } }
+    : { conversationId };
+  const lastStaff = await prisma.message
+    .findFirst({
+      where: { ...scope, authorType: "STAFF", deletedAt: null, isDraft: false, createdAt: { gte: since } },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true },
+    })
+    .catch(() => null);
+  const asked = await prisma.message
+    .findMany({
+      where: {
+        ...scope,
+        direction: "IN",
+        deletedAt: null,
+        isDraft: false,
+        createdAt: { gt: lastStaff?.createdAt ?? since },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: { body: true },
+    })
+    .catch(() => []);
+  return asked.some((m) => wantsToBook(withoutQuote(m.body)));
+}
+
+/**
  * Ответ бота всегда попадает в переписку. Раньше часть веток возвращала текст
  * пациенту, но не сохраняла его: в инбоксе диалог выглядел как молчание бота,
  * а администратор не понимал, что уже было сказано.
@@ -4042,7 +4089,7 @@ async function replyToQuestion(
       const tail = await bookingTail(ctx.companyId, {
         answer: withHandover,
         patientTexts,
-        booking: wantsToBook(own) || patientTexts.some((t) => wantsToBook(t)),
+        booking: await bookingRequestOpen(conversation.id, own),
         dataDone: intakeSent || inIntakeFlow(said),
         refused: refusesService(cleaned),
         whom: patientTexts.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown",
@@ -4374,7 +4421,7 @@ async function replyToQuestion(
     const tail = await bookingTail(ctx.companyId, {
       answer,
       patientTexts,
-      booking: wantsToBook(own) || patientTexts.some((t) => wantsToBook(t)),
+      booking: await bookingRequestOpen(conversation.id, own),
       dataDone: intakeSent || inIntakeFlow(said),
       refused,
       whom: patientTexts.map((t) => whomFor(t)).find((w) => w !== "unknown") ?? "unknown",

@@ -17,7 +17,13 @@ export const MAX_AGE_HOURS = 6;
 
 export interface SweepCandidate {
   /** Последнее сообщение переписки: чьё оно, когда и что в нём. */
-  last?: { direction: "IN" | "OUT"; createdAt: Date; body?: string };
+  last?: {
+    direction: "IN" | "OUT";
+    createdAt: Date;
+    body?: string;
+    /** Во вложении то, что ассистент прочесть не может: фото, голос, документ. */
+    withAttachment?: boolean;
+  };
   /** Пауза после ручного ответа сотрудника (§6.4). */
   botPausedUntil?: Date | null;
 }
@@ -131,6 +137,17 @@ export function needsAnswer(conv: SweepCandidate, now: Date): boolean {
    * приходит человеку как сообщение от клиники — часто ночью и ни о чём.
    */
   if (nothingToAnswer(last.body)) return false;
+
+  /**
+   * Вложение — дело человека, и добор его не трогает.
+   *
+   * Прямой путь фотографию модели не отдаёт: зовёт человека и молчит. А добор
+   * передавал агенту одно тело сообщения — «[фотография]» — без самого
+   * вложения, и модель отвечала «Получила ваши фото, всё готово к приёму» на
+   * то, чего не видела. Человека позвали в момент прихода; отвечать за него
+   * через несколько часов нельзя.
+   */
+  if (last.withAttachment) return false;
 
   // Пауза после ручного ответа сотрудника добор не отменяет.
   if (conv.botPausedUntil && conv.botPausedUntil > now) return false;

@@ -220,3 +220,37 @@ describe("«нет, спасибо» — вежливость, голое «не
     expect(nothingToAnswer("Нет, спасибо, а во сколько?")).toBe(false);
   });
 });
+
+/**
+ * Добор отдавал агенту «[фотография]» без самого вложения, и модель отвечала
+ * «Получила ваши фото, всё готово к приёму» — о том, чего не видела.
+ */
+describe("вложение добор не трогает", () => {
+  const NOW_ = new Date("2026-09-30T15:34:00Z");
+  const ago = (min: number) => new Date(NOW_.getTime() - min * 60_000);
+
+  it("фото, голосовое, документ — дело человека", () => {
+    expect(
+      needsAnswer({ last: { direction: "IN", createdAt: ago(240), body: "[фотография]", withAttachment: true } }, NOW_),
+    ).toBe(false);
+    expect(
+      needsAnswer(
+        { last: { direction: "IN", createdAt: ago(10), body: "[фотография] вот направление", withAttachment: true } },
+        NOW_,
+      ),
+    ).toBe(false);
+  });
+
+  it("сообщение, пришедшее до возврата агенту, не догоняется", () => {
+    expect(
+      needsAnswer(
+        { last: { direction: "IN", createdAt: ago(240), body: "А во сколько завтра?" }, botPausedUntil: ago(1) },
+        NOW_,
+      ),
+    ).toBe(false);
+  });
+
+  it("обычный вопрос без вложения по-прежнему догоняется", () => {
+    expect(needsAnswer({ last: { direction: "IN", createdAt: ago(10), body: "А во сколько завтра?" } }, NOW_)).toBe(true);
+  });
+});

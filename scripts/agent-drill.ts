@@ -78,7 +78,13 @@ type DrillTurn =
    * умолчанию на последнюю; `back: 1` — на предыдущую (живой диалог: «Да»
    * свайпом на вопрос о согласии, между ними агент ответил ещё раз).
    */
-  | { replyToLast: string; back?: number };
+  | { replyToLast: string; back?: number }
+  /**
+   * Реплика сотрудника — как с телефона клиники: агент после неё молчит (пауза).
+   * `handedBack` — прошло четыре часа, диалог вернулся агенту, как это делает
+   * планировщик (`handBackAndRemind`).
+   */
+  | { staff: string; handedBack?: boolean };
 
 interface Scenario {
   title: string;
@@ -1345,6 +1351,21 @@ const DIALOGS_STATUS_SLOTS: Scenario[] = [
       { replyToLast: "Да", back: 1 },
     ],
   },
+  {
+    title: "Живой диалог 30 сентября: администратор записал сам — анкету не просим",
+    expect:
+      "после «Записала» вчерашнее «запиши пожалуйста» закрыто: на вопрос о приёме агент отвечает " +
+      "без просьбы прислать ФИО, возраст и причину",
+    channel: "WHATSAPP",
+    knownPhone: "+79280000003",
+    turns: [
+      "Здравствуйте",
+      { staff: "Таня, завтра удобно будет на 13:30, если я запишу на остеопатию?" },
+      "Да ,запиши пожалуйста 🤗",
+      { staff: "Записала", handedBack: true },
+      "А куда подойти завтра?",
+    ],
+  },
 ];
 
 SCENARIOS.push(
@@ -1530,6 +1551,38 @@ async function main() {
     }
 
     for (const turn of scenario.turns) {
+      /** Сотрудник пишет сам: агента не зовём, только переписка и пауза. */
+      if (typeof turn !== "string" && "staff" in turn) {
+        out.push(`**Администратор:** ${turn.staff}`);
+        out.push("");
+        const conv = await prisma.conversation.findFirst({
+          where: { companyId: company.id, externalUserId },
+          select: { id: true },
+        });
+        if (conv) {
+          await prisma.message.create({
+            data: {
+              companyId: company.id,
+              conversationId: conv.id,
+              channel,
+              direction: "OUT",
+              authorType: "STAFF",
+              body: turn.staff,
+              status: "SENT",
+              sentAt: new Date(),
+            },
+          });
+          const now = new Date();
+          await prisma.conversation.update({
+            where: { id: conv.id },
+            data: turn.handedBack
+              ? { status: "BOT_ACTIVE", botPausedUntil: now, lastMessageAt: now }
+              : { status: "HUMAN_TAKEOVER", botPausedUntil: new Date(now.getTime() + 4 * 3600_000), lastMessageAt: now },
+          });
+        }
+        continue;
+      }
+
       /** Ответ специалиста идёт своим путём — пациентского агента он не касается. */
       if (typeof turn !== "string" && "specialist" in turn) {
         out.push(`**${specialistName}:** ${turn.specialist}`);
