@@ -117,7 +117,7 @@ import { FLOOD_WINDOW_MS, floodJustStarted, flooding } from "./flood";
 import { ungroundedLinks, ungroundedNumbers } from "./grounding";
 import { absoluteUrl, appUrl } from "@/lib/server/app-url";
 import { inventedIndication } from "./indications";
-import { ungroundedAgeLimit } from "./age-limit";
+import { infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusal } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
 import { audienceMentioned, unaskedAudience, withoutUnaskedAudience } from "./unasked-group";
 import { matchServices, onlyWhomStated, whomAcross, whomFor, type Whom } from "./service-match";
@@ -724,13 +724,17 @@ function pickRelevant(
   rows: { topic: string; question: string; answer: string }[],
   question?: string,
 ): { topic: string; question: string; answer: string }[] {
-  const byScore = question
-    ? rows
-        .map((row) => ({ row, score: matchKnowledge(question, [row])?.score ?? 0 }))
-        .sort((a, b) => b.score - a.score)
-        .filter((x) => x.score > 0)
-        .map((x) => x.row)
-    : [];
+  const byScore = infantRulesFirst(
+    rows,
+    question
+      ? rows
+          .map((row) => ({ row, score: matchKnowledge(question, [row])?.score ?? 0 }))
+          .sort((a, b) => b.score - a.score)
+          .filter((x) => x.score > 0)
+          .map((x) => x.row)
+      : [],
+    question,
+  );
 
   /**
    * Ничего не подошло — отдаём справочник целиком, ограничив лишь объёмом.
@@ -2162,7 +2166,8 @@ async function bookingTail(
   const anyAge = dedupeServices(
     patientServices(
       input.patientTexts
-        .map((t) => matchServices(t, services, 4, 0.5, "unknown"))
+        // «Приём» услугу не называет — как и в `knownService` (GENERIC_SERVICE_WORDS).
+        .map((t) => matchServices(t.replace(GENERIC_SERVICE_WORDS, " "), services, 4, 0.5, "unknown"))
         .find((found) => found.length > 0) ?? [],
     ),
   );
@@ -2172,7 +2177,7 @@ async function bookingTail(
       : dedupeServices(
           patientServices(
             input.patientTexts
-              .map((t) => matchServices(t, services, 4, 0.5, whom))
+              .map((t) => matchServices(t.replace(GENERIC_SERVICE_WORDS, " "), services, 4, 0.5, whom))
               .find((found) => found.length > 0) ?? [],
           ),
         );
@@ -4402,9 +4407,38 @@ async function replyToQuestion(
   const knowledgeText = knowledgeRows
     .map((r) => `${r.topic} ${r.question} ${r.answer}`)
     .join("\n");
-  const badAge = answer ? ungroundedAgeLimit(answer, knowledgeText) : null;
+  const badAge = answer
+    ? (ungroundedAgeLimit(answer, knowledgeText) ?? ungroundedAgeRefusal(answer, knowledgeText))
+    : null;
   if (badAge) {
-    console.error(`[agent] ответ отклонён: возрастной границы «${badAge}» нет в справке`);
+    console.error("[agent] ответ отклонён: отказ по возрасту, которого нет в справке");
+    /**
+     * Человек записывается — запись продолжается, а не обрывается.
+     *
+     * Живой диалог 2 октября: «Хотела записать месячного ребенка на приём» →
+     * «месячному малышу не подходит», хотя клиника принимает детей с первого
+     * месяца. Отказывать сам агент не вправе (§6), а «уточню у администратора»
+     * вместо записи — тот же отказ, только вежливый: человек ждёт, а данные
+     * потом собирают заново. Ответ модели выбрасываем целиком — в нём рядом с
+     * отказом стоят его следствия («есть ли другие методы в этом возрасте»), — и
+     * ведём следующий шаг записи кодом.
+     */
+    if (await bookingRequestOpen(conversation.id, own).catch(() => false)) {
+      const patientTexts = [own, ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content))];
+      const facts = await chosenFacts(ctx.companyId, conversation.id).catch(() => null);
+      const lead = facts && hasPrice(facts) ? facts : "";
+      const tail = await bookingTail(ctx.companyId, {
+        answer: lead,
+        patientTexts,
+        booking: true,
+        dataDone: inIntakeFlow(said),
+        refused: false,
+        whom: talkWhom(patientTexts),
+      }).catch(() => ({ text: lead, step: null as BookingStep | null }));
+      if (tail.text.trim()) {
+        return respond(ctx, conversation.id, { text: tail.text, buttons: mainMenu(), bookingContext: true });
+      }
+    }
     await escalate(
       ctx.companyId,
       conversation.id,
