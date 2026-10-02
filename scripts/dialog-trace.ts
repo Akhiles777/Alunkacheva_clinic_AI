@@ -1,153 +1,144 @@
 /**
- * Как агент вёл конкретный диалог — по фактам из базы, а не по догадкам.
+ * Что происходило в диалоге: реплики и судьба каждого ответа.
  *
- * Разбор живых жалоб шёл вслепую: в песочнице разговор проходит правильно, а на
- * боевом сервере тот же разговор обрывается, потому что у диалога там другое
- * состояние — подтянутая история с телефона, эхо ответов, реплики сотрудников,
- * уже данное согласие. Скрипт показывает это состояние целиком.
+ * «Ассистент молчит, приходится дублировать» — жалоба, у которой две разные
+ * причины, и внешне они неотличимы. Либо агент не ответил вовсе, либо ответил,
+ * а канал сообщение не принял: в переписке у пациента пусто и там, и там.
  *
- * Тексты пациента не печатаются (§7): только кто, когда и что про сообщение
- * известно правилам. Тексты клиники (агента и сотрудников) — первые 90 знаков.
+ * Разделяет их статус доставки, который мы храним у каждого своего сообщения:
  *
- *   npx tsx scripts/dialog-trace.ts --phone=+79886433053
+ *   SENT   — ушло пациенту;
+ *   QUEUED — сочинено, но отправка ещё не подтверждена;
+ *   FAILED — провайдер не принял, добор попробует ещё раз.
  *
- * Ничего не меняет и никому не пишет.
+ * Если напротив пропавшего ответа стоит FAILED — чинить надо доставку. Если
+ * ответа нет вовсе — молчал сам агент, и смотреть надо в журнал.
+ *
+ * Тела сообщений печатает: без них по строке «OUT, SENT» ничего не понять, а
+ * запускает скрипт сам владелец у себя на сервере (§7 — про внешние логи и
+ * сторонние сервисы, здесь ни того, ни другого).
+ *
+ *   npx tsx scripts/dialog-trace.ts --phone=79280000000
+ *   npx tsx scripts/dialog-trace.ts --last            # самый свежий диалог
+ *   npx tsx scripts/dialog-trace.ts --last --limit=40
  */
 import "dotenv/config";
 import { prisma } from "../lib/db";
-import { normalizePhone } from "../lib/phone";
-import { wantsToBook } from "../lib/agent/triggers";
-import { staffConfirmedBooking } from "../lib/agent/booking-flow";
 
-const WHEN = (d: Date | null | undefined) =>
-  d
-    ? new Intl.DateTimeFormat("ru-RU", {
-        day: "numeric",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        timeZone: "Europe/Moscow",
-      }).format(d)
-    : "—";
-
-/** Номер принимаем и с пробелами: оболочка режет «+7 988 …» на части. */
-function phoneArg(): string | null {
-  const argv = process.argv.slice(2);
-  const at = argv.findIndex((a) => a.startsWith("--phone="));
-  if (at < 0) return null;
-  const rest = argv.slice(at + 1);
-  const end = rest.findIndex((a) => a.startsWith("--"));
-  return [argv[at].slice("--phone=".length), ...(end < 0 ? rest : rest.slice(0, end))].join(" ").trim() || null;
-}
-
-const key = (t: string) => t.replace(/\s+/g, " ").trim();
-const short = (t: string) => {
-  const one = t.replace(/\s+/g, " ").trim();
-  return one.length > 90 ? `${one.slice(0, 90)}…` : one;
+const arg = (name: string): string | null => {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3) : null;
 };
 
+const when = new Intl.DateTimeFormat("ru-RU", {
+  timeZone: "Europe/Moscow",
+  day: "2-digit",
+  month: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 async function main() {
-  const raw = phoneArg();
-  const e164 = raw ? normalizePhone(raw) : null;
-  if (!e164) {
-    console.log("Укажите номер: --phone=+79886433053");
-    return;
-  }
+  const limit = Number(arg("limit") ?? 25);
+  const phone = arg("phone");
   const company = await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" } });
-  const digits = e164.replace(/\D/g, "");
-  const conv = await prisma.conversation.findFirst({
+
+  const conversation = await prisma.conversation.findFirst({
     where: {
       companyId: company.id,
-      OR: [{ externalUserId: `${digits}@c.us` }, { patient: { phones: { some: { phone: e164 } } } }],
+      ...(phone ? { externalUserId: { contains: phone.replace(/\D/g, "") } } : {}),
     },
     orderBy: { lastMessageAt: "desc" },
     select: {
       id: true,
       channel: true,
       status: true,
-      agentDisabled: true,
       botPausedUntil: true,
-      consentAskedAt: true,
-      consentGrantedAt: true,
-      historyImportedAt: true,
-      patientId: true,
+      lastMessageAt: true,
+      escalations: {
+        where: { status: { not: "RESOLVED" } },
+        select: { reason: true, createdAt: true },
+      },
     },
   });
-  if (!conv) {
-    console.log("Диалога с этим номером нет.");
+  if (!conversation) {
+    console.log("Диалог не найден.");
     return;
   }
 
-  const visits = conv.patientId
-    ? await prisma.appointment.count({ where: { patientId: conv.patientId, deletedAt: null } })
-    : 0;
-  console.log("── ДИАЛОГ");
-  console.log(`  канал ${conv.channel} · статус ${conv.status}${conv.agentDisabled ? " · АГЕНТ ВЫКЛЮЧЕН" : ""}`);
-  console.log(`  пауза агента до: ${WHEN(conv.botPausedUntil)}`);
-  console.log(`  согласие: спрошено ${WHEN(conv.consentAskedAt)} · дано ${WHEN(conv.consentGrantedAt)}`);
-  console.log(`  карточка пациента: ${conv.patientId ? `есть, визитов ${visits}` : "не привязана"}`);
-  console.log(`  история с телефона подтянута: ${WHEN(conv.historyImportedAt)}`);
-
-  const messages = (
-    await prisma.message.findMany({
-      where: { conversationId: conv.id, deletedAt: null, isDraft: false },
-      orderBy: { createdAt: "desc" },
-      take: 40,
-      select: { createdAt: true, direction: true, authorType: true, status: true, body: true, failureReason: true },
-    })
-  ).reverse();
-  const botBodies = messages.filter((m) => m.authorType === "BOT").map((m) => ({ at: m.createdAt, key: key(m.body) }));
-
-  console.log("\n── СООБЩЕНИЯ (последние 40)");
-  for (const m of messages) {
-    if (m.direction === "IN") {
-      const flags = [wantsToBook(m.body) ? "просьба записать" : null].filter(Boolean);
-      console.log(`  ${WHEN(m.createdAt)} · пациент · ${m.body.length} зн.${flags.length ? ` · ${flags.join(", ")}` : ""}`);
-      continue;
-    }
-    const who = m.authorType === "BOT" ? "агент" : "сотрудник";
-    const flags: string[] = [];
-    if (m.authorType === "STAFF") {
-      const echo = botBodies.some(
-        (b) => b.key === key(m.body) && Math.abs(b.at.getTime() - m.createdAt.getTime()) < 15 * 60_000,
-      );
-      if (echo) flags.push("ЭХО ОТВЕТА АГЕНТА, записано сотрудником");
-      if (staffConfirmedBooking(m.body)) flags.push("запись оформлена");
-    }
-    if (m.status === "FAILED") flags.push(`НЕ ДОСТАВЛЕНО: ${m.failureReason ?? "причина не записана"}`);
-    console.log(`  ${WHEN(m.createdAt)} · ${who}${flags.length ? ` · ${flags.join(" · ")}` : ""}`);
-    console.log(`      «${short(m.body)}»`);
+  console.log(`клиника: ${company.name}`);
+  console.log(`диалог: ${conversation.channel}, статус ${conversation.status}`);
+  if (conversation.botPausedUntil) {
+    const active = conversation.botPausedUntil > new Date();
+    console.log(
+      `  пауза агента до ${when.format(conversation.botPausedUntil)}` +
+        (active ? "  ← СЕЙЧАС АГЕНТ МОЛЧИТ" : " (истекла)"),
+    );
+  }
+  for (const e of conversation.escalations) {
+    console.log(`  открытая эскалация: ${e.reason} от ${when.format(e.createdAt)}`);
   }
 
-  const escalations = await prisma.escalation.findMany({
-    where: { conversationId: conv.id },
+  const messages = await prisma.message.findMany({
+    where: { conversationId: conversation.id, deletedAt: null },
     orderBy: { createdAt: "desc" },
-    take: 10,
-    select: { createdAt: true, reason: true, reasonText: true, status: true },
+    take: limit,
+    select: {
+      createdAt: true,
+      direction: true,
+      authorType: true,
+      status: true,
+      isDraft: true,
+      body: true,
+    },
   });
-  console.log("\n── ЭСКАЛАЦИИ");
-  if (escalations.length === 0) console.log("  нет");
-  for (const e of escalations.reverse()) {
-    console.log(`  ${WHEN(e.createdAt)} · ${e.reason} · ${e.status} · ${e.reasonText ?? ""}`);
+
+  console.log(`\n── последние ${messages.length} сообщений ──`);
+  for (const m of [...messages].reverse()) {
+    const who = m.direction === "IN" ? "пациент" : m.authorType === "BOT" ? "агент  " : "человек";
+    const mark =
+      m.direction === "OUT"
+        ? m.status === "SENT"
+          ? "✓ доставлено"
+          : m.status === "FAILED"
+            ? "✗ НЕ ДОСТАВЛЕНО"
+            : `· ${m.status}`
+        : "";
+    console.log(
+      `  ${when.format(m.createdAt)}  ${who} ${m.isDraft ? "(черновик) " : ""}${mark}\n` +
+        `      ${m.body.replace(/\n/g, " ").slice(0, 160)}`,
+    );
   }
 
-  const runs = await prisma.agentRun.findMany({
-    where: { conversationId: conv.id },
-    orderBy: { createdAt: "desc" },
-    take: 20,
-    select: { createdAt: true, outcome: true, errorText: true },
-  });
-  console.log("\n── ПОПЫТКИ АГЕНТА (журнал)");
-  if (runs.length === 0) console.log("  нет");
-  for (const r of runs.reverse()) {
-    console.log(`  ${WHEN(r.createdAt)} · ${r.outcome}${r.errorText ? ` · ${r.errorText}` : ""}`);
+  const failed = messages.filter((m) => m.direction === "OUT" && m.status === "FAILED").length;
+  const queued = messages.filter((m) => m.direction === "OUT" && m.status === "QUEUED").length;
+  console.log("\n── что это значит ──");
+  if (failed > 0) {
+    console.log(
+      `  ${failed} ответов не доставлено: агент их сочинил, канал не принял.\n` +
+        "  Чинить надо доставку — причина будет в журнале рядом с «[whatsapp] ответ не доставлен».",
+    );
   }
+  if (queued > 0) {
+    console.log(
+      `  ${queued} ответов висят в очереди: отправка не подтверждена.\n` +
+        "  Если так помечены и те ответы, на которые пациент отвечал, — значит\n" +
+        "  канал не ставит отметку доставки вовсе, и судить по ней нельзя.",
+    );
+  }
+  if (failed === 0 && queued === 0) {
+    console.log(
+      "  Все ответы доставлены. Значит там, где пациент не получил ответа,\n" +
+        "  агент промолчал сам — причина в журнале сервера, строки «[agent] …».",
+    );
+  }
+
+  await prisma.$disconnect();
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exitCode = 1;
-  })
-  .finally(() => prisma.$disconnect());
+main().catch(async (e) => {
+  console.error(e);
+  await prisma.$disconnect();
+  process.exit(1);
+});
