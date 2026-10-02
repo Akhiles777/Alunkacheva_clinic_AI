@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bookingStep, type BookingState } from "./booking-flow";
+import { bookingStep, staffConfirmedBooking, type BookingState } from "./booking-flow";
 
 const base: BookingState = {
   booking: true,
@@ -48,5 +48,27 @@ describe("порядок разговора о записи", () => {
   it("отказ в услуге и разговор не о записи шагов не имеют", () => {
     expect(bookingStep({ ...base, refused: true }).step).toBeNull();
     expect(bookingStep({ ...base, booking: false }).step).toBeNull();
+  });
+});
+
+describe("какая реплика сотрудника закрывает просьбу записать", () => {
+  it("«Записала», «Вы записаны на…» — запись оформлена", () => {
+    expect(staffConfirmedBooking("Записала")).toBe(true);
+    expect(
+      staffConfirmedBooking("Вы записаны на услугу Лотос к специалисту Нурият Абулкасимовна на 1 октября 2026 в 13:30."),
+    ).toBe(true);
+    expect(staffConfirmedBooking("Записали вас на завтра")).toBe(true);
+  });
+
+  it("приветствие, вопрос и эхо ответа агента запись не оформляют", () => {
+    for (const t of [
+      "Добрый день",
+      "Таня, завтра удобно будет на 13:30, если я запишу на лотос?",
+      "Записывает администратор — он подберёт время и напишет здесь же.",
+      "К кому хотите записаться — Ирина Алилгаджиевна или Разият Ризвановна?",
+      "Ближайшая запись к доктору - 7 октября в 11:00",
+    ]) {
+      expect(staffConfirmedBooking(t), t).toBe(false);
+    }
   });
 });

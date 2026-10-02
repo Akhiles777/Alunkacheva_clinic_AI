@@ -125,10 +125,27 @@ const AGE_NUMBER = /(\d{1,2})\s*-?\s*(?:го|ти|х|ми)?\s*(?:мес\p{L}*|н
  * отрицание про возраст («до 1 месяца не принимаем») — модель его повторяет;
  * нет — отказ выдуман. Число в отказе обязано стоять в такой же фразе справки.
  */
+/**
+ * Сомнение в приёме — тот же отказ, только вежливый.
+ *
+ * Живой прогон 2 октября: «месячный малыш выходит за рамки стандартной
+ * программы… уточнят, возможен ли приём в вашем случае». Отрицания «не» здесь
+ * нет, и проверка выше его пропускала, а человек читает ровно то же: скорее
+ * нет. Клиника принимает детей с первого месяца, и в справке это написано.
+ */
+const DOUBT =
+  /(?:выход\p{L}*\s+за\s+(?:рамки|пределы)|за\s+пределами|не\s+входит|индивидуальн\p{L}*\s+подход|(?:возмож\p{L}*|сможет|можно|подход\p{L}*)\s+ли\s+(?:\p{L}+\s+){0,3}(?:при[её]м|принять|остеопат\p{L}*|записать|ребён\p{L}*|ребен\p{L}*|малыш\p{L}*))/iu;
+
 export function ungroundedAgeRefusal(answer: string, knowledge: string): string | null {
   const refSentences = norm(knowledge).split(/(?<=[.!?\n])/);
-  for (const sentence of norm(answer).split(/(?<=[.!?\n])/)) {
-    if (!AGE_WORDS.test(sentence) || !REFUSAL.test(sentence)) continue;
+  const sentences = norm(answer).split(/(?<=[.!?\n])/);
+  for (const [i, sentence] of sentences.entries()) {
+    /**
+     * Возраст бывает в соседнем предложении: «…месячный малыш. Уточнят,
+     * возможен ли приём в вашем случае». Для сомнения смотрим и на предыдущее.
+     */
+    const doubt = DOUBT.test(sentence) && (AGE_WORDS.test(sentence) || AGE_WORDS.test(sentences[i - 1] ?? ""));
+    if (!doubt && (!AGE_WORDS.test(sentence) || !REFUSAL.test(sentence))) continue;
     const num = AGE_NUMBER.exec(sentence)?.[1] ?? null;
     const grounded = refSentences.some((ref) => {
       if (!AGE_WORDS.test(ref) || !(REFUSAL.test(ref) || RULE_WORDS.test(ref)) || PRICE_WORDS.test(ref)) return false;
@@ -169,8 +186,15 @@ export function infantRulesFirst<T extends { topic: string; question: string; an
   rows: T[],
   ranked: T[],
   question: string | undefined,
+  /**
+   * Прежние слова пациента. Про малыша говорят в первом сообщении («хотела
+   * записать месячного ребёнка»), а спрашивают потом про услугу («к остеопату
+   * хотела записать») — и запись о возрасте до модели не доходила: она снова
+   * сомневалась, «возможен ли приём в вашем случае».
+   */
+  talk: string[] = [],
 ): T[] {
-  if (!question || !asksAboutInfant(question)) return ranked;
+  if (![question ?? "", ...talk].some((t) => asksAboutInfant(t))) return ranked;
   const infant = rows.filter((r) => INFANT_RULE.test(norm(`${r.topic} ${r.question} ${r.answer}`)));
   if (infant.length === 0) return ranked;
   return [...infant, ...ranked.filter((r) => !infant.includes(r))];

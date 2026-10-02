@@ -169,15 +169,29 @@ export async function POST(req: Request) {
      * пропускаем.
      */
     const body = messageBody(event.text, event.attachments).slice(0, 4000);
-    const echo = await prisma.message.findFirst({
-      where: {
-        conversationId: conv.id,
-        direction: "OUT",
-        body,
-        createdAt: { gte: new Date(Date.now() - ECHO_WINDOW_MS) },
-      },
-      select: { id: true, externalId: true },
-    });
+    /**
+     * Сверяем без учёта пробелов и переносов строк.
+     *
+     * Точное совпадение подводило: WhatsApp возвращает текст с другими
+     * переносами, и ответ агента записывался «репликой сотрудника». Одна такая
+     * строка ставит агента на паузу, делает человека «знакомым» (согласие
+     * считается данным, хотя его не спрашивали) и обрывала запись — живой
+     * диалог 2 октября остался без согласия и без просьбы о данных.
+     */
+    const echoKey = (t: string) => t.replace(/\s+/g, " ").trim();
+    const wanted = echoKey(body);
+    const echo = (
+      await prisma.message.findMany({
+        where: {
+          conversationId: conv.id,
+          direction: "OUT",
+          createdAt: { gte: new Date(Date.now() - ECHO_WINDOW_MS) },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: { id: true, externalId: true, body: true },
+      })
+    ).find((m) => echoKey(m.body) === wanted);
     if (echo) {
       // Заодно запоминаем идентификатор провайдера: со следующим событием по
       // этому сообщению хватит обычной проверки на повтор.

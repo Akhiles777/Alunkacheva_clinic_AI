@@ -66,3 +66,18 @@ export function bookingStep(s: BookingState): { step: BookingStep | null; ask: b
   if (!s.dataDone) return at("data");
   return { step: null, ask: false };
 }
+
+/**
+ * Сотрудник написал, что запись оформлена: «Записала», «Вы записаны на…».
+ *
+ * Закрывает просьбу записать только это (и запись в YCLIENTS, созданная после
+ * просьбы). Любая другая реплика сотрудника — «здравствуйте», вопрос, эхо
+ * ответа самого агента — запись не оформляет: живой диалог 2 октября остался
+ * без согласия и без просьбы о данных именно из-за такой реплики.
+ */
+const BOOKED_BY_STAFF =
+  /(?<!\p{L})(?:записал[аи]?|записали|вы\s+записаны|записаны\s+на|запись\s+(?:оформлен\p{L}*|подтвержд\p{L}*|создан\p{L}*))(?!\p{L})/iu;
+
+export function staffConfirmedBooking(text: string): boolean {
+  return BOOKED_BY_STAFF.test(text);
+}
