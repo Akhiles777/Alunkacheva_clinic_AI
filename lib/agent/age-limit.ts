@@ -199,3 +199,37 @@ export function infantRulesFirst<T extends { topic: string; question: string; an
   if (infant.length === 0) return ranked;
   return [...infant, ...ranked.filter((r) => !infant.includes(r))];
 }
+
+/**
+ * Спрашивал ли человек о возрасте — или о ребёнке, где возраст и есть вопрос.
+ */
+const ABOUT_CHILD =
+  /(?<!\p{L})(?:реб[её]н\p{L}*|дет\p{L}*|сын\p{L}*|доч\p{L}*|подрост\p{L}*|мальчик\p{L}*|девочк\p{L}*|с\s+какого)(?!\p{L})/iu;
+
+export function asksAboutAge(text: string): boolean {
+  const t = norm(text);
+  return AGE_WORDS.test(t) || ABOUT_CHILD.test(t);
+}
+
+/**
+ * Ответ без выдуманного отказа по возрасту — по предложениям.
+ *
+ * Прогон 4 октября: «А куда подойти завтра?» — модель назвала адрес и
+ * приписала что-то про возраст, проверка выбросила ответ ЦЕЛИКОМ, и человек
+ * вместо адреса получил «уточню у администратора, с какого возраста идёт
+ * приём» — о возрасте он не спрашивал. Когда возраст не тема вопроса, убираем
+ * только сами отказы, а ответ по делу оставляем. Сомнение («возможен ли
+ * приём») смотрим вместе с предыдущим предложением — как и в проверке.
+ */
+export function withoutAgeRefusal(answer: string, knowledge: string): string {
+  const sentences = answer.split(/(?<=[.!?\n])/);
+  return sentences
+    .filter((s, i) => {
+      if (ungroundedAgeLimit(s, knowledge) !== null || ungroundedAgeRefusal(s, knowledge) !== null) return false;
+      const withPrev = ungroundedAgeRefusal(`${sentences[i - 1] ?? ""}${s}`, knowledge);
+      return withPrev === null || withPrev !== norm(s).trim();
+    })
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

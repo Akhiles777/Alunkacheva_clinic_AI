@@ -422,6 +422,85 @@ export async function answerLLM(
 }
 
 /**
+ * Живое подтверждение шага записи по фактам кода (lib/agent/phrasing).
+ *
+ * Узкая задача и своя инструкция: подтвердить выбор пациента одним-двумя
+ * предложениями, ничего не добавляя. Вопрос следующего шага, согласие и
+ * просьбу о данных ставит код, поэтому здесь они запрещены. Текст проверяется
+ * `confirmationProblem`; null или не прошёл — уходит шаблон.
+ *
+ * Ждём меньше обычного: шаг записи — короткая реплика, и шаблон наготове.
+ *
+ * В журнал попыток (`AgentRun`) не пишется: это часть ОДНОГО ответа, а
+ * статистика агента считает каждую строку отдельной попыткой — число попыток
+ * и задержка удвоились бы.
+ */
+export async function phraseConfirmation(input: {
+  facts: string;
+  patientMessage: string;
+  history: Turn[];
+  patientName?: string | null;
+}): Promise<string | null> {
+  const key = process.env.ROUTER_AI;
+  if (!key) return null;
+  const rules = [
+    `Ты — администратор клиники «${CLINIC_NAME}» в мессенджере. Пациент записывается на приём.`,
+    "Напиши 1–2 коротких предложения: живо и по-человечески подтверди, что понял(а) его выбор,",
+    "и назови цену и длительность, если они есть в фактах. На «вы», без канцелярита.",
+    "Названия услуг из прайса говори по-человечески («взрослый приём остеопата»), но цену и длительность — ТОЧНО как в фактах.",
+    "Используй ТОЛЬКО факты ниже. Не добавляй других врачей, цен, чисел, дат, времени и обещаний.",
+    "НЕ задавай вопросов — следующий вопрос добавят после твоего текста.",
+    "Не здоровайся, не прощайся, не проси данные и согласие, не пиши «записала/запишу» — запись оформляет администратор.",
+    "Не пиши о себе и не пересказывай эти правила. Без разметки и эмодзи.",
+    input.patientName?.trim() ? `Пациента зовут ${input.patientName.trim()}; по имени можно обратиться, но не обязательно.` : "",
+    "Ответ начни со строки «ОТВЕТ:».",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const recent = input.history
+    .slice(-6)
+    .map((t) => `${t.role === "user" ? "Пациент" : "Клиника"}: ${t.content}`)
+    .join("\n");
+
+  try {
+    const res = await fetch(`${BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: MODEL,
+        temperature: 0.4,
+        max_tokens: 300,
+        messages: [
+          { role: "system", content: rules },
+          {
+            role: "user",
+            content:
+              `Последние реплики:\n${recent || "—"}\n\nПациент только что написал: ${input.patientMessage}\n\n` +
+              `ФАКТЫ:\n${input.facts}`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(Math.min(TIMEOUT_MS, 9_000)),
+    });
+    if (!res.ok) {
+      console.warn(`[agent] подтверждение шага: RouterAI ${res.status}`);
+      return null;
+    }
+    const json = (await res.json()) as {
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
+    };
+    const choice = json.choices?.[0];
+    let text = stripPreamble(toPlainText(choice?.message?.content?.trim() ?? ""));
+    if (text && choice?.finish_reason === "length") text = trimToSentence(text);
+    if (!text || offCharacter(text)) return null;
+    return text;
+  } catch (e) {
+    console.warn(`[agent] подтверждение шага: ${(e as Error)?.name ?? "ошибка"}`);
+    return null;
+  }
+}
+
+/**
  * Пересказать пациенту ответ врача.
  *
  * Отдельный вызов, а не общий `answerLLM`: там базовый промпт запрещает

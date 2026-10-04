@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { asksAboutInfant, infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusal } from "./age-limit";
+import {
+  asksAboutAge,
+  asksAboutInfant,
+  infantRulesFirst,
+  ungroundedAgeLimit,
+  ungroundedAgeRefusal,
+  withoutAgeRefusal,
+} from "./age-limit";
 
 /**
  * Справка клиники — та, что заведена в базе знаний. Возрастное правило в ней
@@ -159,5 +166,32 @@ describe("сомнение в приёме по возрасту — тоже о
     ];
     const out = infantRulesFirst(rows, [], "К остеопату хотела записать", ["Хотела записать месячного ребенка на прием"]);
     expect(out[0].topic).toBe("С какого возраста");
+  });
+});
+
+describe("отказ по возрасту там, где о возрасте не спрашивали", () => {
+  const knowledge = "Детей принимаем с первого месяца жизни.";
+
+  it("убирает только сам отказ, адрес остаётся", () => {
+    const answer =
+      "Мы находимся на улице Ленина, 1, второй этаж. Вход со стороны двора. " +
+      "Приём для детей начинается с более старшего возраста.";
+    const rest = withoutAgeRefusal(answer, knowledge);
+    expect(rest).toContain("Ленина, 1");
+    expect(rest).not.toMatch(/старшего возраста/);
+  });
+
+  it("ответ без отказа не меняется", () => {
+    const answer = "Мы находимся на улице Ленина, 1. Вход со стороны двора.";
+    expect(withoutAgeRefusal(answer, knowledge)).toBe(answer);
+  });
+
+  it("вопрос о возрасте или о ребёнке узнаётся", () => {
+    for (const t of ["С какого возраста принимаете?", "Ребёнку 2 месяца", "можно сына записать", "малышу 3 недели"]) {
+      expect(asksAboutAge(t), t).toBe(true);
+    }
+    for (const t of ["А куда подойти завтра?", "Сколько стоит остеопатия?", "Во сколько работаете?"]) {
+      expect(asksAboutAge(t), t).toBe(false);
+    }
   });
 });

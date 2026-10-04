@@ -17,7 +17,8 @@ function knowledgeIdOf(row: { id?: string }): string[] {
   return typeof row.id === "string" && row.id ? [row.id] : [];
 }
 import { confidentMatch, matchKnowledge, usableKnowledgeWhere } from "./knowledge";
-import { answerLLM, type Turn } from "./llm";
+import { answerLLM, phraseConfirmation, type Turn } from "./llm";
+import { confirmationProblem, factsBlock, type StepFacts } from "./phrasing";
 import { focusLine, focusOf, searchText } from "./focus";
 import { patientVisitsContext, upcomingBookingLines } from "./patient-visits";
 import { HANDBACK_HOURS } from "./handback-rule";
@@ -117,7 +118,7 @@ import { FLOOD_WINDOW_MS, floodJustStarted, flooding } from "./flood";
 import { ungroundedLinks, ungroundedNumbers } from "./grounding";
 import { absoluteUrl, appUrl } from "@/lib/server/app-url";
 import { inventedIndication } from "./indications";
-import { infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusal } from "./age-limit";
+import { asksAboutAge, infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusal, withoutAgeRefusal } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
 import { audienceMentioned, unaskedAudience, withoutUnaskedAudience } from "./unasked-group";
 import { matchServices, onlyWhomStated, whomAcross, whomFor, type Whom } from "./service-match";
@@ -2515,7 +2516,12 @@ async function bookingByCode(
       : said_ === "adult"
         ? "Хорошо, приём для взрослого."
         : "Хорошо.";
-  const answer = [lead, ack, priced].filter(Boolean).join(" ");
+  const template = [ack, priced].filter(Boolean).join(" ");
+  const phrased =
+    template && (choice?.doctor || choice?.service)
+      ? await phraseStep(ctx, conversationId, choice, talkWhom(patientTexts), own, said).catch(() => null)
+      : null;
+  const answer = [lead, phrased ?? template].filter(Boolean).join(" ");
   const tail = await bookingTail(ctx.companyId, {
     answer,
     patientTexts,
@@ -2530,6 +2536,50 @@ async function bookingByCode(
     whom: talkWhom(patientTexts),
   }).catch(() => ({ text: answer, step: null as BookingStep | null }));
   return respond(ctx, conversationId, { text: tail.text, buttons: mainMenu(), bookingContext: booking || undefined });
+}
+
+/**
+ * Живое подтверждение шага записи (lib/agent/phrasing): что сказать, решил код
+ * (`talkChoice`), как сказать — пишет модель. Каждое число и каждый врач в её
+ * тексте сверяются с фактами; не прошло или модель молчит — null, и уходит
+ * шаблон. Выключается `AGENT_PHRASE_STEPS=0`.
+ */
+async function phraseStep(
+  ctx: AgentContext,
+  conversationId: string,
+  choice: TalkChoice,
+  whom: Whom,
+  own: string,
+  said: Turn[],
+): Promise<string | null> {
+  if (process.env.AGENT_PHRASE_STEPS === "0") return null;
+  const facts: StepFacts = {
+    doctor: choice.doctor ? shortName(choice.doctor.name) : null,
+    service: choice.service
+      ? { title: choice.service.title, price: choice.service.price, durationMin: choice.service.durationMin }
+      : null,
+    whom,
+    patientMessage: own,
+  };
+  const [staffNames, patientName] = await Promise.all([
+    staffNamesOf(ctx.companyId).catch(() => [] as string[]),
+    addressNameFor(conversationId).catch(() => null),
+  ]);
+  const text = await phraseConfirmation({
+    facts: factsBlock(facts),
+    patientMessage: own,
+    history: said,
+    patientName,
+  });
+  if (!text) return null;
+  const problem = confirmationProblem(text, facts, staffNames);
+  if (problem) {
+    // Причина без текста: в нём бывают имя и жалоба (§7).
+    console.warn(`[agent] подтверждение шага не прошло проверку: ${problem.replace(/:.*/, "")}`);
+    if (process.env.AGENT_DRILL === "1") console.warn(`  текст: ${text}`);
+    return null;
+  }
+  return text;
 }
 
 async function slotHandoverText(
@@ -4170,17 +4220,22 @@ async function replyToQuestion(
       (asksForIntake(lastAgent) || asksForPersonalData(lastAgent)) &&
       clinicStaffNames.some((name) => mentionsStaff(own, name));
     /**
-     * Врач назван посреди записи — это шаг записи, что бы мы ни спросили перед
-     * этим: «к Ирине А.» в ответ на запрос согласия уходило в модель и
-     * кончалось «Секунду, передаю ваш вопрос администратору».
+     * Врач, услуга или «для кого» посреди записи — это шаг записи, что бы мы ни
+     * спросили перед этим. «к Ирине А.» в ответ на запрос согласия уходило в
+     * модель и кончалось «Секунду, передаю ваш вопрос администратору»; «остеопат»
+     * там же (прогон 4 октября) — переспросом «для взрослого или для ребёнка?»,
+     * хотя «взрослый» человек сказал репликой раньше. Что именно названо,
+     * проверяет условие ниже.
      */
-    const namesDoctor = clinicStaffNames.some((name) => mentionsStaff(own, name));
     const askedStep =
       asksDoctor(lastAgent) ||
       asksService(lastAgent) ||
       asksWhom(lastAgent) ||
       correctsDoctor ||
-      (namesDoctor && (await bookingRequestOpen(conversation.id, own).catch(() => false)));
+      // После просьбы о данных «ребёнку 5 лет» — часть анкеты, а не новый шаг.
+      (!asksForIntake(lastAgent) &&
+        !asksForPersonalData(lastAgent) &&
+        (await bookingRequestOpen(conversation.id, own).catch(() => false)));
     const words = own.trim().split(/\s+/).filter(Boolean).length;
     if (
       askedStep &&
@@ -4504,7 +4559,8 @@ async function replyToQuestion(
    * услугу вы хотите записаться».
    */
   const reference = visits ? `${context}\n\n${visits}` : context;
-  const answer = await answerLLM(
+  // let: проверка возраста может убрать из ответа отдельные предложения.
+  let answer = await answerLLM(
     text,
     reference,
     said,
@@ -4669,11 +4725,26 @@ async function replyToQuestion(
   const knowledgeText = knowledgeRows
     .map((r) => `${r.topic} ${r.question} ${r.answer}`)
     .join("\n");
-  const badAge = answer
-    ? (ungroundedAgeLimit(answer, knowledgeText) ?? ungroundedAgeRefusal(answer, knowledgeText))
-    : null;
+  const ageProblem = (text: string) =>
+    ungroundedAgeLimit(text, knowledgeText) ?? ungroundedAgeRefusal(text, knowledgeText);
+  let badAge = answer ? ageProblem(answer) : null;
+  /**
+   * О возрасте не спрашивали — убираем сам отказ, а ответ по делу оставляем:
+   * на «куда подойти?» человек должен получить адрес, а не «уточню, с какого
+   * возраста идёт приём» (`withoutAgeRefusal`).
+   */
+  if (answer && badAge && !asksAboutAge(own) && !said.some((t) => t.role === "user" && asksAboutAge(t.content))) {
+    const rest = withoutAgeRefusal(answer, knowledgeText);
+    if (rest.length >= MEANINGFUL_ANSWER_CHARS && !ageProblem(rest)) {
+      console.warn("[agent] из ответа убран отказ по возрасту — о возрасте не спрашивали");
+      answer = rest;
+      badAge = null;
+    }
+  }
   if (badAge) {
     console.error("[agent] ответ отклонён: отказ по возрасту, которого нет в справке");
+    // Формулировку печатает только прогон на песочнице: в боевом ответе бывают имя и жалоба (§7).
+    if (process.env.AGENT_DRILL === "1") console.error(`  отклонено: ${badAge}`);
     /**
      * Человек записывается — запись продолжается, а не обрывается.
      *
@@ -4709,7 +4780,9 @@ async function replyToQuestion(
     ).catch(() => {});
     return respond(ctx, conversation.id, {
       text:
-        "Уточню у администратора, с какого возраста идёт приём, — он напишет здесь же. " +
+        (asksAboutAge(own)
+          ? "Уточню у администратора, с какого возраста идёт приём, — он напишет здесь же. "
+          : "Уточню у администратора — он напишет здесь же. ") +
         "Могу пока рассказать про услуги, цены, адрес и часы работы.",
       buttons: mainMenu(),
     });
