@@ -131,13 +131,55 @@ export async function statusPostedAt(
   return found;
 }
 
-/** Цитата — это известный нам статус клиники: значит, её автор точно клиника. */
+/** Такой статус клиника выкладывала: по номеру или по тексту, хотя бы раз. */
+async function clinicStatusSaved(companyId: string, externalId: string | null, text: string | null): Promise<boolean> {
+  if (externalId) {
+    const byId = await prisma.clinicStatus
+      .findUnique({ where: { companyId_externalId: { companyId, externalId } }, select: { id: true } })
+      .catch(() => null);
+    if (byId) return true;
+  }
+  const key = statusKey(text);
+  if (!key) return false;
+  const rows = await prisma.clinicStatus
+    .findMany({
+      where: { companyId, postedAt: { gt: new Date(Date.now() - STATUS_WINDOW_MS) } },
+      select: { text: true },
+    })
+    .catch(() => []);
+  return rows.some((r) => statusKey(r.text) === key);
+}
+
+/**
+ * Цитата — статус клиники: значит, её автор точно клиника.
+ *
+ * Живой диалог 4 октября: ответ «Можно нам 😊» на статус «Окошко на завтра к
+ * Ирине Алилгаджиевне в 9:30 детский» получил «передал администратору» вместо
+ * закрепления. Автора цитаты WhatsApp прислал скрытым идентификатором, номер
+ * клиники с ним не совпал, а статусы клиники на боевом аккаунте приходят
+ * только запросом к провайдеру — и этот запрос делался ПОЗЖЕ, уже после того,
+ * как цитату признали «не от клиники». Замкнутый круг: статуса нет в базе,
+ * потому что его не запросили, а не запросили, потому что его нет в базе.
+ *
+ * Теперь, не найдя статус у себя, спрашиваем провайдера сразу (не чаще раза в
+ * 20 секунд). Список берётся из аккаунта самой клиники — его не подделать.
+ * Совпадение по тексту засчитывается, даже если таких статусов два (вчера и
+ * сегодня): для авторства неважно, какой из них, — оба выложила клиника; день
+ * потом уточняется отдельно (`statusPostedAt`).
+ */
 export async function isKnownClinicStatus(
   companyId: string,
   externalId: string | null,
   text: string | null = null,
 ): Promise<boolean> {
-  return (await knownPostedAt(companyId, externalId, text)) !== null;
+  if (await clinicStatusSaved(companyId, externalId, text)) return true;
+  const last = lastFetch.get(companyId) ?? 0;
+  if (Date.now() - last < FETCH_EVERY_MS) return false;
+  lastFetch.set(companyId, Date.now());
+  const rows = await fetchOutgoingStatuses(companyId, STATUS_WINDOW_MS / 60_000).catch(() => null);
+  if (!rows) return false;
+  await recordClinicStatuses(companyId, rows, "api");
+  return clinicStatusSaved(companyId, externalId, text);
 }
 
 // ───────────────────────────────────────── занятость
