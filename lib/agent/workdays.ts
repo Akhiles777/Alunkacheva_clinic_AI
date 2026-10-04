@@ -129,9 +129,43 @@ export function uniqueStaffAsked<T extends { name: string }>(text: string, staff
       .replace(/ё/g, "е")
       .split(/\s+/)
       .filter((w) => w.length >= 4)
-      .filter((w) => norm.includes(w.slice(0, 5))).length;
+      // Основа короче слова: «Ирина» должна найтись и в «Ирине», «Ириной».
+      .filter((w) => norm.includes(w.slice(0, Math.min(5, w.length - 1)))).length;
 
-  const scored = staff.map((s) => ({ s, hits: score(s.name) })).filter((x) => x.hits > 0);
+  /**
+   * Инициал после имени: «к Ирине А.», «Ирина А», «Разият Р.».
+   *
+   * Живой диалог 4 октября: «на 12 октября к Ирине А. есть окошко?». Ирин двое,
+   * совпавшее слово одно у обеих — врач считался неназванным, агент спросил «на
+   * какую услугу», а потом сам выбрал услугу другого врача. Буква после имени —
+   * это фамилия или отчество, и у Ирины Алилгаджиевны она «А», а у Ирины
+   * Омаровой — «О». Засчитываем инициал, только если он стоит сразу за
+   * совпавшим словом имени и совпадает с началом другого слова того же имени.
+   */
+  const initialHits = (name: string) => {
+    const parts = name.toLowerCase().replace(/ё/g, "е").split(/\s+/).filter((w) => w.length >= 2);
+    let hits = 0;
+    for (const part of parts.filter((w) => w.length >= 4)) {
+      const stem = part.slice(0, 4);
+      // Флаг i нужен для основы («Ирине»), но он же складывает регистр у \p{Lu} —
+      // заглавность буквы проверяем отдельно ниже.
+      const re = new RegExp(`(?<!\\p{L})${stem}\\p{L}*\\s+(\\p{L})\\.?(?!\\p{L})`, "giu");
+      for (const m of text.replace(/ё/g, "е").replace(/Ё/g, "Е").matchAll(re)) {
+        const letter = m[1].toLowerCase();
+        // Буква должна быть ЗАГЛАВНОЙ в исходном тексте: «к Ирине а есть окошко» — союз, не инициал.
+        if (m[1] !== m[1].toUpperCase()) continue;
+        if (parts.some((p) => p !== part && p.startsWith(letter))) hits += 1;
+      }
+    }
+    return Math.min(hits, 1);
+  };
+
+  const scored = staff
+    .map((s) => {
+      const words = score(s.name);
+      return { s, hits: words > 0 ? words + initialHits(s.name) : 0 };
+    })
+    .filter((x) => x.hits > 0);
   if (scored.length === 0) return null;
   const best = Math.max(...scored.map((x) => x.hits));
   const top = scored.filter((x) => x.hits === best);

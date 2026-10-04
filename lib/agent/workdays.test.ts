@@ -147,6 +147,18 @@ describe("uniqueStaffAsked", () => {
     expect(uniqueStaffAsked("есть окошко к Ирина?", staff)).toBeNull();
   });
 
+  // Живой диалог 4 октября: «на 12 октября к Ирине А. есть окошко?»
+  it("имя с инициалом различает тёзок", () => {
+    expect(uniqueStaffAsked("на 12 октября к Ирине А. есть окошко?", staff)?.id).toBe("a");
+    expect(uniqueStaffAsked("к Ирине А.", staff)?.id).toBe("a");
+    expect(uniqueStaffAsked("Ирина О, она свободна?", staff)?.id).toBe("b");
+  });
+
+  it("строчная буква после имени — не инициал", () => {
+    expect(uniqueStaffAsked("к Ирине а когда окошко?", staff)).toBeNull();
+    expect(uniqueStaffAsked("к Ирине в субботу можно?", staff)).toBeNull();
+  });
+
   it("без имени — никого", () => {
     expect(uniqueStaffAsked("есть свободное окошко на завтра?", staff)).toBeNull();
   });

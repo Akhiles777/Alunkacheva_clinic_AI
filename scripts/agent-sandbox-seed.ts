@@ -105,6 +105,14 @@ const SERVICES = [
   { title: 'Инфузия "Ферро-Баланс" (Энергия крови)', price: 5500, durationMin: 60, yclientsServiceId: 26 },
   { title: "Остеопатия для беременных", price: 8000, durationMin: 45, yclientsServiceId: 27 },
   { title: "Массаж классический", price: 3000, durationMin: 60, yclientsServiceId: 28 },
+  /**
+   * Именные строки врача — как на боевом прайсе. У Разият Ризвановны свои цены
+   * и свои строки; у Ирины Алилгаджиевны — общие «Взрослый/Детский приём».
+   * Без них песочница не ловила живой дефект 4 октября: «к Ирине А.» →
+   * «остеопат» → код выбрал самую дешёвую строку и назвал цену Разият.
+   */
+  { title: "Остеопатия, прием Разият", price: 5000, durationMin: 45, yclientsServiceId: 31 },
+  { title: "Остеопатия - дети, прием Разият", price: 4000, durationMin: 40, yclientsServiceId: 32 },
 ];
 
 /**
@@ -205,8 +213,8 @@ const KNOWLEDGE = [
     topic: "Специалисты",
     question: "Кто принимает? Какие врачи работают",
     answer:
-      "Принимают: Ирина Алилгаджиевна — остеопат, взрослый и детский приём; " +
-      "Разият Ризвановна — невролог.",
+      "Принимают остеопаты: Ирина Алилгаджиевна — взрослый и детский приём; " +
+      "Разият Ризвановна — взрослый и детский приём.",
   },
   /**
    * Описание процедуры — то, чем агенту разрешено отвечать на «а что это
@@ -531,9 +539,11 @@ async function main() {
   await prisma.appointment.deleteMany({
     where: { companyId: company.id, staffId: secondOsteopath.id },
   });
-  for (const [i, s] of [service, adult].entries()) {
+  const razChild = await prisma.service.findFirstOrThrow({ where: { companyId: company.id, yclientsServiceId: 32 } });
+  const razAdult = await prisma.service.findFirstOrThrow({ where: { companyId: company.id, yclientsServiceId: 31 } });
+  for (const [i, s] of [razChild, razAdult].entries()) {
     const at = new Date(Date.now() - (30 + i) * 86_400_000);
-    const price = s.id === service.id ? 4000 : 7000;
+    const price = s.id === razChild.id ? 4000 : 5000;
     await prisma.appointment.create({
       data: {
         companyId: company.id,
