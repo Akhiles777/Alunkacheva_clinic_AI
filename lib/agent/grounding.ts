@@ -63,6 +63,19 @@ export function ungroundedNumbers(answer: string, context: string): string[] {
   return out;
 }
 
+/**
+ * Ответ без предложений, где стоит число не из справки. Решать, хватает ли
+ * остатка, — вызывающему: он знает, о чём спрашивали.
+ */
+export function withoutUngroundedSentences(answer: string, context: string): string {
+  return answer
+    .split(/(?<=[.!?\n])/)
+    .filter((sentence) => ungroundedNumbers(sentence, context).length === 0)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function groundedInFacts(answer: string, context: string): boolean {
   return ungroundedNumbers(answer, context).length === 0;
 }

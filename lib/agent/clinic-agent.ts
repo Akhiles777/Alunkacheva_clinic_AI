@@ -115,14 +115,14 @@ import {
 import { forMessenger } from "./messenger-text";
 import { keepOneQuestion } from "./one-question";
 import { FLOOD_WINDOW_MS, floodJustStarted, flooding } from "./flood";
-import { ungroundedLinks, ungroundedNumbers } from "./grounding";
+import { ungroundedLinks, ungroundedNumbers, withoutUngroundedSentences } from "./grounding";
 import { absoluteUrl, appUrl } from "@/lib/server/app-url";
 import { inventedIndication } from "./indications";
 import { asksAboutAge, infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusal, withoutAgeRefusal } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
 import { audienceMentioned, unaskedAudience, withoutUnaskedAudience } from "./unasked-group";
 import { matchServices, onlyWhomStated, whomAcross, whomFor, type Whom } from "./service-match";
-import { staffConfirmedBooking } from "./booking-flow";
+import { complaintAsReason, staffConfirmedBooking } from "./booking-flow";
 import { addressableName } from "./person-name";
 import { bookingStep, type BookingStep } from "./booking-flow";
 import {
@@ -985,6 +985,16 @@ async function conversationChoice(companyId: string, conversationId: string): Pr
   );
 }
 
+/** Наша последняя реплика в переписке. */
+async function lastBotText(conversationId: string): Promise<string> {
+  const row = await prisma.message.findFirst({
+    where: { conversationId, direction: "OUT", deletedAt: null },
+    orderBy: { createdAt: "desc" },
+    select: { body: true },
+  });
+  return row?.body ?? "";
+}
+
 /** Та же строка с хвостом про администратора — для ответа перед согласием. */
 async function chosenLine(companyId: string, conversationId: string): Promise<string | null> {
   const facts = await chosenFacts(companyId, conversationId);
@@ -1118,6 +1128,25 @@ async function respond(
      * Молчим здесь совсем: `consentRequestFor` пометил бы диалог спрошенным, и
      * на настоящем шаге данных вопрос уже не задался бы.
      */
+    /**
+     * Вопрос выбора, вырезанный вместе с просьбой о данных, возвращаем.
+     *
+     * Прогон 4 октября: «Хочу записаться сама и сына привести» — модель
+     * спросила «на какую услугу хотите записаться вы и на какую — сына (и
+     * сколько ему лет)». Возраст до согласия спрашивать нельзя, и предложение
+     * ушло целиком — вместе с главным вопросом. Человек получил «Здравствуйте!»
+     * и юридический текст. Вопрос выбора персональных данных не касается:
+     * задаём его своими словами, а согласие — на шаге данных.
+     */
+    if (granted && !granted.consentGrantedAt) {
+      const cleaned = withoutConsentRequest(withoutPersonalDataRequest(reply.text));
+      if (asksToChoose(reply.text) && !asksToChoose(cleaned)) {
+        const question = asksService(reply.text)
+          ? "Подскажите, пожалуйста, на какую услугу записываемся?"
+          : "Подскажите, пожалуйста, к кому из врачей хотите записаться?";
+        reply = { ...reply, text: cleaned ? `${cleaned}\n\n${question}` : question };
+      }
+    }
     const stillChoosing = asksToChoose(
       withoutConsentRequest(withoutPersonalDataRequest(reply.text)),
     );
@@ -1174,7 +1203,9 @@ async function respond(
           body = await chosenLine(ctx.companyId, conversationId).catch(() => null);
         } else if (!hasPrice(kept)) {
           const facts = await chosenFacts(ctx.companyId, conversationId).catch(() => null);
-          if (facts && hasPrice(facts)) body = `${kept}\n${facts}`;
+          // Цена уже стояла в нашей прошлой реплике — второй раз подряд не повторяем.
+          const before = facts ? await lastBotText(conversationId).catch(() => "") : "";
+          if (facts && hasPrice(facts) && !before.includes(facts.replace(/\.$/, ""))) body = `${kept}\n${facts}`;
         }
         reply = {
           ...reply,
@@ -2263,6 +2294,12 @@ async function bookingTail(
     refused: boolean;
     /** Для кого приём, если это уже сказано. */
     whom: Whom;
+    /**
+     * Наша прошлая реплика. Цены, которые в ней уже стояли, второй раз подряд не
+     * печатаем: на «Взрослый, болит шея» после «к кому хотите?» уходил тот же
+     * список целиком (прогон 4 октября) — читается как автоответчик.
+     */
+    lastAgent?: string;
   },
 ): Promise<{ text: string; step: BookingStep | null }> {
   const services = await getServices(companyId).catch(() => []);
@@ -2379,22 +2416,21 @@ async function bookingTail(
    * Разият или к Ирине?»: цену второго врача человек так и не видел, а выбирать
    * должен с ценами обоих (порядок клиники).
    */
-  const mentioned = (price: number) => {
-    const plain = String(price);
-    const spaced = plain.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-    return [plain, spaced, spaced.replace(/ /g, "\u00a0")].some((p) => input.answer.includes(p));
-  };
+  const mentioned = (price: number) => priceMentioned(input.answer, price);
+  const shownBefore = (r: { title: string; price: number }) =>
+    !!input.lastAgent && input.lastAgent.includes(r.title) && priceMentioned(input.lastAgent, r.price);
+  const fresh = shown.filter((r) => !shownBefore(r));
   const prices =
-    shown.length === 0
+    fresh.length === 0
       ? ""
       : step === "doctor"
-        ? shown
+        ? fresh
             .filter((r) => !mentioned(r.price))
             .map(priceLine)
             .join("\n")
         : hasPrice(input.answer)
           ? ""
-          : shown.map(priceLine).join("\n");
+          : fresh.map(priceLine).join("\n");
 
   const names = [...providers];
   // Вес — только на остеопатии, по требованию клиники (как и в `intakeAsk`).
@@ -2415,6 +2451,57 @@ async function bookingTail(
             }.`;
 
   return { text: [input.answer, prices, question].filter(Boolean).join("\n\n"), step };
+}
+
+/** Цена названа в тексте: «8000», «8 000» и «8\u00a0000» — одно число. */
+function priceMentioned(text: string, price: number): boolean {
+  const plain = String(price);
+  const spaced = plain.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return [plain, spaced, spaced.replace(/ /g, "\u00a0")].some((p) => text.includes(p));
+}
+
+/**
+ * Цены выбора, которых модель не назвала, — на вопрос о цене.
+ *
+ * Прогон 4 октября: «сколько стоит остеопат для ребенка 3 года?» — и модель
+ * назвала детский приём Ирины, а детский приём Разият (4000 ₽) пропустила.
+ * Человек выбирает врача, видя одну цену из двух. Дописываем недостающие
+ * строки прайса — как на шаге выбора врача в записи (`bookingTail`).
+ */
+async function missingChoicePrices(companyId: string, conversationId: string, answer: string): Promise<string> {
+  const choice = await conversationChoice(companyId, conversationId);
+  if (choice.candidates.length < 2 || choice.candidates.length > 6) return "";
+  const staff = await prisma.staff
+    .findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { id: true, name: true } })
+    .catch(() => [] as { id: string; name: string }[]);
+  /**
+   * Строка с именем врача в названии названа, только если назван и врач: у
+   * двух врачей бывают одинаковые цены (5000 ₽ — детский у Ирины и взрослый у
+   * Разият), и по одному числу строка Разият считалась бы названной.
+   */
+  const missing = (r: ServiceRow) => {
+    if (!priceMentioned(answer, r.price)) return true;
+    const titled = namedInTitle(r.title, staff);
+    return titled.length > 0 && !titled.some((x) => mentionsStaff(answer, x.name));
+  };
+  return choice.candidates.filter(missing).map(priceLine).join("\n");
+}
+
+/** Спрашивают цену. */
+function asksPrice(text: string): boolean {
+  return /(?<!\p{L})(?:сколько\s+стоит|сколько\s+будет|цена|цены|стоимость|прайс|почём|почем)(?!\p{L})/iu.test(text);
+}
+
+/**
+ * Цены того, что человек выбрал за разговор (`talkChoice`): врач назван —
+ * его строки, иначе — строки названной услуги. Пусто, если выбора нет или
+ * строк столько, что это уже прайс, а не ответ.
+ */
+async function choicePrices(companyId: string, conversationId: string): Promise<string> {
+  const choice = await conversationChoice(companyId, conversationId);
+  if (choice.candidates.length === 0 || choice.candidates.length > 6) return "";
+  const lines = choice.candidates.map(priceLine).join("\n");
+  return choice.doctor ? `${shortName(choice.doctor.name)}:\n${lines}` : lines;
 }
 
 /**
@@ -2507,18 +2594,40 @@ async function bookingByCode(
   const patientTexts = [own, ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content))];
   const booking = stepAnswer || (await bookingRequestOpen(conversationId, own).catch(() => false));
   const said_ = whomFor(own);
-  // «Сколько стоит приём у Ирины?» — вопрос, а не ответ: «Хорошо.» к нему не идёт.
-  const asking = /(?<!\p{L})(?:сколько|когда|где|как|почему|есть\s+ли|можно\s+ли)(?!\p{L})/iu.test(own);
+  /**
+   * «Сколько стоит приём у Ирины?» — вопрос, а не ответ: «Хорошо.» к нему не идёт.
+   * Вопросом считаем знак «?», вопрос о цене и вопросительное слово В НАЧАЛЕ:
+   * «Выгибание шеи когда лежит» — не вопрос, а «когда» посреди фразы снимало
+   * подтверждение выбора (прогон 4 октября).
+   */
+  const asking =
+    hasQuestion(own) ||
+    asksPrice(own) ||
+    /^\s*(?:а\s+)?(?:сколько|когда|где|как|почему|есть\s+ли|можно\s+ли)(?!\p{L})/iu.test(own);
+  /**
+   * «Для кого» эхом — только в ответ на шаг, не на свежую просьбу записать:
+   * «Хочу записаться сама и сына привести» — это двое, и «Хорошо, приём для
+   * ребёнка» было бы неправдой (прогон 4 октября).
+   */
   const ack = !stepAnswer || asking
     ? ""
-    : said_ === "child"
-      ? "Хорошо, приём для ребёнка."
-      : said_ === "adult"
-        ? "Хорошо, приём для взрослого."
-        : "Хорошо.";
-  const template = [ack, priced].filter(Boolean).join(" ");
+    : wantsToBook(own)
+      ? "Хорошо."
+      : said_ === "child"
+        ? "Хорошо, приём для ребёнка."
+        : said_ === "adult"
+          ? "Хорошо, приём для взрослого."
+          : "Хорошо.";
+  /**
+   * Та же строка прайса, что в нашей прошлой реплике, второй раз подряд не
+   * идёт: «взрослый» → «остеопат» → «к Ирине А.» давали три одинаковых
+   * сообщения с ценой — так пишет автоответчик.
+   */
+  const lastAgentText = [...said].reverse().find((t) => t.role === "assistant")?.content ?? "";
+  const repeated = !!priced && lastAgentText.includes(priced.replace(/\.$/, ""));
+  const template = repeated ? ack || "Хорошо." : [ack, priced].filter(Boolean).join(" ");
   const phrased =
-    template && (choice?.doctor || choice?.service)
+    template && !repeated && (choice?.doctor || choice?.service)
       ? await phraseStep(ctx, conversationId, choice, talkWhom(patientTexts), own, said).catch(() => null)
       : null;
   const answer = [lead, phrased ?? template].filter(Boolean).join(" ");
@@ -2534,6 +2643,7 @@ async function bookingByCode(
     dataDone: stepAnswer ? false : inIntakeFlow(said),
     refused: false,
     whom: talkWhom(patientTexts),
+    lastAgent: [...said].reverse().find((t) => t.role === "assistant")?.content ?? "",
   }).catch(() => ({ text: answer, step: null as BookingStep | null }));
   return respond(ctx, conversationId, { text: tail.text, buttons: mainMenu(), bookingContext: booking || undefined });
 }
@@ -2599,8 +2709,11 @@ async function slotHandoverText(
    * порядок записи, значит отвечать не на тот вопрос.
    */
   lead = "Свободное время подберёт администратор — он напишет здесь же.",
+  /** Цены выбора, если человек о них спросил: встают между первой фразой и вопросом. */
+  prices = "",
 ): Promise<string> {
   const tail = " Передам вместе с вашим вопросом, чтобы вам не повторяться.";
+  const head = prices ? `${lead}\n\n${prices}\n\n` : `${lead} `;
 
   /**
    * Названный врач — тоже ответ на «на какую услугу»: к кому человек идёт, он
@@ -2633,13 +2746,13 @@ async function slotHandoverText(
    */
   if (hasService && hasWhom) return lead;
   if (hasService) {
-    return `${lead} Пока скажите, пожалуйста, приём для взрослого или для ребёнка?${tail}`;
+    return `${head}Пока скажите, пожалуйста, приём для взрослого или для ребёнка?${tail}`;
   }
   if (hasWhom) {
-    return `${lead} Пока скажите, пожалуйста, на какую услугу записываемся?${tail}`;
+    return `${head}Пока скажите, пожалуйста, на какую услугу записываемся?${tail}`;
   }
   return (
-    `${lead} Пока скажите, пожалуйста, на какую услугу записываемся и для кого — ` +
+    `${head}Пока скажите, пожалуйста, на какую услугу записываемся и для кого — ` +
     `взрослому или ребёнку.${tail}`
   );
 }
@@ -3858,7 +3971,28 @@ async function replyToQuestion(
    *
    * Анкета — это ответ, а не вопрос. Вопросительный знак исключение снимает.
    */
-  if (medical(own) && !(inIntakeFlow(said) && !hasQuestion(own))) {
+  /**
+   * Жалоба посреди записи — причина обращения, а не медицинский вопрос
+   * (`complaintAsReason`). «Ребенок, новорожденный, 12 дней. Выгибание шеи когда
+   * лежит» в ответ на наш вопрос «для взрослого или для ребёнка?» получало
+   * «этот вопрос лучше уточнить у специалиста», и запись обрывалась: прежнее
+   * исключение узнавало только «взрослого или ребёнка» без «для».
+   */
+  const lastAgentTurn = [...said].reverse().find((t) => t.role === "assistant")?.content ?? "";
+  const reasonForBooking =
+    medical(own) &&
+    complaintAsReason(
+      own,
+      wantsToBook(own) ||
+        asksForSlot(own) ||
+        inIntakeFlow(said) ||
+        asksWhom(lastAgentTurn) ||
+        asksService(lastAgentTurn) ||
+        asksDoctor(lastAgentTurn) ||
+        (await bookingRequestOpen(conversation.id, own).catch(() => false)),
+    );
+
+  if (medical(own) && !(inIntakeFlow(said) && !hasQuestion(own)) && !reasonForBooking) {
     const match = matchKnowledge(text, knowledgeRows);
     if (!confidentMatch(match)) {
       await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос без готового ответа").catch(() => {});
@@ -3871,11 +4005,7 @@ async function replyToQuestion(
        * услышал. Какая именно капельница нужна, решает врач — это остаётся за
        * ним; сказать, сколько стоит названная услуга, мы можем и обязаны.
        */
-      const asksPrice =
-        /(?<!\p{L})(?:сколько\s+стоит|сколько\s+будет|цена|цены|стоимость|прайс|почём|почем)(?!\p{L})/iu.test(
-          own,
-        );
-      const priced = asksPrice
+      const priced = asksPrice(own)
         ? dedupeServices(matchServices(own, await getServices(ctx.companyId).catch(() => []), 3, 0.5))
         : [];
       const prices = priced
@@ -4240,9 +4370,10 @@ async function replyToQuestion(
     if (
       askedStep &&
       words > 0 &&
-      words <= 8 &&
+      // С жалобой ответ длиннее: «Взрослый, болит шея после сна уже неделю».
+      words <= (reasonForBooking ? 20 : 8) &&
       !hasQuestion(own) &&
-      !medical(own) &&
+      (!medical(own) || reasonForBooking) &&
       !scheduleTopic(own) &&
       !wantsReschedule(own) &&
       !looksLikeIntake(own, clinicStaffNames) &&
@@ -4289,12 +4420,28 @@ async function replyToQuestion(
        * задаём ОДИН вопрос, а не анкету: два вопроса подряд человек
        * воспринимает как форму и бросает.
        */
-      return respond(ctx, conversation.id, {
-        text: await slotHandoverText(ctx.companyId, [
-          own,
-          ...said.filter((t) => t.role === "user").map((t) => t.content),
-        ]),
-      });
+      const lead = "Свободное время подберёт администратор — он напишет здесь же.";
+      /**
+       * Спросили и цену — называем её сразу (живой диалог 4 октября: «Сколько
+       * стоит запись на прием к остеопату Ирине и когда у нее есть свободное
+       * окно» получило один вопрос «для кого» и ни одной цены).
+       */
+      const prices = asksPrice(own) ? await choicePrices(ctx.companyId, conversation.id).catch(() => "") : "";
+      const text = await slotHandoverText(
+        ctx.companyId,
+        [own, ...said.filter((t) => t.role === "user").map((t) => t.content)],
+        lead,
+        prices,
+      );
+      /**
+       * Всё известно — разговор не кончается на «время подберёт администратор»:
+       * цена и данные идут дальше по порядку записи, как у «как попасть на приём».
+       */
+      if (text === lead) {
+        const next = await bookingByCode(ctx, conversation.id, own, said, lead);
+        if (next !== undefined) return next;
+      }
+      return respond(ctx, conversation.id, { text });
     }
 
     /**
@@ -4449,6 +4596,25 @@ async function replyToQuestion(
               : "Если появятся вопросы — я здесь."),
       });
     }
+
+    /**
+     * Просьба записать с названной услугой или врачом — шаг записи кодом.
+     *
+     * «Хочу записаться к остеопату, болит спина» уходило модели, та подтянула
+     * справку «Приём мужчин», и человек получил «Если есть особенности здоровья
+     * — уточните у специалиста». Здесь отвечать нечего, кроме порядка записи:
+     * для кого, цены, врач, данные. Вопрос («а сколько?», «можно ли…?») —
+     * по-прежнему модели.
+     */
+    if (wantsToBook(own) && !hasQuestion(own) && !asksHowToBook(own)) {
+      const named =
+        clinicStaffNames.some((name) => mentionsStaff(own, name)) ||
+        (await knownService(ctx.companyId, [own]).catch(() => false));
+      if (named) {
+        const next = await bookingByCode(ctx, conversation.id, own, said, "", true);
+        if (next !== undefined) return next;
+      }
+    }
   }
 
   /**
@@ -4582,6 +4748,8 @@ async function replyToQuestion(
     // Журнал попыток: по нему считается надёжность агента (§«Работа ассистента»).
     { companyId: ctx.companyId, conversationId: conversation.id },
   );
+  // Сырой ответ модели печатает только прогон на песочнице: в боевом бывают имя и жалоба (§7).
+  if (process.env.AGENT_DRILL === "1" && answer) console.warn(`  модель: ${answer.replace(/\n+/g, " ⏎ ")}`);
 
   /**
    * Обещание записать не отправляем никогда: расписанием агент не
@@ -4662,9 +4830,30 @@ async function replyToQuestion(
     .map((t) => t.content)
     .join("\n");
   const grounding = `${reference}\n${saidByPatient}\n${text}`;
-  const invented = answer ? ungroundedNumbers(answer, grounding) : [];
-  if (invented.length > 0) {
-    console.error(`[agent] ответ отклонён: чисел нет в справке — ${invented.join(", ")}`);
+  let invented = answer ? ungroundedNumbers(answer, grounding) : [];
+  /**
+   * Число не из справки — убираем предложение с ним, а не весь ответ, если
+   * остаток по-прежнему отвечает на вопрос.
+   *
+   * Прогон 4 октября: «Сколько это выйдет за двоих?» — модель назвала обе цены
+   * из прайса и приписала «Итого за двоих — 13000 ₽». Суммы в справке нет, и
+   * ответ выбрасывался целиком: человек получил «на какую услугу
+   * записываемся?» вместо двух верных цен. Остаток обязан быть основной частью
+   * ответа и на вопрос о цене — содержать цену: иначе уходит пустая вежливость.
+   */
+  if (answer && invented.length > 0) {
+    const kept = withoutUngroundedSentences(answer, grounding);
+    const enough =
+      kept.length >= MEANINGFUL_ANSWER_CHARS &&
+      kept.length >= answer.length * 0.6 &&
+      (!asksPrice(own) || hasPrice(kept));
+    if (enough) {
+      console.warn(`[agent] из ответа убрано предложение с числом не из справки — ${invented.join(", ")}`);
+      answer = kept;
+      invented = [];
+    } else {
+      console.error(`[agent] ответ отклонён: чисел нет в справке — ${invented.join(", ")}`);
+    }
   }
 
   /**
@@ -5013,7 +5202,12 @@ async function replyToQuestion(
       refused,
       whom: talkWhom(patientTexts),
     }).catch(() => ({ text: base, step: null as BookingStep | null }));
-    const shown = tail.text;
+    let shown = tail.text;
+    // Модель назвала цены — значит все цены выбора, а не часть («А приём остеопата?» без «сколько стоит»).
+    if (!tail.step && !refused && hasPrice(shown)) {
+      const extra = await missingChoicePrices(ctx.companyId, conversation.id, shown).catch(() => "");
+      if (extra) shown = `${shown}\n\n${extra}`;
+    }
 
     return respond(ctx, conversation.id, {
       // Приветствие добавит respond — одно место на все ветки.
@@ -5088,6 +5282,29 @@ async function replyToQuestion(
     [own, ...said.filter((t) => t.role === "user").map((t) => t.content)]
       .map((t) => uniqueStaffAsked(t, staffRows)?.name ?? null)
       .find((n) => n !== null) ?? null;
+  /**
+   * Спросили цену — запасной путь отвечает ценами, а не справкой по словам.
+   *
+   * Прогон 4 октября: «Сколько стоит капельница?» → цена, следом «А приём
+   * остеопата?» — модель не ответила, и ушла дословная справка «как
+   * подготовиться к приёму»: по словам вопроса нашлась она. Короткое «А …?»
+   * сразу после вопроса о цене — тот же вопрос о цене.
+   */
+  const prevPatient = [...said].reverse().find((t) => t.role === "user")?.content ?? "";
+  const priceAsked =
+    asksPrice(own) ||
+    (/^\s*а\s/iu.test(own) && own.trim().split(/\s+/).length <= 5 && asksPrice(prevPatient));
+  if (priceAsked) {
+    const rows =
+      fallbackChoice && fallbackChoice.candidates.length > 0 && fallbackChoice.candidates.length <= 6
+        ? fallbackChoice.candidates
+        : dedupeServices(matchServices(query, await getServices(ctx.companyId).catch(() => []), 3, 0.5));
+    if (rows.length > 0) {
+      const head = fallbackChoice?.doctor ? `${shortName(fallbackChoice.doctor.name)}:\n` : "По прайсу клиники:\n";
+      return respond(ctx, conversation.id, { text: `${head}${rows.map(priceLine).join("\n")}`, buttons: mainMenu() });
+    }
+  }
+
   if (confidentMatch(exact) && !foreignPrices(exact!.row.answer)) {
     const trimmed = focusedAnswer(exact!.row.answer, askedPerson, staffNames);
     const badDay = wrongDayIn(trimmed);

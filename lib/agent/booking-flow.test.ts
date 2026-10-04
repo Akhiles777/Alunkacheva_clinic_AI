@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bookingStep, staffConfirmedBooking, type BookingState } from "./booking-flow";
+import { bookingStep, complaintAsReason, staffConfirmedBooking, type BookingState } from "./booking-flow";
 
 const base: BookingState = {
   booking: true,
@@ -69,6 +69,45 @@ describe("какая реплика сотрудника закрывает пр
       "Ближайшая запись к доктору - 7 октября в 11:00",
     ]) {
       expect(staffConfirmedBooking(t), t).toBe(false);
+    }
+  });
+});
+
+describe("жалоба посреди записи — причина, а не медицинский вопрос", () => {
+  it("ответ на наш вопрос и просьба записать с жалобой — причина записи", () => {
+    for (const t of [
+      "Ребенок, новорожденный, 12 дней. Выгибание шеи когда лежит",
+      "Взрослый, болит шея после сна",
+      "Хочу записаться к остеопату, болит спина",
+      "Хочу записать сына 5 лет к остеопату, жалобы на осанку",
+    ]) {
+      expect(complaintAsReason(t, true), t).toBe(true);
+    }
+  });
+
+  it("вне разговора о записи правило не действует", () => {
+    expect(complaintAsReason("Болит шея после сна", false)).toBe(false);
+  });
+
+  it("вопрос — знаком или словами — остаётся медицинским", () => {
+    for (const t of [
+      "Болит спина, остеопат поможет?",
+      "Болит спина, можно ли к остеопату",
+      "у сына сколиоз, остеопатия поможет",
+      "ребёнку 2 недели можно",
+      "не знаю что делать, болит голова каждый день",
+    ]) {
+      expect(complaintAsReason(t, true), t).toBe(false);
+    }
+  });
+
+  it("срочное зовёт человека как медицинское", () => {
+    for (const t of [
+      "Хочу записать сына, у него температура 39",
+      "Ребенок упал, ударился головой, хотим к остеопату",
+      "у малыша судороги, запишите пожалуйста",
+    ]) {
+      expect(complaintAsReason(t, true), t).toBe(false);
     }
   });
 });

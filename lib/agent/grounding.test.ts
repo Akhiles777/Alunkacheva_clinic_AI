@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { numbersIn, ungroundedNumbers, groundedInFacts, ungroundedLinks } from "./grounding";
+import { numbersIn, ungroundedNumbers, groundedInFacts, ungroundedLinks, withoutUngroundedSentences } from "./grounding";
 
 const CONTEXT = [
   "Услуги и цены:",
@@ -89,5 +89,19 @@ describe("ссылки и почта в ответе", () => {
     ]) {
       expect(ungroundedLinks(answer, context), answer).toEqual([]);
     }
+  });
+});
+
+describe("предложение с числом не из справки", () => {
+  it("уходит только оно, верные цены остаются (прогон 4 октября, «за двоих»)", () => {
+    const context = "Взрослый прием - остеопатия — 8000 ₽, 45 мин. Детский прием до 10 л - остеопатия — 5000 ₽, 40 мин.";
+    const answer =
+      "Взрослый приём — 8000 ₽ (45 минут), детский приём до 10 лет — 5000 ₽ (40 минут). Итого за двоих — 13000 ₽. " +
+      "Подтверждаете запись на остеопатию для вас и сына?";
+    const kept = withoutUngroundedSentences(answer, context);
+    expect(kept).toContain("8000 ₽");
+    expect(kept).toContain("5000 ₽");
+    expect(kept).not.toContain("13000");
+    expect(ungroundedNumbers(kept, context)).toEqual([]);
   });
 });
