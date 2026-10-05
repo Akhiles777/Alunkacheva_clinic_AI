@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAcknowledgement, isFarewell, isThanks, smallTalkReply } from "./smalltalk";
+import { isAcknowledgement, isApology, isFarewell, isOpener, isThanks, smallTalkReply } from "./smalltalk";
 
 /**
  * «Хорошо» — подтверждение, а не вопрос. На боевом стенде такое «Хорошо» ушло
@@ -47,5 +47,28 @@ describe("вежливые реплики", () => {
   it("не предлагает помощь после «хорошо»", () => {
     // «Чем ещё могу помочь?» после подтверждения выглядит навязчиво.
     expect(smallTalkReply("Хорошо")).not.toMatch(/чем.*помочь/i);
+  });
+});
+
+describe("зачин разговора", () => {
+  it("«Подскажите пожалуйста» — слушаем, а не зовём администратора", () => {
+    for (const t of ["Подскажите пожалуйста", "Подскажите", "Можно вопрос?", "Здравствуйте, у меня вопрос"]) {
+      expect(isOpener(t), t).toBe(true);
+      expect(smallTalkReply(t), t).toBe("Да, конечно — слушаю вас.");
+    }
+  });
+  it("с самим вопросом — не зачин", () => {
+    for (const t of ["Подскажите пожалуйста адрес", "Подскажите сколько стоит остеопатия", "Здравствуйте"]) {
+      expect(isOpener(t), t).toBe(false);
+    }
+  });
+});
+
+describe("извинение за поздний час", () => {
+  it("«Извините что поздно» — ничего страшного", () => {
+    for (const t of ["Извините что поздно", "Простите, что так поздно пишу", "Извините за беспокойство"]) {
+      expect(isApology(t), t).toBe(true);
+    }
+    expect(isApology("Извините, сколько стоит приём?")).toBe(false);
   });
 });

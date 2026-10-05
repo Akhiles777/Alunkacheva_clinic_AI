@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchServices, onlyWhomStated, whomAcross, whomFor } from "./service-match";
+import { bothAges, matchServices, onlyWhomStated, whomAcross, whomFor } from "./service-match";
 
 /** Прайс клиники — те самые строки, на которых ассистент ошибся. */
 const SERVICES = [
@@ -409,5 +409,16 @@ describe("«как записаться» — вопрос о порядке, а
     expect(whomAcross(["В какую стоимость консультация", "Малышу 2 месяца", "как записаться к Ирине?"])).toBe("child");
     expect(whomAcross(["Хочу записаться к остеопату", "Сыну 5 лет, сколько стоит?"])).toBe("adult");
     expect(whomAcross(["Сколько стоит?", "Здравствуйте"])).toBe("unknown");
+  });
+});
+
+describe("себя и ребёнка сразу", () => {
+  it("«записаться сама и сына привести» — для кого, не решаем", () => {
+    expect(whomFor("Хочу записаться сама и сына привести")).toBe("unknown");
+    expect(whomFor("Мне 34, сыну 7")).toBe("unknown");
+    expect(whomFor("Хочу записать сына")).toBe("child");
+    expect(bothAges("Хочу записаться сама и сына привести")).toBe(true);
+    expect(bothAges("Мне 34, сыну 7")).toBe(true);
+    expect(bothAges("Хочу записать сына")).toBe(false);
   });
 });

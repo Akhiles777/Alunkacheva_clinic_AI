@@ -33,7 +33,7 @@ const CHILD_WORDS =
  * «мне» найдётся внутри «мнение».
  */
 const ADULT_WORDS =
-  /(?<!\p{L})(?:взросл\p{L}*|муж\p{L}*|жен[еуы]|себя|для меня|(?:мне|маме|папе)(?!\p{L}))/iu;
+  /(?<!\p{L})(?:взросл\p{L}*|муж\p{L}*|жен[еуы]|себя|для меня|(?:мне|маме|папе|сама|самой)(?!\p{L}))/iu;
 
 /**
  * «Записаться» — про себя, «записать» — про кого-то.
@@ -90,6 +90,12 @@ export function whomAcross(textsNewestFirst: string[]): Whom {
     if (w !== "unknown") return w;
   }
   return "unknown";
+}
+
+/** Названы и взрослый, и ребёнок: «записаться сама и сына привести». */
+export function bothAges(text: string): boolean {
+  const t = norm(text);
+  return (CHILD_WORDS.test(t) || AGE_IN_MONTHS.test(t) || recentBirthDate(t)) && ADULT_WORDS.test(t);
 }
 
 export function whomFor(text: string): Whom {
