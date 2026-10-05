@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bookingStep, complaintAsReason, staffConfirmedBooking, type BookingState } from "./booking-flow";
+import { bookingStep, complaintAsReason, dataAlreadyReceived, staffConfirmedBooking, type BookingState } from "./booking-flow";
 
 const base: BookingState = {
   booking: true,
@@ -109,5 +109,49 @@ describe("жалоба посреди записи — причина, а не �
     ]) {
       expect(complaintAsReason(t, true), t).toBe(false);
     }
+  });
+});
+
+describe("данные для записи уже присланы", () => {
+  const talk = (...turns: [("user" | "assistant"), string][]) => turns.map(([role, content]) => ({ role, content }));
+
+  it("живой диалог 5 октября: после «передал(а) ваши данные» просьба о времени не просит их снова", () => {
+    const history = talk(
+      ["user", "Мне сначала на БОС записаться или к остеопату ?"],
+      ["assistant", "Время подберёт администратор. Пришлите, пожалуйста, одним сообщением: ФИО, возраст, вес и кратко причину обращения."],
+      ["user", "Султанова Джамиля 13 лет.  35 кг . Энурез."],
+      ["assistant", "Спасибо, передал(а) ваши данные администратору. Он подберёт ближайшее удобное время и напишет здесь же."],
+    );
+    expect(dataAlreadyReceived(history, "Если можно запишите с утра на 9 часов в ближайший свободный день")).toBe(true);
+    expect(dataAlreadyReceived(history, "А лучше к Разият")).toBe(true);
+  });
+
+  it("второй человек — данных нет", () => {
+    const history = talk(["assistant", "Данные передал(а) администратору — он подберёт время и напишет здесь же."]);
+    expect(dataAlreadyReceived(history, "А можно ещё сына записать?")).toBe(false);
+    expect(dataAlreadyReceived(history, "И дочку тоже запишите")).toBe(false);
+  });
+
+  it("просьба о данных после приёма или новая запись — данных для неё нет", () => {
+    expect(
+      dataAlreadyReceived(
+        talk(
+          ["assistant", "Спасибо, передал(а) ваши данные администратору."],
+          ["user", "Хочу записаться к остеопату"],
+          ["assistant", "К кому хотите записаться?"],
+        ),
+        "К Разият",
+      ),
+    ).toBe(false);
+    expect(
+      dataAlreadyReceived(
+        talk(["assistant", "Пришлите, пожалуйста, одним сообщением: ФИО, возраст и кратко причину обращения."]),
+        "в 9 утра",
+      ),
+    ).toBe(false);
+  });
+
+  it("данных не присылали — нет", () => {
+    expect(dataAlreadyReceived(talk(["assistant", "Здравствуйте! Чем могу помочь?"]), "Хочу записаться")).toBe(false);
   });
 });

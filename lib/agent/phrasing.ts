@@ -73,6 +73,10 @@ export function confirmationProblem(text: string, f: StepFacts, staffNames: stri
   if (t.includes("?")) return "свой вопрос";
   if (bookingPromiseFound(t)) return "обещание записать";
   if (asksForPersonalData(t) || asksForIntake(t) || asksForConsent(t)) return "просьба данных или согласия";
+  // Про администратора и время говорит код: «администратор сейчас подберёт» — обещание срока.
+  if (/(?<!\p{L})(?:администратор\p{L}*|подбер\p{L}*|свободн\p{L}*|окош\p{L}*|окн[оа](?!\p{L}))/iu.test(t)) {
+    return "про администратора или время";
+  }
 
   const allowed = new Set([...numbersIn(factsBlock(f)), ...numbersIn(f.patientMessage)]);
   const stray = numbersIn(t).find((n) => !allowed.has(n));

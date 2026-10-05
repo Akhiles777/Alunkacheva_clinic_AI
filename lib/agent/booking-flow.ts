@@ -1,4 +1,6 @@
 import { complexMedical } from "./specialist-rules";
+import { asksForIntake, asksForPersonalData } from "./intake";
+import { wantsToBook } from "./triggers";
 
 /**
  * Порядок разговора о записи — одним местом.
@@ -120,4 +122,38 @@ export function complaintAsReason(
   if (!bookingContext || /\?/.test(text)) return false;
   if (URGENT.test(text) || ASKS_IN_WORDS.some((re) => re.test(text))) return false;
   return !complexMedical(text);
+}
+
+/**
+ * Данные для этой записи уже присланы и приняты.
+ *
+ * Живой диалог 5 октября: анкета «Султанова Джамиля 13 лет. 35 кг. Энурез.» →
+ * «Спасибо, передал(а) ваши данные администратору» → «Если можно запишите с
+ * утра на 9 часов в ближайший свободный день» — и агент снова попросил ФИО,
+ * возраст, вес и причину. Признак «данные есть» смотрел только на нашу
+ * последнюю реплику: просили ли мы их только что.
+ *
+ * Идём от конца разговора: наш ответ «данные приняты» встретился раньше, чем
+ * наша новая просьба о данных или новая просьба человека записать, — значит
+ * данные у нас. Вторая запись («ещё сына», «и дочку тоже», «второго») — уже
+ * другой человек, его данных нет.
+ */
+const DATA_ACCEPTED = /(?:переда\p{L}*(?:\(а\))?\s+ваши\s+данные|данные\s+переда\p{L}*)/iu;
+const ANOTHER_PERSON = /(?<!\p{L})(?:ещ[её]|втор\p{L}*|тоже|также)(?!\p{L})/iu;
+
+export function dataAlreadyReceived(
+  history: { role: "user" | "assistant"; content: string }[],
+  own: string,
+): boolean {
+  if (ANOTHER_PERSON.test(own)) return false;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const { role, content } = history[i];
+    if (role === "assistant") {
+      if (DATA_ACCEPTED.test(content)) return true;
+      if (asksForIntake(content) || asksForPersonalData(content)) return false;
+    } else if (wantsToBook(content)) {
+      return false;
+    }
+  }
+  return false;
 }
