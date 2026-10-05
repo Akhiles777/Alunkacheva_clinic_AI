@@ -155,3 +155,16 @@ describe("данные для записи уже присланы", () => {
     expect(dataAlreadyReceived(talk(["assistant", "Здравствуйте! Чем могу помочь?"]), "Хочу записаться")).toBe(false);
   });
 });
+
+describe("диагноз как причина записи", () => {
+  it("просят записать, спрашивают цену и день — это запись, а не вопрос о лечении", () => {
+    const t = "Здравствуйте, у дочки 7 лет сколиоз, хотим к остеопату, сколько стоит и можно ли на субботу?";
+    expect(complaintAsReason(t, true, true)).toBe(true);
+    expect(complaintAsReason(t, true, false)).toBe(false);
+  });
+  it("вопрос о самом диагнозе остаётся медицинским", () => {
+    for (const t of ["У сына сколиоз, хотим к остеопату, поможет ли?", "У дочки ДЦП, можно ли ей остеопатию?"]) {
+      expect(complaintAsReason(t, true, true), t).toBe(false);
+    }
+  });
+});

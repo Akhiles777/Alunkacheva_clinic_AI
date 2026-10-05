@@ -20,7 +20,17 @@ export interface ServiceLike {
   durationMin: number;
 }
 
-const norm = (s: string) => s.toLowerCase().replace(/ё/g, "е");
+/**
+ * Нижний регистр, «ё» как «е» и частые опечатки в названии основной услуги:
+ * «астеопат», «остиопат» (проверка 5 октября: «хачу записатся к астеопату»
+ * не находило услугу вовсе).
+ */
+const norm = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/(?<!\p{L})астео/gu, "остео")
+    .replace(/(?<!\p{L})ост[иы]опат/gu, "остеопат");
 
 /** Для кого приём — по словам пациента. */
 export type Whom = "child" | "adult" | "unknown";
@@ -33,7 +43,18 @@ const CHILD_WORDS =
  * «мне» найдётся внутри «мнение».
  */
 const ADULT_WORDS =
-  /(?<!\p{L})(?:взросл\p{L}*|муж\p{L}*|жен[еуы]|себя|для меня|(?:мне|маме|папе|сама|самой)(?!\p{L}))/iu;
+  /(?<!\p{L})(?:взросл\p{L}*|муж\p{L}*|жен[еуы]|себя|для меня|бабушк\p{L}*|дедушк\p{L}*|свекров\p{L}*|(?:мне|маме|папе|маму|папу|мама|папа|сама|самой)(?!\p{L}))/iu;
+
+/**
+ * Возраст в годах, который бывает только у взрослого: «маму 60 лет». Годы сами
+ * по себе ребёнком не делают, а вот восемнадцать и больше — взрослым делают.
+ */
+function adultYears(text: string): boolean {
+  return [...text.matchAll(/(?<!\d)(\d{2,3})\s*(?:лет|года|год)(?!\p{L})/giu)].some((m) => {
+    const n = Number(m[1]);
+    return n >= 18 && n <= 110;
+  });
+}
 
 /**
  * «Записаться» — про себя, «записать» — про кого-то.
@@ -92,16 +113,39 @@ export function whomAcross(textsNewestFirst: string[]): Whom {
   return "unknown";
 }
 
+/**
+ * Возраст одного человека уже назван — «записать сына 6 лет», «малышу 2
+ * месяца». Тогда в анкете его не спрашиваем: переспрос сказанного читается как
+ * «вас не слушали» (проверка 5 октября). Возрастов несколько или речь о
+ * нескольких детях — спрашиваем как обычно: чей это возраст, не угадываем.
+ * «Через 2 дня», «на 3 дня» — не возраст.
+ */
+const AGE_MENTION =
+  /(?<!(?:^|[^\p{L}])(?:через|на|за)\s{1,3})(?<![\p{L}\d.,])\d{1,2}(?:[.,]\d)?\s*(?:год\p{L}*|лет|мес\p{L}*|недел\p{L}*|дн\p{L}*|день)(?!\p{L})/giu;
+const SEVERAL = /(?<!\p{L})(?:дети|детей|детям|двоих|троих|обоих|обеих)(?!\p{L})|(?:сын\p{L}*|доч\p{L}*)\s+и\s+(?:сын\p{L}*|доч\p{L}*)/iu;
+export function ageStated(textsNewestFirst: string[], whom: Whom): boolean {
+  if (whom === "unknown") return false;
+  const joined = textsNewestFirst.slice(0, 4).join("\n");
+  if (SEVERAL.test(joined)) return false;
+  const hits = joined.match(AGE_MENTION) ?? [];
+  if (hits.length !== 1) return false;
+  // «Мне 34 года» не отвечает на возраст сына, «сыну 6 лет» — на возраст взрослого.
+  const n = Number.parseFloat(hits[0].replace(",", "."));
+  const years = /год|лет/iu.test(hits[0]);
+  const childAge = !years || n < 18;
+  return whom === "child" ? childAge : years && n >= 18;
+}
+
 /** Названы и взрослый, и ребёнок: «записаться сама и сына привести». */
 export function bothAges(text: string): boolean {
   const t = norm(text);
-  return (CHILD_WORDS.test(t) || AGE_IN_MONTHS.test(t) || recentBirthDate(t)) && ADULT_WORDS.test(t);
+  return (CHILD_WORDS.test(t) || AGE_IN_MONTHS.test(t) || recentBirthDate(t)) && (ADULT_WORDS.test(t) || adultYears(t));
 }
 
 export function whomFor(text: string): Whom {
   const t = norm(text);
   const child = CHILD_WORDS.test(t) || AGE_IN_MONTHS.test(t) || recentBirthDate(t);
-  const adult = ADULT_WORDS.test(t);
+  const adult = ADULT_WORDS.test(t) || adultYears(t);
   // Сказали и то и другое («записать ребёнка и себя») — выбирать нельзя.
   if (child && adult) return "unknown";
   if (child) return "child";
@@ -129,8 +173,17 @@ export function onlyWhomStated(text: string): boolean {
     .filter((w) => w.length > 0);
   // Четыре слова — это «ребенку 11 лет» и «приём для взрослого». Больше —
   // человек сказал что-то ещё, и решать за него нельзя.
-  return parts.length > 0 && parts.length <= 4;
+  if (parts.length === 0 || parts.length > 4) return false;
+  /**
+   * И все слова — о человеке. «Перезвоните мне пожалуйста» — четыре слова и
+   * «мне», но это просьба позвонить, а не ответ «для кого»: агент спросил
+   * «на какую услугу вы хотите записаться» (проверка 5 октября).
+   */
+  return parts.every((w) => WHOM_TOKEN.test(w));
 }
+
+const WHOM_TOKEN =
+  /^(?:\d+|для|на|это|мне|нам|меня|нас|у|и|а|приём|прием|пожалуйста|человек\p{L}*|взросл\p{L}*|детск\p{L}*|реб[её]н\p{L}*|дет\p{L}*|сын\p{L}*|доч\p{L}*|мальчик\p{L}*|девочк\p{L}*|малыш\p{L}*|младен\p{L}*|грудн\p{L}*|новорожд\p{L}*|внук\p{L}*|внучк\p{L}*|племянн\p{L}*|мам\p{L}*|пап\p{L}*|муж\p{L}*|жен\p{L}*|бабушк\p{L}*|дедушк\p{L}*|себ\p{L}*|сам\p{L}*|лет|год\p{L}*|месяц\p{L}*|мес|недел\p{L}*|дн\p{L}*|день|одн\p{L}*|два|две|двух|три|тр[её]х|четыр\p{L}*|пят\p{L}*|шест\p{L}*|сем\p{L}*|восьм\p{L}*|восем\p{L}*|девят\p{L}*|десят\p{L}*|полгода|полтора|полутора)$/u;
 
 /** Услуга детская по названию. */
 function isChildService(title: string): boolean {

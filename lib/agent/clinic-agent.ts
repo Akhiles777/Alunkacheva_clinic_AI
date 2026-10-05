@@ -121,10 +121,10 @@ import { inventedIndication } from "./indications";
 import { asksAboutAge, infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusal, withoutAgeRefusal } from "./age-limit";
 import { focusedAnswer } from "./focused-answer";
 import { audienceMentioned, unaskedAudience, withoutUnaskedAudience } from "./unasked-group";
-import { bothAges, matchServices, onlyWhomStated, whomAcross, whomFor, type Whom } from "./service-match";
+import { ageStated, bothAges, matchServices, onlyWhomStated, whomAcross, whomFor, type Whom } from "./service-match";
 import { complaintAsReason, dataAlreadyReceived, staffConfirmedBooking } from "./booking-flow";
 import { addressableName } from "./person-name";
-import { asksRepeatVisit, lastVisit, type LastVisit } from "./repeat-visit";
+import { asksRepeatVisit, lastVisit, repeatDoctor, type LastVisit, type VisitedDoctor } from "./repeat-visit";
 import { doctorsWord, groupedOffer } from "./offer-text";
 import { bookingStep, type BookingStep } from "./booking-flow";
 import {
@@ -148,7 +148,7 @@ import { inHandoverFlow, rescheduleAsked, timeDetail } from "./handover-flow";
 import { askSpecialist, specialistNames, specialistQueryPending } from "./specialist";
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { complexMedical, managementTopic } from "./specialist-rules";
-import { WEEKDAY_WHEN, daysAsked, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
+import { WEEKDAY_WHEN, daysAsked, lastNamedStaff, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
 /**
  * Агент пациентского канала.
@@ -853,12 +853,20 @@ async function bookingRequestOpen(conversationId: string, own: string): Promise<
  * Третье нужно отдельно: оформленному пациенту данные не нужны, и просьба
  * прислать ФИО от модели ему не уходит (живой диалог 30 сентября).
  */
+/**
+ * Сколько живёт просьба записать. Разговор о записи за три дня либо закончен,
+ * либо начат заново; шестьдесят дней (срок памяти переписки) держали её
+ * открытой, и постоянная пациентка на «сколько стоит приём у Разият?» получала
+ * «подскажите, когда вам удобно» — по просьбе месячной давности.
+ */
+const BOOKING_REQUEST_DAYS = 3;
+
 async function bookingState(conversationId: string, own: string): Promise<"none" | "open" | "booked"> {
   if (asksToBookOrSlot(own)) return "open";
   const conv = await prisma.conversation
     .findUnique({ where: { id: conversationId }, select: { patientId: true, companyId: true } })
     .catch(() => null);
-  const since = new Date(Date.now() - HISTORY_DAYS * 24 * 3600 * 1000);
+  const since = new Date(Date.now() - BOOKING_REQUEST_DAYS * 24 * 3600 * 1000);
   const scope = conv?.patientId
     ? { companyId: conv.companyId, conversation: { patientId: conv.patientId } }
     : { conversationId };
@@ -1009,8 +1017,32 @@ async function repeatFor(
   patientId: string | null,
   newestFirst: string[],
 ): Promise<LastVisit | null> {
-  if (!patientId || !newestFirst.slice(0, 3).some((t) => asksRepeatVisit(t))) return null;
-  return lastVisit(companyId, patientId).catch(() => null);
+  return (await repeatResolve(companyId, patientId, newestFirst)).pick;
+}
+
+/** Повторный приём с учётом названного врача (`repeatDoctor`): к кому — или двояко. */
+async function repeatResolve(
+  companyId: string,
+  patientId: string | null,
+  newestFirst: string[],
+): Promise<{ pick: LastVisit | null; clash: VisitedDoctor[] }> {
+  const none = { pick: null, clash: [] as VisitedDoctor[] };
+  const fresh = newestFirst.slice(0, 3);
+  if (!patientId || !fresh.some((t) => asksRepeatVisit(t))) return none;
+  const last = await lastVisit(companyId, patientId).catch(() => null);
+  if (!last) return none;
+  const staff = await prisma.staff
+    .findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { id: true, name: true } })
+    .catch(() => [] as { id: string; name: string }[]);
+  /**
+   * Врач — из САМОЙ СВЕЖЕЙ реплики, где его называли (как `lastNamedStaff`):
+   * вчерашнее «сколько стоит у Разият?» не перебивает сегодняшнее «ещё раз к
+   * Ирине». Назван однозначно — он; двояко — все, кто подходит.
+   */
+  const one = lastNamedStaff(fresh, staff);
+  const freshest = one ? null : fresh.find((t) => staff.some((x) => mentionsStaff(t, x.name)));
+  const named = one ? [one.id] : freshest ? staff.filter((x) => mentionsStaff(freshest, x.name)).map((x) => x.id) : [];
+  return repeatDoctor(last, named);
 }
 
 /** Наша реплика целиком по её обрезку из цитаты («Хорошо, приём… Прежде чем продолж…»). */
@@ -1026,6 +1058,17 @@ async function ownMessageByQuote(conversationId: string, quote: string): Promise
     })
     .catch(() => []);
   return rows.find((r) => r.body.replace(/\s+/g, " ").trim().startsWith(head))?.body ?? null;
+}
+
+/** Слова пациента, свежие первыми: текущая реплика и его прошлые (без цитат). */
+function userNewestFirst(own: string, said: { role: string; content: string }[]): string[] {
+  return [
+    own,
+    ...said
+      .filter((t) => t.role === "user")
+      .map((t) => withoutQuote(t.content))
+      .reverse(),
+  ];
 }
 
 /** Наша последняя реплика в переписке. */
@@ -2094,7 +2137,12 @@ async function talkChoice(
     fromWords.length > 0 || !assumedQuery ? fromWords : matchServices(assumedQuery, usable, 6, 0.5, whom),
   );
 
-  let doctor = newest.map((t) => uniqueStaffAsked(t, staff)).find((x) => x !== null) ?? null;
+  /**
+   * Врач — из самой свежей реплики, где его называли (`lastNamedStaff`): «у
+   * Разият» из вчерашнего разговора не перебивает сегодняшнее «ещё раз к
+   * Ирине» (прогон 5 октября).
+   */
+  let doctor = lastNamedStaff(newest, staff);
   let named_ = named;
 
   /**
@@ -2103,7 +2151,8 @@ async function talkChoice(
    * ведёт: «повторно, но теперь на БОС» — уже не к остеопату.
    */
   const repeatStaff = repeat ? staff.find((x) => x.id === repeat.staff.id) ?? null : null;
-  if (!doctor && repeat && repeatStaff) {
+  // Врач назван и это врач прошлого визита — услуга и «для кого» тоже из визита.
+  if (repeat && repeatStaff && (!doctor || doctor.id === repeatStaff.id)) {
     const fits =
       named.length === 0 ||
       (await Promise.all(named.map((row) => doctorsOf(row)))).some((by) => by.has(repeat.staff.id));
@@ -2136,7 +2185,12 @@ async function talkChoice(
   }
 
   let candidates = named;
-  const mentioned = staff.filter((x) => newest.some((t) => mentionsStaff(t, x.name)));
+  /**
+   * Названные врачи — из самой свежей реплики, где врача называли: «Сколько у
+   * Разият?» → «А у Ирины?» — речь об Ирине, и Разият в круг не входит.
+   */
+  const freshestMention = newest.find((t) => staff.some((x) => mentionsStaff(t, x.name)));
+  const mentioned = freshestMention ? staff.filter((x) => mentionsStaff(freshestMention, x.name)) : [];
   if (mentioned.length > 0 && candidates.length > 0) {
     const tagged = await Promise.all(candidates.map(async (row) => ({ row, by: await doctorsOf(row) })));
     const theirs = tagged.filter((x) => mentioned.some((m) => x.by.has(m.id)));
@@ -2246,11 +2300,21 @@ async function mainOffer(
  * — к кому и, если ещё неизвестно, для кого. Одна функция на все места, где
  * агент иначе спросил бы «на какую услугу» (`slotHandoverText`, `bookingTail`).
  */
-function mainOfferText(offer: { accusative: string; block: string; doctors: number }, whomKnown: boolean): string {
+function mainOfferText(
+  offer: { accusative: string; block: string; doctors: number },
+  whomKnown: boolean,
+  /** Услугу человек назвал сам — «если вы про…» и «другая услуга» лишние. */
+  named = false,
+): string {
   const many = offer.doctors >= 2;
-  const intro = many
-    ? `Если вы про ${offer.accusative} — у нас принимают ${doctorsWord(offer.doctors)}:`
-    : `Если вы про ${offer.accusative}:`;
+  const cap = offer.accusative[0].toUpperCase() + offer.accusative.slice(1);
+  const intro = named
+    ? many
+      ? `${cap} у нас ведут ${doctorsWord(offer.doctors)}:`
+      : ""
+    : many
+      ? `Если вы про ${offer.accusative} — у нас принимают ${doctorsWord(offer.doctors)}:`
+      : `Если вы про ${offer.accusative}:`;
   const ask = many
     ? whomKnown
       ? "К кому из врачей записать?"
@@ -2258,14 +2322,67 @@ function mainOfferText(offer: { accusative: string; block: string; doctors: numb
     : whomKnown
       ? ""
       : "Приём для взрослого или для ребёнка?";
-  const other = "Если нужна другая услуга — напишите, какая.";
-  return [`${intro}\n${offer.block}`, ask ? `${ask} ${other}` : other].join("\n\n");
+  const other = named ? "" : "Если нужна другая услуга — напишите, какая.";
+  return [intro ? `${intro}\n${offer.block}` : offer.block, [ask, other].filter(Boolean).join(" ")]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** Человек назвал основную услугу или врача, который её ведёт. */
+async function mainKindNamed(
+  companyId: string,
+  patientTexts: string[],
+  staff: { id: string; name: string }[],
+): Promise<boolean> {
+  const kind = await mainServiceKind(companyId);
+  if (!kind) return false;
+  const services = await getServices(companyId).catch(() => [] as ServiceRow[]);
+  const usable = patientServices(services);
+  const kindRows = matchServices(kind.query, usable, 8, 0.5, "unknown");
+  const nameWords = staffWordsFor(staff.map((x) => x.name), services);
+  const named =
+    patientTexts.map((t) => matchServices(serviceQuery(t, nameWords), usable, 6, 0.5, "unknown")).find((f) => f.length > 0) ?? [];
+  if (named.length > 0) return named.every((r) => kindRows.some((k) => k.id === r.id));
+  const doctor = patientTexts.map((t) => uniqueStaffAsked(t, staff)).find((x) => x !== null) ?? null;
+  if (!doctor) return false;
+  for (const r of kindRows) {
+    if ((await staffNamesForService(companyId, r.id).catch(() => [] as string[])).includes(doctor.name)) return true;
+  }
+  return false;
 }
 
 /**
  * Ответ на вопрос о цене основной услуги (или врача без названной услуги).
  * null — вопрос не о цене, названа другая услуга, или основной услуги нет.
  */
+/** Короткое «А …?»: «А у Ирины?», «А детский?». */
+function shortFollowUp(text: string): boolean {
+  return /^\s*а\s/iu.test(text) && text.trim().split(/\s+/).length <= 5;
+}
+
+/**
+ * Короткое «А …?» продолжает вопрос о цене — и через несколько звеньев:
+ * «Сколько у Разият?» → «А у Ирины?» → «А детский?». Третья реплика ушла в
+ * справку про возраст: проверялась только соседняя, а она сама — «А …?»
+ * (прогон 5 октября).
+ */
+function priceThread(own: string, userTextsOldestFirst: string[]): boolean {
+  if (!shortFollowUp(own)) return false;
+  // «А адрес?», «А в субботу?», «А БОС что даёт?», «А сколько длится?» — другая тема, а не цена.
+  if (
+    /(?<!\p{L})(?:адрес\p{L}*|где|куда|когда|во\s+сколько|время|окошк\p{L}*|окн\p{L}*|запис\p{L}*|понедельн\p{L}*|вторник\p{L}*|сред[ауы]|четверг\p{L}*|пятниц\p{L}*|суббот\p{L}*|воскрес\p{L}*|работа\p{L}*|можно|как|завтра|сегодня|что|зачем|почему|чем|да[её]т|помога\p{L}*|такое|длит\p{L}*|больно|подойд\p{L}*|нужно|надо|взять|подготов\p{L}*)(?!\p{L})/iu.test(
+      own,
+    )
+  ) {
+    return false;
+  }
+  for (const t of [...userTextsOldestFirst].reverse().slice(0, 3)) {
+    if (asksPrice(t)) return true;
+    if (!shortFollowUp(t)) return false;
+  }
+  return false;
+}
+
 async function priceOffer(
   companyId: string,
   own: string,
@@ -2274,8 +2391,12 @@ async function priceOffer(
 ): Promise<string | null> {
   const userTexts = said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content));
   const prev = userTexts[userTexts.length - 1] ?? "";
-  // «Для взрослого» сразу после вопроса о цене — тот же вопрос о цене.
-  if (!asksPrice(own) && !(onlyWhomStated(own) && asksPrice(prev))) return null;
+  /**
+   * «Для взрослого», «А у Ирины?», «А детский?» после вопроса о цене — тот же
+   * вопрос о цене (как и в запасном пути, `priceThread`).
+   */
+  const followUp = priceThread(own, userTexts) || (onlyWhomStated(own) && asksPrice(prev));
+  if (!asksPrice(own) && !followUp) return null;
   /**
    * В сообщении есть и другой вопрос — отвечает модель: «сколько стоит и что
    * взять с собой», «работаете ли в выходные и сколько стоит» потеряли бы
@@ -2305,7 +2426,10 @@ async function priceOffer(
     .find((found) => found.length > 0) ?? [];
 
   if (doctorNamed) {
-    const choice = await talkChoice(companyId, recent).catch(() => null);
+    // Услуга не названа — речь об основной: «к Ирине» тогда значит остеопата, а не БОС-терапевта.
+    const choice = await talkChoice(companyId, recent, null, namedRows.length === 0 ? (kind?.query ?? null) : null).catch(
+      () => null,
+    );
     if (!choice?.doctor || choice.candidates.length === 0 || choice.candidates.length > 4) return null;
     if (namedRows.length > 0 && !namedRows.some((r) => choice.candidates.some((c) => c.id === r.id))) return null;
     const block = await offerOf(companyId, choice.candidates, choice.doctor, choice.ageSplit);
@@ -2649,6 +2773,13 @@ async function osteopathyInTalk(
   own: string,
   said: { role: string; content: string }[],
 ): Promise<boolean> {
+  /**
+   * Остеопатию с ценой могли назвать мы сами — человек ответил «к Ирине» на
+   * наше предложение, и слова «остеопат» в его репликах нет (проверка 5
+   * октября: анкета ушла без веса).
+   */
+  const ours = said.filter((t) => t.role === "assistant").slice(-4);
+  if (ours.some((t) => /остеопат/i.test(t.content) && hasPrice(t.content))) return true;
   return osteopathyInTexts(companyId, [own, ...said.filter((t) => t.role === "user").map((t) => t.content)]);
 }
 
@@ -2716,9 +2847,20 @@ async function bookingTail(
    * «к Ирине» + «остеопат» — это врач названный, а не повод спросить заново.
    */
   const newestFirst = [input.patientTexts[0] ?? "", ...input.patientTexts.slice(1).reverse()];
-  const repeat = await repeatFor(companyId, input.patientId ?? null, newestFirst);
+  const { pick: repeat, clash } = await repeatResolve(companyId, input.patientId ?? null, newestFirst);
   const choice = await talkChoice(companyId, newestFirst, repeat, input.assumedQuery ?? null).catch(() => null);
   const doctorNamed = choice?.doctor?.name ?? null;
+
+  /**
+   * «Ещё раз к Ирине» — а Ирин, у которых человек бывал, две: спрашиваем, к
+   * какой, с услугой у каждой (`repeatDoctor`). Угадать здесь — значит
+   * записать не к тому врачу на не ту услугу.
+   */
+  if (input.booking && !input.dataDone && !doctorNamed && clash.length >= 2 && !asksDoctor(input.answer)) {
+    const list = clash.map((v) => `• ${shortName(v.staff.name)}${v.serviceTitle ? ` — ${v.serviceTitle}` : ""}`).join("\n");
+    const ask = `Вы были у ${clash.length === 2 ? "двух" : "нескольких"} специалистов с этим именем:\n${list}\nК кому записать?`;
+    return { text: [input.answer, ask].filter(Boolean).join("\n\n"), step: "doctor" };
+  }
 
   /**
    * Агент СПРОСИЛ, для кого приём, — значит наша догадка не в счёт.
@@ -2785,6 +2927,8 @@ async function bookingTail(
     ownersByRow.set(s.id, names);
     for (const name of names) providers.add(name);
   }
+  /** День, названный в свежих репликах: «можно ли на субботу?», «хочу в пятницу». */
+  const daysNamed = newestFirst.slice(0, 3).map((t) => daysAsked(t)).find((d) => d.length > 0) ?? [];
   /** Одинаковые строки одного врача — одной строкой (`sameOfferOnce`). */
   const once = <T extends ServiceRow>(rows: T[]): T[] =>
     sameOfferOnce(
@@ -2828,10 +2972,29 @@ async function bookingTail(
      * что администратор всё равно спросит первым.
      */
     if (returning && !/(?<!\p{L})(?:удобн\p{L}*|когда\s+вам)(?!\p{L})/iu.test(input.answer)) {
-      const ask = /администратор/iu.test(input.answer)
-        ? "Подскажите, какой день и время вам удобны."
-        : "Время подберёт администратор — подскажите, какой день и время вам удобны, передам ему.";
-      return { text: input.answer ? `${input.answer}\n\n${ask}` : ask, step: null };
+      /**
+       * День или время человек уже назвал («хочу ещё раз к Ирине в субботу») —
+       * не спрашиваем их снова, а говорим, принимает ли врач в этот день.
+       */
+      const timeGiven =
+        daysNamed.length > 0 ||
+        newestFirst
+          .slice(0, 3)
+          .some((t) => timeDetail(t) || /(?<!\p{L})(?:завтра|послезавтра|сегодня)(?!\p{L})/iu.test(t));
+      const note = choice?.doctor
+        ? await dayNoteFor(companyId, daysNamed, [...providers], choice.doctor.name, input.answer)
+        : "";
+      // Врач в названный день не принимает — «пожелание передал» было бы обещанием невозможного.
+      const ask = note
+        ? "Передал(а) администратору — он предложит ближайшее время и напишет здесь же."
+        : timeGiven
+        ? /администратор/iu.test(input.answer)
+          ? "Ваше пожелание по времени передал(а) ему."
+          : "Время подберёт администратор — ваше пожелание передал(а) ему."
+        : /администратор/iu.test(input.answer)
+          ? "Подскажите, какой день и время вам удобны."
+          : "Время подберёт администратор — подскажите, какой день и время вам удобны, передам ему.";
+      return { text: [input.answer, note, ask].filter(Boolean).join("\n\n"), step: null };
     }
     return { text: input.answer, step: null };
   }
@@ -2906,6 +3069,8 @@ async function bookingTail(
           : asOffer(fresh);
 
   const names = [...providers];
+  // Возраст уже назван («сына 6 лет») — не переспрашиваем (`ageStated`).
+  const ageKnown = step === "data" && !both && ageStated(newestFirst, whom);
   // Вес — только на остеопатии, по требованию клиники (как и в `intakeAsk`).
   const weight =
     step === "data" && ask && (await osteopathyInTexts(companyId, input.patientTexts).catch(() => false)) ? ", вес" : "";
@@ -2929,11 +3094,92 @@ async function bookingTail(
               both
                 ? `ФИО и возраст каждого, кто придёт на приём${weight ? ", вес" : ""}, и кратко причину обращения`
                 : whom === "child"
-                  ? `ФИО ребёнка, его возраст${weight}, имя родителя и кратко причину обращения`
-                  : `ФИО того, кто придёт на приём, возраст${weight} и кратко причину обращения`
+                  ? `ФИО ребёнка${ageKnown ? "" : ", его возраст"}${weight}, имя родителя и кратко причину обращения`
+                  : `ФИО того, кто придёт на приём${ageKnown ? "" : ", возраст"}${weight} и кратко причину обращения`
             }.`;
 
-  return { text: [input.answer, prices, question].filter(Boolean).join("\n\n"), step };
+  const dayNote =
+    step === "doctor" || ((step === "whom" || step === "data") && choice?.doctor)
+      ? await dayNoteFor(companyId, daysNamed, names, step === "doctor" ? null : (choice?.doctor?.name ?? null), input.answer)
+      : "";
+
+  return { text: [input.answer, prices, dayNote, question].filter(Boolean).join("\n\n"), step };
+}
+
+const DAY_STEM: Record<number, string> = {
+  1: "понедельн",
+  2: "вторн",
+  3: "сред",
+  4: "четверг",
+  5: "пятниц",
+  6: "суббот",
+  7: "воскресен",
+};
+
+/**
+ * Кто принимает в названный день — строкой к шагу записи.
+ *
+ * Врач не выбран: по каждому дню, кто из ведущих услугу в этот день принимает
+ * («можно ли на субботу?» оставалось без ответа, а по субботам из остеопатов
+ * принимает одна — проверка 5 октября). Врач выбран и в этот день не
+ * принимает — говорим это СРАЗУ и называем, кто принимает: иначе человек
+ * присылает данные, а потом слышит от администратора, что день не тот.
+ *
+ * Дни приёма не заполнены хоть у одного из врачей — молчим: пустой список
+ * значит «не заполнено», а не «не работает» (§6). День уже назван в ответе
+ * модели — не повторяем.
+ */
+async function dayNoteFor(
+  companyId: string,
+  days: number[],
+  providerNames: string[],
+  chosen: string | null,
+  answer: string,
+): Promise<string> {
+  if (days.length === 0) return "";
+  if (days.every((d) => new RegExp(DAY_STEM[d], "iu").test(answer))) return "";
+  const names = [...new Set([...providerNames, ...(chosen ? [chosen] : [])])];
+  if (names.length === 0) return "";
+  const rows = await prisma.staff
+    .findMany({
+      where: { companyId, isActive: true, deletedAt: null, name: { in: names } },
+      select: { name: true, workdays: true },
+    })
+    .catch(() => [] as { name: string; workdays: number[] }[]);
+  if (rows.length === 0 || rows.some((r) => r.workdays.length === 0)) return "";
+  const cap = (t: string) => `${t[0].toUpperCase()}${t.slice(1)}`;
+  const whoOn = (d: number, among: typeof rows) => among.filter((r) => r.workdays.includes(d));
+
+  if (chosen) {
+    const me = rows.find((r) => r.name === chosen);
+    if (!me) return "";
+    const no = days.filter((d) => !me.workdays.includes(d));
+    if (no.length === 0) return "";
+    const others = rows.filter((r) => r.name !== chosen);
+    const lines = no.map((d) => {
+      const works = whoOn(d, others);
+      return works.length > 0
+        ? `${WEEKDAY_WHEN[d]} принимает ${works.map((w) => shortName(w.name)).join(" и ")}`
+        : `${WEEKDAY_WHEN[d]} приёма нет`;
+    });
+    return `${shortName(me.name)} ${no.map((d) => WEEKDAY_WHEN[d]).join(" и ")} не принимает. ${lines.map(cap).join(". ")}.`;
+  }
+
+  if (rows.length < 2) return "";
+  const lines = days
+    .filter((d) => whoOn(d, rows).length < rows.length)
+    .map((d) => {
+      const works = whoOn(d, rows);
+      return works.length > 0
+        ? `${WEEKDAY_WHEN[d]} принимает ${works.map((w) => shortName(w.name)).join(" и ")}`
+        : `${WEEKDAY_WHEN[d]} приёма нет`;
+    });
+  return lines.length > 0 ? `${lines.map(cap).join(". ")}.` : "";
+}
+
+/** Специальность посреди фразы: «Остеопат» → «остеопат», а «БОС-терапия» остаётся как есть. */
+function specialtyWord(specialty: string): string {
+  return /^\p{Lu}\p{Ll}/u.test(specialty) ? specialty[0].toLowerCase() + specialty.slice(1) : specialty;
 }
 
 /** Цена названа в тексте: «8000», «8 000» и «8\u00a0000» — одно число. */
@@ -3035,7 +3281,7 @@ function hasPrice(text: string): boolean {
   return /₽|руб(?:\.|л\p{L}*)?(?!\p{L})/iu.test(text);
 }
 
-function intakeAsk(whom: Whom, needsWeight = false): string {
+function intakeAsk(whom: Whom, needsWeight = false, ageKnown = false): string {
   /**
    * Ребёнка записывают на имя родителя.
    *
@@ -3047,8 +3293,8 @@ function intakeAsk(whom: Whom, needsWeight = false): string {
   const weight = needsWeight ? ", вес" : "";
   const who =
     whom === "child"
-      ? `ФИО ребёнка, его возраст${weight}, имя родителя и кратко причину обращения`
-      : `ФИО, возраст${weight} и кратко причину обращения`;
+      ? `ФИО ребёнка${ageKnown ? "" : ", его возраст"}${weight}, имя родителя и кратко причину обращения`
+      : `ФИО${ageKnown ? "" : ", возраст"}${weight} и кратко причину обращения`;
   /**
    * «Передал(а) вашу просьбу» здесь неправда: человек только что ответил
    * «Да» на согласие и ни о чём администратора не просил. Ему ещё предстоит
@@ -3159,8 +3405,16 @@ async function bookingByCode(
     template && !repeated && (choice?.doctor || choice?.service)
       ? await phraseStep(ctx, conversationId, choice, talkWhom(patientTexts), own, said).catch(() => null)
       : null;
+  /**
+   * Спросили цену, а услуга одна не выбрана — цены выбора называем всё равно:
+   * вопрос о цене внутри записи иначе оставался без ответа (проверка 5 октября).
+   */
+  const priceBlock =
+    asksPrice(own) && !priced && choice && choice.candidates.length > 0 && choice.candidates.length <= 4
+      ? await offerOf(ctx.companyId, choice.candidates, choice.doctor, choice.ageSplit).catch(() => "")
+      : "";
   // Сначала подтверждение выбора, потом служебное «время подберёт администратор»: так читается как ответ, а не как бланк.
-  const answer = [phrased ?? template, lead].filter(Boolean).join(" ");
+  const answer = [[phrased ?? template, lead].filter(Boolean).join(" "), priceBlock].filter(Boolean).join("\n\n");
   const tail = await bookingTail(ctx.companyId, {
     answer,
     patientTexts,
@@ -3290,6 +3544,15 @@ async function slotHandoverText(
    */
   if (hasService && hasWhom) return lead;
   if (hasService) {
+    /**
+     * Названа основная услуга или её врач — цены по врачам сразу и один вопрос:
+     * «Хочу на остеопатию» получало только «для взрослого или для ребёнка?», и
+     * цены человек узнавал следующим сообщением (проверка 5 октября).
+     */
+    const offer = !prices && (await mainKindNamed(companyId, patientTexts, staff))
+      ? await mainOffer(companyId, whom, patientTexts).catch(() => null)
+      : null;
+    if (offer) return [lead, prices, mainOfferText(offer, false, true)].filter(Boolean).join("\n\n");
     return `${head}Пока скажите, пожалуйста, приём для взрослого или для ребёнка?${tail}`;
   }
   /**
@@ -4565,8 +4828,20 @@ async function replyToQuestion(
    * исключение узнавало только «взрослого или ребёнка» без «для».
    */
   const lastAgentTurn = [...said].reverse().find((t) => t.role === "assistant")?.content ?? "";
-  const reasonForBooking =
+  /**
+   * «Я беременна, можно ли к остеопату записаться?» — у клиники есть отдельная
+   * услуга для беременных, и вопрос здесь о записи, а не о показаниях
+   * (проверка 5 октября: человек получил обрывок «уточните у специалиста»).
+   */
+  const pregnantBooking =
     medical(own) &&
+    /беремен/iu.test(own) &&
+    wantsToBook(own) &&
+    !/(?<!\p{L})(?:опасно|вредно|противопоказ\p{L}*|поможет|подойд\p{L}*|нужно\s+ли)(?!\p{L})/iu.test(own) &&
+    (await getServices(ctx.companyId).catch(() => [] as ServiceRow[])).some((s) => /беремен/iu.test(s.title));
+  const reasonForBooking =
+    pregnantBooking ||
+    (medical(own) &&
     complaintAsReason(
       own,
       wantsToBook(own) ||
@@ -4576,7 +4851,8 @@ async function replyToQuestion(
         asksService(lastAgentTurn) ||
         asksDoctor(lastAgentTurn) ||
         (await bookingRequestOpen(conversation.id, own).catch(() => false)),
-    );
+      wantsToBook(own) || asksForSlot(own),
+    ));
 
   if (medical(own) && !(inIntakeFlow(said) && !hasQuestion(own)) && !reasonForBooking) {
     const match = matchKnowledge(text, knowledgeRows);
@@ -4729,16 +5005,26 @@ async function replyToQuestion(
      * реплике имени нет, но речь по-прежнему о ней. Без памяти агент терял
      * собеседницу и отвечал «уточню у администратора» на простой вопрос.
      */
-    const named =
-      staffAsked(own, doctors) ??
-      staffAsked(
-        said
+    const spoken = lastNamedStaff(
+      [
+        own,
+        ...said
           .filter((t) => t.role === "user")
           .slice(-3)
           .map((t) => t.content)
-          .join("\n"),
-        doctors,
-      );
+          .reverse(),
+      ],
+      doctors,
+    );
+    /**
+     * «К Ирине» двояко, но разговор о записи его разрешает: повторный приём —
+     * врач прошлого визита, названная услуга — тот, кто её ведёт
+     * (`conversationChoice`, только эта переписка).
+     */
+    const chosen = spoken
+      ? null
+      : ((await conversationChoice(ctx.companyId, conversation.id).catch(() => null))?.doctor ?? null);
+    const named = spoken ?? (chosen ? (doctors.find((d) => d.id === chosen.id) ?? null) : null);
 
     /**
      * Про врачей отвечаем, только когда спросили про врача или про услугу.
@@ -4771,7 +5057,18 @@ async function replyToQuestion(
         own,
       );
 
-    if (named && named.workdays.length > 0 && !alsoAsksPrice) {
+    /**
+     * Человек ЗАПИСЫВАЕТСЯ, а не спрашивает расписание: «Хочу к остеопату с
+     * дочкой 5 лет в субботу». Короткий ответ «в субботу принимает Разият»
+     * обрывал запись — без цены, без выбора, без данных (проверка 5 октября).
+     * Такое ведёт шаг записи: цены, кто принимает в этот день (`dayNoteFor`),
+     * следующий вопрос. Здесь остаётся одно: названный врач в этот день НЕ
+     * принимает — это говорится сразу и коротко, до цен и согласия.
+     */
+    const bookingNow = wantsToBook(own) || asksForSlot(own);
+    const namedWorksAll = !!named && named.workdays.length > 0 && askedDays.every((d) => named.workdays.includes(d));
+
+    if (named && named.workdays.length > 0 && !alsoAsksPrice && !(bookingNow && namedWorksAll)) {
       /** Спросили про конкретного врача — отвечаем про него, коротко и точно. */
       const yes = askedDays.filter((d) => named.workdays.includes(d));
       const no = askedDays.filter((d) => !named.workdays.includes(d));
@@ -4780,7 +5077,7 @@ async function replyToQuestion(
       if (yes.length > 0) {
         return respond(ctx, conversation.id, {
           text:
-            `Да, ${named.name} принимает ${yes.map((d) => WEEKDAY_WHEN[d]).join(" и ")}. ` +
+            `Да, ${shortName(named.name)} принимает ${yes.map((d) => WEEKDAY_WHEN[d]).join(" и ")}. ` +
             "Время подберёт администратор — он напишет здесь же.",
         });
       }
@@ -4804,19 +5101,19 @@ async function replyToQuestion(
           ).works;
           const line =
             sameKind.length > 0
-              ? `${WEEKDAY_WHEN[d]} принимает ${sameKind.map((w) => w.name).join(", ")}`
+              ? `${WEEKDAY_WHEN[d]} принимает ${sameKind.map((w) => shortName(w.name)).join(", ")}`
               : `${WEEKDAY_WHEN[d]} приёма нет`;
           return `${line[0].toUpperCase()}${line.slice(1)}`;
         })
         .join(". ");
       return respond(ctx, conversation.id, {
         text:
-          `${named.name} ${no.map((d) => WEEKDAY_WHEN[d]).join(" и ")} не принимает. ` +
+          `${shortName(named.name)} ${no.map((d) => WEEKDAY_WHEN[d]).join(" и ")} не принимает. ` +
           `${other}. Передал(а) администратору — он подберёт время.`,
       });
     }
 
-    if (!named && !alsoAsksPrice && scope.length > 0 && scope.some((d) => d.workdays.length > 0)) {
+    if (!named && !alsoAsksPrice && !bookingNow && scope.length > 0 && scope.some((d) => d.workdays.length > 0)) {
       /**
        * Врача не назвали — говорим по каждому дню, кто принимает.
        *
@@ -4830,7 +5127,7 @@ async function replyToQuestion(
         return capitalize(
           works.length > 0
             ? `${WEEKDAY_WHEN[d]} принимает ${works
-                .map((w) => `${w.name}${w.specialty ? ` — ${w.specialty}` : ""}`)
+                .map((w) => `${shortName(w.name)}${w.specialty ? ` — ${specialtyWord(w.specialty)}` : ""}`)
                 .join("; ")}`
             : `${WEEKDAY_WHEN[d]} приёма нет`,
         );
@@ -5053,7 +5350,9 @@ async function replyToQuestion(
      * неизвестное (`slotHandoverText`).
      */
     if (asksHowToBook(own) && !asksAboutOwnBooking(own)) {
-      const lead = "Записывает администратор — он подберёт время и напишет здесь же.";
+      const lead = /без\s+записи/iu.test(own)
+        ? "Приём у нас по записи — время подберёт администратор, он напишет здесь же."
+        : "Записывает администратор — он подберёт время и напишет здесь же.";
       const text = await slotHandoverText(
         ctx.companyId,
         [own, ...said.filter((t) => t.role === "user").map((t) => t.content)],
@@ -5469,7 +5768,7 @@ async function replyToQuestion(
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
       return respond(ctx, conversation.id, {
-        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said)),
+        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said), ageStated(userNewestFirst(own, said), whomInTalk(own, said))),
       });
     }
     return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
@@ -5757,7 +6056,7 @@ async function replyToQuestion(
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
       return respond(ctx, conversation.id, {
-        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said)),
+        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said), ageStated(userNewestFirst(own, said), whomInTalk(own, said))),
       });
     }
     return respond(ctx, conversation.id, {
@@ -5958,10 +6257,12 @@ async function replyToQuestion(
    * подготовиться к приёму»: по словам вопроса нашлась она. Короткое «А …?»
    * сразу после вопроса о цене — тот же вопрос о цене.
    */
-  const prevPatient = [...said].reverse().find((t) => t.role === "user")?.content ?? "";
   const priceAsked =
     asksPrice(own) ||
-    (/^\s*а\s/iu.test(own) && own.trim().split(/\s+/).length <= 5 && asksPrice(prevPatient));
+    priceThread(
+      own,
+      said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content)),
+    );
   if (priceAsked) {
     const rows =
       fallbackChoice && fallbackChoice.candidates.length > 0 && fallbackChoice.candidates.length <= 6
@@ -6367,10 +6668,16 @@ async function handleCallback(
     if (pending && !pendingIsIntake) {
       const said = await recentTurns(conversationId);
       const mine = said.filter((t) => t.role === "user").map((t) => t.content);
-      if (mine.some((t) => wantsToBook(t) || scheduleTopic(t))) {
+      /**
+       * Запись могла начаться и без слова «записаться»: человек ответил на наше
+       * «если хотите записаться — напишите, к кому» словами «к Ирине», и мы
+       * спросили согласие (проверка 5 октября). Последняя реплика до «Да» без
+       * вопроса — это шаг записи, а не вопрос, на который надо ответить.
+       */
+      if (mine.some((t) => wantsToBook(t) || scheduleTopic(t)) || !hasQuestion(pendingOwn ?? pending)) {
         const whom = whomInTalk(pending, said);
         return respond(ctx, conversationId, {
-          text: intakeAsk(whom, await osteopathyInTalk(ctx.companyId, pending, said)),
+          text: intakeAsk(whom, await osteopathyInTalk(ctx.companyId, pending, said), ageStated(userNewestFirst(pending, said), whom)),
         });
       }
     }
@@ -6407,9 +6714,14 @@ async function handleCallback(
     // как быть: по телефону согласие тоже можно взять.
     await escalate(ctx.companyId, conversationId, "PATIENT_REQUEST", "Пациент не дал согласие на обработку ПДн").catch(() => {});
     return respond(ctx, conversationId, {
+      /**
+       * Без согласия не собираем данные — а не прекращаем разговор (§7, «Стены
+       * больше нет»). Прежний текст «мы не сможем вести переписку» говорил
+       * обратное и обрывал человека, у которого могли быть вопросы о ценах.
+       */
       text:
-        "Хорошо. Без согласия на обработку персональных данных мы не сможем вести переписку — " +
-        "передал(а) администратору, он свяжется с вами.",
+        "Хорошо, без согласия данные в переписке не собираем. Записать вас может администратор — " +
+        "передал(а) ему, он свяжется с вами. На вопросы об услугах, ценах и адресе отвечу и так.",
       platformConsent: true,
     });
   }

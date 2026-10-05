@@ -118,10 +118,30 @@ export function complaintAsReason(
   text: string,
   /** Идёт разговор о записи: просьба записать, вопрос об окне или наш вопрос шага. */
   bookingContext: boolean,
+  /**
+   * Человек сам просит записать — «у дочки сколиоз, хотим к остеопату, сколько
+   * стоит и можно ли на субботу?» (проверка 5 октября). Диагноз здесь — причина
+   * записи, а вопросы — о цене и дне, не о лечении. Тогда допустимы и
+   * названный диагноз, и вопросы о цене и времени.
+   */
+  explicitBooking = false,
 ): boolean {
-  if (!bookingContext || /\?/.test(text)) return false;
-  if (URGENT.test(text) || ASKS_IN_WORDS.some((re) => re.test(text))) return false;
-  return !complexMedical(text);
+  if (!bookingContext) return false;
+  if (URGENT.test(text)) return false;
+  const rest = explicitBooking ? withoutPriceAndTimeQuestions(text) : text;
+  if (/\?/.test(rest) || ASKS_IN_WORDS.some((re) => re.test(rest))) return false;
+  return explicitBooking || !complexMedical(text);
+}
+
+/** Вопросы о цене и дне — не медицинские: «сколько стоит», «можно ли на субботу». */
+function withoutPriceAndTimeQuestions(text: string): string {
+  return text
+    .replace(/сколько\s+(?:\p{L}+\s+){0,2}?(?:стоит|стоят|будет|выйдет)[^,.!?]*[?]?/giu, " ")
+    .replace(
+      /можно\s+(?:ли\s+)?(?:на|в|во)\s+(?:суббот\p{L}*|воскресень\p{L}*|понедельник\p{L}*|вторник\p{L}*|сред\p{L}*|четверг\p{L}*|пятниц\p{L}*|завтра|сегодня|утр\p{L}*|вечер\p{L}*|\d{1,2}(?::\d{2})?)[^,.!?]*[?]?/giu,
+      " ",
+    )
+    .replace(/(?<!\p{L})(?:и|а)\s*\?/gu, " ");
 }
 
 /**

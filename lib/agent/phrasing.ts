@@ -84,6 +84,27 @@ export function confirmationProblem(text: string, f: StepFacts, staffNames: stri
 
   const foreign = staffNames.find((name) => namesOther(t, name, f.doctor));
   if (foreign) return `чужой врач: ${foreign}`;
+  const garbled = garbledName(t, staffNames);
+  if (garbled) return `искажено имя: ${garbled}`;
+  return null;
+}
+
+/**
+ * Слово похоже на имя сотрудника, но это не его форма: «Ирины Алилгаджиевой»
+ * вместо «Алилгаджиевны» (прогон 5 октября). Падеж меняет только окончание,
+ * поэтому форма обязана начинаться с имени без последней буквы
+ * («Алилгаджиевн…», «Ирин…», «Омаров…»). Искажённое отчество врача в сообщении
+ * клиники читается как небрежность — уходит шаблон.
+ */
+function garbledName(text: string, staffNames: string[]): string | null {
+  const parts = staffNames
+    .flatMap((n) => n.toLowerCase().replace(/ё/g, "е").split(/\s+/))
+    .filter((w) => w.length >= 5);
+  for (const raw of text.match(/\p{Lu}\p{Ll}{3,}/gu) ?? []) {
+    const w = raw.toLowerCase().replace(/ё/g, "е");
+    const kin = parts.filter((p) => w.slice(0, 5) === p.slice(0, 5));
+    if (kin.length > 0 && !kin.some((p) => w.startsWith(p.slice(0, p.length - 1)))) return raw;
+  }
   return null;
 }
 

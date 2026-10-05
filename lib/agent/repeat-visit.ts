@@ -25,11 +25,16 @@ export function asksRepeatVisit(text: string): boolean {
   return REPEAT.some((re) => re.test(text));
 }
 
-export interface LastVisit {
+export interface VisitedDoctor {
   staff: { id: string; name: string };
   /** Основная услуга прошлого визита; null — в записи её нет. */
   serviceId: string | null;
   serviceTitle: string | null;
+}
+
+export interface LastVisit extends VisitedDoctor {
+  /** Все врачи недавних визитов, свежие первыми, у каждого — его последняя услуга. */
+  visited: VisitedDoctor[];
 }
 
 /**
@@ -50,7 +55,7 @@ export async function lastVisit(companyId: string, patientId: string | null, now
         staff: { isActive: true, deletedAt: null },
       },
       orderBy: [{ startAt: "desc" }],
-      take: 5,
+      take: 20,
       select: {
         status: true,
         staff: { select: { id: true, name: true } },
@@ -59,11 +64,39 @@ export async function lastVisit(companyId: string, patientId: string | null, now
     })
     .catch(() => []);
   // Состоявшийся визит надёжнее неразобранного: отметку «пришёл» ставят не всегда, но если стоит — ей верим.
-  const row = rows.find((r) => r.status === "ARRIVED") ?? rows[0];
+  const row = rows.slice(0, 5).find((r) => r.status === "ARRIVED") ?? rows[0];
   if (!row?.staff) return null;
+  const visited: VisitedDoctor[] = [];
+  for (const r of rows) {
+    if (!r.staff || visited.some((v) => v.staff.id === r.staff.id)) continue;
+    visited.push({ staff: r.staff, serviceId: r.primaryService?.id ?? null, serviceTitle: r.primaryService?.title ?? null });
+  }
   return {
     staff: row.staff,
     serviceId: row.primaryService?.id ?? null,
     serviceTitle: row.primaryService?.title ?? null,
+    visited,
   };
+}
+
+/**
+ * К кому «повторный приём», если человек назвал врача.
+ *
+ * Прогон 5 октября: «Хочу ещё раз к Ирине записаться» — пациентка ходила и к
+ * Ирине Алилгаджиевне (остеопатия), и к Ирине Омаровой (БОС), последней была
+ * у второй, и агент назвал БОС, хотя речь могла идти об остеопатии. Имя
+ * подходит к ДВУМ врачам, у которых человек бывал, — угадывать нельзя, это
+ * вопрос (`clash`). Подходит к одному — к нему, даже если последний визит был
+ * к другому врачу: «ещё раз к Ирине» после визита к Разият — это к Ирине.
+ *
+ * `namedIds` — врачи, которых человек назвал (однозначно названный — один).
+ */
+export function repeatDoctor(last: LastVisit, namedIds: string[]): { pick: LastVisit | null; clash: VisitedDoctor[] } {
+  if (namedIds.length === 0) return { pick: last, clash: [] };
+  const among = last.visited.filter((v) => namedIds.includes(v.staff.id));
+  if (among.length === 1) {
+    const v = among[0];
+    return { pick: v.staff.id === last.staff.id ? last : { ...v, visited: last.visited }, clash: [] };
+  }
+  return { pick: null, clash: among.length >= 2 ? among : [] };
 }

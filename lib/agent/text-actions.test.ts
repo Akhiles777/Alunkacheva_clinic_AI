@@ -136,3 +136,12 @@ describe("приветствия в родительном падеже", () => 
     expect(isGreeting("Доброго дня, сколько стоит приём?")).toBe(false);
   });
 });
+
+describe("отказ от согласия — только голый", () => {
+  it("«Нет, лучше к Разият» — смена врача, а не отказ", () => {
+    expect(consentFromText("Нет, лучше к Разият")).toBeNull();
+    expect(consentFromText("Нет")).not.toBeNull();
+    expect(consentFromText("Нет, спасибо")).not.toBeNull();
+    expect(consentFromText("Не согласна")).not.toBeNull();
+  });
+});

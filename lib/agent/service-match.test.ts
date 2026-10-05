@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bothAges, matchServices, onlyWhomStated, whomAcross, whomFor } from "./service-match";
+import { ageStated, bothAges, matchServices, onlyWhomStated, whomAcross, whomFor } from "./service-match";
 
 /** Прайс клиники — те самые строки, на которых ассистент ошибся. */
 const SERVICES = [
@@ -420,5 +420,54 @@ describe("себя и ребёнка сразу", () => {
     expect(bothAges("Хочу записаться сама и сына привести")).toBe(true);
     expect(bothAges("Мне 34, сыну 7")).toBe(true);
     expect(bothAges("Хочу записать сына")).toBe(false);
+  });
+});
+
+describe("для кого — по словам о человеке", () => {
+  it("маму, папу, 60 лет — взрослый", () => {
+    expect(whomFor("Записать маму 60 лет к остеопату")).toBe("adult");
+    expect(whomFor("Хочу записать папу")).toBe("adult");
+    expect(whomFor("Ей 45 лет")).toBe("adult");
+    expect(whomFor("Ребенку 7 лет")).toBe("child");
+  });
+  it("«Перезвоните мне пожалуйста» — не ответ «для кого»", () => {
+    expect(onlyWhomStated("Перезвоните мне пожалуйста")).toBe(false);
+    expect(onlyWhomStated("Для взрослого человека")).toBe(true);
+    expect(onlyWhomStated("Ребенку 11 лет")).toBe(true);
+  });
+});
+
+describe("опечатки в названии услуги", () => {
+  it("астеопат и остиопат — остеопатия", () => {
+    const titles = (q: string) => matchServices(q, PRICE_LIST, 3, 0.5).map((x) => x.title);
+    expect(titles("хачу записатся к астеопату").some((t) => /остеопат/i.test(t))).toBe(true);
+    expect(titles("к остиопату можно").some((t) => /остеопат/i.test(t))).toBe(true);
+  });
+});
+
+describe("возраст уже назван — в анкете не переспрашиваем", () => {
+  it("один ребёнок с возрастом", () => {
+    expect(ageStated(["Хочу записать сына 6 лет к Ирине"], "child")).toBe(true);
+    expect(ageStated(["Да", "Малышу 2 месяца"], "child")).toBe(true);
+    expect(ageStated(["новорожденный, 12 дней"], "child")).toBe(true);
+  });
+
+  it("взрослый с возрастом", () => {
+    expect(ageStated(["Записать маму 60 лет"], "adult")).toBe(true);
+  });
+
+  it("чужой возраст не в счёт", () => {
+    expect(ageStated(["хочу записать сына", "Мне 34 года"], "child")).toBe(false);
+    expect(ageStated(["сыну 7 лет"], "adult")).toBe(false);
+  });
+
+  it("несколько человек или возрастов — спрашиваем", () => {
+    expect(ageStated(["Сына 5 лет и дочку 8 лет"], "child")).toBe(false);
+    expect(ageStated(["Хочу записать детей, старшему 7 лет"], "child")).toBe(false);
+  });
+
+  it("сроки — не возраст", () => {
+    expect(ageStated(["Можно через 2 дня?"], "child")).toBe(false);
+    expect(ageStated(["хочу записать сына"], "child")).toBe(false);
   });
 });

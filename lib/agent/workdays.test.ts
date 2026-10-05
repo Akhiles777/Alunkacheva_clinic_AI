@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daysAsked, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
+import { daysAsked, lastNamedStaff, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
 
 /**
  * Живой диалог, из-за которого правило появилось: «работаете ли вы в выходные
@@ -187,5 +187,37 @@ describe("врач назван фамилией — двух Ирин разл�
 
   it("врача не назвали — никого не подставляем", () => {
     expect(uniqueStaffAsked("сколько стоит приём?", staff)).toBeNull();
+  });
+});
+
+describe("lastNamedStaff — врач из самой свежей реплики, где его называли", () => {
+  const team = [
+    { name: "Алункачева Ирина Алилгаджиевна" },
+    { name: "Мугадова Разият Ризвановна" },
+    { name: "Омарова Ирина" },
+  ];
+
+  it("двоякое «к Ирине» не уступает старой реплике про Разият", () => {
+    expect(lastNamedStaff(["В четверг после обеда", "хочу ещё раз к Ирине записаться", "Сколько стоит у Разият?"], team)).toBeNull();
+  });
+
+  it("«А в пятницу?» — врач из прошлой реплики", () => {
+    expect(lastNamedStaff(["А в пятницу?", "Можно в субботу к Ирине Алилгаджиевне?"], team)?.name).toBe(
+      "Алункачева Ирина Алилгаджиевна",
+    );
+  });
+
+  it("свежая реплика сильнее старой", () => {
+    expect(lastNamedStaff(["Лучше к Разият", "к Ирине Алилгаджиевне"], team)?.name).toBe("Мугадова Разият Ризвановна");
+  });
+
+  it("двоякое «Ирина» разрешается прошлой репликой о той же Ирине", () => {
+    expect(lastNamedStaff(["А Ирина в субботу принимает?", "к Ирине Алилгаджиевне"], team)?.name).toBe(
+      "Алункачева Ирина Алилгаджиевна",
+    );
+  });
+
+  it("врача не называли — неизвестен", () => {
+    expect(lastNamedStaff(["В четверг можно?", "Здравствуйте"], team)).toBeNull();
   });
 });

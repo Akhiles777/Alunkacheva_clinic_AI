@@ -173,6 +173,45 @@ export function uniqueStaffAsked<T extends { name: string }>(text: string, staff
   return top.length === 1 ? top[0].s : null;
 }
 
+/** Назван ли в тексте хоть кто-то из сотрудников — пусть и двояко («к Ирине»). */
+function staffMentioned(text: string, staff: { name: string }[]): boolean {
+  const norm = text.toLowerCase().replace(/ё/g, "е");
+  return staff.some((s) =>
+    s.name
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .split(/\s+/)
+      .filter((w) => w.length >= 4)
+      .some((w) => norm.includes(w.slice(0, Math.min(5, w.length - 1)))),
+  );
+}
+
+/**
+ * Врач из САМОЙ СВЕЖЕЙ реплики, где врача называли (реплики — от новых к
+ * старым). Названо двояко — врач неизвестен, а не взят из реплики постарше.
+ *
+ * Живой прогон 5 октября: «хочу ещё раз к Ирине записаться» → «В четверг после
+ * обеда» — и ответ «Да, Разият Ризвановна принимает в четверг». «К Ирине»
+ * двояко (Ирин две), и поиск ушёл в старую реплику про Разият: человеку назвали
+ * чужого врача.
+ */
+export function lastNamedStaff<T extends { name: string }>(newestFirst: string[], staff: T[]): T | null {
+  /**
+   * Свежая реплика назвала врача двояко — круг сужен до подходящих. Реплика
+   * постарше, где назван однозначно ОДИН из них, круг разрешает: «к Ирине
+   * Алилгаджиевне» → «А Ирина в субботу принимает?» — это всё та же Ирина. Врач
+   * вне круга («у Разият» вчера) — не ответ на сегодняшнее «к Ирине».
+   */
+  let circle: T[] | null = null;
+  for (const text of newestFirst) {
+    if (!staffMentioned(text, staff)) continue;
+    const unique = uniqueStaffAsked(text, staff);
+    if (unique) return !circle || circle.includes(unique) ? unique : null;
+    circle ??= staff.filter((s) => staffMentioned(text, [s]));
+  }
+  return null;
+}
+
 /**
  * Вопрос без слов о днях недели — для поиска услуги.
  *
