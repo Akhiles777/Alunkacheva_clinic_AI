@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bookingStep, complaintAsReason, dataAlreadyReceived, staffConfirmedBooking, type BookingState } from "./booking-flow";
+import { bookingStep, complaintAsReason, dataAlreadyReceived, staffConfirmedBooking, type BookingState, moneyIn, priceObjection } from "./booking-flow";
 
 const base: BookingState = {
   booking: true,
@@ -166,5 +166,27 @@ describe("диагноз как причина записи", () => {
     for (const t of ["У сына сколиоз, хотим к остеопату, поможет ли?", "У дочки ДЦП, можно ли ей остеопатию?"]) {
       expect(complaintAsReason(t, true, true), t).toBe(false);
     }
+  });
+});
+
+describe("человек называет другую цену", () => {
+  const ours = "Поняла, Саида, повторный приём остеопата для дочки — 5000 рублей, 30 минут.";
+
+  it("суммы в тексте", () => {
+    expect(moneyIn("Ирина говорила 3 тыс")).toEqual([3000]);
+    expect(moneyIn("5 000 ₽ и 2,5 т.р.")).toEqual([2500, 5000]);
+    expect(moneyIn("в 10:30, 12 октября")).toEqual([]);
+  });
+
+  it("«Ирина говорила 3 тыс» — возражение о цене", () => {
+    expect(priceObjection("Ирина говорила 3 тыс", ours)).toBe(true);
+    expect(priceObjection("Почему 5000? Было 3000", ours)).toBe(true);
+    expect(priceObjection("Мне Ирина говорила повторный бесплатно", ours)).toBe(true);
+  });
+
+  it("та же цена, вопрос о другой услуге или без суммы — не возражение", () => {
+    expect(priceObjection("Да, 5000 нормально", ours)).toBe(false);
+    expect(priceObjection("А капельница сколько?", ours)).toBe(false);
+    expect(priceObjection("Ирина говорила 3 тыс", "Здравствуйте! Чем помочь?")).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daysAsked, lastNamedStaff, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
+import { daysAsked, lastNamedStaff, relativeDaysAsked, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
 
 /**
  * Живой диалог, из-за которого правило появилось: «работаете ли вы в выходные
@@ -219,5 +219,18 @@ describe("lastNamedStaff — врач из самой свежей реплик�
 
   it("врача не называли — неизвестен", () => {
     expect(lastNamedStaff(["В четверг можно?", "Здравствуйте"], team)).toBeNull();
+  });
+});
+
+describe("сегодня и завтра — дни недели по часам клиники", () => {
+  // Вторник, 6 октября 2026, 09:32 по Москве.
+  const now = new Date("2026-10-06T06:32:00Z");
+  it("сегодня, завтра, послезавтра", () => {
+    expect(relativeDaysAsked("на сегодня есть окошки на детского ?", now, "Europe/Moscow")).toEqual([2]);
+    expect(relativeDaysAsked("а завтра?", now, "Europe/Moscow")).toEqual([3]);
+    expect(relativeDaysAsked("послезавтра можно", now, "Europe/Moscow")).toEqual([4]);
+  });
+  it("поздний вечер по UTC — уже следующий день по Москве", () => {
+    expect(relativeDaysAsked("сегодня", new Date("2026-10-06T22:30:00Z"), "Europe/Moscow")).toEqual([3]);
   });
 });

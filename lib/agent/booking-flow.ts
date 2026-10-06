@@ -177,3 +177,42 @@ export function dataAlreadyReceived(
   }
   return false;
 }
+
+/**
+ * Суммы в рублях из текста: «3 тыс», «3000», «5 000 ₽», «2,5 т.р.». Часы и даты
+ * («10:30», «12 октября») суммами не считаются: меньше 300 — не цена.
+ */
+export function moneyIn(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(/(?<![\p{L}\d])(\d+(?:[.,]\d+)?)\s*(?:тыс\p{L}*|т\.?\s?р\.?|к)(?![\p{L}\d])/giu)) {
+    out.push(Math.round(Number.parseFloat(m[1].replace(",", ".")) * 1000));
+  }
+  for (const m of text.matchAll(/(?<![\p{L}\d.,:])(\d{1,3}(?:[\s ]\d{3})+|\d{3,6})(?![\d.,:]|\s*(?:тыс|т\.?\s?р))/giu)) {
+    const n = Number(m[1].replace(/\D/g, ""));
+    if (n >= 300) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Человек называет другую цену, чем назвали мы: «Ирина говорила 3 тыс».
+ *
+ * Живой диалог 6 октября: агент назвал повторный приём по прайсу — 5000 ₽, мама
+ * ответила «Ирина говорила 3 тыс» и получила тот же ответ с той же ценой и ту
+ * же просьбу о данных. Спорить о цене агенту нечем: прайс у нас, а договорённость
+ * — у врача, и решает здесь администратор. Узнаём по сумме, которой не было в
+ * нашей последней реплике, рядом со словами «говорила», «сказали», «было»,
+ * «почему», «дешевле».
+ */
+const OBJECTION_CUE =
+  /(?<!\p{L})(?:говорил\p{L}*|сказал\p{L}*|называл\p{L}*|обещал\p{L}*|озвучил\p{L}*|писал\p{L}*|было|был[аи]?|же|ведь|вроде|почему|дешевле|дороже|разве)(?!\p{L})/iu;
+
+export function priceObjection(text: string, lastAgent: string): boolean {
+  if (!lastAgent || !OBJECTION_CUE.test(text)) return false;
+  const ours = moneyIn(lastAgent);
+  if (ours.length === 0) return false;
+  // «Ирина говорила, повторный бесплатно», «обещали скидку» — та же договорённость без суммы.
+  if (/(?<!\p{L})(?:бесплатн\p{L}*|без\s+оплат\p{L}*|скидк\p{L}*|даром)(?!\p{L})/iu.test(text)) return true;
+  const theirs = moneyIn(text);
+  return theirs.length > 0 && theirs.some((n) => !ours.includes(n));
+}

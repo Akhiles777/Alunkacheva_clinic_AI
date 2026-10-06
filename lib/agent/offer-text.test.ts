@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { doctorsWord, groupedOffer } from "./offer-text";
+import { doctorsWord, groupedOffer, mainKindOf } from "./offer-text";
 
 describe("цены по врачам", () => {
   it("взрослый и детский под врачом — как пишет администратор", () => {
@@ -45,5 +45,21 @@ describe("цены по врачам", () => {
   it("число врачей словами", () => {
     expect(doctorsWord(2)).toBe("два врача");
     expect(doctorsWord(7)).toBe("врачи");
+  });
+});
+
+describe("основная услуга — по людям, а не по сеансам", () => {
+  const visits = (kind: string, people: number, from = 0) =>
+    Array.from({ length: people }, (_, i) => ({ patientId: `${kind}${from + i}`, kind }));
+
+  it("курсы с десятками сеансов не перевешивают остеопатию", () => {
+    // Пять человек на БОС по 30 сеансов — пять человек, а не сто пятьдесят приёмов.
+    const bos = visits("терап", 5).flatMap((v) => Array.from({ length: 30 }, () => v));
+    expect(mainKindOf([...visits("остео", 40), ...bos, ...visits("внутр", 10)], 0.3)).toBe("остео");
+  });
+
+  it("ничья и россыпь — основной нет", () => {
+    expect(mainKindOf([...visits("остео", 10), ...visits("терап", 10)], 0.3)).toBeNull();
+    expect(mainKindOf([...visits("остео", 2), ...visits("терап", 1), ...visits("внутр", 1), ...visits("забор", 1), ...visits("массаж", 1), ...visits("узи", 1), ...visits("кт", 1)], 0.3)).toBeNull();
   });
 });

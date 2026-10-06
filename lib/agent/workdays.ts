@@ -65,6 +65,28 @@ export function daysAsked(text: string): number[] {
   return [...found].sort((a, b) => a - b);
 }
 
+/**
+ * «Сегодня», «завтра», «послезавтра» — дни недели по часам клиники.
+ *
+ * Только для строки «кто в этот день принимает» к записи: «на сегодня есть
+ * окошки?» (живой диалог 6 октября) — это вопрос и про врачей этого дня. В
+ * ветку прямых вопросов о расписании не идёт: «сегодня» там встречается и в
+ * «сегодня у меня запись», и в «я сегодня опоздаю».
+ */
+export function relativeDaysAsked(text: string, now: Date, tz: string): number[] {
+  const weekday = (offsetDays: number) => {
+    const name = new Intl.DateTimeFormat("en-GB", { timeZone: tz, weekday: "short" }).format(
+      new Date(now.getTime() + offsetDays * 86_400_000),
+    );
+    return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].indexOf(name) + 1;
+  };
+  const found = new Set<number>();
+  if (/(?<!\p{L})сегодня(?!\p{L})/iu.test(text)) found.add(weekday(0));
+  if (/(?<!\p{L})завтра(?!\p{L})/iu.test(text)) found.add(weekday(1));
+  if (/(?<!\p{L})послезавтра(?!\p{L})/iu.test(text)) found.add(weekday(2));
+  return [...found].sort((a, b) => a - b);
+}
+
 export interface StaffDays {
   name: string;
   specialty?: string | null;

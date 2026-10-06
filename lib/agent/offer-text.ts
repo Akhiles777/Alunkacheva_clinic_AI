@@ -94,3 +94,24 @@ export function doctorsWord(n: number): string {
   const words: Record<number, string> = { 2: "два врача", 3: "три врача", 4: "четыре врача" };
   return words[n] ?? "врачи";
 }
+
+/**
+ * Основной вид услуги клиники — по числу ЛЮДЕЙ, а не приёмов: курс из тридцати
+ * сеансов — один человек. Вид, к которому ходило больше всего людей, не меньше
+ * `share` из всех и строго больше любого другого; иначе основного нет.
+ */
+export function mainKindOf(visits: { patientId: string; kind: string | null }[], share: number): string | null {
+  const people = new Map<string, Set<string>>();
+  const everyone = new Set<string>();
+  for (const v of visits) {
+    everyone.add(v.patientId);
+    if (!v.kind) continue;
+    if (!people.has(v.kind)) people.set(v.kind, new Set());
+    people.get(v.kind)!.add(v.patientId);
+  }
+  const ranked = [...people.entries()].map(([kind, set]) => [kind, set.size] as const).sort((a, b) => b[1] - a[1]);
+  const [top, second] = ranked;
+  if (!top || everyone.size === 0) return null;
+  if (second && second[1] === top[1]) return null;
+  return top[1] / everyone.size >= share ? top[0] : null;
+}

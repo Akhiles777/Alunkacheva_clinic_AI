@@ -530,6 +530,49 @@ async function main() {
   }
 
   /**
+   * Мама, чья дочка уже была на детском приёме у Ирины, — ребёнок записан на
+   * карточку родителя, как это и делают в клинике. Живой диалог 6 октября:
+   * «Дочери говорили нужен повторный приём» — агент попросил анкету, хотя
+   * клиника девочку знает, а присланные «Баринова Сафия 7 лет Саида» не принял.
+   */
+  {
+    const phone = "+79280000006";
+    const existing = await prisma.patientPhone.findUnique({
+      where: { companyId_phone: { companyId: company.id, phone } },
+      select: { patientId: true },
+    });
+    const mom = existing
+      ? await prisma.patient.findUniqueOrThrow({ where: { id: existing.patientId } })
+      : await prisma.patient.create({
+          data: {
+            companyId: company.id,
+            name: "Саида Баринова",
+            firstSeenAt: new Date(Date.now() - 120 * 86_400_000),
+            phones: { create: { companyId: company.id, phone, isPrimary: true } },
+          },
+        });
+    await prisma.appointment.deleteMany({ where: { companyId: company.id, patientId: mom.id } });
+    const at = new Date(Date.now() - 40 * 86_400_000);
+    await prisma.appointment.create({
+      data: {
+        companyId: company.id,
+        patientId: mom.id,
+        staffId: staff.id,
+        primaryServiceId: service.id,
+        startAt: at,
+        endAt: new Date(at.getTime() + 40 * 60_000),
+        createdAtYclients: at,
+        updatedAtYclients: at,
+        durationMin: 40,
+        status: "ARRIVED",
+        revenue: 5000,
+        services: { create: { companyId: company.id, serviceId: service.id, priceCharged: 5000, durationMin: 40 } },
+      },
+    });
+    console.log(`пациент: Саида Баринова ${phone} — дочка была на детском приёме у Ирины`);
+  }
+
+  /**
    * Остеопатию в клинике ведут ДВОЕ, и в песочнице должно быть так же.
    *
    * Пока визиты были только у Ирины Алилгаджиевны, платформа считала, что

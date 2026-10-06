@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { intakePrompt, looksLikeIntake, DEFAULT_INTAKE_PROMPT, MAX_INSTRUCTION_CHARS, asksForIntake, inIntakeFlow, nameFromIntake,
+import { answersDataRequest, intakePrompt, looksLikeIntake, DEFAULT_INTAKE_PROMPT, MAX_INSTRUCTION_CHARS, asksForIntake, inIntakeFlow, nameFromIntake,
   asksForPersonalData,
   asksToChoose,
   asksWhom,
@@ -455,5 +455,27 @@ describe("обычная фраза с заглавных — не анкета"
     ]) {
       expect(looksLikeIntake(t), t).toBe(true);
     }
+  });
+});
+
+describe("ответ на нашу просьбу о данных — анкета", () => {
+  const ask = "Чтобы администратору не спрашивать заново — пришлите, пожалуйста, одним сообщением: ФИО ребёнка, его возраст, имя родителя и кратко причину обращения.";
+  // Имена сотрудников бывают теми же, что у пациентов: Сафия, Саида.
+  const staff = ["Алункачева Ирина Алилгаджиевна", "Сафия Магомедовна", "Саида Алиева"];
+
+  it("«Баринова Сафия 7 лет Саида» — анкета, даже если имена совпали с сотрудниками", () => {
+    expect(answersDataRequest("Баринова Сафия 7 лет Саида", ask, staff)).toBe(true);
+    expect(answersDataRequest("Алиева Марьям 5 лет, мама Зарема", ask, staff)).toBe(true);
+  });
+
+  it("возраст без имени, вопрос, смена врача — не анкета", () => {
+    expect(answersDataRequest("Ему 6 лет", ask, staff)).toBe(false);
+    expect(answersDataRequest("Сыну 7 лет", ask, staff)).toBe(false);
+    expect(answersDataRequest("А к Ирине можно, ей 7 лет?", ask, staff)).toBe(false);
+    expect(answersDataRequest("к Ирине Алилгаджиевне", ask, staff)).toBe(false);
+  });
+
+  it("без нашей просьбы — не наше правило", () => {
+    expect(answersDataRequest("Баринова Сафия 7 лет Саида", "Здравствуйте! Чем помочь?", staff)).toBe(false);
   });
 });
