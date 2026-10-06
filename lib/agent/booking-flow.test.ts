@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bookingStep, complaintAsReason, dataAlreadyReceived, staffConfirmedBooking, type BookingState, moneyIn, priceObjection } from "./booking-flow";
+import { bookingStep, complaintAsReason, dataAlreadyReceived, staffConfirmedBooking, type BookingState, moneyIn, priceObjection, withoutTimePreferenceQuestion } from "./booking-flow";
 
 const base: BookingState = {
   booking: true,
@@ -188,5 +188,23 @@ describe("человек называет другую цену", () => {
     expect(priceObjection("Да, 5000 нормально", ours)).toBe(false);
     expect(priceObjection("А капельница сколько?", ours)).toBe(false);
     expect(priceObjection("Ирина говорила 3 тыс", "Здравствуйте! Чем помочь?")).toBe(false);
+  });
+});
+
+describe("время определяет администратор — пациента о нём не спрашиваем", () => {
+  it("вопрос об удобном времени убирается, остальное остаётся", () => {
+    expect(
+      withoutTimePreferenceQuestion(
+        "Поняла, детский приём остеопата к Ирине Алилгаджиевне — 5000 рублей, 30 минут. Какой день и время вам удобны?",
+      ),
+    ).toBe("Поняла, детский приём остеопата к Ирине Алилгаджиевне — 5000 рублей, 30 минут.");
+    expect(withoutTimePreferenceQuestion("Хорошо.\n\nКогда вам удобно прийти?")).toBe("Хорошо.");
+    expect(withoutTimePreferenceQuestion("На какое время вас записать?")).toBe("");
+  });
+
+  it("утверждения и другие вопросы не трогаем", () => {
+    const t = "Время подберёт администратор — он напишет здесь же. Приём для взрослого или для ребёнка?";
+    expect(withoutTimePreferenceQuestion(t)).toBe(t);
+    expect(withoutTimePreferenceQuestion("К кому из врачей записать?")).toBe("К кому из врачей записать?");
   });
 });

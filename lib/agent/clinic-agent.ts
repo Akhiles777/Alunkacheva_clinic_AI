@@ -122,7 +122,13 @@ import { asksAboutAge, infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusa
 import { focusedAnswer } from "./focused-answer";
 import { audienceMentioned, unaskedAudience, withoutUnaskedAudience } from "./unasked-group";
 import { ageStated, bothAges, matchServices, onlyWhomStated, whomAcross, whomFor, type Whom } from "./service-match";
-import { complaintAsReason, dataAlreadyReceived, priceObjection, staffConfirmedBooking } from "./booking-flow";
+import {
+  complaintAsReason,
+  dataAlreadyReceived,
+  priceObjection,
+  staffConfirmedBooking,
+  withoutTimePreferenceQuestion,
+} from "./booking-flow";
 import { addressableName } from "./person-name";
 import { asksRepeatVisit, lastVisit, repeatDoctor, type LastVisit, type VisitedDoctor } from "./repeat-visit";
 import { doctorsWord, groupedOffer, mainKindOf } from "./offer-text";
@@ -2849,6 +2855,13 @@ async function bookingTail(
     assumedQuery?: string | null;
   },
 ): Promise<{ text: string; step: BookingStep | null }> {
+  /**
+   * Время приёма определяет администратор (заказчик, 6 октября: «почему он
+   * предлагает пациенту выбрать время, это определяет админ»). Вопрос модели
+   * «какой день и время вам удобны?» из разговора о записи убирается — вместо
+   * него идёт следующий шаг записи.
+   */
+  input = { ...input, answer: withoutTimePreferenceQuestion(input.answer) };
   const services = await getServices(companyId).catch(() => []);
 
   /**
@@ -2897,10 +2910,16 @@ async function bookingTail(
    * приём» — это девочка, которая у нас уже была (живой диалог 6 октября: агент
    * попросил анкету и на присланные данные попросил её снова).
    */
+  /**
+   * Записывают ребёнка не повторно — данные нужны, сколько бы детских визитов
+   * ни было в карточке родителя: это может быть другой ребёнок (живой диалог 6
+   * октября: «Детский» → агент спросил удобное время вместо данных). Себя
+   * постоянный пациент записывает без анкеты, как прежде.
+   */
   const returning =
     input.booking && !input.dataDone && input.patientId && repeat
       ? true
-      : input.booking && !input.dataDone && input.patientId
+      : input.booking && !input.dataDone && input.patientId && whom !== "child"
       ? await returningSelf(
           companyId,
           input.patientId,
@@ -2988,11 +3007,19 @@ async function bookingTail(
   });
   if (!step) {
     /**
-     * Всё известно, а данные у нас — остаётся время. «Повторный приём у Ирины —
-     * 8000 ₽» и тишина не говорят человеку, что делать дальше; спрашиваем то,
-     * что администратор всё равно спросит первым.
+     * Всё известно, а данные у нас — остаётся время, и его определяет
+     * администратор. «Повторный приём у Ирины — 8000 ₽» и тишина не говорят
+     * человеку, что дальше, — говорим, что время подберёт администратор. Само
+     * время у пациента НЕ спрашиваем (заказчик, 6 октября); назвал сам —
+     * передаём его пожелание.
      */
     if (returning && !/(?<!\p{L})(?:удобн\p{L}*|когда\s+вам)(?!\p{L})/iu.test(input.answer)) {
+      /**
+       * Клиника человека знает — просьба модели прислать ФИО и возраст лишняя и
+       * спорит с нашим «время подберёт администратор» (прогон 6 октября:
+       * «Чтобы записать вас, нужны ваши ФИО, возраст…» постоянной пациентке).
+       */
+      input = { ...input, answer: withoutPersonalDataRequest(input.answer) };
       /**
        * День или время человек уже назвал («хочу ещё раз к Ирине в субботу») —
        * не спрашиваем их снова, а говорим, принимает ли врач в этот день.
@@ -3024,11 +3051,30 @@ async function bookingTail(
               ? `Время${cost} подтвердит администратор — ваше пожелание передал(а) ему.`
               : "Время подберёт администратор — ваше пожелание передал(а) ему."
           : adminSaid
-            ? `${cost ? "Стоимость повторного приёма он тоже подтвердит. " : ""}Подскажите, какой день и время вам удобны.`
+            ? cost
+              ? "Стоимость повторного приёма он тоже подтвердит."
+              : ""
             : cost
-              ? `Время${cost} подтвердит администратор — подскажите, какой день и время вам удобны, передам ему.`
-              : "Время подберёт администратор — подскажите, какой день и время вам удобны, передам ему.";
-      return { text: [input.answer, note, ask].filter(Boolean).join("\n\n"), step: null };
+              ? `Время${cost} подтвердит администратор — он напишет здесь же.`
+              : "Время подберёт администратор — он напишет здесь же.";
+      /**
+       * Цена — всегда, и постоянному тоже: «А можно на БОС-терапию записаться?»
+       * получало одно «время подберёт администратор» — у БОС три строки прайса,
+       * одна не выбиралась, и цена не звучала вовсе.
+       */
+      const rowsNow = once(doctorRows.length > 0 ? doctorRows : forWhom.length > 0 ? forWhom : anyAge);
+      const pricesNow =
+        !hasPrice(input.answer) && rowsNow.length > 0 && rowsNow.length <= 4
+          ? groupedOffer(
+              rowsNow.map((r) => {
+                const names = ownersByRow.get(r.id) ?? [];
+                const owner = choice?.doctor && doctorRows.some((d) => d.id === r.id) ? choice.doctor.name : names.length === 1 ? names[0] : null;
+                return { title: r.title, price: r.price, durationMin: r.durationMin, owner: owner ? shortName(owner) : null };
+              }),
+              whomMatters,
+            )
+          : "";
+      return { text: [input.answer, pricesNow, note, ask].filter(Boolean).join("\n\n"), step: null };
     }
     return { text: input.answer, step: null };
   }
@@ -3106,8 +3152,17 @@ async function bookingTail(
   // Возраст уже назван («сына 6 лет») — не переспрашиваем (`ageStated`).
   const ageKnown = step === "data" && !both && ageStated(newestFirst, whom);
   // Вес — только на остеопатии, по требованию клиники (как и в `intakeAsk`).
+  // Остеопатию могли назвать и мы («Если вы про остеопатию»), а человек ответил «Детский» — смотрим и на выбор.
+  const osteoChosen =
+    !!choice &&
+    (choice.service ? [choice.service] : choice.candidates).length > 0 &&
+    (choice.service ? [choice.service] : choice.candidates).every((r) => /остеопат/iu.test(r.title));
   const weight =
-    step === "data" && ask && (await osteopathyInTexts(companyId, input.patientTexts).catch(() => false)) ? ", вес" : "";
+    step === "data" &&
+    ask &&
+    (osteoChosen || (await osteopathyInTexts(companyId, input.patientTexts).catch(() => false)))
+      ? ", вес"
+      : "";
   /**
    * Вместо «на какую услугу записываемся?» — основная услуга с ценами по врачам
    * (заказчик, 5 октября: «в 90% это остеопатия, не заставлять клиента много

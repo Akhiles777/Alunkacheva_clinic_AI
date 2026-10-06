@@ -535,8 +535,11 @@ async function main() {
    * «Дочери говорили нужен повторный приём» — агент попросил анкету, хотя
    * клиника девочку знает, а присланные «Баринова Сафия 7 лет Саида» не принял.
    */
-  {
-    const phone = "+79280000006";
+  for (const { phone, name } of [
+    { phone: "+79280000006", name: "Саида Баринова" },
+    // Вторая такая мама — для разговора, где по карточке видно детей, но записывают не повторно.
+    { phone: "+79280000007", name: "Зуля Магомедова" },
+  ]) {
     const existing = await prisma.patientPhone.findUnique({
       where: { companyId_phone: { companyId: company.id, phone } },
       select: { patientId: true },
@@ -546,7 +549,7 @@ async function main() {
       : await prisma.patient.create({
           data: {
             companyId: company.id,
-            name: "Саида Баринова",
+            name,
             firstSeenAt: new Date(Date.now() - 120 * 86_400_000),
             phones: { create: { companyId: company.id, phone, isPrimary: true } },
           },
@@ -569,7 +572,7 @@ async function main() {
         services: { create: { companyId: company.id, serviceId: service.id, priceCharged: 5000, durationMin: 40 } },
       },
     });
-    console.log(`пациент: Саида Баринова ${phone} — дочка была на детском приёме у Ирины`);
+    console.log(`пациент: ${name} ${phone} — ребёнок был на детском приёме у Ирины`);
   }
 
   /**

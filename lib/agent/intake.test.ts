@@ -471,6 +471,8 @@ describe("ответ на нашу просьбу о данных — анкет
   it("возраст без имени, вопрос, смена врача — не анкета", () => {
     expect(answersDataRequest("Ему 6 лет", ask, staff)).toBe(false);
     expect(answersDataRequest("Сыну 7 лет", ask, staff)).toBe(false);
+    expect(answersDataRequest("Для сына, ему 8 лет", ask, staff)).toBe(false);
+    expect(answersDataRequest("Хорошо. Моей дочке 5 лет", ask, staff)).toBe(false);
     expect(answersDataRequest("А к Ирине можно, ей 7 лет?", ask, staff)).toBe(false);
     expect(answersDataRequest("к Ирине Алилгаджиевне", ask, staff)).toBe(false);
   });

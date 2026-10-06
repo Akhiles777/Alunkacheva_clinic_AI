@@ -216,3 +216,27 @@ export function priceObjection(text: string, lastAgent: string): boolean {
   const theirs = moneyIn(text);
   return theirs.length > 0 && theirs.some((n) => !ours.includes(n));
 }
+
+/**
+ * Вопрос пациенту о предпочтительном дне и времени — убираем из разговора о
+ * записи. Время определяет администратор (заказчик, 6 октября), и вопрос
+ * «какой день и время вам удобны?» обещает выбор, которого у агента нет.
+ * Убираются только вопросы (со знаком «?») про удобное время и день; «время
+ * подберёт администратор» и прочие утверждения остаются.
+ */
+const TIME_PREFERENCE =
+  /(?<!\p{L})(?:удобн\p{L}*|како[ей]\s+(?:время|день|число|дату)|какой\s+день|когда\s+(?:вам|вы|сможете|хотите|планируете|хотели)|на\s+какое\s+(?:время|число)|в\s+какое\s+время|какие\s+дни)(?!\p{L})/iu;
+
+export function withoutTimePreferenceQuestion(text: string): string {
+  return text
+    .split("\n")
+    .map((line) =>
+      line
+        .split(/(?<=[.!?…])\s+/)
+        .filter((sentence) => !(sentence.includes("?") && TIME_PREFERENCE.test(sentence)))
+        .join(" "),
+    )
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
