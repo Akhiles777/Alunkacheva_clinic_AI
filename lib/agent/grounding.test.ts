@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { numbersIn, ungroundedNumbers, groundedInFacts, ungroundedLinks, withoutUngroundedSentences } from "./grounding";
+import { numbersIn, ungroundedNumbers, groundedInFacts, ungroundedLinks, withoutUngroundedSentences, ungroundedMoneyTerms, withoutUngroundedMoneyTerms } from "./grounding";
 
 const CONTEXT = [
   "Услуги и цены:",
@@ -103,5 +103,24 @@ describe("предложение с числом не из справки", () =
     expect(kept).toContain("5000 ₽");
     expect(kept).not.toContain("13000");
     expect(ungroundedNumbers(kept, context)).toEqual([]);
+  });
+});
+
+describe("денежные условия — только из справки", () => {
+  const reference = "Если планы изменились, предупредите нас не позже чем за 3 часа до приёма — тогда мы успеем предложить время другому пациенту.";
+
+  it("придуманная платная отмена убирается, справка остаётся", () => {
+    const answer =
+      "Если планы изменились, предупредите нас не позже чем за 3 часа до приёма — тогда мы успеем предложить время другому пациенту. Отмена позже этого времени может быть платной, но точные условия уточните у администратора.";
+    expect(ungroundedMoneyTerms(answer, reference)).toEqual(["платной"]);
+    expect(withoutUngroundedMoneyTerms(answer, reference)).toBe(
+      "Если планы изменились, предупредите нас не позже чем за 3 часа до приёма — тогда мы успеем предложить время другому пациенту.",
+    );
+  });
+
+  it("условие из справки и «бесплатно» не трогаем", () => {
+    const ref = "Предоплата 1000 ₽ при записи на курс. Консультация бесплатная? Нет.";
+    expect(ungroundedMoneyTerms("При записи на курс нужна предоплата 1000 ₽.", ref)).toEqual([]);
+    expect(ungroundedMoneyTerms("Первичная диагностика бесплатно.", reference)).toEqual([]);
   });
 });

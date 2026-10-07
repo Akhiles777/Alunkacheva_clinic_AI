@@ -4,6 +4,7 @@ import {
   asksForSlot,
   cantCome,
   complainsAboutClinic,
+  deferredBooking,
   medical,
   runningLate,
   scheduleTopic,
@@ -549,5 +550,36 @@ describe("«дочку» — не «до»", () => {
     expect(wantsReschedule("Можно пожалуйста после 12?")).toBe(true);
     expect(wantsReschedule("хочу до обеда, если можно")).toBe(true);
     expect(wantsReschedule("Можно перенести на четверг?")).toBe(true);
+  });
+});
+
+describe("отмена записи — в любом порядке слов", () => {
+  it("живой диалог 7 октября и другие формы", () => {
+    for (const t of [
+      "Здравствуйте, можете пожалуйста запись на вторник отменить.\nЯ позже запишусь",
+      "Запись на завтра отмените, пожалуйста",
+      "Можно отменить мой приём в четверг?",
+      "Отмените пожалуйста",
+      "Прошу отменить визит",
+      "Мы не сможем прийти, ребёнок заболел, температура",
+    ]) {
+      expect(cantCome(t), t).toBe(true);
+      expect(wantsToBook(t), t).toBe(false);
+    }
+  });
+
+  it("«позже запишусь» — не просьба записать сейчас", () => {
+    for (const t of ["Я позже запишусь", "Потом сама запишусь", "Запишусь попозже, спасибо"]) {
+      expect(deferredBooking(t), t).toBe(true);
+      expect(wantsToBook(t), t).toBe(false);
+    }
+  });
+
+  it("обычная запись и вопрос об условиях отмены — не отмена", () => {
+    for (const t of ["Хочу записаться к остеопату", "Запишите меня на пятницу", "Запишусь к Ирине на четверг"]) {
+      expect(cantCome(t), t).toBe(false);
+      expect(wantsToBook(t), t).toBe(true);
+    }
+    expect(cantCome("За сколько дней можно бесплатно отменить, если что?")).toBe(false);
   });
 });

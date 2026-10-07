@@ -114,3 +114,33 @@ export function ungroundedLinks(answer: string, context: string): string[] {
     (link) => !known.some((k) => link === k || link.startsWith(`${k}/`)),
   );
 }
+
+/**
+ * Денежные условия, которых нет в справке: «отмена позже может быть платной»,
+ * «предоплата не возвращается», «удерживается штраф».
+ *
+ * Прогон 7 октября: на «за сколько можно бесплатно отменить?» модель ответила
+ * справкой («предупредите за 3 часа») и приписала от себя «отмена позже этого
+ * времени может быть платной». В справке клиники об этом ни слова. Число такая
+ * фраза может и не содержать, поэтому проверка чисел её не видит, а для
+ * пациента это условие клиники про его деньги. Каждое такое слово обязано
+ * стоять в справке; нет — предложение убирается. Слова пациента основанием не
+ * считаются, как и везде.
+ */
+const MONEY_TERM =
+  /(?<!\p{L})(?:платн\p{L}*|штраф\p{L}*|удерж\p{L}*|предоплат\p{L}*|неустойк\p{L}*|невозвратн\p{L}*|не\s+возвра[щт]\p{L}*|списыва\p{L}*|списан\p{L}*|оплачива\p{L}*)(?!\p{L})/giu;
+
+export function ungroundedMoneyTerms(answer: string, reference: string): string[] {
+  const ref = reference.toLowerCase().replace(/ё/g, "е");
+  const stem = (w: string) => w.toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").slice(0, 6);
+  return [...answer.matchAll(MONEY_TERM)].map((m) => m[0]).filter((w) => !ref.includes(stem(w)));
+}
+
+export function withoutUngroundedMoneyTerms(answer: string, reference: string): string {
+  return answer
+    .split(/(?<=[.!?\n])/)
+    .filter((sentence) => ungroundedMoneyTerms(sentence, reference).length === 0)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

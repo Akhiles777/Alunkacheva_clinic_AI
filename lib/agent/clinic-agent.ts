@@ -43,6 +43,7 @@ import {
   asksForSlot,
   asksHowToBook,
   cantCome,
+  deferredBooking,
   complainsAboutClinic,
   medical,
   personalTopic,
@@ -115,7 +116,13 @@ import {
 import { forMessenger } from "./messenger-text";
 import { keepOneQuestion } from "./one-question";
 import { FLOOD_WINDOW_MS, floodJustStarted, flooding } from "./flood";
-import { ungroundedLinks, ungroundedNumbers, withoutUngroundedSentences } from "./grounding";
+import {
+  ungroundedLinks,
+  ungroundedMoneyTerms,
+  ungroundedNumbers,
+  withoutUngroundedMoneyTerms,
+  withoutUngroundedSentences,
+} from "./grounding";
 import { absoluteUrl, appUrl } from "@/lib/server/app-url";
 import { inventedIndication } from "./indications";
 import { asksAboutAge, infantRulesFirst, ungroundedAgeLimit, ungroundedAgeRefusal, withoutAgeRefusal } from "./age-limit";
@@ -4981,7 +4988,15 @@ async function replyToQuestion(
       wantsToBook(own) || asksForSlot(own),
     ));
 
-  if (medical(own) && !(inIntakeFlow(said) && !hasQuestion(own)) && !reasonForBooking) {
+  /**
+   * «Мы не сможем прийти, ребёнок заболел, температура» — это отмена, а не
+   * вопрос о здоровье: человек предупреждает, чтобы запись не пропала. Ответ
+   * «уточните у специалиста» здесь мимо (проверка 7 октября). Вопрос в том же
+   * сообщении («…что делать?») возвращает медицинскую ветку.
+   */
+  const cancelsForIllness = cantCome(own) && !hasQuestion(own);
+
+  if (medical(own) && !(inIntakeFlow(said) && !hasQuestion(own)) && !reasonForBooking && !cancelsForIllness) {
     const match = matchKnowledge(text, knowledgeRows);
     if (!confidentMatch(match)) {
       await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Медицинский вопрос без готового ответа").catch(() => {});
@@ -5556,10 +5571,23 @@ async function replyToQuestion(
      * «поняла, передал(а)». Ровно так и вышло в живой переписке.
      */
     if (cantCome(own)) {
+      /**
+       * «Выздоравливайте!» — только тому, кто сказал о болезни: на «отмените
+       * запись, я позже запишусь» оно читается как ответ не на то сообщение.
+       */
+      const ill =
+        /(?<!\p{L})(?:бол[еи]\p{L}*|заболел\p{L}*|температур\p{L}*|простыл\p{L}*|простуд\p{L}*|озноб\p{L}*|плохо\s+себя|орви|грипп\p{L}*|кашл\p{L}*|рвот\p{L}*|недомога\p{L}*)(?!\p{L})/iu.test(
+          own,
+        );
+      const tail = ill
+        ? " Выздоравливайте!"
+        : deferredBooking(own)
+          ? " Когда решите записаться снова — напишите сюда."
+          : "";
       return respond(ctx, conversation.id, {
         text:
           "Поняла, спасибо, что предупредили. Передал(а) администратору — он отменит или перенесёт " +
-          "запись, как вам удобно, и напишет здесь же. Выздоравливайте!",
+          `запись, как вам удобно, и напишет здесь же.${tail}`,
       });
     }
 
@@ -5943,6 +5971,26 @@ async function replyToQuestion(
       invented = [];
     } else {
       console.error(`[agent] ответ отклонён: чисел нет в справке — ${invented.join(", ")}`);
+    }
+  }
+
+  /**
+   * Денежное условие не из справки — «отмена позже может быть платной»
+   * (`ungroundedMoneyTerms`, прогон 7 октября). Убираем предложение; не осталось
+   * ответа по существу — отклоняем, как ответ с выдуманной ценой. Основание —
+   * только справка клиники, не слова пациента.
+   */
+  if (answer && invented.length === 0) {
+    const money = ungroundedMoneyTerms(answer, reference);
+    if (money.length > 0) {
+      const kept = withoutUngroundedMoneyTerms(answer, reference);
+      if (kept.length >= MEANINGFUL_ANSWER_CHARS) {
+        console.warn(`[agent] из ответа убрано денежное условие не из справки — ${money.join(", ")}`);
+        answer = kept;
+      } else {
+        console.error(`[agent] ответ отклонён: денежного условия нет в справке — ${money.join(", ")}`);
+        invented = money;
+      }
     }
   }
 
