@@ -115,10 +115,11 @@ const NOT_A_NAME = new Set([
  * «Ризвановна», и «Алункачевой» вместо «Алункачева».
  */
 function staffWordsOf(names: string[]): string[] {
+  // Основа короче слова на букву: «Ирина» узнаётся и в «Ирине», «Ириной», «Ирину».
   return names
     .flatMap((n) => n.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}]+/u))
     .filter((w) => w.length >= 4)
-    .map((w) => w.slice(0, 5));
+    .map((w) => w.slice(0, Math.min(5, w.length - 1)));
 }
 
 function isStaffWord(word: string, staffWords: string[]): boolean {
@@ -233,7 +234,12 @@ const NOT_A_NAME_IN_ANSWER =
 const AGE_IN_ANSWER = /(?<![\p{L}\d])\d{1,2}(?:[.,]\d)?\s*(?:лет|год\p{L}*|мес\p{L}*|г\.)(?!\p{L})/iu;
 
 export function answersDataRequest(text: string, lastAgent: string, staffNames: string[] = []): boolean {
-  if (!lastAgent || !(asksForIntake(lastAgent) || asksForPersonalData(lastAgent))) return false;
+  /**
+   * Только настоящая просьба о ДАННЫХ (ФИО, возраст), а не «для кого приём»:
+   * на вопрос «к кому и для кого?» ответ «Ребенку 3 года к Ирине» — выбор, а не
+   * анкета (прогон 8 октября: вместо цены ушёл один запрос согласия).
+   */
+  if (!lastAgent || !asksForPersonalData(lastAgent)) return false;
   const t = text.trim();
   if (t.length < 8 || /\?/.test(t)) return false;
   const staffWords = staffWordsOf(staffNames);

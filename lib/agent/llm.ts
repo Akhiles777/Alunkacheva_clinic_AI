@@ -200,6 +200,8 @@ const PATIENT_PROMPT = [
 export interface Turn {
   role: "user" | "assistant";
   content: string;
+  /** Когда сказано — правила записи смотрят только текущий разговор (`sessionOf`). Модели не уходит. */
+  at?: Date;
 }
 
 /**
@@ -667,7 +669,7 @@ async function askOnce(input: {
            * начале разговора, к середине становился незнакомым — и агент честно
            * отвечал, что имени не знает.
            */
-          ...history.slice(-20),
+          ...history.slice(-20).map(({ role, content }) => ({ role, content })),
           { role: "user", content: question },
         ],
       }),

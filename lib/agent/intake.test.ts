@@ -477,6 +477,12 @@ describe("ответ на нашу просьбу о данных — анкет
     expect(answersDataRequest("к Ирине Алилгаджиевне", ask, staff)).toBe(false);
   });
 
+  it("вопрос «к кому и для кого» — не просьба о данных", () => {
+    const offer = "К кому из врачей записать и для кого приём — для взрослого или для ребёнка? Если нужна другая услуга — напишите, какая.";
+    expect(answersDataRequest("Ребенку 3 года к Ирине", offer, staff)).toBe(false);
+    expect(answersDataRequest("Ребенку 3 года к Ирине", ask, staff)).toBe(false);
+  });
+
   it("без нашей просьбы — не наше правило", () => {
     expect(answersDataRequest("Баринова Сафия 7 лет Саида", "Здравствуйте! Чем помочь?", staff)).toBe(false);
   });

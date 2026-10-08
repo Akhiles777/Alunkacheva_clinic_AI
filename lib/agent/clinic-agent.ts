@@ -822,12 +822,35 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
     where,
     orderBy: { createdAt: "desc" },
     take: 21,
-    select: { direction: true, body: true },
+    select: { direction: true, body: true, createdAt: true },
   });
   return rows
     .reverse()
     .slice(0, -1) // последнее — текущий вопрос, он передаётся отдельно
-    .map((m) => ({ role: m.direction === "IN" ? ("user" as const) : ("assistant" as const), content: m.body }));
+    .map((m) => ({
+      role: m.direction === "IN" ? ("user" as const) : ("assistant" as const),
+      content: m.body,
+      at: m.createdAt,
+    }));
+}
+
+/**
+ * Текущий разговор — реплики за последние `SESSION_HOURS` часов.
+ *
+ * История у агента общая на пациента и длинная (60 дней): модели она нужна,
+ * чтобы помнить человека. Но решать по ней, ДЛЯ КОГО запись, к какому врачу и
+ * на какой день, нельзя: мама на прошлой неделе спрашивала про сына, а сегодня
+ * пишет «хотела записаться» — и агент сам решал «ребёнок» и называл одни
+ * детские цены (заказчик, 8 октября: «он это даже не уточнил»). Так же
+ * вчерашнее «у Разият» перебивало сегодняшнее «к Ирине», а «завтра» из старой
+ * реплики считалось от сегодняшнего дня. Правилам записи — только текущий
+ * разговор; модели — вся история, как прежде.
+ */
+const SESSION_HOURS = 12;
+
+function sessionOf(turns: Turn[], now = new Date()): Turn[] {
+  const since = now.getTime() - SESSION_HOURS * 3_600_000;
+  return turns.filter((t) => !t.at || t.at.getTime() >= since);
 }
 
 /**
@@ -995,10 +1018,12 @@ async function chosenFacts(companyId: string, conversationId: string): Promise<s
 
 /** Выбор по словам пациента в этой переписке (без цитат), свежие первыми. */
 async function conversationChoice(companyId: string, conversationId: string): Promise<TalkChoice> {
+  // Только текущий разговор (`sessionOf`): выбор недельной давности сегодняшнюю запись не решает.
+  const since = new Date(Date.now() - SESSION_HOURS * 3_600_000);
   const [rows, conv, ours] = await Promise.all([
     prisma.message
       .findMany({
-        where: { conversationId, direction: "IN", deletedAt: null },
+        where: { conversationId, direction: "IN", deletedAt: null, createdAt: { gte: since } },
         orderBy: { createdAt: "desc" },
         take: 10,
         select: { body: true },
@@ -1009,7 +1034,7 @@ async function conversationChoice(companyId: string, conversationId: string): Pr
       .catch(() => null),
     prisma.message
       .findMany({
-        where: { conversationId, direction: "OUT", deletedAt: null },
+        where: { conversationId, direction: "OUT", deletedAt: null, createdAt: { gte: since } },
         orderBy: { createdAt: "desc" },
         take: 4,
         select: { body: true },
@@ -1072,6 +1097,19 @@ async function ownMessageByQuote(conversationId: string, quote: string): Promise
     })
     .catch(() => []);
   return rows.find((r) => r.body.replace(/\s+/g, " ").trim().startsWith(head))?.body ?? null;
+}
+
+/**
+ * Наша последняя реплика просила ДАННЫЕ — ФИО, возраст, вес, — а не «для кого
+ * приём». `inIntakeFlow` шире: он нужен, чтобы ответ на наш вопрос о жалобе не
+ * считался медицинским вопросом. Шаг данных он закрывать не должен: «напишите,
+ * для кого приём» в ответе о цене считалось просьбой о данных, и следующая
+ * просьба записать проходила без вопроса «к какой Ирине» и без анкеты (прогон
+ * 8 октября).
+ */
+function askedForDataLast(said: { role: string; content: string }[]): boolean {
+  const last = [...said].reverse().find((t) => t.role === "assistant")?.content ?? "";
+  return asksForPersonalData(last);
 }
 
 /** Слова пациента, свежие первыми: текущая реплика и его прошлые (без цитат). */
@@ -2960,7 +2998,16 @@ async function bookingTail(
    * взрослый. Вариант один — спрашивать нечего, цена от ответа не изменится.
    */
   const childish = (title: string) => /(?<!\p{L})(дет[си]|ребен|ребён|подрост)/iu.test(title.toLowerCase());
-  const whomMatters = anyAge.some((s) => childish(s.title)) && anyAge.some((s) => !childish(s.title));
+  /**
+   * Услуга не названа, а врач назван («хочу записаться к Ирине Алилгаджиевне»)
+   * — делится ли приём по возрасту, решают его услуги (`choice.ageSplit`).
+   * Прежде строк выбора не было вовсе, вопрос «для кого» пропускался, а цены
+   * шли голым списком строк прайса (прогон 8 октября: это прятала догадка
+   * «записаться = взрослый»).
+   */
+  const whomMatters =
+    (anyAge.some((s) => childish(s.title)) && anyAge.some((s) => !childish(s.title))) ||
+    (anyAge.length === 0 && !!choice?.doctor && choice.ageSplit);
 
   /** Кто ведёт подходящие услуги — по имени в строке прайса и по визитам. */
   const providers = new Set<string>();
@@ -2971,10 +3018,11 @@ async function bookingTail(
     for (const name of names) providers.add(name);
   }
   /** День, названный в свежих репликах: «можно ли на субботу?», «хочу в пятницу». */
+  // «Завтра» считается от СЕГОДНЯ только в этой реплике: в прошлой оно значило другой день.
   const daysNamed =
     newestFirst
       .slice(0, 2)
-      .map((t) => [...new Set([...daysAsked(t), ...relativeDaysAsked(t, new Date(), CLINIC_TZ)])])
+      .map((t, i) => [...new Set([...daysAsked(t), ...(i === 0 ? relativeDaysAsked(t, new Date(), CLINIC_TZ) : [])])])
       .find((d) => d.length > 0) ?? [];
   /** Одинаковые строки одного врача — одной строкой (`sameOfferOnce`). */
   const once = <T extends ServiceRow>(rows: T[]): T[] =>
@@ -3529,7 +3577,7 @@ async function bookingByCode(
      * данные уже ПРИСЛАНЫ и приняты (`dataAlreadyReceived`), второй раз их не
      * просим (живой диалог 5 октября).
      */
-    dataDone: dataAlreadyReceived(said, own) || (!stepAnswer && inIntakeFlow(said)),
+    dataDone: dataAlreadyReceived(said, own) || (!stepAnswer && askedForDataLast(said)),
     refused: false,
     whom: talkWhom(patientTexts),
     assumedQuery: offeredKind(said),
@@ -3640,8 +3688,13 @@ async function slotHandoverText(
    * «На сегодня есть окошки?», «можно в субботу?» — кто из врачей в этот день
    * принимает, рядом с ценами (живой диалог 6 октября).
    */
+  // Текущая реплика первой, дальше — от новых к старым (patientTexts идут от старых к новым).
   const slotDays = [
-    ...new Set(patientTexts.slice(0, 2).flatMap((t) => [...daysAsked(t), ...relativeDaysAsked(t, new Date(), CLINIC_TZ)])),
+    ...new Set(
+      [patientTexts[0] ?? "", ...patientTexts.slice(1).reverse()]
+        .slice(0, 2)
+        .flatMap((t, i) => [...daysAsked(t), ...(i === 0 ? relativeDaysAsked(t, new Date(), CLINIC_TZ) : [])]),
+    ),
   ].sort((a, b) => a - b);
   const slotDayNote = (names: string[]) => dayNoteFor(companyId, slotDays, names, null, "").catch(() => "");
 
@@ -4734,7 +4787,9 @@ async function replyToQuestion(
     return respond(ctx, conversation.id, { text: "Передал(а) администратору — он ответит здесь же." });
   }
 
-  const said = await recentTurns(conversation.id);
+  // Модели — вся история; правилам записи — только текущий разговор (`sessionOf`).
+  const history = await recentTurns(conversation.id);
+  const said = sessionOf(history);
 
   /**
    * «Хорошо», «спасибо», «до свидания» — отвечаем сами.
@@ -5134,7 +5189,12 @@ async function replyToQuestion(
    * вовсе и идём обычной дорогой: пустая настройка не значит «не работает».
    */
   const askedDays = daysAsked(own);
-  if (askedDays.length > 0) {
+  /**
+   * Отмена и перенос — не вопрос о расписании врача: «запись на вторник
+   * отменить» после разговора об Ирине получало «Да, Ирина Алилгаджиевна
+   * принимает во вторник» (прогон 8 октября). Их ведёт своя ветка ниже.
+   */
+  if (askedDays.length > 0 && !cantCome(own) && !wantsReschedule(own)) {
     const doctors = await prisma.staff.findMany({
       where: { companyId: ctx.companyId, isActive: true, deletedAt: null },
       orderBy: { name: "asc" },
@@ -5415,11 +5475,22 @@ async function replyToQuestion(
   if (scheduleTopic(own)) {
     await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Вопрос по записи или расписанию").catch(() => {});
     /** «Повторный приём» и прошлый визит в карточке — врач и услуга известны. */
-    const repeatKnown =
-      (await repeatFor(ctx.companyId, conversation.patientId, [
-        own,
-        ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content)).reverse(),
-      ])) !== null;
+    const repeatNow = await repeatResolve(ctx.companyId, conversation.patientId, [
+      own,
+      ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content)).reverse(),
+    ]);
+    const repeatKnown = repeatNow.pick !== null;
+
+    /**
+     * «Ещё раз к Ирине», а Ирин, у которых человек бывал, две — вопрос «к
+     * какой», а не предложение остеопатии с ценами: ветка «как попасть на
+     * приём» до проверки тёзок не доходила (прогон 8 октября). Вопрос задаёт
+     * шаг записи (`bookingTail`), как и в остальных местах.
+     */
+    if (repeatNow.clash.length >= 2 && !cantCome(own) && !wantsReschedule(own)) {
+      const next = await bookingByCode(ctx, conversation.id, own, said, "Записывает администратор — он подберёт время и напишет здесь же.");
+      if (next !== undefined) return next;
+    }
 
     /**
      * Спросили про свободное время — уточнять нечего.
@@ -5845,7 +5916,7 @@ async function replyToQuestion(
   let answer = await answerLLM(
     text,
     reference,
-    said,
+    history,
     /**
      * Инструкция из «Настройки → Ассистент».
      *
@@ -5907,7 +5978,7 @@ async function replyToQuestion(
         answer: withHandover,
         patientTexts,
         booking: await bookingRequestOpen(conversation.id, own),
-        dataDone: intakeSent || inIntakeFlow(said),
+        dataDone: intakeSent || askedForDataLast(said),
         refused: refusesService(cleaned),
         whom: talkWhom(patientTexts),
         assumedQuery: offeredKind(said),
@@ -6091,7 +6162,7 @@ async function replyToQuestion(
         answer: lead,
         patientTexts,
         booking: true,
-        dataDone: inIntakeFlow(said) || dataAlreadyReceived(said, own),
+        dataDone: askedForDataLast(said) || dataAlreadyReceived(said, own),
         refused: false,
         whom: talkWhom(patientTexts),
         assumedQuery: offeredKind(said),
@@ -6338,7 +6409,7 @@ async function replyToQuestion(
       answer: base,
       patientTexts,
       booking: state === "open",
-      dataDone: intakeSent || inIntakeFlow(said) || dataAlreadyReceived(said, own),
+      dataDone: intakeSent || askedForDataLast(said) || dataAlreadyReceived(said, own),
       refused,
       whom: talkWhom(patientTexts),
       assumedQuery: offeredKind(said),
@@ -6841,7 +6912,7 @@ async function handleCallback(
      * на них, а не просить снова.
      */
     if (pending && !pendingIsIntake) {
-      const said = await recentTurns(conversationId);
+      const said = sessionOf(await recentTurns(conversationId));
       const mine = said.filter((t) => t.role === "user").map((t) => t.content);
       /**
        * Запись могла начаться и без слова «записаться»: человек ответил на наше
