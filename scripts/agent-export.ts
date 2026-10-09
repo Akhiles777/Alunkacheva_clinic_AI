@@ -27,15 +27,42 @@ import { SANDBOX_YCLIENTS_IDS } from "./sandbox-id";
 async function main() {
   // `--sandbox` — снимок самой песочницы: только чтобы проверить выгрузку и загрузку локально.
   const ownSandbox = process.argv.includes("--sandbox");
-  const companies = await prisma.company.findMany({
+  // `--company=<номер филиала YCLIENTS>` — какую клинику выгружать, если их несколько.
+  const asked = Number(process.argv.find((a) => a.startsWith("--company="))?.slice(10) ?? NaN);
+  const candidates = await prisma.company.findMany({
     where: ownSandbox ? { yclientsId: SANDBOX_YCLIENTS_IDS[0] } : { NOT: { yclientsId: { in: SANDBOX_YCLIENTS_IDS } } },
     select: { id: true, name: true, timezone: true, yclientsId: true },
   });
-  if (companies.length !== 1) {
-    console.error(`ожидалась одна боевая клиника, нашлось ${companies.length} — снимок не делаю`);
+  /**
+   * Клиник бывает несколько (на боевом сервере нашлось две). Живая — та, где
+   * визиты: выгружаем её и называем выбор вслух, чтобы его можно было
+   * проверить. Явный `--company=` сильнее догадки.
+   */
+  const counted = await Promise.all(
+    candidates.map(async (c) => ({
+      ...c,
+      visits: await prisma.appointment.count({ where: { companyId: c.id } }),
+      knowledge: await prisma.knowledgeEntry.count({ where: { companyId: c.id } }),
+    })),
+  );
+  for (const c of counted) {
+    console.error(`клиника «${c.name}», филиал ${c.yclientsId}: визитов ${c.visits}, записей справочника ${c.knowledge}`);
+  }
+  const ranked = [...counted].sort((a, b) => b.visits - a.visits);
+  const company = Number.isFinite(asked)
+    ? counted.find((c) => c.yclientsId === asked)
+    : ranked.length === 1 || (ranked.length > 1 && ranked[0].visits > 0 && ranked[1].visits === 0)
+      ? ranked[0]
+      : undefined;
+  if (!company) {
+    console.error(
+      Number.isFinite(asked)
+        ? `клиники с филиалом ${asked} нет — снимок не делаю`
+        : "не понять, какая клиника живая, — укажите её: --company=<номер филиала>",
+    );
     process.exit(1);
   }
-  const company = companies[0];
+  console.error(`выгружаю «${company.name}» (филиал ${company.yclientsId})`);
   const where = { companyId: company.id };
 
   const [services, staff, knowledge, settings, schedule, exceptions, consent, specialists] = await Promise.all([
