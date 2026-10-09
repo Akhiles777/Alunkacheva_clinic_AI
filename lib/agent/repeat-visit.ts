@@ -66,17 +66,29 @@ export async function lastVisit(companyId: string, patientId: string | null, now
   // Состоявшийся визит надёжнее неразобранного: отметку «пришёл» ставят не всегда, но если стоит — ей верим.
   const row = rows.slice(0, 5).find((r) => r.status === "ARRIVED") ?? rows[0];
   if (!row?.staff) return null;
+  /**
+   * У этого врача были и взрослые, и детские визиты — услугу прошлого визита
+   * не угадываем. «Хочу к Разият на повторный приём»: мама ходила к ней и сама,
+   * и с ребёнком, последним был детский — и агент молча назвал детский приём
+   * (проверка 9 октября). Врач известен, а для кого — спрашиваем.
+   */
+  const childish = (title: string | undefined) => !!title && /(?<!\p{L})(?:дет[си]|реб[её]н|подрост)/iu.test(title);
+  const mixed = (staffId: string) => {
+    const kinds = new Set(
+      rows.filter((r) => r.staff?.id === staffId && r.primaryService).map((r) => childish(r.primaryService?.title)),
+    );
+    return kinds.size > 1;
+  };
+  const visitOf = (r: (typeof rows)[number]): VisitedDoctor =>
+    mixed(r.staff.id)
+      ? { staff: r.staff, serviceId: null, serviceTitle: null }
+      : { staff: r.staff, serviceId: r.primaryService?.id ?? null, serviceTitle: r.primaryService?.title ?? null };
   const visited: VisitedDoctor[] = [];
   for (const r of rows) {
     if (!r.staff || visited.some((v) => v.staff.id === r.staff.id)) continue;
-    visited.push({ staff: r.staff, serviceId: r.primaryService?.id ?? null, serviceTitle: r.primaryService?.title ?? null });
+    visited.push(visitOf(r));
   }
-  return {
-    staff: row.staff,
-    serviceId: row.primaryService?.id ?? null,
-    serviceTitle: row.primaryService?.title ?? null,
-    visited,
-  };
+  return { ...visitOf(row), visited };
 }
 
 /**

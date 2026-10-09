@@ -135,3 +135,69 @@ describe("живое подтверждение шага — без рассуж
     );
   });
 });
+
+describe("проверка обычных разговоров 9 октября", () => {
+  it("«к любому», «без разницы» — врач выбран", async () => {
+    const { anyDoctor } = await import("./booking-flow");
+    for (const t of ["К любому, без разницы", "к любому врачу", "Без разницы", "кто свободен", "всё равно"]) {
+      expect(anyDoctor(t), t).toBe(true);
+    }
+    expect(anyDoctor("не к любому, к Ирине")).toBe(false);
+    expect(anyDoctor("Хочу к Ирине")).toBe(false);
+  });
+
+  it("двое детей — анкета на каждого", async () => {
+    const { severalChildren } = await import("./service-match");
+    expect(severalChildren("Хочу записать двоих детей 4 и 7 лет к Ирине")).toBe(true);
+    expect(severalChildren("сына и дочку")).toBe(true);
+    expect(severalChildren("сына 5 лет")).toBe(false);
+    expect(severalChildren("Мне 34, сыну 7")).toBe(false);
+  });
+
+  it("«кто из врачей лучше?» узнаётся", async () => {
+    const { comparesDoctors } = await import("./booking-flow");
+    expect(comparesDoctors("Ребенку 3 месяца, хотим к остеопату. Кто из врачей лучше?")).toBe(true);
+    expect(comparesDoctors("к кому лучше записаться?")).toBe(true);
+    expect(comparesDoctors("Хочу к Ирине")).toBe(false);
+  });
+
+  it("вопрос о цене — не вопрос о своей записи", async () => {
+    const { asksAboutOwnBooking } = await import("./triggers");
+    expect(asksAboutOwnBooking("Сколько стоит приём? Мне 25")).toBe(false);
+    expect(asksAboutOwnBooking("Когда у меня приём?")).toBe(true);
+  });
+
+  it("«не знаю, к какому врачу» в просьбе записать — не медицинский вопрос", async () => {
+    const { complaintAsReason } = await import("./booking-flow");
+    expect(complaintAsReason("Хочу записаться, но не знаю к какому врачу, у ребенка сколиоз, 9 лет", true, true)).toBe(true);
+    expect(complaintAsReason("У ребёнка сколиоз, не знаю, что делать, хочу записаться", true, true)).toBe(false);
+  });
+});
+
+describe("«справка» пациенту не звучит", () => {
+  it("предложение о том, чего в справке нет, уходит; оборот снимается", async () => {
+    const { withoutReferenceTalk } = await import("./grounding");
+    expect(
+      withoutReferenceTalk("Скидок для инвалидов в справке клиники нет, поэтому точно ответить не могу. Уточню у администратора."),
+    ).toBe("Уточню у администратора.");
+    expect(withoutReferenceTalk("Патимат, по нашей справке БОС-терапия помогает учиться управлять дыханием.")).toBe(
+      "Патимат, БОС-терапия помогает учиться управлять дыханием.",
+    );
+    expect(withoutReferenceTalk("В справке указано, что курс обычно состоит из 10 сеансов.")).toBe(
+      "Курс обычно состоит из 10 сеансов.",
+    );
+    expect(withoutReferenceTalk("Приём остеопата — 5000 ₽, 45 минут.")).toBe("Приём остеопата — 5000 ₽, 45 минут.");
+  });
+});
+
+describe("модель не опровергает наши прошлые ответы", () => {
+  it("«Поправлю своё прошлое сообщение…» уходит", async () => {
+    const { withoutSelfCorrection } = await import("./grounding");
+    expect(
+      withoutSelfCorrection(
+        "Поправлю своё прошлое сообщение: детской цены на приём Ирины нет. Её приём стоит 8000 ₽, длится 45 минут.",
+      ),
+    ).toBe("Её приём стоит 8000 ₽, длится 45 минут.");
+    expect(withoutSelfCorrection("Приём стоит 8000 ₽.")).toBe("Приём стоит 8000 ₽.");
+  });
+});

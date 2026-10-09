@@ -246,6 +246,14 @@ const SELF = /(?<!\p{L})(?:я|мне|меня|мо[йяею]|мою|моей|м�
 
 export function asksAboutOwnBooking(text: string): boolean {
   if (!SELF.test(text)) return false;
+  /**
+   * Вопрос о цене — не вопрос о своей записи: «Сколько стоит приём? Мне 25»
+   * получало «Записи впереди я у вас не вижу» (проверка 9 октября): «мне»,
+   * «приём» и «?» складывались в вопрос о записи.
+   */
+  if (/(?<!\p{L})(?:сколько\s+(?:\p{L}+\s+){0,2}?(?:стоит|стоить|будет|выйдет|обойд\p{L}*)|цен[аыу]|стоимост\p{L}*|почём|почем|прайс)(?!\p{L})/iu.test(text)) {
+    return false;
+  }
   if (!OWN_BOOKING.test(text)) return false;
   if (!ASKING.test(text)) return false;
   if (WANTS_CHANGE.test(text)) return false;

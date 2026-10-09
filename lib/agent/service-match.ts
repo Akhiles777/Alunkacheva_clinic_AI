@@ -142,6 +142,20 @@ export function ageStated(textsNewestFirst: string[], whom: Whom): boolean {
 }
 
 /** Названы и взрослый, и ребёнок: «записаться сама и сына привести». */
+/**
+ * Записывают двоих детей и больше: «двоих детей 4 и 7 лет», «сына и дочку».
+ * Анкета тогда — на каждого (проверка 9 октября: «ФИО ребёнка» в единственном
+ * числе маме двоих).
+ */
+export function severalChildren(text: string): boolean {
+  const t = norm(text);
+  return (
+    /(?<!\p{L})(?:двоих|двух|троих|тр[её]х|обоих|обеих)\s+(?:\p{L}+\s+)?(?:дет\p{L}*|реб[её]н\p{L}*|сынов\p{L}*|дочер\p{L}*|малыш\p{L}*)/u.test(t) ||
+    /(?<!\p{L})(?:сын\p{L}*|доч\p{L}*|дочк\p{L}*)\s+и\s+(?:сын\p{L}*|доч\p{L}*|дочк\p{L}*)(?!\p{L})/u.test(t) ||
+    /(?<!\p{L})(?:дет\p{L}*|реб[её]н\p{L}*)[^.?!\n]{0,20}\d{1,2}\s*(?:и|,)\s*\d{1,2}\s*(?:лет|год)/u.test(t)
+  );
+}
+
 export function bothAges(text: string): boolean {
   const t = norm(text);
   return (CHILD_WORDS.test(t) || AGE_IN_MONTHS.test(t) || recentBirthDate(t)) && (ADULT_WORDS.test(t) || adultYears(t));
