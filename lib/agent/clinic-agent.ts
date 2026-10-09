@@ -3374,7 +3374,19 @@ async function bookingTail(
     if (!last || !priceMentioned(last, r.price)) return false;
     if (last.includes(r.title)) return true;
     const owner = ownerOf(r);
-    return !!owner && last.split("\n").some((line) => line.includes(owner) && priceMentioned(line, r.price));
+    // Имя — по основе: в живом подтверждении оно в падеже («у Разият Ризвановны»).
+    const stems = (owner ?? "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length >= 4)
+      .map((w) => w.slice(0, Math.max(4, w.length - 2)));
+    return (
+      stems.length > 0 &&
+      last
+        .split(/\n|(?<=[.!?])\s+/)
+        .some((line) => stems.some((st) => line.toLowerCase().includes(st)) && priceMentioned(line, r.price)) ||
+      (stems.length > 0 && stems.some((st) => last.toLowerCase().includes(st)) && priceMentioned(last, r.price))
+    );
   };
   const fresh = shown.filter((r) => !shownBefore(r));
   const asOffer = (rows: ServiceRow[]) =>
@@ -3636,6 +3648,15 @@ async function missingChoicePrices(companyId: string, conversationId: string, an
       const child = (t: string) => /(?<!\p{L})(дет[си]|ребен|ребён|подрост)/iu.test(t.toLowerCase());
       choice.ageSplit = family.some((r) => child(r.title)) && family.some((r) => !child(r.title));
     }
+  }
+  /**
+   * Врач назван, услуга нет — дописываем только строки основной услуги. Ирина
+   * ведёт и остеопатию, и «Лотос», и на «Ирина Алункачева принимает?» под её
+   * именем уходило «взрослый приём 3000 ₽» — цена «Лотоса» (снимок 9 октября).
+   */
+  if (choice.doctor && !choice.service) {
+    const kind = await mainServiceKind(companyId);
+    choice.candidates = kind ? choice.candidates.filter((c) => matchServices(kind.query, [c], 1, 0.5).length > 0) : [];
   }
   if (choice.candidates.length < 2 || choice.candidates.length > 6) return "";
   const staff = await prisma.staff
@@ -6482,7 +6503,7 @@ async function replyToQuestion(
     // «Поправлю своё прошлое сообщение…» — опровержение наших же ответов из прайса.
     answer = withoutSelfCorrection(answer);
     // «В справке клиники нет», «по нашей справке» — служебные слова.
-    if (/справк|материал|источник/iu.test(answer)) answer = withoutReferenceTalk(answer);
+    if (/справк|материал|источник|данных|известн/iu.test(answer)) answer = withoutReferenceTalk(answer);
     if (answer.trim().length < 12) {
       console.error("[agent] ответ отклонён: после чистки ничего не осталось");
       answer = null;

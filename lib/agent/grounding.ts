@@ -232,8 +232,16 @@ export function withoutReferenceTalk(answer: string): string {
     " сказать заранее не могу",
   );
   const sentences = rewritten.split(/(?<=[.!?])(?=\s|$)|(?<=\n)/);
+  /**
+   * «У меня данных нет», «в моих данных этого нет» — та же служебная речь.
+   * И замена «не указано» → «сказать заранее не могу» рядом с «поэтому точно
+   * сказать не могу» даёт «Скидок сказать заранее не могу, поэтому точно
+   * сказать не могу» (прогон 9 октября) — такое предложение убираем целиком.
+   */
+  const MY_DATA = /(?<!\p{L})(?:в\s+моих\s+данных|у\s+меня\s+(?:нет\s+)?(?:точных\s+)?данных|данных\s+у\s+меня\s+нет|мне\s+не\s+известн\p{L}*)/iu;
+  const doubled = (s: string) => /сказать\s+заранее\s+не\s+могу[^.!?]*не\s+могу/iu.test(s);
   // Предложение, опирающееся на выброшенное («Так…», «Поэтому…»), уходит вместе с ним.
-  const dropped = sentences.map((s) => REFERENCE_WORD.test(s) && REFERENCE_MISSING.test(s));
+  const dropped = sentences.map((s) => (REFERENCE_WORD.test(s) && REFERENCE_MISSING.test(s)) || MY_DATA.test(s) || doubled(s));
   const kept = sentences
     .filter((s, i) => !dropped[i] && !(i > 0 && dropped[i - 1] && /^\s*(?:так|поэтому|это|тогда|значит|из-за\s+этого)(?!\p{L})/iu.test(s)))
     .map((s) => {
