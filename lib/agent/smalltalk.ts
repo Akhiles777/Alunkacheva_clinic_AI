@@ -11,6 +11,7 @@
  */
 
 import { normalize } from "./text-actions";
+import { collapseFormulas, courtesyFormulaWord, thanksFormula } from "./courtesy-words";
 
 /** Согласие и подтверждение: разговор продолжать не нужно. */
 const ACKNOWLEDGEMENTS = [
@@ -66,8 +67,11 @@ const OPENERS = [
 /** Вежливые довески, которые не меняют смысл реплики. */
 const FILLER = ["большое", "огромное", "вам", "тебе", "очень", "и", "а", "ну", "же", "то", "уж"];
 
-/** Осталось ли в сообщении что-то, кроме перечисленных слов. */
-function onlyFrom(text: string, phrases: string[]): boolean {
+/**
+ * Осталось ли в сообщении что-то, кроме перечисленных слов.
+ * `formulas` — снимать и вежливые формулы («джазакиЛляху хайран», «амин»).
+ */
+function onlyFrom(text: string, phrases: string[], formulas = false): boolean {
   let rest = ` ${normalize(text)} `;
   if (rest.trim().length === 0) return false;
 
@@ -75,22 +79,40 @@ function onlyFrom(text: string, phrases: string[]): boolean {
   for (const phrase of [...phrases, ...FILLER].sort((a, b) => b.length - a.length)) {
     rest = rest.split(` ${phrase} `).join(" ");
   }
+  if (formulas) {
+    rest = collapseFormulas(rest.trim())
+      .split(" ")
+      .filter((w) => w && !courtesyFormulaWord(w))
+      .join(" ");
+  }
   return rest.trim().length === 0;
 }
 
-/** «Хорошо», «ок», «понятно» — подтверждение, а не вопрос. */
+/**
+ * «Хорошо», «ок», «понятно» — подтверждение, а не вопрос. «Амин»,
+ * «иншаАллах» — то же: человек принял сказанное, спрашивать нечего.
+ */
 export function isAcknowledgement(text: string): boolean {
-  return onlyFrom(text, ACKNOWLEDGEMENTS);
+  // «ДжазакаЛлаху хайран» — благодарность, а не «ок»: на неё отвечают, как на «спасибо».
+  return onlyFrom(text, ACKNOWLEDGEMENTS, true) && !thanksFormula(normalize(text));
 }
 
-/** «Спасибо» и его формы. */
+/** «Спасибо» и его формы — и «джазакиЛляху хайран», «баракаЛлаху фики». */
 export function isThanks(text: string): boolean {
-  return onlyFrom(text, [...THANKS, ...ACKNOWLEDGEMENTS]) && /спасиб|спс|благодар/i.test(text);
+  return (
+    onlyFrom(text, [...THANKS, ...ACKNOWLEDGEMENTS], true) &&
+    (/спасиб|спс|благодар/i.test(text) || thanksFormula(normalize(text)))
+  );
+}
+
+/** Благодарность формулой: отвечаем по-русски, без попытки повторить её. */
+function isThanksFormula(text: string): boolean {
+  return isThanks(text) && !/спасиб|спс|благодар/i.test(text);
 }
 
 /** «До свидания», «всего доброго». */
 export function isFarewell(text: string): boolean {
-  return onlyFrom(text, [...FAREWELLS, ...THANKS, ...ACKNOWLEDGEMENTS]) && /свидан|пока|встреч|доброго|хорошего|ночи/i.test(text);
+  return onlyFrom(text, [...FAREWELLS, ...THANKS, ...ACKNOWLEDGEMENTS], true) && /свидан|пока|встреч|доброго|хорошего|ночи/i.test(text);
 }
 
 /**
@@ -116,6 +138,11 @@ export function smallTalkReply(text: string): string | null {
   if (isOpener(text)) return "Да, конечно — слушаю вас.";
   if (isApology(text)) return "Ничего страшного — слушаю вас.";
   if (isFarewell(text)) return "Всего доброго! Будем рады видеть вас в клинике.";
+  /**
+   * На «джазакиЛляху хайран» модель отвечала «Ва iyyaka» — латиницей посреди
+   * кириллицы. Повторять формулу не берёмся: ответ клиники — по-русски.
+   */
+  if (isThanksFormula(text)) return "И вам всего доброго! Если что-то понадобится — напишите.";
   if (isThanks(text)) return "Пожалуйста! Если что-то понадобится — напишите.";
   if (isAcknowledgement(text)) return "Хорошо, если появятся вопросы — я здесь.";
   return null;

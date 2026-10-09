@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { prisma } from "@/lib/db";
 import { vapidPublicKey, vapidStatus, vapidSubject } from "@/lib/server/notify";
 import { checkVapidKeys } from "@/lib/server/vapid-keys";
+import { BOT_MODEL } from "@/lib/agent/llm";
 
 /**
  * Проверка окружения. Отдаёт только факт «переменная задана», без значений —
@@ -115,11 +116,9 @@ export async function GET() {
    */
   const models = {
     аналитик: process.env.ROUTER_AI_MODEL || "anthropic/claude-sonnet-4.5 (по умолчанию)",
-    ботПациентов:
-      process.env.ROUTER_AI_BOT_MODEL ||
-      process.env.ROUTER_AI_MODEL ||
-      "anthropic/claude-haiku-4.5 (по умолчанию)",
-    переопределеноПеременной: Boolean(process.env.ROUTER_AI_MODEL || process.env.ROUTER_AI_BOT_MODEL),
+    // Та же константа, что у бота: две записи одного значения однажды разойдутся.
+    ботПациентов: process.env.ROUTER_AI_BOT_MODEL?.trim() ? BOT_MODEL : `${BOT_MODEL} (по умолчанию)`,
+    переопределеноПеременной: Boolean(process.env.ROUTER_AI_MODEL || process.env.ROUTER_AI_BOT_MODEL?.trim()),
   };
 
   /**

@@ -11,6 +11,8 @@
  * пометкой «цену бери отсюда». Модель формулирует ответ, но цену не выбирает.
  */
 
+import { collapseFormulas, courtesyFormulaWord } from "./courtesy-words";
+
 /** Насколько слабее лучшего совпадения может быть соседнее в том же ответе. */
 const CLOSE_ENOUGH = 0.75;
 
@@ -273,10 +275,14 @@ const NOISE = new Set([
  * разные услуги с разными ценами.
  */
 function words(text: string): string[] {
-  return norm(text)
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
+  return collapseFormulas(norm(text).replace(/[^\p{L}\p{N}]+/gu, " "))
     .split(" ")
-    .filter((w) => w.length >= 3 && !NOISE.has(w));
+    /**
+     * «Амин» — не услуга. Живой диалог 9 октября: на «амин» агент ответил
+     * «вы выбрали инфузию „Амино-Архитектура“ — 8500 ₽»: четыре буквы совпали
+     * с началом названия, и слово весило как название целиком.
+     */
+    .filter((w) => w.length >= 3 && !NOISE.has(w) && !courtesyFormulaWord(w));
 }
 
 /**

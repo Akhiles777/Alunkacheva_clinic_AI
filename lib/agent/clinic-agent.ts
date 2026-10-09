@@ -44,6 +44,7 @@ import {
   asksHowToBook,
   cantCome,
   deferredBooking,
+  dropsBooking,
   complainsAboutClinic,
   medical,
   personalTopic,
@@ -65,7 +66,7 @@ import {
   asksForConsent,
 } from "./consent";
 import { shouldNotifyEscalation, type EscalationReason } from "./escalation-window";
-import { consentFromText, greetingUsed, isGreeting, menuActionFromText, supportsButtons } from "./text-actions";
+import { consentFromText, greetingUsed, isGreeting, menuActionFromText, normalize as normalizeText, supportsButtons } from "./text-actions";
 import { messageBody, needsHuman, type IncomingAttachment } from "./attachments";
 import { alreadyGreeted, alreadySaid } from "./repetition";
 import {
@@ -121,6 +122,8 @@ import {
   ungroundedMoneyTerms,
   ungroundedNumbers,
   withoutUngroundedMoneyTerms,
+  foreignScriptWords,
+  withoutForeignScript,
   withoutUngroundedSentences,
 } from "./grounding";
 import { absoluteUrl, appUrl } from "@/lib/server/app-url";
@@ -134,6 +137,7 @@ import {
   dataAlreadyReceived,
   priceObjection,
   staffConfirmedBooking,
+  staffHandlesBooking,
   withoutTimePreferenceQuestion,
 } from "./booking-flow";
 import { addressableName } from "./person-name";
@@ -155,12 +159,13 @@ import {
   asksToChoose,
   asksWhom,
 } from "./intake";
-import { isAcknowledgement, smallTalkReply } from "./smalltalk";
+import { isAcknowledgement, isThanks, smallTalkReply } from "./smalltalk";
 import { stuckInMisunderstanding } from "./confusion";
 import { splitQuote, withoutQuote } from "./quoted";
 import { inHandoverFlow, rescheduleAsked, timeDetail } from "./handover-flow";
-import { askSpecialist, specialistNames, specialistQueryPending } from "./specialist";
+import { askSpecialist, medicalQueryPending, specialistNames, specialistQueryPending } from "./specialist";
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
+import { amenOnly, collapseFormulas, courtesyFormulaWord } from "./courtesy-words";
 import { complexMedical, managementTopic } from "./specialist-rules";
 import { WEEKDAY_WHEN, daysAsked, lastNamedStaff, relativeDaysAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
@@ -822,7 +827,7 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
     where,
     orderBy: { createdAt: "desc" },
     take: 21,
-    select: { direction: true, body: true, createdAt: true },
+    select: { direction: true, body: true, createdAt: true, authorType: true },
   });
   return rows
     .reverse()
@@ -831,6 +836,7 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
       role: m.direction === "IN" ? ("user" as const) : ("assistant" as const),
       content: m.body,
       at: m.createdAt,
+      byStaff: m.direction === "OUT" && m.authorType === "STAFF",
     }));
 }
 
@@ -847,6 +853,20 @@ async function recentTurns(conversationId: string): Promise<Turn[]> {
  * разговор; модели — вся история, как прежде.
  */
 const SESSION_HOURS = 12;
+
+/**
+ * Жест вежливости, который ни на что не отвечает: благодарность, «амин»,
+ * «иншаАллах», одни смайлики. «Да», «ок», «хорошо» сюда НЕ входят: на
+ * «Записать вас к Ирине?» это согласие, и шаг записи после него нужен.
+ */
+function gestureOnly(text: string): boolean {
+  const body = withoutQuote(text).trim();
+  if (!body || body.includes("?")) return false;
+  if (!/\p{L}/u.test(body)) return true;
+  if (isThanks(body) || amenOnly(body)) return true;
+  const words = collapseFormulas(normalizeText(body)).split(" ").filter(Boolean);
+  return words.length > 0 && words.every(courtesyFormulaWord);
+}
 
 function sessionOf(turns: Turn[], now = new Date()): Turn[] {
   const since = now.getTime() - SESSION_HOURS * 3_600_000;
@@ -891,43 +911,72 @@ async function bookingRequestOpen(conversationId: string, own: string): Promise<
  * прислать ФИО от модели ему не уходит (живой диалог 30 сентября).
  */
 /**
- * Сколько живёт просьба записать. Разговор о записи за три дня либо закончен,
- * либо начат заново; шестьдесят дней (срок памяти переписки) держали её
- * открытой, и постоянная пациентка на «сколько стоит приём у Разият?» получала
- * «подскажите, когда вам удобно» — по просьбе месячной давности.
+ * Сколько живёт просьба записать — столько же, сколько текущий разговор
+ * (`SESSION_HOURS`).
+ *
+ * Было три дня, а правила записи с 8 октября видят только последние двенадцать
+ * часов. Живой диалог 9 октября: вчерашняя просьба «к Ирине… окошко» ещё
+ * считалась открытой, а вчерашнего выбора врача правила уже не видели — и на
+ * утреннее «нельзя оказывается» агент начал запись заново, с предложения двух
+ * остеопатов. Окно одно на всё: о какой записи говорим и открыта ли она, решает
+ * один и тот же разговор.
  */
-const BOOKING_REQUEST_DAYS = 3;
+const BOOKING_REQUEST_HOURS = SESSION_HOURS;
 
-async function bookingState(conversationId: string, own: string): Promise<"none" | "open" | "booked"> {
+/** Текст без пробелов и переносов — так узнаётся эхо нашего ответа (как в вебхуке). */
+const echoKey = (t: string) => t.replace(/\s+/g, " ").trim();
+
+/**
+ * «staff» — запись ведёт администратор: он предложил время или попросил данные
+ * (`staffHandlesBooking`). Шаги записи агент тогда не дописывает: начать её
+ * заново значит перебить человека, который уже договаривается.
+ */
+async function bookingState(conversationId: string, own: string): Promise<"none" | "open" | "booked" | "staff"> {
   if (asksToBookOrSlot(own)) return "open";
+  // «Тогда узнаю у врача», «подумаем» — человек сам закрыл разговор о записи.
+  if (dropsBooking(withoutQuote(own))) return "none";
   const conv = await prisma.conversation
     .findUnique({ where: { id: conversationId }, select: { patientId: true, companyId: true } })
     .catch(() => null);
-  const since = new Date(Date.now() - BOOKING_REQUEST_DAYS * 24 * 3600 * 1000);
+  const since = new Date(Date.now() - BOOKING_REQUEST_HOURS * 3600 * 1000);
   const scope = conv?.patientId
     ? { companyId: conv.companyId, conversation: { patientId: conv.patientId } }
     : { conversationId };
-  const request = (
-    await prisma.message
-      .findMany({
-        where: { ...scope, direction: "IN", deletedAt: null, isDraft: false, createdAt: { gte: since } },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-        select: { body: true, createdAt: true },
-      })
-      .catch(() => [])
-  ).find((m) => asksToBookOrSlot(withoutQuote(m.body)));
-  if (!request) return "none";
-
-  const bookedByStaff = await prisma.message
+  const incoming = await prisma.message
     .findMany({
-      where: { ...scope, authorType: "STAFF", deletedAt: null, isDraft: false, createdAt: { gt: request.createdAt } },
-      select: { body: true },
+      where: { ...scope, direction: "IN", deletedAt: null, isDraft: false, createdAt: { gte: since } },
+      orderBy: { createdAt: "desc" },
       take: 20,
+      select: { body: true, createdAt: true },
     })
-    .then((rows) => rows.some((m) => staffConfirmedBooking(m.body)))
-    .catch(() => false);
-  if (bookedByStaff) return "booked";
+    .catch(() => []);
+  const request = incoming.find((m) => asksToBookOrSlot(withoutQuote(m.body)));
+  if (!request) return "none";
+  // После просьбы человек передумал или отложил — просьбы больше нет.
+  if (incoming.some((m) => m.createdAt > request.createdAt && dropsBooking(withoutQuote(m.body)))) return "none";
+
+  const after = await prisma.message
+    .findMany({
+      where: {
+        ...scope,
+        direction: "OUT",
+        authorType: { in: ["STAFF", "BOT"] },
+        deletedAt: null,
+        isDraft: false,
+        createdAt: { gt: request.createdAt },
+      },
+      select: { body: true, authorType: true },
+      take: 40,
+    })
+    .catch(() => []);
+  const staffRows = after.filter((m) => m.authorType === "STAFF");
+  if (staffRows.some((m) => staffConfirmedBooking(m.body))) return "booked";
+  /**
+   * Эхо нашего же ответа, записанное «сотрудником», запись администратору не
+   * передаёт: в нём бывает и «пришлите ФИО», а говорил это агент.
+   */
+  const ours = new Set(after.filter((m) => m.authorType === "BOT").map((m) => echoKey(m.body)));
+  if (staffRows.some((m) => !ours.has(echoKey(m.body)) && staffHandlesBooking(m.body))) return "staff";
 
   if (conv?.patientId) {
     const booked = await prisma.appointment
@@ -1977,14 +2026,18 @@ export async function handlePatientMessage(
       : quote
         ? { content: quote }
         : [...(await recentTurns(conversation.id))].reverse().find((t) => t.role === "assistant");
-    if (pending || (lastAgent && !agentAskedSomething(lastAgent.content))) {
+    // «Амин» ничего не отвечает и ни на что не соглашается — на него молчим всегда.
+    const amen = amenOnly(own);
+    if (pending || amen || (lastAgent && !agentAskedSomething(lastAgent.content))) {
       await logAgentRun({
         companyId: ctx.companyId,
         conversationId: conversation.id,
         outcome: "SUPPRESSED",
         error: pending
           ? "вопрос у врача, пациент ответил вежливостью — отвечать нечего"
-          : "пациент ответил вежливостью, а агент ничего не спрашивал — отвечать нечего",
+          : amen
+            ? "пациент ответил «амин» — отвечать нечего"
+            : "пациент ответил вежливостью, а агент ничего не спрашивал — отвечать нечего",
       });
       return null;
     }
@@ -4816,6 +4869,15 @@ async function replyToQuestion(
     const answersAgent = isAcknowledgement(own) && lastAgent !== undefined && agentAskedSomething(lastAgent);
     const polite = answersAgent ? null : smallTalkReply(own);
     if (polite) return respond(ctx, conversation.id, { text: polite });
+  } else if (isThanks(own)) {
+    /**
+     * «Спасибо» — не ответ на вопрос анкеты, и в оформлении записи тоже.
+     * «ДжазакаЛлаху хайран» после «напишите, к кому и для кого» уходило модели
+     * (прогон 9 октября): «для кого» считается вопросом анкеты, и вежливость
+     * здесь не разбиралась вовсе.
+     */
+    const polite = smallTalkReply(own);
+    if (polite) return respond(ctx, conversation.id, { text: polite });
   }
 
   /**
@@ -5177,6 +5239,32 @@ async function replyToQuestion(
   }
 
   /**
+   * Вопрос о здоровье уже у врача — запись ждёт её ответа.
+   *
+   * Живой диалог 9 октября: «у сына артрогрипоз…» → «хотела бы
+   * проконсультироваться» → «к Ирине Алилгаджиевне ближайшее окошко?». Маме
+   * назвали цены, предложили время, попросили данные — а врач ответила, что без
+   * назначения лечащего врача таких пациентов не берёт. Человек готовился к
+   * приёму, которого не будет. Подходит ли приём, решает врач; пока она не
+   * ответила, ни цен, ни шагов записи. Администратор узнаёт о просьбе сразу —
+   * если он решит иначе, напишет сам.
+   */
+  if (
+    (wantsToBook(own) || asksForSlot(own)) &&
+    !cantCome(own) &&
+    !wantsReschedule(own) &&
+    !looksLikeIntake(own, clinicStaffNames) &&
+    (await medicalQueryPending(ctx.companyId, conversation.id, SESSION_HOURS).catch(() => false))
+  ) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Просит записать, а вопрос о здоровье ещё у врача").catch(() => {});
+    return respond(ctx, conversation.id, {
+      text:
+        "Ваш вопрос уже у врача: подходит ли приём в вашем случае, решает врач. " +
+        "Как ответит — сразу напишу здесь же, а время после этого подберёт администратор.",
+    });
+  }
+
+  /**
    * Прямой вопрос про день недели: кто из врачей принимает.
    *
    * Отвечаем кодом, а не моделью. «Работаете ли вы в выходные дни? И сколько
@@ -5452,9 +5540,19 @@ async function replyToQuestion(
         !asksForPersonalData(lastAgent) &&
         (await bookingRequestOpen(conversation.id, own).catch(() => false)));
     const words = own.trim().split(/\s+/).filter(Boolean).length;
+    /**
+     * Последним в разговоре о записи говорил администратор — время, данные.
+     * Шаг записи кодом здесь означает повторить за ним «пришлите ФИО» и цены:
+     * «К Ирине» в ответ на его «есть окошко на 9:30, пришлите Ф.И.О.» — ответ ему.
+     */
+    const lastClinic = [...said].reverse().find((t) => t.role === "assistant");
+    const adminLeads = lastClinic?.byStaff === true && staffHandlesBooking(lastClinic.content);
     if (
       askedStep &&
+      !adminLeads &&
       words > 0 &&
+      // «Амин», «спасибо» — не ответ на шаг записи (живой диалог 9 октября: «амин» стало инфузией).
+      !gestureOnly(own) &&
       // С жалобой ответ длиннее: «Взрослый, болит шея после сна уже неделю».
       words <= (reasonForBooking ? 20 : 8) &&
       !hasQuestion(own) &&
@@ -6066,6 +6164,26 @@ async function replyToQuestion(
   }
 
   /**
+   * Латиница посреди русской фразы — сбой модели: «Ва iyyaka», «Ваalaйкум
+   * ассалям» (`foreignScriptWords`, 9 октября). Убираем предложение; не осталось
+   * ответа по существу — отклоняем, дальше идёт запасной путь.
+   */
+  if (answer && invented.length === 0) {
+    const allowed = [reference, own, ...history.map((t) => t.content)].join("\n");
+    const odd = foreignScriptWords(answer, allowed);
+    if (odd.length > 0) {
+      const kept = withoutForeignScript(answer, allowed);
+      if (kept.length >= MEANINGFUL_ANSWER_CHARS) {
+        console.warn(`[agent] из ответа убрано предложение не тем алфавитом — ${odd.join(", ")}`);
+        answer = kept;
+      } else {
+        console.error(`[agent] ответ отклонён: слова не тем алфавитом — ${odd.join(", ")}`);
+        invented = odd;
+      }
+    }
+  }
+
+  /**
    * Придуманное показание — ответ не отправляем вовсе.
    *
    * «При постоянной усталости часто подбирают инфузию „Био-Ресурс“» — в
@@ -6403,12 +6521,21 @@ async function replyToQuestion(
      * попросила сама: «пришлите ФИО, возраст и причину» записанной вчера
      * пациентке читается как «вас забыли» (живой диалог 30 сентября).
      */
-    const stripped = state === "booked" ? withoutPersonalDataRequest(answer) : answer;
+    /**
+     * Просьба модели прислать ФИО — только в открытой записи.
+     *
+     * Запись оформлена, её ведёт администратор или человек её отложил — данные
+     * не просим. Живой диалог 9 октября: на «нельзя оказывается, хорошо, что
+     * уточнили» модель ответила «можем обсудить запись: назовите ФИО ребёнка,
+     * его возраст…» — человеку, которому врач только что отказала.
+     */
+    const stripped = state !== "open" && !intakeSent ? withoutPersonalDataRequest(answer) : answer;
     const base = stripped.length >= MEANINGFUL_ANSWER_CHARS ? stripped : answer;
     const tail = await bookingTail(ctx.companyId, {
       answer: base,
       patientTexts,
-      booking: state === "open",
+      // К вежливости шаг записи не дописываем: на «джазакиЛляху хайран» уходил прайс двух врачей.
+      booking: state === "open" && !gestureOnly(own),
       dataDone: intakeSent || askedForDataLast(said) || dataAlreadyReceived(said, own),
       refused,
       whom: talkWhom(patientTexts),
@@ -6641,6 +6768,17 @@ async function replyToQuestion(
       text: `${list}\n\nЗаписывает администратор — напишите, кого и на когда, и он подберёт время.`,
       buttons: mainMenu(),
     });
+  }
+
+  /**
+   * Человек закрыл разговор («нельзя оказывается, хорошо, что уточнили», «тогда
+   * подумаем») — вопроса нет, и «передаю ваш вопрос администратору» звучит как
+   * неуслышанный ответ. Администратор всё равно узнаёт: отказ от записи — повод
+   * для него, а не для агента.
+   */
+  if (dropsBooking(withoutQuote(own)) && !hasQuestion(own)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Пациент отложил запись").catch(() => {});
+    return respond(ctx, conversation.id, { text: "Поняла вас. Если что-то понадобится — напишите здесь." });
   }
 
   await escalate(ctx.companyId, conversation.id, "MISUNDERSTOOD", "Ассистент не смог ответить").catch(() => {});

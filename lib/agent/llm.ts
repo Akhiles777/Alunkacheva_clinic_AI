@@ -15,12 +15,46 @@ import { toPlainText } from "@/lib/assistant/plain-text";
  */
 const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1").replace(/\/+$/, "");
 /**
- * Модель бота пациентов — Haiku 4.5: здесь не нужен глубокий разбор, нужно
- * аккуратно ответить по справочнику клиники. На замере вышло 0.07 за ответ
- * против 0.87 у старшей модели — в двенадцать раз дешевле при том же
- * результате. Отдельная переменная: у бота и у аналитика разные задачи.
+ * Модель бота пациентов — Haiku 5.5 (решение заказчика, 9 октября: на 4.5
+ * агент «лажал» — «Ва iyyaka» вперемешку с кириллицей, свои суждения о
+ * диагнозе вместо справки). У провайдера 5.5 к тому же дешевле 4.5 примерно
+ * вдесятеро за токен.
+ *
+ * Переменная одна — `ROUTER_AI_BOT_MODEL`. Прежде бот подхватывал и
+ * `ROUTER_AI_MODEL`, то есть модель АНАЛИТИКА: стоило поставить её на сервере
+ * ради отчётов, и пациентам незаметно начинала отвечать другая модель.
  */
-const MODEL = process.env.ROUTER_AI_BOT_MODEL || process.env.ROUTER_AI_MODEL || "anthropic/claude-haiku-4.5";
+export const BOT_MODEL = process.env.ROUTER_AI_BOT_MODEL?.trim() || "anthropic/claude-haiku-5.5";
+const MODEL = BOT_MODEL;
+
+/**
+ * Сколько модели «думать» перед ответом.
+ *
+ * Haiku 5.5 по умолчанию рассуждает и тратит на это тот же лимит, что и на
+ * ответ: на пробе 194 токена из 200 ушли на размышление, и пациенту досталось
+ * «ОТВЕ». С `low` размышление короткое (0–110 токенов), задержка 2–4 секунды,
+ * а медицинский вопрос модель держит осторожнее, чем совсем без размышления.
+ * Пустое значение — параметр не передаём вовсе (так нужно для моделей, у
+ * которых его нет).
+ */
+const BOT_REASONING = (process.env.ROUTER_AI_BOT_REASONING ?? "low").trim();
+
+/**
+ * Пометка реплики сотрудника в истории для модели.
+ *
+ * Живой диалог 9 октября: администратор предложила «во вторник 13 октября в
+ * 13:30» и попросила данные, а через четыре часа модель, получив эти реплики
+ * как СВОИ («assistant»), начала извиняться — «я зря назвал время во вторник:
+ * свободные окна я не вижу» — и собирать запись заново. Она не знала, что это
+ * сказал человек. Правилам записи пометка не нужна: для них важно, что
+ * сказала клиника, а не кто именно.
+ */
+export const STAFF_MARK = "[Администратор клиники]";
+
+/** Модель и размышление — одинаково во всех запросах бота. */
+function modelParams(): { model: string; reasoning?: { effort: string } } {
+  return BOT_REASONING ? { model: MODEL, reasoning: { effort: BOT_REASONING } } : { model: MODEL };
+}
 
 /**
  * Сколько ждём модель.
@@ -195,6 +229,10 @@ const PATIENT_PROMPT = [
   "Никогда не утверждай, что один человек «это» другой, — ты не можешь этого знать.",
   "Обращайся только на «вы», даже если человек пишет коротко, с ошибками или на «ты».",
   "Не рассуждай о том, чего нет в справке: расстояния, дорога, парковка, погода — этого ты не знаешь.",
+  `Реплики в истории, начинающиеся с «${STAFF_MARK}», написал живой сотрудник клиники, а не ты.`,
+  "Не извиняйся за них, не поправляй и не пересказывай; время, которое он предложил, и данные, которые он попросил, второй раз не предлагай и не проси — это ведёт он.",
+  "Человек сказал, что запись не нужна, или отложил её («узнаю у врача», «подумаю») — запись не предлагай и данные не проси.",
+  `Свой ответ никогда не начинай с «${STAFF_MARK}».`,
 ].join(" ");
 
 export interface Turn {
@@ -202,6 +240,12 @@ export interface Turn {
   content: string;
   /** Когда сказано — правила записи смотрят только текущий разговор (`sessionOf`). Модели не уходит. */
   at?: Date;
+  /** Написал живой сотрудник клиники, а не агент. */
+  byStaff?: boolean;
+}
+
+function forModel(turn: Turn): { role: "user" | "assistant"; content: string } {
+  return { role: turn.role, content: turn.byStaff ? `${STAFF_MARK} ${turn.content}` : turn.content };
 }
 
 /**
@@ -280,7 +324,9 @@ export function trimToSentence(text: string): string {
   return cut > 40 ? text.slice(0, cut + 1).trim() : text;
 }
 
-export function stripPreamble(text: string): string {
+export function stripPreamble(raw: string): string {
+  // Пометку реплик сотрудника модель могла повторить — пациенту она не нужна.
+  const text = raw.split(STAFF_MARK).join("").replace(/[ \t]{2,}/g, " ");
   /**
    * Метка — главный способ: всё до неё отрезается целиком, что бы там ни
    * было. Берём последнюю: модель иногда упоминает метку и в рассуждении.
@@ -462,7 +508,7 @@ export async function phraseConfirmation(input: {
     .join(" ");
   const recent = input.history
     .slice(-6)
-    .map((t) => `${t.role === "user" ? "Пациент" : "Клиника"}: ${t.content}`)
+    .map((t) => `${t.role === "user" ? "Пациент" : t.byStaff ? "Администратор" : "Клиника"}: ${t.content}`)
     .join("\n");
 
   try {
@@ -470,9 +516,10 @@ export async function phraseConfirmation(input: {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: MODEL,
+        ...modelParams(),
         temperature: 0.4,
-        max_tokens: 300,
+        // Размышление идёт из того же лимита: с запасом, чтобы подтверждение не обрывалось.
+        max_tokens: 500,
         messages: [
           { role: "system", content: rules },
           {
@@ -545,9 +592,9 @@ export async function relayDoctorAnswer(input: {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: MODEL,
+        ...modelParams(),
         temperature: 0.2,
-        max_tokens: 700,
+        max_tokens: 900,
         messages: [
           { role: "system", content: rules },
           {
@@ -609,7 +656,7 @@ async function askOnce(input: {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: MODEL,
+        ...modelParams(),
         temperature: 0.3,
         /**
          * Запас на преамбулу.
@@ -669,7 +716,7 @@ async function askOnce(input: {
            * начале разговора, к середине становился незнакомым — и агент честно
            * отвечал, что имени не знает.
            */
-          ...history.slice(-20).map(({ role, content }) => ({ role, content })),
+          ...history.slice(-20).map(forModel),
           { role: "user", content: question },
         ],
       }),

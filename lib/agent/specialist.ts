@@ -303,6 +303,32 @@ export async function specialistQueryPending(
   return row !== null;
 }
 
+/**
+ * Медицинский вопрос по этому диалогу ждёт ответа врача — за последние `hours`.
+ *
+ * Пока он ждёт, запись не начинаем: подходит ли приём, решает врач. Живой
+ * диалог 9 октября — маме предложили время и попросили данные, а врач потом
+ * ответила, что без назначения лечащего врача таких пациентов не берёт.
+ */
+export async function medicalQueryPending(
+  companyId: string,
+  conversationId: string,
+  hours: number,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const row = await prisma.specialistQuery.findFirst({
+    where: {
+      companyId,
+      conversationId,
+      kind: "MEDICAL",
+      status: "SENT",
+      askedAt: { gte: new Date(now.getTime() - hours * 3600 * 1000) },
+    },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
 export async function askSpecialist(input: {
   companyId: string;
   conversationId: string;

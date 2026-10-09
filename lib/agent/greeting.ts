@@ -1,5 +1,5 @@
 import { CLINIC_NAME } from "@/lib/brand";
-import { greetingUsed, isGreeting, normalize } from "./text-actions";
+import { SALAAM_GREETINGS, greetingUsed, isGreeting, normalize } from "./text-actions";
 
 /**
  * Что отвечать на приветствие.
@@ -39,10 +39,7 @@ const MIRROR: Record<string, string> = {
   привет: "Привет!",
   приветствую: "Приветствую!",
   // На салам отвечают ответным саламом — это не перевод, а формула ответа.
-  салам: "Ва алейкум ассалам!",
-  "салам алейкум": "Ва алейкум ассалам!",
-  "ассалам алейкум": "Ва алейкум ассалам!",
-  "ассаламу алейкум": "Ва алейкум ассалам!",
+  ...Object.fromEntries(SALAAM_GREETINGS.map((g) => [g, "Ва алейкум ассалам!"])),
   hello: "Hello!",
   hi: "Hi!",
 };

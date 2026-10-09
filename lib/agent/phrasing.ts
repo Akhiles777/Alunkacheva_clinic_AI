@@ -1,6 +1,7 @@
 import { bookingPromiseFound } from "./booking-promise";
 import { asksForConsent } from "./consent";
 import { asksForIntake, asksForPersonalData } from "./intake";
+import { foreignScriptWords } from "./grounding";
 
 /**
  * Живые слова для шага записи — модель пишет, код проверяет.
@@ -81,6 +82,22 @@ export function confirmationProblem(text: string, f: StepFacts, staffNames: stri
   const allowed = new Set([...numbersIn(factsBlock(f)), ...numbersIn(f.patientMessage)]);
   const stray = numbersIn(t).find((n) => !allowed.has(n));
   if (stray) return `число не из фактов: ${stray}`;
+
+  /**
+   * Подтверждение выбора — факт, а не рассуждение о себе. Haiku 5.5 писала
+   * «Цену и длительность пока не знаю, поэтому назову их позже» (цены стояли
+   * строкой ниже) и «Сейчас уточню детали приёма» — обещание, которого никто
+   * не выполнит (прогон 9 октября).
+   */
+  if (
+    /(?<!\p{L})(?:не\s+знаю|пока\s+не|позже|назову|уточн\p{L}*|сейчас\s+(?:я\s+)?(?:посмотр|провер|узна)\p{L}*|помогу|с\s+радостью)(?!\p{L})/iu.test(t)
+  ) {
+    return "рассуждение или обещание";
+  }
+
+  // «Ваalaйкум» — латиница посреди русской фразы (прогон 9 октября).
+  const odd = foreignScriptWords(t, `${factsBlock(f)}\n${f.patientMessage}`);
+  if (odd.length > 0) return `не тот алфавит: ${odd.join(", ")}`;
 
   const foreign = staffNames.find((name) => namesOther(t, name, f.doctor));
   if (foreign) return `чужой врач: ${foreign}`;

@@ -144,3 +144,51 @@ export function withoutUngroundedMoneyTerms(answer: string, reference: string): 
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+/**
+ * Слова не того алфавита — сбой модели, а не ответ.
+ *
+ * Живые ответы: «Ва iyyaka 🌿» (Haiku 4.5, 9 октября) и «Ваalaйкум ассалям!»
+ * (Haiku 5.5, прогон того же дня). Пациент видит латиницу посреди русской
+ * фразы и понимает, что пишет программа, причём сломанная.
+ *
+ * Сбоем считаем: слово, где перемешаны латиница и кириллица; латинское слово
+ * от трёх букв, которого нет ни в справке, ни в переписке («IV-терапия»,
+ * «BRAINBI» стоят в справке — их не трогаем); слово другого письма (арабского
+ * и т. п.), которого нет там же. Ссылки и почта проверяются отдельно
+ * (`ungroundedLinks`) и здесь не разбираются.
+ */
+const KNOWN_LATIN = new Set(["whatsapp", "telegram", "instagram", "viber", "email", "sms", "wi", "fi", "wifi"]);
+
+export function foreignScriptWords(answer: string, allowed: string): string[] {
+  const text = answer.replace(/https?:\/\/\S+|www\.\S+|[\w.+-]+@[\w-]+\.[\w.]+/giu, " ");
+  const known = allowed.toLowerCase();
+  const out: string[] = [];
+  for (const m of text.matchAll(/\p{L}+/gu)) {
+    const w = m[0];
+    const latin = /[a-z]/i.test(w);
+    const cyrillic = /[Ѐ-ӿ]/.test(w);
+    const other = /[^a-zЀ-ӿ]/i.test(w);
+    if (latin && cyrillic) {
+      out.push(w);
+    } else if ((latin || other) && !cyrillic) {
+      const lower = w.toLowerCase();
+      if (latin && !other && (w.length < 3 || KNOWN_LATIN.has(lower))) continue;
+      if (!known.includes(lower)) out.push(w);
+    } else if (other && cyrillic) {
+      out.push(w);
+    }
+  }
+  return out;
+}
+
+/** Ответ без предложений, где есть слова не того алфавита. */
+export function withoutForeignScript(answer: string, allowed: string): string {
+  return answer
+    // Точка внутри ссылки («alunkachevaclinic.ru») предложение не заканчивает.
+    .split(/(?<=[.!?])(?=\s|$)|(?<=\n)/)
+    .filter((sentence) => foreignScriptWords(sentence, allowed).length === 0)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

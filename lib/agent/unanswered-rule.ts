@@ -1,4 +1,5 @@
 import { withoutQuote } from "./quoted";
+import { collapseFormulas, courtesyFormulaWord } from "./courtesy-words";
 
 /**
  * Правило добора: на какое сообщение агент обязан ответить второй раз.
@@ -96,10 +97,15 @@ export function nothingToAnswer(raw: string | undefined): boolean {
    * Пустой остаток означает сообщение из одних картинок — сердечко, палец
    * вверх, стикер.
    */
-  const words = text
-    .toLowerCase()
-    .replace(/ё/g, "е")
-    .split(/[^\p{L}\p{N}]+/u)
+  const words = collapseFormulas(
+    text
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean)
+      .join(" "),
+  )
+    .split(" ")
     .filter(Boolean);
   if (words.length === 0) return true;
   const meaningful = words.filter((w) => !FILLER.includes(w));
@@ -115,7 +121,8 @@ export function nothingToAnswer(raw: string | undefined): boolean {
    * «Нет» на «Подтверждаете?» — ответ, и молчать на него нельзя.
    */
   const polite = meaningful.some((w) => THANKS.includes(w)) ? meaningful.filter((w) => w !== "нет") : meaningful;
-  return polite.every((w) => COURTESY.includes(w));
+  // «ДжазакиЛляху хайран», «амин» — та же вежливость (живой диалог 9 октября).
+  return polite.every((w) => COURTESY.includes(w) || courtesyFormulaWord(w));
 }
 
 /**
@@ -192,8 +199,23 @@ export function needsAnswer(conv: SweepCandidate, now: Date): boolean {
  */
 const ASKING = /(?:скажите|пришлите|напишите|уточните|подскажите|ответьте|выберите|подтвердите|сообщите|укажите)(?!\p{L})/iu;
 
+/**
+ * Вежливое приглашение на будущее — не вопрос: «Если что-то понадобится —
+ * напишите», «Если захотите вернуться к вопросу, напишите здесь».
+ *
+ * Прогон 9 октября: на «иншаАллах» после нашего «И вам всего доброго! Если
+ * что-то понадобится — напишите» отвечала модель («Аминь, и вам всего
+ * доброго!»): глагол «напишите» считался вопросом, и разговор шёл по второму
+ * кругу вежливостей. «Если хотите записаться — напишите, к кому и для кого» —
+ * настоящий вопрос, его правило не трогает: там просят назвать выбор.
+ */
+const GENERIC_INVITE =
+  /(?<!\p{L})если\s+(?:[\p{L}-]+\s+){0,3}?(?:понадоб\p{L}*|появ\p{L}*|возникн\p{L}*|остан\p{L}*|захотите\s+вернуться)(?:\s+[\p{L}-]+){0,3}?\s*[,—–-]?\s*(?:напишите|пишите|обращайтесь)(?:\s+(?:здесь|нам|сюда))?(?!\p{L})/giu;
+
 export function agentAskedSomething(text: string | undefined): boolean {
   // Не знаем, что сказал агент, — считаем, что спрашивал: молчать вслепую нельзя.
   if (text === undefined) return true;
-  return text.includes("?") || ASKING.test(text);
+  if (text.includes("?")) return true;
+  // Вырезаем сам оборот приглашения, а не предложение: «…, а пока скажите, для кого» — вопрос.
+  return ASKING.test(text.replace(GENERIC_INVITE, " "));
 }
