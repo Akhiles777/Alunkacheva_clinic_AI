@@ -1,3 +1,4 @@
+import { durationsFromKnowledge } from "./knowledge-duration";
 import { prisma } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 
@@ -70,17 +71,48 @@ export function slotLabel(at: Date): string {
   return `${d}, ${t}`;
 }
 
+/**
+ * Длительность из справки клиники по услугам (`durationsFromKnowledge`) — на
+ * минуту: справочник меняется редко, а прайс читается на каждом ответе.
+ */
+const knowledgeDurationCache = new Map<string, { at: number; map: Map<string, number> }>();
+
+async function knowledgeDurations(
+  companyId: string,
+  rows: { id: string; title: string; price: number }[],
+): Promise<Map<string, number>> {
+  const hit = knowledgeDurationCache.get(companyId);
+  if (hit && Date.now() - hit.at < 60_000) return hit.map;
+  const [entries, staff] = await Promise.all([
+    prisma.knowledgeEntry.findMany({
+      where: { companyId, isActive: true, OR: [{ needsDoctorApproval: false }, { approvedAt: { not: null } }] },
+      select: { answer: true },
+    }),
+    prisma.staff.findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { name: true } }),
+  ]);
+  const map = durationsFromKnowledge(
+    entries.map((e) => e.answer),
+    staff.map((s) => s.name),
+    rows,
+  );
+  knowledgeDurationCache.set(companyId, { at: Date.now(), map });
+  return map;
+}
+
 export async function getServices(companyId: string): Promise<ServiceInfo[]> {
   const rows = await prisma.service.findMany({
     where: { companyId, isActive: true },
     orderBy: { title: "asc" },
     select: { id: true, title: true, price: true, durationMin: true, kind: true },
   });
+  const priced = rows.map((r) => ({ id: r.id, title: r.title, price: Number(r.price) }));
+  // Длительность, которую клиника называет в справке, сильнее длины слота в YCLIENTS.
+  const fromKnowledge = await knowledgeDurations(companyId, priced).catch(() => new Map<string, number>());
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
     price: Number(r.price),
-    durationMin: r.durationMin,
+    durationMin: fromKnowledge.get(r.id) ?? r.durationMin,
     kind: r.kind,
   }));
 }

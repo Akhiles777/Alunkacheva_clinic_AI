@@ -107,7 +107,19 @@ async function main() {
   const staffMap = new Map<string, string>();
   const keptStaff = new Set<string>();
   for (const s of snap.staff) {
-    const mine = localStaff.find((l) => key(l.name) === key(s.name));
+    /**
+     * Имя — по совпадению слов: в справочнике YCLIENTS «Ирина Алилгаджиевна»
+     * без фамилии, в песочнице — «Алункачева Ирина Алилгаджиевна». Все слова
+     * короткого имени должны быть в длинном; одного общего «Ирина» мало.
+     */
+    const words = (n: string) => key(n).split(" ").filter(Boolean);
+    const sameName = (a: string, b: string) => {
+      const [short, long] = words(a).length <= words(b).length ? [words(a), words(b)] : [words(b), words(a)];
+      return short.length >= 2 && short.every((w) => long.includes(w));
+    };
+    const mine =
+      localStaff.find((l) => key(l.name) === key(s.name)) ??
+      localStaff.find((l) => !keptStaff.has(l.id) && sameName(l.name, s.name));
     const data = { name: s.name, specialty: s.specialty, workdays: s.workdays, isActive: s.isActive, sortOrder: s.sortOrder, deletedAt: null };
     const id = mine
       ? (await prisma.staff.update({ where: { id: mine.id }, data })).id

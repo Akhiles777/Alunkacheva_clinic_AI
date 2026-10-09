@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import type { Prisma } from "@/generated/prisma/client";
 import { fetchOutgoingStatuses, type ClinicStatusRow } from "@/lib/integrations/whatsapp/green-api";
 import { forSomeoneElse } from "./status-slot";
+import { getServices } from "./booking";
 
 /**
  * Окошко из статуса: занято ли оно и за кем закреплено.
@@ -531,7 +532,9 @@ export async function serviceForSlot(
   const fit = audience === null ? real : real.filter((s) => childish(s.title) === (audience === "child"));
   if (fit.length !== 1) return null;
   const s = fit[0];
-  return { id: s.id, title: s.title, price: Number(s.price), durationMin: s.durationMin };
+  // Длительность — как везде, с учётом справки клиники (`getServices`): в YCLIENTS это длина слота.
+  const known = (await getServices(companyId).catch(() => [])).find((x) => x.id === s.id);
+  return { id: s.id, title: s.title, price: Number(s.price), durationMin: known?.durationMin ?? s.durationMin };
 }
 
 /**

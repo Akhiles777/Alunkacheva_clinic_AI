@@ -95,12 +95,70 @@ function pairs(list: string[]): string[] {
   return out;
 }
 
+/**
+ * Слова, которыми названы услуги в прайсе клиники: «остео», «капел», «инфуз»,
+ * «лотос», «бос», «нак», «анали». Общие слова прайса («приём», «курс»,
+ * «детский», «терапия») услугу не называют и сюда не идут.
+ */
+const GENERIC_SERVICE_STEMS = new Set([
+  "прием", "детск", "дети", "взрос", "курс", "сеанс", "назва", "персо", "станд", "терап", "проце",
+  "консу", "повто", "перви", "введе", "внутр", "препа", "своег", "струй", "пакет", "анкет", "экспе",
+  "ауди", "назна", "проток",
+]);
+
+export function serviceStems(titles: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const t of titles) {
+    for (const w of words(t.replace(/[«»"]/g, " "))) {
+      const s = stem(w);
+      if (!GENERIC_SERVICE_STEMS.has(s)) out.add(s);
+    }
+  }
+  return out;
+}
+
+export type KnowledgeMatch = {
+  row: KnowledgeRow;
+  score: number;
+  hits: number;
+  topicCoverage: number;
+  specificCoverage: number;
+  /** Доля названных услуг, которые есть в записи; null — услугу не называли. */
+  serviceCoverage?: number | null;
+};
+
+/**
+ * Все записи по убыванию совпадения — для справки модели.
+ *
+ * Прежде записи для модели оценивались по одной, и общие пары слов решали
+ * больше, чем названная услуга. Боевой справочник (62 записи, снимок 9
+ * октября): «Что взять с собой к остеопату?» находило «как подготовиться к
+ * КАПЕЛЬНИЦЕ» — у неё в вопросах «что взять с собой», — а «Что такое НАК?
+ * Ребёнку 5 лет, задержка речи» находило запись о БОС при ЗПРР. На двенадцати
+ * записях песочницы этого не было видно.
+ *
+ * Теперь слово, называющее услугу клиники (`serviceStems`), решает: запись,
+ * где названной услуги нет, теряет очки, где есть — получает.
+ */
+export function rankKnowledge(question: string, rows: KnowledgeRow[], services: Set<string> = new Set()): KnowledgeMatch[] {
+  return rows
+    .map((row) => scoreRow(question, row, services))
+    .filter((m): m is KnowledgeMatch => m !== null)
+    .sort((a, b) => b.score - a.score);
+}
+
 export function matchKnowledge(
   question: string,
   rows: KnowledgeRow[],
-): { row: KnowledgeRow; score: number; hits: number; topicCoverage: number; specificCoverage: number } | null {
+  services: Set<string> = new Set(),
+): KnowledgeMatch | null {
+  return rankKnowledge(question, rows, services)[0] ?? null;
+}
+
+function scoreRow(question: string, row: KnowledgeRow, services: Set<string>): KnowledgeMatch | null {
   const asked = words(question).map(stem);
-  if (asked.length === 0 || rows.length === 0) return null;
+  if (asked.length === 0) return null;
+  const rows = [row];
 
   /**
    * Значимые слова вопроса: имена, названия услуг, редкие термины.
@@ -127,8 +185,7 @@ export function matchKnowledge(
    */
   const askedPairs = pairs(asked);
 
-  let best: { row: KnowledgeRow; score: number; hits: number; topicCoverage: number; specificCoverage: number } | null =
-    null;
+  let best: KnowledgeMatch | null = null;
   for (const row of rows) {
     /**
      * Совпадения считаем по теме и вопросу записи, а не по тексту ответа.
@@ -162,8 +219,18 @@ export function matchKnowledge(
     const pairCoverage =
       askedPairs.length === 0 ? 0 : askedPairs.filter((p) => rowPairs.has(p)).length / askedPairs.length;
 
-    const score = hits / asked.length + topicCoverage * 0.5 + specificCoverage * 0.5 + pairCoverage;
-    if (!best || score > best.score) best = { row, score, hits, topicCoverage, specificCoverage };
+    /**
+     * Названная услуга решает. Спросили про остеопата — запись о капельнице не
+     * годится, сколько бы общих слов («взять с собой») в ней ни было.
+     */
+    const named = asked.filter((w) => services.has(w));
+    const serviceCoverage = named.length === 0 ? 0 : named.filter((w) => haystack.has(w)).length / named.length;
+    const serviceBonus = named.length === 0 ? 0 : serviceCoverage > 0 ? serviceCoverage * 0.6 : -0.6;
+
+    const score = hits / asked.length + topicCoverage * 0.5 + specificCoverage * 0.5 + pairCoverage + serviceBonus;
+    if (!best || score > best.score) {
+      best = { row, score, hits, topicCoverage, specificCoverage, serviceCoverage: named.length === 0 ? null : serviceCoverage };
+    }
   }
   return best;
 }
@@ -176,11 +243,47 @@ export function matchKnowledge(
  * Поэтому для коротких вопросов требуем не меньше двух совпавших слов, а
  * односложные отдаём модели: у неё есть контекст переписки.
  */
+/**
+ * Вопрос о самочувствии ПОСЛЕ процедуры: «после остеопатии поднялась
+ * температура, это нормально?». Справки «поможет ли остеопат» и «что взять»
+ * на него не отвечают, сколько бы слов ни совпало, — это вопрос врачу.
+ */
+const AFTER_EFFECT =
+  /(?<!\p{L})(?:после\s+(?:остеопат\p{L}*|капельниц\p{L}*|процедур\p{L}*|при[её]ма|сеанс\p{L}*|бос\p{L}*|инфузи\p{L}*|занят\p{L}*)|это\s+нормально|поднял\p{L}*\s+температур\p{L}*|стало\s+(?:хуже|плохо))/iu;
+
 export function confidentMatch(
-  m: { score: number; hits: number; topicCoverage: number; specificCoverage?: number } | null,
+  m: { score: number; hits: number; topicCoverage: number; specificCoverage?: number; serviceCoverage?: number | null } | null,
+  /** Сам вопрос: нужен, чтобы не отвечать справкой на вопрос о самочувствии после процедуры. */
+  question?: string,
 ): boolean {
   if (!m) return false;
   if (m.score < KNOWLEDGE_MIN_SCORE) return false;
+  /**
+   * Названа услуга, а в записи её нет — запись не о том: «Что за тихая
+   * терапия?» получало перечень анализов перед капельницей (снимок 9
+   * октября). Обратного послабления («услуга совпала — значит уверенно») нет
+   * намеренно: «после остеопатии поднялась температура, это нормально?» с ним
+   * получало справку «поможет ли остеопат» — медицинский вопрос дословной
+   * справкой отвечается только при строгом совпадении.
+   */
+  if (m.serviceCoverage === 0) return false;
+  /**
+   * Запись про НАЗВАННУЮ услугу, тема записи покрыта хотя бы наполовину —
+   * годится, даже если человек добавил подробности о себе: «Что такое НАК?
+   * Ребёнку 5 лет, задержка речи», «Постоянная усталость… у вас капельницы
+   * есть» (запись клиники «Капельницы от усталости»). Иначе подробности
+   * разбавляли совпадение, и человек слышал «уточните у специалиста» при
+   * готовом ответе клиники. Вопрос о самочувствии после процедуры — никогда.
+   */
+  if (
+    question !== undefined &&
+    m.serviceCoverage === 1 &&
+    m.hits >= 2 &&
+    m.topicCoverage >= 0.5 &&
+    !AFTER_EFFECT.test(question)
+  ) {
+    return true;
+  }
 
   /**
    * Значимые слова вопроса должны хотя бы наполовину найтись в записи.

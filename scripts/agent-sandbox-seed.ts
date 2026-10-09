@@ -349,16 +349,41 @@ async function main() {
   for (const s of SERVICES) {
     await prisma.service.upsert({
       where: { companyId_yclientsServiceId: { companyId: company.id, yclientsServiceId: s.yclientsServiceId } },
-      update: { title: s.title, price: s.price, durationMin: s.durationMin },
+      update: { title: s.title, price: s.price, durationMin: s.durationMin, isActive: true },
       create: { companyId: company.id, ...s },
     });
   }
   for (const s of STAFF) {
     await prisma.staff.upsert({
       where: { companyId_yclientsStaffId: { companyId: company.id, yclientsStaffId: s.yclientsStaffId } },
-      update: { name: s.name, specialty: s.specialty, workdays: s.workdays },
+      update: { name: s.name, specialty: s.specialty, workdays: s.workdays, isActive: true },
       create: { companyId: company.id, ...s },
     });
+  }
+  /**
+   * Сид возвращает песочницу ЦЕЛИКОМ — после загрузки боевого снимка
+   * (`agent-snapshot-load.ts`) в ней оставались боевые услуги, врачи,
+   * настройки ассистента и выдуманные пациенты «снимок-N», и прогон на
+   * «чистой» песочнице на деле шёл на смеси.
+   */
+  await prisma.service.updateMany({
+    where: { companyId: company.id, yclientsServiceId: { notIn: SERVICES.map((s) => s.yclientsServiceId) } },
+    data: { isActive: false },
+  });
+  await prisma.staff.updateMany({
+    where: { companyId: company.id, yclientsStaffId: { notIn: STAFF.map((s) => s.yclientsStaffId) } },
+    data: { isActive: false },
+  });
+  await prisma.setting.deleteMany({ where: { companyId: company.id, key: "clinic" } });
+  const synthetic = await prisma.patient.findMany({
+    where: { companyId: company.id, phones: { some: { phone: { startsWith: "+7999" } } } },
+    select: { id: true },
+  });
+  if (synthetic.length > 0) {
+    const ids = synthetic.map((p) => p.id);
+    await prisma.appointment.deleteMany({ where: { patientId: { in: ids } } });
+    await prisma.patientPhone.deleteMany({ where: { patientId: { in: ids } } });
+    await prisma.patient.deleteMany({ where: { id: { in: ids } } });
   }
   console.log(`услуг ${SERVICES.length}, специалистов ${STAFF.length}`);
 
@@ -373,9 +398,17 @@ async function main() {
    * агент оборвал разговор, когда пациентка ответила на сообщение клиники со
    * словом «Окошко» просьбой записать племянника.
    */
+  const assistantSetting = {
+    assistant: {
+      mode: "on",
+      greeting: "Здравствуйте! Это клиника Алункачевой. Чем могу помочь?",
+      stopWords: ["окошко", "жалоба", "юрист"],
+      prompt: CLINIC_PROMPT,
+    },
+  };
   await prisma.setting.upsert({
     where: { companyId_key: { companyId: company.id, key: "assistant" } },
-    update: {},
+    update: { value: assistantSetting },
     create: {
       companyId: company.id,
       key: "assistant",
@@ -408,6 +441,11 @@ async function main() {
     });
   }
 
+  // Документ согласия из боевого снимка выключаем: активен только песочный.
+  await prisma.consentDocument.updateMany({
+    where: { companyId: company.id, NOT: { version: "1" } },
+    data: { isActive: false },
+  });
   await prisma.consentDocument.upsert({
     where: { companyId_version: { companyId: company.id, version: "1" } },
     update: { isActive: true },

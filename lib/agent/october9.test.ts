@@ -201,3 +201,62 @@ describe("модель не опровергает наши прошлые от�
     expect(withoutSelfCorrection("Приём стоит 8000 ₽.")).toBe("Приём стоит 8000 ₽.");
   });
 });
+
+describe("стоп-слово — с начала слова", () => {
+  it("«меню» не срабатывает на «изменю», «окошко» ловит «окошком»", async () => {
+    const { hitsStopWord } = await import("./clinic-agent");
+    expect(hitsStopWord("Я изменю время, можно?", ["меню"])).toBe(false);
+    expect(hitsStopWord("Покажите меню капельниц", ["меню"])).toBe(true);
+    expect(hitsStopWord("Есть окошком на завтра?", ["окошко"])).toBe(true);
+    expect(hitsStopWord("Перенесите   запись на пятницу", ["перенесите запись"])).toBe(true);
+    expect(hitsStopWord("Это моё", ["это"])).toBe(true);
+  });
+});
+
+describe("угроза жизни — сначала скорая", () => {
+  it("удушье, отёк Квинке, потеря сознания — да; анамнез — нет", async () => {
+    const { lifeThreat } = await import("./triggers");
+    for (const t of ["Задыхаюсь после капельницы", "у ребенка судороги сейчас", "отек квинке начался", "мама потеряла сознание"]) {
+      expect(lifeThreat(t), t).toBe(true);
+    }
+    for (const t of ["у ребенка были судороги год назад, хотим к остеопату", "после родов было кровотечение", "Хочу записаться к остеопату"]) {
+      expect(lifeThreat(t), t).toBe(false);
+    }
+  });
+});
+
+describe("снимок боевых данных: правила разговора", () => {
+  it("взрослый мужчина — да; «с мужем», сын — нет", async () => {
+    const { adultMaleMentioned } = await import("./triggers");
+    expect(adultMaleMentioned("Здравствуйте, мужу нужен остеопат, можно записать?")).toBe(true);
+    expect(adultMaleMentioned("Хочу записать отца к остеопату")).toBe(true);
+    expect(adultMaleMentioned("Приду с мужем, можно?")).toBe(false);
+    expect(adultMaleMentioned("Сыну 10 лет, к остеопату")).toBe(false);
+  });
+
+  it("вопрос об услуге — не шаг записи", async () => {
+    const { infoQuestion } = await import("./triggers");
+    expect(infoQuestion("Здравствуйте, хочу на капельницы, с чего начать?")).toBe(true);
+    expect(infoQuestion("Что такое НАК?")).toBe(true);
+    expect(infoQuestion("Хочу записаться к Ирине")).toBe(false);
+  });
+
+  it("«Расскажите про Лотос» находит Лотос", async () => {
+    const { matchServices } = await import("./service-match");
+    const services = [
+      { title: "Лотос/Стандарт", price: 3000, durationMin: 45 },
+      { title: "Остеопатия, приём Ирины", price: 8000, durationMin: 30 },
+    ];
+    expect(matchServices("Расскажите про Лотос, сколько стоит?", services, 6, 0.5).map((s) => s.price)).toEqual([3000]);
+  });
+
+  it("подбор справки: названная услуга решает", async () => {
+    const { rankKnowledge, serviceStems } = await import("./knowledge");
+    const rows = [
+      { topic: "как подготовиться к капельнице", question: "что взять с собой на капельницу/ натощак на капельницу", answer: "IV" },
+      { topic: "Подготовка к остеопатии", question: "Как готовиться к приёму остеопата?/ что взять к остеопату?", answer: "OSTEO" },
+    ];
+    const vocab = serviceStems(["Остеопатия, приём Ирины", 'Инфузия "Био-Ресурс"', "Внутривенное капельное введение растворов"]);
+    expect(rankKnowledge("Что взять с собой к остеопату?", rows, vocab)[0].row.answer).toBe("OSTEO");
+  });
+});
