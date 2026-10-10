@@ -125,6 +125,8 @@ export type KnowledgeMatch = {
   specificCoverage: number;
   /** Доля названных услуг, которые есть в записи; null — услугу не называли. */
   serviceCoverage?: number | null;
+  /** Тема или вопросы записи называют услугу клиники («безопасность IV», «подготовка к остеопатии»). */
+  rowNamesService?: boolean;
 };
 
 /**
@@ -145,6 +147,90 @@ export function rankKnowledge(question: string, rows: KnowledgeRow[], services: 
     .map((row) => scoreRow(question, row, services))
     .filter((m): m is KnowledgeMatch => m !== null)
     .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Части вопроса: «Сколько стоит детский приём, сколько длится и что взять с
+ * собой?» — три вопроса в одном. Режем по знакам конца и по «и/,» перед
+ * вопросительным словом.
+ */
+export function questionParts(question: string): string[] {
+  return question
+    .split(/[?!.\n]+|,\s*(?:и\s+|а\s+)?(?=(?:что|сколько|где|когда|как|какой|какая|какие|можно|нужно|есть|во\s+сколько|до\s+скольки)(?!\p{L}))|\s+(?:и|а)\s+(?=(?:что|сколько|где|когда|как|какой|какая|какие|можно|нужно|есть|во\s+сколько|до\s+скольки)(?!\p{L}))/iu)
+    .map((p) => p.trim())
+    .filter((p) => words(p).length > 0)
+    // «Здравствуйте!», «Спасибо» — не часть вопроса: «Здравствуйте! Сколько стоит?» — один вопрос.
+    .filter(
+      (p) =>
+        !/^(?:здравствуйте|здрасте|здравствуй|добрый\s+(?:день|вечер)|доброе\s+утро|привет|ассаляму?\s+алейкум|салам\p{L}*|спасибо|пожалуйста|извините|подскажите(?:\s+пожалуйста)?|скажите(?:\s+пожалуйста)?)[\s,!.🌸🌺☺️🙂]*$/iu.test(p),
+    );
+}
+
+/**
+ * Записи справки для модели — по КАЖДОЙ части вопроса, а не по всему разом.
+ *
+ * Снимок боевых данных 9 октября: «Сколько стоит детский приём, сколько длится
+ * и что взять с собой?» — слово «сколько» набирало очки у десятка записей, и
+ * «Подготовка к остеопатии» до модели не доходила: агент отвечал «что взять с
+ * собой, не знаю», хотя справка у клиники есть. По частям каждая находит своё.
+ *
+ * Часть без названной услуги («а что взять с собой?») ищется вместе с услугой из
+ * свежих слов пациента: в разговоре об остеопатии это подготовка к остеопатии,
+ * а не к капельнице.
+ */
+/**
+ * Вопрос без названной услуги — вместе с услугой из свежих слов пациента: «А
+ * ребёнку 7 лет можно?» в разговоре о БОС — это вопрос о возрасте для БОС, а
+ * не о любой услуге (снимок боевых данных 9 октября).
+ */
+export function withTalkService(question: string, services: Set<string>, context: string[]): string {
+  const namedIn = (text: string) => words(text).filter((w) => services.has(stem(w)));
+  if (namedIn(question).length > 0) return question;
+  /**
+   * Разговор о самочувствии после процедуры — услугу не подмешиваем: «И ещё
+   * слабость какая-то» после «после капельницы кружится голова» иначе находило
+   * меню капельниц. Это вопрос врачу, а не справке.
+   */
+  if (context.slice(0, 3).some((t) => AFTER_EFFECT.test(t))) return question;
+  /**
+   * Услуги из нескольких свежих реплик, а не из одной: «Диагностика отдельно
+   * оплачивается?» называет строку «Диагностика… на БОС-терапию», а разговор
+   * весь о БОС, названной тремя репликами раньше.
+   */
+  const contextWords = [...new Set(context.slice(0, 6).flatMap(namedIn).map((w) => w.toLowerCase()))];
+  return contextWords.length > 0 ? `${question} ${contextWords.join(" ")}` : question;
+}
+
+export function rankForModel(
+  question: string,
+  rows: KnowledgeRow[],
+  services: Set<string> = new Set(),
+  /** Слова пациента за разговор, свежие первыми. */
+  context: string[] = [],
+): KnowledgeRow[] {
+  const namedIn = (text: string) => words(text).filter((w) => services.has(stem(w)));
+  const contextWords = context.map(namedIn).find((found) => found.length > 0) ?? [];
+  const parts = questionParts(question);
+
+  const lists: KnowledgeRow[][] = [];
+  for (const part of parts.length > 1 ? parts : []) {
+    const query = namedIn(part).length === 0 && contextWords.length > 0 ? `${part} ${contextWords.join(" ")}` : part;
+    lists.push(rankKnowledge(query, rows, services).filter((m) => m.score > 0).slice(0, 3).map((m) => m.row));
+  }
+  const whole = question.trim() && namedIn(question).length === 0 && contextWords.length > 0
+    ? `${question} ${contextWords.join(" ")}`
+    : question;
+  lists.push(rankKnowledge(whole, rows, services).filter((m) => m.score > 0).map((m) => m.row));
+  // Вперемешку: первая находка каждой части раньше вторых находок остальных.
+  const out: KnowledgeRow[] = [];
+  const depth = Math.max(...lists.map((l) => l.length), 0);
+  for (let i = 0; i < depth; i += 1) {
+    for (const list of lists) {
+      const row = list[i];
+      if (row && !out.includes(row)) out.push(row);
+    }
+  }
+  return out;
 }
 
 export function matchKnowledge(
@@ -229,7 +315,18 @@ function scoreRow(question: string, row: KnowledgeRow, services: Set<string>): K
 
     const score = hits / asked.length + topicCoverage * 0.5 + specificCoverage * 0.5 + pairCoverage + serviceBonus;
     if (!best || score > best.score) {
-      best = { row, score, hits, topicCoverage, specificCoverage, serviceCoverage: named.length === 0 ? null : serviceCoverage };
+      const rowNamesService = words(`${row.topic} ${row.question}`.replace(/\//g, " "))
+        .map(stem)
+        .some((w) => services.has(w));
+      best = {
+        row,
+        score,
+        hits,
+        topicCoverage,
+        specificCoverage,
+        serviceCoverage: named.length === 0 ? null : serviceCoverage,
+        rowNamesService,
+      };
     }
   }
   return best;
@@ -252,12 +349,26 @@ const AFTER_EFFECT =
   /(?<!\p{L})(?:после\s+(?:остеопат\p{L}*|капельниц\p{L}*|процедур\p{L}*|при[её]ма|сеанс\p{L}*|бос\p{L}*|инфузи\p{L}*|занят\p{L}*)|это\s+нормально|поднял\p{L}*\s+температур\p{L}*|стало\s+(?:хуже|плохо))/iu;
 
 export function confidentMatch(
-  m: { score: number; hits: number; topicCoverage: number; specificCoverage?: number; serviceCoverage?: number | null } | null,
+  m: {
+    score: number;
+    hits: number;
+    topicCoverage: number;
+    specificCoverage?: number;
+    serviceCoverage?: number | null;
+    rowNamesService?: boolean;
+  } | null,
   /** Сам вопрос: нужен, чтобы не отвечать справкой на вопрос о самочувствии после процедуры. */
   question?: string,
 ): boolean {
   if (!m) return false;
   if (m.score < KNOWLEDGE_MIN_SCORE) return false;
+  /**
+   * Вопрос услугу не называет, а запись — о конкретной услуге: дословно не
+   * отвечаем, о чём речь, знает только разговор. Снимок боевых данных 9
+   * октября: пациентка записывалась к остеопату и спросила «А это опасно? Может
+   * это давление?» — и получила справку о безопасности капельниц.
+   */
+  if (m.serviceCoverage == null && m.rowNamesService && m.topicCoverage < 0.5) return false;
   /**
    * Названа услуга, а в записи её нет — запись не о том: «Что за тихая
    * терапия?» получало перечень анализов перед капельницей (снимок 9

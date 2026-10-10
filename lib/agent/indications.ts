@@ -89,7 +89,18 @@ export function inventedIndication(answer: string, reference: string): string | 
 
   for (const m of text.matchAll(LINKS)) {
     const at = m.index ?? 0;
-    const window = text.slice(at, at + WINDOW);
+    /**
+     * «Цена зависит от того, о какой процедуре речь» — оборот, а не показание:
+     * «от» здесь не «капельница от…», а «речь» — не речь ребёнка. Ответ про
+     * цену капельниц, анализы и оплату отклонялся целиком (прогон на боевом
+     * снимке, 10 октября).
+     */
+    if (m[0] === "от" && (/завис\p{L}*\s*$/u.test(text.slice(Math.max(0, at - 14), at)) || /^от\s+(?:того|этого|вашего|выбранн|конкретн)/u.test(text.slice(at)))) {
+      continue;
+    }
+    const window = text
+      .slice(at, at + WINDOW)
+      .replace(/(?<!\p{L})о\s+(?:какой|чем|ч[её]м|какой-то)\s+(?:\p{L}+\s+)?речь(?!\p{L})|речь\s+ид[её]т/gu, " ");
     const windowWords = wordsOf(window);
     for (const c of CONDITIONS) {
       /**

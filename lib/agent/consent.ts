@@ -312,11 +312,56 @@ export function asksForConsent(text: string): boolean {
   return text.split(/(?<=[.!?\n])/).some((sentence) => CONSENT_ASK.test(sentence));
 }
 
-export function withoutConsentRequest(text: string): string {
+/**
+ * Предложение, которое держится за вырезанное: «Оно нужно по закону…», «Без
+ * него мы не можем…». Прогон на боевом снимке 10 октября: просьбу модели о
+ * согласии вырезали, и пациент получил «Спасибо! Оно нужно по закону» — что
+ * «оно», непонятно.
+ */
+const LEANS_ON_PREVIOUS = /^\s*(?:оно|оно\s+нужно|без\s+него|его|это\s+(?:нужно|требуется|стандартн)|так\s+мы|поэтому)(?!\p{L})/iu;
+
+export function withoutConsentRequest(
+  text: string,
+  /**
+   * Человек сам спросил, зачем согласие: объяснение модели оставляем, убираем
+   * только вопросы («вы согласны?», «ответьте…»). Прогон на боевом снимке 10
+   * октября: на «А зачем согласие?» уходило «…и оно используется только для
+   * целей…» — начало объяснения вырезали как просьбу.
+   */
+  explaining = false,
+): string {
+  const parts = text.split(/(?<=[.!?\n])/);
+  const dropped = parts.map(
+    (sentence) =>
+      CONSENT_ASK.test(sentence) &&
+      (!explaining || /\?|(?<!\p{L})(?:ответьте|подтвердите|напишите|согласн\p{L}*\s+ли)(?!\p{L})/iu.test(sentence)),
+  );
   return (
-    text
-      .split(/(?<=[.!?\n])/)
-      .filter((sentence) => !CONSENT_ASK.test(sentence))
+    parts
+      .filter((sentence, i) => {
+        if (dropped[i]) return false;
+        /**
+         * Хвосты просьбы о согласии, где бы они ни стояли: «Достаточно написать
+         * „Согласен“ или „Согласна“», «Подписывается это один раз, при первом
+         * визите» (прогон на боевом снимке, 10 октября). Без вырезанной просьбы
+         * они бессмысленны, а с нашим запросом — второй запрос рядом.
+         */
+        if (
+          dropped.some(Boolean) &&
+          /(?:«|")\s*согласн\p{L}*|(?<!\p{L})достаточно\s+(?:написать|ответить)|(?<!\p{L})подписыва\p{L}*\s+(?:это\s+)?один\s+раз/iu.test(sentence)
+        ) {
+          dropped[i] = true;
+          return false;
+        }
+        // Цепочка: за вырезанным идут одно-два предложения, держащиеся за него.
+        let j = i - 1;
+        while (j >= 0 && !parts[j].trim()) j -= 1;
+        if (j >= 0 && dropped[j] && LEANS_ON_PREVIOUS.test(sentence)) {
+          dropped[i] = true;
+          return false;
+        }
+        return true;
+      })
       .join("")
       /**
        * Ссылка на политику уходит вместе с просьбой.
@@ -326,7 +371,7 @@ export function withoutConsentRequest(text: string): string {
        * зачем она. На живом прогоне это выглядело так: цена, пустая строка,
        * ссылка на политику, и следом наш собственный запрос согласия.
        */
-      .replace(/^[ \t]*политика\s*:.*$/gim, "")
+      .replace(/^[ \t]*политика(?:\s+здесь)?\s*:.*$/gim, "")
       .replace(/\n{3,}/g, "\n\n")
       .replace(/[ \t]{2,}/g, " ")
       .trim()

@@ -62,7 +62,14 @@ export interface BookingState {
 export function bookingStep(s: BookingState): { step: BookingStep | null; ask: boolean } {
   if (!s.booking || s.refused) return { step: null, ask: false };
 
-  const at = (step: BookingStep) => ({ step, ask: !s.askedByModel[step] });
+  /**
+   * Модель уже задала вопрос записи — любой, не только о текущем шаге, — свой не
+   * дописываем: один вопрос за раз. Снимок боевых данных 9 октября: модель
+   * спросила «на какую консультацию — диагностика БОС?», а мы следом «к Разият
+   * или к Ирине?», и человек не знал, на что отвечать.
+   */
+  const modelAsked = Object.values(s.askedByModel).some(Boolean);
+  const at = (step: BookingStep) => ({ step, ask: !s.askedByModel[step] && !modelAsked });
 
   if (!s.service) return at("service");
   if (s.whomMatters && !s.whom) return at("whom");
@@ -256,7 +263,12 @@ export function priceObjection(text: string, lastAgent: string): boolean {
  * подберёт администратор» и прочие утверждения остаются.
  */
 const TIME_PREFERENCE =
-  /(?<!\p{L})(?:удобн\p{L}*|како[ей]\s+(?:время|день|число|дату)|какой\s+день|когда\s+(?:вам|вы|сможете|хотите|планируете|хотели)|на\s+какое\s+(?:время|число)|в\s+какое\s+время|какие\s+дни)(?!\p{L})/iu;
+  /(?<!\p{L})(?:удобн\p{L}*|како[ей]\s+(?:время|день|число|дату)|какой\s+день|когда\s+(?:вам|вы|сможете|хотите|планируете|хотели)|на\s+какое\s+(?:время|число)|на\s+какую\s+дату|в\s+какое\s+время|какие\s+дни)(?!\p{L})/iu;
+/**
+ * Та же просьба без знака вопроса: «напишите, пожалуйста, на какую дату и время
+ * вам удобнее» (прогон на боевом снимке, 10 октября).
+ */
+const ASK_VERB = /(?<!\p{L})(?:напишите|подскажите|сообщите|укажите|уточните)(?!\p{L})/iu;
 
 export function withoutTimePreferenceQuestion(text: string): string {
   return text
@@ -264,7 +276,7 @@ export function withoutTimePreferenceQuestion(text: string): string {
     .map((line) =>
       line
         .split(/(?<=[.!?…])\s+/)
-        .filter((sentence) => !(sentence.includes("?") && TIME_PREFERENCE.test(sentence)))
+        .filter((sentence) => !((sentence.includes("?") || ASK_VERB.test(sentence)) && TIME_PREFERENCE.test(sentence)))
         .join(" "),
     )
     .join("\n")

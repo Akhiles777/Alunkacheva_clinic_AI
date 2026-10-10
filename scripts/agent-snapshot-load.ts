@@ -164,6 +164,54 @@ async function main() {
   if (offServices.length > 0) {
     await prisma.service.updateMany({ where: { id: { in: offServices.map((l) => l.id) } }, data: { isActive: false } });
   }
+  /**
+   * Визиты постоянных пациенток песочницы — на боевые услуги того же вида,
+   * возраста, цены и врача. Песочная «Взрослый прием - остеопатия» совпала по
+   * названию с выключенной боевой строкой (6000 ₽), и «повторный приём»
+   * проверялся бы на строке, которой агент на сервере не видит.
+   */
+  const childish = (t: string) => /(?<!\p{L})(?:дет[си]|реб[её]н|подрост)/iu.test(t);
+  // Вид услуги — по самому длинному слову названия: «остеопатия», а не «взрослый».
+  const kindOf = (t: string) =>
+    key(t)
+      .replace(/[^а-яa-z ]/g, " ")
+      .split(" ")
+      .sort((a, b) => b.length - a.length)[0]
+      ?.slice(0, 5) ?? "";
+  const stale = await prisma.appointment.findMany({
+    where: {
+      companyId,
+      primaryService: { isActive: false },
+      patient: { phones: { none: { phone: { startsWith: SYNTH_PHONE } } } },
+    },
+    select: {
+      id: true,
+      revenue: true,
+      primaryService: { select: { id: true, title: true } },
+      staff: { select: { name: true } },
+      services: { select: { id: true, priceCharged: true } },
+    },
+  });
+  let moved = 0;
+  for (const a of stale) {
+    if (!a.primaryService) continue;
+    const paid = Number(a.services[0]?.priceCharged ?? a.revenue ?? 0);
+    const firstName = key(a.staff?.name ?? "").split(" ").find((w) => w.length >= 4) ?? "";
+    let target = snap.services.filter(
+      (x) =>
+        x.isActive &&
+        Number(x.price) === paid &&
+        childish(x.title) === childish(a.primaryService!.title) &&
+        key(x.title).includes(kindOf(a.primaryService!.title)),
+    );
+    if (target.length > 1 && firstName) target = target.filter((x) => key(x.title).includes(firstName.slice(0, 4)));
+    const to = target.length === 1 ? serviceMap.get(target[0].id) : undefined;
+    if (!to) continue;
+    await prisma.appointment.update({ where: { id: a.id }, data: { primaryServiceId: to } });
+    await prisma.appointmentService.updateMany({ where: { appointmentId: a.id }, data: { serviceId: to } });
+    moved += 1;
+  }
+  if (stale.length > 0) console.log(`визиты постоянных пациенток на боевые услуги: ${moved} из ${stale.length}`);
   console.log(`услуг ${snap.services.length} (выключено песочных ${offServices.length})`);
 
   /** Справочник — целиком боевой. */
