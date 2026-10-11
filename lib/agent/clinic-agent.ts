@@ -3590,8 +3590,9 @@ async function bookingTail(
    * печатаются под врачами — и на «Хочу записать» сразу после цен уходил тот же
    * блок второй раз подряд (проверка 9 октября).
    */
+  // Две наши прошлые реплики: цена, названная перед вопросом о согласии, не повторяется и после него.
   const shownBefore = (r: ServiceRow) => {
-    const last = input.lastAgent ?? "";
+    const last = [input.lastAgent ?? "", input.earlierAgent ?? ""].join("\n");
     if (!last || !priceMentioned(last, r.price)) return false;
     if (last.includes(r.title)) return true;
     const owner = ownerOf(r);
@@ -6910,10 +6911,11 @@ async function replyToQuestion(
       const tail = await bookingTail(ctx.companyId, {
         answer: withHandover,
         lastAgent: [...said].reverse().find((t) => t.role === "assistant")?.content ?? "",
-    earlierAgent: [...said].reverse().filter((t) => t.role === "assistant")[1]?.content ?? "",
+        earlierAgent: [...said].reverse().filter((t) => t.role === "assistant")[1]?.content ?? "",
         patientTexts,
         booking: await bookingRequestOpen(conversation.id, own),
-        dataDone: intakeSent || askedForDataLast(said),
+        // Данные уже присланы — второй раз не просим (живой диалог 11 октября: анкета → «вторник на 11:00» → снова ФИО).
+        dataDone: intakeSent || askedForDataLast(said) || dataAlreadyReceived(said, own),
         refused: refusesService(cleaned),
         whom: talkWhom(patientTexts),
         assumedQuery: offeredKind(said),

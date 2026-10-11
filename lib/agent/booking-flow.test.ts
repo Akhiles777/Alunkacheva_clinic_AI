@@ -208,3 +208,16 @@ describe("время определяет администратор — пац�
     expect(withoutTimePreferenceQuestion("К кому из врачей записать?")).toBe("К кому из врачей записать?");
   });
 });
+
+describe("dataAlreadyReceived: «вторник» — не «второй»", () => {
+  const history = [
+    { role: "assistant" as const, content: "Спасибо, передал(а) ваши данные администратору. Он подберёт ближайшее удобное время." },
+  ];
+  it("пожелание по дню после анкеты — данные уже у нас (живой диалог 11 октября)", () => {
+    expect(dataAlreadyReceived(history, "Если можно, вторник на 11:00.")).toBe(true);
+  });
+  it("второй человек — данных нет", () => {
+    expect(dataAlreadyReceived(history, "И второго ребёнка запишите")).toBe(false);
+    expect(dataAlreadyReceived(history, "Ещё сына хочу записать")).toBe(false);
+  });
+});
