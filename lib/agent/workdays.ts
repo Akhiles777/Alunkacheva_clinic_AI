@@ -87,6 +87,27 @@ export function relativeDaysAsked(text: string, now: Date, tz: string): number[]
   return [...found].sort((a, b) => a - b);
 }
 
+/**
+ * Одна ли это специальность. В справочнике клиники она записана руками и
+ * по-разному: «Остеопат» у одного врача и «врач остеопат» у другого. При
+ * дословном сравнении агент не находил замены и говорил «в субботу приёма нет»,
+ * хотя в субботу принимает второй остеопат (демо-прогон 12 октября).
+ * «Врач», «доктор» и регистр смысла не меняют; основа слова — первые шесть букв.
+ */
+export function sameSpecialty(a: string | null | undefined, b: string | null | undefined): boolean {
+  const key = (s: string | null | undefined) =>
+    (s ?? "")
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .split(/[^\p{L}]+/u)
+      .filter((w) => w.length >= 3 && !/^(?:врач|доктор|специалист)$/u.test(w))
+      .map((w) => w.slice(0, 6))
+      .sort()
+      .join(" ");
+  const ka = key(a);
+  return ka.length > 0 && ka === key(b);
+}
+
 export interface StaffDays {
   name: string;
   specialty?: string | null;

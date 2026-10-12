@@ -55,6 +55,18 @@ describe("confidentMatch", () => {
     expect(confidentMatch(m)).toBe(false);
   });
 
+  it("на вопрос о цене дословно не отвечаем справкой без цены (демо-прогон 12 октября)", () => {
+    const rows: KnowledgeRow[] = [
+      { id: "n", topic: "Сколько капельниц нужно?", question: "Сколько капельниц нужно пройти?", answer: "Количество капельниц определяется индивидуально, чаще курс от 5 до 10." },
+    ];
+    const q = "Сколько стоят капельницы? Сколько капельниц нужно";
+    const m = matchKnowledge(q, rows);
+    expect(m).not.toBeNull();
+    expect(confidentMatch(m, q)).toBe(false);
+    const q2 = "Сколько капельниц нужно пройти?";
+    expect(confidentMatch(matchKnowledge(q2, rows), q2)).toBe(true);
+  });
+
   it("развёрнутый вопрос по теме — уверенное совпадение", () => {
     expect(confidentMatch(matchKnowledge("как готовиться к капельнице", ROWS))).toBe(true);
   });

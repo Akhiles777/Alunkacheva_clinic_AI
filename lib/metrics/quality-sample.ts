@@ -110,6 +110,18 @@ export function parseVerdict(raw: string): { verdict: Verdict; comment: string }
     /^(OK|DEVIATION|UNSUPPORTED_CLAIM|MEDICAL_WITHOUT_SOURCE|UNFINISHED)(?![A-Za-z_])[:\s-]*([\s\S]*)$/i,
   );
   if (!match) return null;
+  /**
+   * Передумала по ходу — проверки не было. Модель начинает с «DEVIATION», а
+   * в конце сама пишет «ВЕРДИКТ: OK» (демо-прогон 12 октября): по первому
+   * слову на экран шла ошибка, которой нет. Какой из двух вердиктов верен, мы
+   * не знаем, — как и непонятный ответ, такая проверка не записывается.
+   */
+  const verdicts = new Set(
+    [...text.matchAll(/(?<![A-Za-z_])(OK|DEVIATION|UNSUPPORTED_CLAIM|MEDICAL_WITHOUT_SOURCE|UNFINISHED)(?![A-Za-z_])/g)].map((m) =>
+      m[1].toUpperCase(),
+    ),
+  );
+  if (verdicts.size > 1) return null;
   return {
     verdict: match[1].toUpperCase() as Verdict,
     comment: match[2].trim().slice(0, 600),

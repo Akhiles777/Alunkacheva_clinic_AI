@@ -31,7 +31,7 @@ import path from "node:path";
 export const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
 
 export function mediaRoot(): string {
-  return process.env.MEDIA_DIR ?? path.join(process.cwd(), ".data", "media");
+  return process.env.MEDIA_DIR ?? path.join(/*turbopackIgnore: true*/ process.cwd(), ".data", "media");
 }
 
 /**

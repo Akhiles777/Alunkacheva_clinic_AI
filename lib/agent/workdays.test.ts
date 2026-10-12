@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { daysAsked, lastNamedStaff, relativeDaysAsked, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
+import { daysAsked, lastNamedStaff, relativeDaysAsked, sameSpecialty, staffAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday } from "./workdays";
 
 /**
  * Живой диалог, из-за которого правило появилось: «работаете ли вы в выходные
@@ -232,5 +232,17 @@ describe("сегодня и завтра — дни недели по часам
   });
   it("поздний вечер по UTC — уже следующий день по Москве", () => {
     expect(relativeDaysAsked("сегодня", new Date("2026-10-06T22:30:00Z"), "Europe/Moscow")).toEqual([3]);
+  });
+});
+
+describe("sameSpecialty", () => {
+  it("«Остеопат» и «врач остеопат» — одна специальность (демо-прогон 12 октября)", () => {
+    expect(sameSpecialty("Остеопат", "врач остеопат")).toBe(true);
+    expect(sameSpecialty("врач-остеопат", "Остеопат")).toBe(true);
+  });
+  it("разные специальности не склеиваются", () => {
+    expect(sameSpecialty("Остеопат", "БОС-терапевт")).toBe(false);
+    expect(sameSpecialty("Медсестра", "Остеопат")).toBe(false);
+    expect(sameSpecialty(null, null)).toBe(false);
   });
 });

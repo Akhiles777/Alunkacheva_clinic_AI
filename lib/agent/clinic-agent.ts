@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { prisma } from "@/lib/db";
 import { normalizePhone } from "@/lib/phone";
 import { notifyStaff, escalationRecipients } from "@/lib/server/notify";
@@ -179,7 +180,7 @@ import { askSpecialist, medicalQueryPending, specialistNames, specialistQueryPen
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { amenOnly, collapseFormulas, courtesyFormulaWord } from "./courtesy-words";
 import { complexMedical, managementTopic } from "./specialist-rules";
-import { WEEKDAY_WHEN, daysAsked, lastNamedStaff, relativeDaysAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
+import { WEEKDAY_WHEN, daysAsked, sameSpecialty, lastNamedStaff, relativeDaysAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
 /**
  * Агент пациентского канала.
@@ -353,8 +354,8 @@ async function saveMessage(input: {
   attachments?: IncomingAttachment[];
   /** Для исходящих: «в очереди», пока канал не подтвердил отправку. */
   status?: "QUEUED" | "SENT" | "FAILED";
-}) {
-  await prisma.message.create({
+}): Promise<string> {
+  const saved = await prisma.message.create({
     data: {
       companyId: input.companyId,
       conversationId: input.conversationId,
@@ -383,6 +384,49 @@ async function saveMessage(input: {
       reminderCount: 0,
     },
   });
+  return saved.id;
+}
+
+/**
+ * Что пошло в ответ на ОДНО сообщение пациента: когда началась обработка и
+ * какие записи справочника агент держал перед глазами.
+ *
+ * Журнал попыток (`AgentRun`) задуман с ответом и записями справочника — по
+ * ним ночью выбираются ответы на проверку качества, а экран «Пробелы» считает
+ * пользу каждой записи. Но ни ответ, ни записи для модели туда не попадали:
+ * проверка качества на боевом сервере всегда находила «нечего проверять»
+ * (демо-прогон 12 октября). Протаскивать это через десятки функций незачем —
+ * обработка одного сообщения и есть контекст.
+ */
+interface TurnLog {
+  startedAt: Date;
+  knowledge: Set<string>;
+}
+const turnLog = new AsyncLocalStorage<TurnLog>();
+
+function noteKnowledge(...rows: ({ id?: string } | null | undefined)[]): void {
+  const turn = turnLog.getStore();
+  if (!turn) return;
+  for (const r of rows) if (r?.id) turn.knowledge.add(r.id);
+}
+
+/** Привязать попытки этой обработки к ушедшему ответу. */
+async function linkTurnRuns(conversationId: string, messageId: string): Promise<void> {
+  const turn = turnLog.getStore();
+  if (!turn) return;
+  const mine = { conversationId, messageId: null, triggeredAt: { gte: turn.startedAt } };
+  try {
+    // Записи справочника — модели, у которой их нет; дословный ответ свои уже записал.
+    if (turn.knowledge.size > 0) {
+      await prisma.agentRun.updateMany({
+        where: { ...mine, outcome: "OK", knowledgeEntryIds: { isEmpty: true } },
+        data: { knowledgeEntryIds: [...turn.knowledge] },
+      });
+    }
+    await prisma.agentRun.updateMany({ where: mine, data: { messageId } });
+  } catch {
+    // Журнал не должен ронять ответ пациенту.
+  }
 }
 
 /**
@@ -876,6 +920,7 @@ async function clinicContext(
     ? knowledge.filter((k) => !aboutConsent(k.topic) && !aboutConsent(k.question))
     : knowledge;
   const relevant = pickRelevant(usable, question, talk, serviceStems(services.map((s) => s.title)));
+  noteKnowledge(...(relevant as { id?: string }[]));
   if (relevant.length) {
     lines.push("", "Справка клиники:");
     for (const k of relevant) lines.push(`${k.topic}: ${k.answer}`);
@@ -1691,7 +1736,7 @@ async function respond(
    * инбоксе он есть, а у пациента его нет, и никто об этом не знает. Отметку
    * ставит тот, кто отправил (см. lib/agent/unanswered и вебхуки каналов).
    */
-  await saveMessage({
+  const messageId = await saveMessage({
     companyId: ctx.companyId,
     conversationId,
     channel: ctx.channel,
@@ -1700,6 +1745,7 @@ async function respond(
     body: text,
     status: "QUEUED",
   });
+  await linkTurnRuns(conversationId, messageId);
   return { ...reply, text, conversationId };
 }
 
@@ -1751,7 +1797,14 @@ async function callHumanWhileWaitingConsent(
 }
 
 
-export async function handlePatientMessage(
+export function handlePatientMessage(
+  ctx: AgentContext,
+  input: Parameters<typeof handlePatientMessageNow>[1],
+): Promise<AgentReply | null> {
+  return turnLog.run({ startedAt: new Date(), knowledge: new Set() }, () => handlePatientMessageNow(ctx, input));
+}
+
+async function handlePatientMessageNow(
   ctx: AgentContext,
   input: {
     text?: string;
@@ -3803,12 +3856,14 @@ async function dayNoteFor(
       .findFirst({ where: { companyId, isActive: true, deletedAt: null, name: chosen }, select: { specialty: true } })
       .catch(() => null);
     const peers = mine?.specialty
-      ? await prisma.staff
-          .findMany({
-            where: { companyId, isActive: true, deletedAt: null, specialty: mine.specialty, NOT: { name: chosen } },
-            select: { name: true, workdays: true },
-          })
-          .catch(() => [] as { name: string; workdays: number[] }[])
+      ? (
+          await prisma.staff
+            .findMany({
+              where: { companyId, isActive: true, deletedAt: null, NOT: { name: chosen } },
+              select: { name: true, workdays: true, specialty: true },
+            })
+            .catch(() => [] as { name: string; workdays: number[]; specialty: string | null }[])
+        ).filter((p) => sameSpecialty(p.specialty, mine.specialty))
       : rows.filter((r) => r.name !== chosen);
     const head = `${shortName(me.name)} ${no.map((d) => WEEKDAY_WHEN[d]).join(" и ")} не принимает.`;
     if (peers.length === 0 || peers.some((p) => p.workdays.length === 0)) return head;
@@ -5742,9 +5797,41 @@ async function replyToQuestion(
        * услышал. Какая именно капельница нужна, решает врач — это остаётся за
        * ним; сказать, сколько стоит названная услуга, мы можем и обязаны.
        */
-      const priced = asksPrice(own)
-        ? dedupeServices(matchServices(own, patientServices(await getServices(ctx.companyId).catch(() => [])), 3, 0.5))
-        : [];
+      /**
+       * Цену сначала берём из справки клиники, если там она есть.
+       *
+       * «Сколько стоят капельницы? Хочется что-то от постоянной усталости»
+       * получало строку прайса «Внутривенное капельное введение растворов —
+       * 500 ₽» — плату за само введение, хотя программы капельниц, по справке
+       * клиники, стоят от 4 000 до 10 800 ₽ (демо-прогон 12 октября). Справка с
+       * ценой отвечает дословно; строку прайса по общему «капельницы» не
+       * называем вовсе (`knowledgeServiceIn`).
+       */
+      const pricedKnowledge = asksPrice(own)
+        ? matchKnowledge(
+            talkQuery,
+            knowledgeRows.filter((r) => /\d[\d\s\u00a0]*\s*(?:₽|руб)/u.test(r.answer)),
+            vocab,
+          )
+        : null;
+      /**
+       * Порог здесь свой: жалоба рядом с вопросом разбавляет совпадение
+       * («хочется что-то от постоянной усталости»), а выбор и так сужен до
+       * справок с ценой и до вопроса о цене. Тема записи покрыта наполовину и
+       * два слова совпали — это ответ на заданный вопрос.
+       */
+      if (pricedKnowledge && (confidentMatch(pricedKnowledge, talkQuery) || (pricedKnowledge.hits >= 2 && pricedKnowledge.topicCoverage >= 0.5))) {
+        return respond(ctx, conversation.id, {
+          text:
+            `${pricedKnowledge.row.answer.trim()}\n\nКакая именно подойдёт в вашем случае, скажет специалист — ` +
+            "передал(а) администратору клиники.",
+          buttons: mainMenu(),
+        });
+      }
+      const priced =
+        asksPrice(own) && !(await knowledgeServiceIn(ctx.companyId, [own]))
+          ? dedupeServices(matchServices(own, patientServices(await getServices(ctx.companyId).catch(() => [])), 3, 0.5))
+          : [];
       const prices = priced
         .map((p) => `${p.title} — ${p.price} ₽${p.durationMin > 0 ? `, ${p.durationMin} мин` : ""}`)
         .join("\n");
@@ -6112,7 +6199,7 @@ async function replyToQuestion(
            * сбивает с толку: спрашивали про остеопата, а названа БОС-терапия.
            */
           const sameKind = whoWorks(
-            doctors.filter((x) => (x.specialty ?? "") === (named.specialty ?? "")),
+            doctors.filter((x) => sameSpecialty(x.specialty, named.specialty)),
             [d],
           ).works;
           const line =

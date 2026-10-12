@@ -29,7 +29,13 @@ const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1"
 /** Проверку ведёт тот же провайдер; модель можно задать отдельно. */
 const MODEL =
   process.env.ROUTER_AI_QUALITY_MODEL || process.env.ROUTER_AI_MODEL || "anthropic/claude-sonnet-4.5";
-const TIMEOUT_MS = Number(process.env.ROUTER_AI_TIMEOUT_MS ?? 20_000);
+/**
+ * Своя граница ожидания, не общая с ботом. Проверка идёт ночью и никого не
+ * держит, а двадцати секунд модели-проверяющему не хватало: первый же
+ * медленный ответ считался «модель недоступна» и обрывал весь прогон
+ * (демо-прогон 12 октября — три обрыва подряд на пяти ответах).
+ */
+const TIMEOUT_MS = Number(process.env.ROUTER_AI_QUALITY_TIMEOUT_MS ?? 60_000);
 
 /** За какой срок берём ответы на проверку. */
 const WINDOW_DAYS = 8;
@@ -188,6 +194,27 @@ export async function previewSample(companyId: string): Promise<SamplePreview> {
       })
     : [];
   const entryById = new Map(entries.map((e) => [e.id, e]));
+  /**
+   * Прайс и врачи — тоже справка агента: он называет цены и длительность из
+   * прайса, а не из записей справочника. Без них «диагностика у Ирины
+   * Омаровой — 1000 ₽, 30 минут» помечалось как «в справке не указано», и экран
+   * качества заполнялся ошибками, которых нет (демо-прогон 12 октября). Это
+   * открытые сведения клиники, персональных данных здесь нет.
+   */
+  const [priceRows, staffRows] = await Promise.all([
+    prisma.service.findMany({
+      where: { companyId, isActive: true, price: { gt: 1 } },
+      select: { title: true, price: true, durationMin: true },
+      orderBy: { title: "asc" },
+    }),
+    prisma.staff.findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { name: true, specialty: true } }),
+  ]);
+  const catalogue = [
+    "Прайс клиники:",
+    ...priceRows.map((r) => `${r.title} — ${Number(r.price)} ₽${r.durationMin > 0 ? `, ${r.durationMin} мин` : ""}`),
+    "Специалисты:",
+    ...staffRows.map((r) => `${r.name}${r.specialty ? ` — ${r.specialty}` : ""}`),
+  ].join("\n");
 
   const items: SampleItem[] = [];
   for (const picked of sample) {
@@ -206,6 +233,7 @@ export async function previewSample(companyId: string): Promise<SamplePreview> {
         .map((id) => entryById.get(id))
         .filter(Boolean)
         .map((e) => `«${e!.topic}»: ${e!.answer}`)
+        .concat(catalogue)
         .join("\n"),
     });
   }

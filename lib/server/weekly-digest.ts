@@ -38,7 +38,12 @@ const TOTAL_WEEKS = HISTORY_WEEKS + 1;
 
 const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1").replace(/\/+$/, "");
 const MODEL = process.env.ROUTER_AI_MODEL || "anthropic/claude-sonnet-4.5";
-const TIMEOUT_MS = Number(process.env.ROUTER_AI_TIMEOUT_MS ?? 20_000);
+/**
+ * Своя граница ожидания: сводка идёт в понедельник утром и никого не держит, а
+ * двадцати секунд модели не хватало — три сводки из пяти уходили своими
+ * словами вместо связного текста (демо-прогон 12 октября).
+ */
+const TIMEOUT_MS = Number(process.env.ROUTER_AI_DIGEST_TIMEOUT_MS ?? 60_000);
 
 export interface DigestMetrics {
   [key: string]: number;
@@ -411,6 +416,45 @@ export function numbersAreOurs(text: string, sources: string[]): boolean {
 }
 
 /**
+ * Текст написан владельцу, а не нам.
+ *
+ * Модель иногда отвечает не сводкой, а просьбой к тому, кто её спросил:
+ * «Пожалуйста, предоставьте остальные наблюдения — пока дан только один пункт».
+ * Чужих чисел в таком тексте нет, и `numbersAreOurs` его пропускала — владелец
+ * получил бы это в понедельник вместо сводки (демо-прогон 12 октября, две
+ * сводки из пяти). Признаков два: обращение за данными и пропавшее наблюдение
+ * — у каждого наблюдения хотя бы одно его число должно остаться в тексте.
+ */
+export function writtenForOwner(
+  text: string,
+  observations: string[],
+  /** Есть ли среди наблюдений наша гипотеза: своей модели придумывать нельзя. */
+  hasHypothesis = true,
+): boolean {
+  if (
+    /(?<!\p{L})(?:предоставьте|пришлите|пришли|поделись|поделитесь|уточните|укажите|дайте|ты\s+пишешь|у\s+меня\s+(?:есть\s+)?только)(?!\p{L})|не\s+хватает\s+(?:данных|наблюдений)|не\s+предоставлен\p{L}*|не\s+передан\p{L}*|опечатк|неполн\p{L}*\s+фраз|пока\s+дан\p{L}*\s+только/iu.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  /**
+   * Причину, которой мы не давали, модель не придумывает: «возможно, это
+   * связано с сезонным фактором» подходит к любой неделе и уводит от разбора
+   * (§8, «гипотеза только там, где её подпирает второе число»).
+   */
+  // Вступление о самой себе: «Напишу абзац по этому единственному наблюдению…», «Вот сводка:».
+  if (/^\s*(?:напишу|пишу|вот\s+(?:сводка|текст|абзац)|конечно|хорошо[,.!])|(?<!\p{L})(?:единственн\p{L}*\s+наблюдени\p{L}*|без\s+добавления\s+чисел)/iu.test(text)) return false;
+  if (!hasHypothesis && /(?<!\p{L})(?:возможно|вероятно|видимо|сезон\p{L}*|связан\p{L}*\s+с)(?!\p{L})/iu.test(text)) return false;
+  const digits = (s: string) => (s.match(/\d[\d\u00a0\u202f\s.,]*/g) ?? []).map((n) => n.replace(/[^\d]/g, "")).filter(Boolean);
+  const inText = new Set(digits(text));
+  return observations.every((o) => {
+    const own = digits(o);
+    return own.length === 0 || own.some((n) => inText.has(n));
+  });
+}
+
+/**
  * Попросить модель связать наблюдения в текст.
  *
  * Возвращает `null`, если модель недоступна ИЛИ принесла своё число: и то, и
@@ -419,6 +463,12 @@ export function numbersAreOurs(text: string, sources: string[]): boolean {
 async function phrase(label: string, digest: Digest): Promise<string | null> {
   const key = process.env.ROUTER_AI;
   if (!key) return null;
+  /**
+   * Связывать нечего — модель не зовём: на пустой неделе она сочиняла
+   * «загрузка кабинетов держалась в привычных рамках», хотя о загрузке ей
+   * ничего не давали (демо-прогон 12 октября). Уходит наш текст.
+   */
+  if (digest.observations.length === 0) return null;
 
   const facts = [
     `Неделя: ${label}.`,
@@ -465,6 +515,8 @@ async function phrase(label: string, digest: Digest): Promise<string | null> {
      * Чужое число — брак целиком, а не повод поправить одну строку: если
      * модель посчитала что-то сама, доверять нельзя и остальному тексту.
      */
+    const observed = digest.observations.map((o) => o.text);
+    if (!writtenForOwner(text, observed, digest.observations.some((o) => o.hypothesis))) return null;
     return numbersAreOurs(text, facts) ? text : null;
   } catch {
     return null;
