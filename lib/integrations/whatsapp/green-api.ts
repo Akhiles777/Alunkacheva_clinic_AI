@@ -358,6 +358,42 @@ export async function deleteMessage(
   return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
 
+/** Сообщение, ждущее отправки в очереди провайдера. */
+export interface QueuedMessage {
+  /** Идентификатор, который провайдер вернул при постановке (`idMessage`). */
+  id: string;
+  chatId: string | null;
+}
+
+/**
+ * Что лежит в очереди исходящих у Green API (первые 500). null — спросить не
+ * удалось: интеграция выключена, ключей нет или провайдер не ответил.
+ */
+export async function messagesQueue(companyId: string): Promise<QueuedMessage[] | null> {
+  if (!isWhatsappEnabled()) return null;
+  const creds = await loadCredentials(companyId);
+  if (!creds) return null;
+  const res = await call<unknown>(ENDPOINTS.showMessagesQueue(creds.idInstance, creds.apiToken));
+  if (!res.ok || !Array.isArray(res.data)) return null;
+  const out: QueuedMessage[] = [];
+  for (const row of res.data as Record<string, unknown>[]) {
+    const body = (row?.body ?? {}) as Record<string, unknown>;
+    const chatId = typeof body.chatId === "string" ? body.chatId : null;
+    const ids = typeof row?.messageID === "string" ? [row.messageID] : Array.isArray(row?.messagesIDs) ? row.messagesIDs : [];
+    for (const id of ids) if (typeof id === "string" && id) out.push({ id, chatId });
+  }
+  return out;
+}
+
+/** Очистить очередь исходящих целиком — выборочно провайдер не умеет. */
+export async function clearMessagesQueue(companyId: string): Promise<boolean> {
+  if (!isWhatsappEnabled()) return false;
+  const creds = await loadCredentials(companyId);
+  if (!creds) return false;
+  const res = await call<{ isCleared?: boolean }>(ENDPOINTS.clearMessagesQueue(creds.idInstance, creds.apiToken));
+  return res.ok && res.data?.isCleared === true;
+}
+
 /** Исправить текст уже отправленного сообщения. */
 export async function editMessage(
   companyId: string,

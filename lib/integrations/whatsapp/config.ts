@@ -52,6 +52,14 @@ export const ENDPOINTS = {
   editMessage: (id: string, token: string) => `/waInstance${id}/editMessage/${token}`,
   getStateInstance: (id: string, token: string) => `/waInstance${id}/getStateInstance/${token}`,
   /**
+   * Очередь исходящих у провайдера. Принятое сообщение лежит в ней до суток и
+   * уходит, как только связь восстановится, — сколько бы времени ни прошло.
+   * Времени постановки в очередь у элементов нет, а очистить можно только всю
+   * очередь целиком (`lib/server/whatsapp-queue-watch.ts`).
+   */
+  showMessagesQueue: (id: string, token: string) => `/waInstance${id}/showMessagesQueue/${token}`,
+  clearMessagesQueue: (id: string, token: string) => `/waInstance${id}/clearMessagesQueue/${token}`,
+  /**
    * Есть ли WhatsApp у номера.
    *
    * Единственный способ отличить «сообщение ушло» от «ушло в никуда». Green

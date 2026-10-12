@@ -4,6 +4,7 @@ import { sendText as sendWhatsapp } from "@/lib/integrations/whatsapp/green-api"
 import { sendText as sendTelegram } from "@/lib/integrations/telegram/client";
 import { needsAnswer, QUIET_MINUTES, MAX_AGE_HOURS } from "./unanswered-rule";
 import { needsHuman, type IncomingAttachment } from "./attachments";
+import { STALE_REASON } from "@/lib/integrations/whatsapp/queue-rule";
 
 /** Вложение, которое ассистент не прочтёт (стикер — не в счёт). */
 function carriesAttachment(raw: unknown): boolean {
@@ -32,6 +33,13 @@ function carriesAttachment(raw: unknown): boolean {
 
 /** Сколько диалогов разбираем за круг: добор — подстраховка, а не нагрузка. */
 const BATCH = 20;
+
+/**
+ * Сколько минут недоставленный ответ агента ещё стоит повторять. Дальше он
+ * устарел: человек мог переспросить, ему мог ответить администратор
+ * (решение заказчика, 12 октября: «не ушло за 5 минут — не отправлять»).
+ */
+export const RESEND_WINDOW_MIN = 5;
 
 export interface SweepResult {
   проверено: number;
@@ -152,19 +160,49 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
    * Такой диалог заканчивается нашим сообщением, поэтому в разбор выше он не
    * попадает: там мы ищем последнее слово за пациентом. Отправляем заново —
    * это именно повтор доставки, второго ответа не сочиняем.
+   *
+   * Только свежие и только ответы агента (решение заказчика, 12 октября).
+   * Повтор брал всё недоставленное за шесть часов, включая сообщения
+   * администраторов: пока Green API лежал, копились десятки ответов, и после
+   * починки они ушли бы разом — пациентам, которым давно ответили люди.
+   * Сообщение, не ушедшее за пять минут, устарело; ушедшее позже пяти минут
+   * удаляется у пациента (`lib/integrations/whatsapp/late-delivery.ts`).
+   * Сообщения сотрудников повторяет только сам сотрудник — кнопкой.
    */
-  const undelivered = await prisma.message.findMany({
-    where: {
-      companyId,
-      direction: "OUT",
-      status: "FAILED",
-      createdAt: { gte: notOlderThan },
-      conversation: { status: "BOT_ACTIVE", agentDisabled: false },
-    },
-    orderBy: { createdAt: "asc" },
-    take: BATCH,
-    select: { id: true, body: true, conversation: { select: { channel: true, externalUserId: true } } },
-  });
+  const undelivered = (
+    await prisma.message.findMany({
+      where: {
+        companyId,
+        direction: "OUT",
+        authorType: "BOT",
+        status: "FAILED",
+        // Снятое из вставшей очереди повторять незачем: очередь та же самая.
+        OR: [{ failureReason: null }, { failureReason: { not: STALE_REASON } }],
+        createdAt: { gte: new Date(now - RESEND_WINDOW_MIN * 60_000) },
+        conversation: { status: "BOT_ACTIVE", agentDisabled: false },
+      },
+      orderBy: { createdAt: "asc" },
+      take: BATCH,
+      select: {
+        id: true,
+        body: true,
+        createdAt: true,
+        conversation: {
+          select: {
+            channel: true,
+            externalUserId: true,
+            // Последнее сообщение диалога: после нашего кто-то уже написал — повтор устарел.
+            messages: {
+              where: { deletedAt: null, isDraft: false },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+              select: { createdAt: true },
+            },
+          },
+        },
+      },
+    })
+  ).filter((m) => (m.conversation.messages[0]?.createdAt ?? m.createdAt) <= m.createdAt);
 
   for (const msg of undelivered) {
     const sent = await deliver(companyId, msg.conversation.channel, msg.conversation.externalUserId, {

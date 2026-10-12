@@ -131,7 +131,13 @@ export type ParsedEvent =
       text: string;
       attachments: IncomingAttachment[];
     }
-  | { kind: "status"; externalId: string; status: string }
+  | {
+      kind: "status";
+      externalId: string;
+      status: string;
+      /** Когда это случилось у провайдера; вебхук может прийти позже. */
+      at?: Date;
+    }
   | { kind: "state"; state: string }
   | { kind: "ignored"; reason: string };
 
@@ -191,7 +197,12 @@ export function parseWebhook(raw: unknown): ParsedEvent {
 
     case "outgoingMessageStatus":
       return e.idMessage
-        ? { kind: "status", externalId: e.idMessage, status: e.status ?? "unknown" }
+        ? {
+            kind: "status",
+            externalId: e.idMessage,
+            status: e.status ?? "unknown",
+            ...(e.timestamp && Number.isFinite(e.timestamp) ? { at: new Date(e.timestamp * 1000) } : {}),
+          }
         : { kind: "ignored", reason: "статус без идентификатора" };
 
     case "stateInstanceChanged":

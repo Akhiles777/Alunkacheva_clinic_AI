@@ -19,6 +19,7 @@ import { runQualityCheck } from "@/lib/server/agent-quality";
 import { deliverWeeklyDigest } from "@/lib/server/weekly-digest-delivery";
 import { CLINIC_TZ } from "@/lib/clinic-time";
 import { PROXY_CHECK_INTERVAL_MIN, runProxyWatch } from "@/lib/server/instagram-proxy-watch";
+import { QUEUE_CHECK_INTERVAL_MIN, runWhatsappQueueWatch } from "@/lib/server/whatsapp-queue-watch";
 
 /**
  * Синхронизация с YCLIENTS по расписанию — внутри приложения.
@@ -117,6 +118,7 @@ interface SchedulerShared {
   nightHistory: SyncRunInfo[];
   /** Проверка прокси Instagram: свой таймер, состояние — в instagram-proxy-watch. */
   proxyTimer?: NodeJS.Timeout | null;
+  waQueueTimer?: NodeJS.Timeout | null;
 }
 
 const shared: SchedulerShared = ((globalThis as Record<string, unknown>).__clinicScheduler ??= {
@@ -577,6 +579,17 @@ export function startScheduler(): void {
   shared.proxyTimer.unref?.();
   // Первая проверка — вскоре после старта: экрану «Интеграции» нужно состояние сразу.
   setTimeout(() => void runProxyWatch().catch(() => {}), 30_000).unref?.();
+
+  /**
+   * Очередь исходящих Green API — раз в минуту и тоже отдельно от круга:
+   * сообщение, не ушедшее за пять минут, отправлять уже нельзя, и ждать круг
+   * выгрузки на это некогда.
+   */
+  shared.waQueueTimer = setInterval(
+    () => void runWhatsappQueueWatch().catch((e) => console.error("[scheduler] очередь WhatsApp:", e)),
+    QUEUE_CHECK_INTERVAL_MIN * 60_000,
+  );
+  shared.waQueueTimer.unref?.();
 
   shared.nightTimer = setInterval(() => void runNightCycle(), NIGHT_TICK_MIN * 60_000);
   shared.nightTimer.unref?.();

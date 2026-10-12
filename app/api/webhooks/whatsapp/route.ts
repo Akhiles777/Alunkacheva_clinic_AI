@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import { deliveryPatch, stageOf } from "@/lib/integrations/delivery";
+import { LATE_PREFIX, LATE_REASON, lateKeptReason, shouldRetract } from "@/lib/integrations/whatsapp/late-delivery";
 import { prisma } from "@/lib/db";
 import { handlePatientMessage } from "@/lib/agent/clinic-agent";
 import { isWhatsappEnabled, WHATSAPP_PROVIDER } from "@/lib/integrations/whatsapp/config";
 import { parseWebhook, quoteAuthor, verifyWebhookSecret } from "@/lib/integrations/whatsapp/webhook";
-import { fetchContactPhone, instanceWid, sendText } from "@/lib/integrations/whatsapp/green-api";
+import {
+  deleteMessage as deleteWhatsappMessage,
+  fetchContactPhone,
+  instanceWid,
+  sendText,
+} from "@/lib/integrations/whatsapp/green-api";
 import { humanTakeoverUntil, type AgentQuote } from "@/lib/agent/clinic-agent";
 import { isKnownClinicStatus, recordClinicStatuses } from "@/lib/agent/slot-hold";
 import { looksLikeOffer } from "@/lib/agent/status-slot";
@@ -72,9 +78,56 @@ export async function POST(req: Request) {
     if (!stage) return NextResponse.json({ ok: true, kind: "status", ignored: event.status });
     const msg = await prisma.message.findFirst({
       where: { channel: "WHATSAPP", externalId: event.externalId },
-      select: { id: true, status: true, sentAt: true, deliveredAt: true, readAt: true },
+      select: {
+        id: true,
+        companyId: true,
+        conversationId: true,
+        authorType: true,
+        createdAt: true,
+        failureReason: true,
+        status: true,
+        sentAt: true,
+        deliveredAt: true,
+        readAt: true,
+        conversation: { select: { externalUserId: true } },
+      },
     });
     if (!msg) return NextResponse.json({ ok: true, kind: "status", ignored: "чужое сообщение" });
+    // Уже удалено у пациента как опоздавшее — дальнейшие статусы его не «воскрешают».
+    if (msg.failureReason?.startsWith(LATE_PREFIX)) {
+      return NextResponse.json({ ok: true, kind: "status", ignored: "удалено как опоздавшее" });
+    }
+    if (stage !== "failed") {
+      const sentAt = event.at ?? null;
+      const repliedBeforeSent = sentAt
+        ? (await prisma.message.count({
+            where: {
+              conversationId: msg.conversationId,
+              id: { not: msg.id },
+              deletedAt: null,
+              isDraft: false,
+              createdAt: { gt: msg.createdAt, lt: sentAt },
+            },
+          })) > 0
+        : false;
+      if (shouldRetract(stage, { ...msg, sentAt, repliedBeforeSent })) {
+        const res = await deleteWhatsappMessage(msg.companyId, msg.conversation.externalUserId, event.externalId);
+        /**
+         * Удалили — у пациента сообщения нет, на экране «не ушло» с причиной.
+         * Не удалили — оно у пациента, и экран говорит это прямо.
+         */
+        await prisma.message.update({
+          where: { id: msg.id },
+          data: {
+            status: res.ok ? "FAILED" : "SENT",
+            failureReason: res.ok ? LATE_REASON : lateKeptReason(res.error ?? "провайдер отказал"),
+            sentAt: msg.sentAt ?? sentAt ?? new Date(),
+          },
+        });
+        console.warn(`[wa-late] опоздавшее сообщение ${msg.id}: ${res.ok ? "удалено у пациента" : "удалить не удалось"}`);
+        return NextResponse.json({ ok: true, kind: "status", retracted: res.ok });
+      }
+    }
     const patch = deliveryPatch(msg, stage, new Date());
     if (patch) await prisma.message.update({ where: { id: msg.id }, data: patch });
     return NextResponse.json({ ok: true, kind: "status", applied: Boolean(patch) });
