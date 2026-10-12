@@ -109,6 +109,11 @@ describe("что обрабатывать нельзя", () => {
     expect(e).toEqual({ kind: "status", externalId: "X1", status: "delivered" });
   });
 
+  it("у статуса запоминается время провайдера — по нему считается опоздание", () => {
+    const e = parseWebhook({ typeWebhook: "outgoingMessageStatus", idMessage: "X1", status: "sent", timestamp: 1760263200 });
+    expect(e).toEqual({ kind: "status", externalId: "X1", status: "sent", at: new Date(1760263200 * 1000) });
+  });
+
   it("смена состояния инстанса распознаётся отдельно", () => {
     const e = parseWebhook({ typeWebhook: "stateInstanceChanged", stateInstance: "notAuthorized" });
     expect(e).toEqual({ kind: "state", state: "notAuthorized" });

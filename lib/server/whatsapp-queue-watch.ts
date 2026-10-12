@@ -67,8 +67,18 @@ async function watchCompany(companyId: string): Promise<void> {
       createdAt: true,
       conversation: {
         select: {
+          /**
+           * Последняя реплика человека вне очереди: два наших ответа подряд,
+           * стоящие в очереди вместе, — не «уже ответили», а одна поломка.
+           */
           messages: {
-            where: { deletedAt: null, isDraft: false },
+            where: {
+              deletedAt: null,
+              isDraft: false,
+              OR: [{ externalId: null }, { externalId: { notIn: queue.map((q) => q.id) } }],
+              // Ответил человек — пациент или сотрудник, а не агент второй попыткой.
+              AND: [{ OR: [{ direction: "IN" }, { authorType: "STAFF" }] }],
+            },
             orderBy: { createdAt: "desc" },
             take: 1,
             select: { createdAt: true },

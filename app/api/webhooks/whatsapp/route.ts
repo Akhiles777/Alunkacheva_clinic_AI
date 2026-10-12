@@ -99,7 +99,10 @@ export async function POST(req: Request) {
     }
     if (stage !== "failed") {
       const sentAt = event.at ?? null;
-      const repliedBeforeSent = sentAt
+      // Спрашивать базу, писали ли в переписке, стоит только про опоздавший ответ агента.
+      const lateBot =
+        msg.authorType === "BOT" && stage === "sent" && sentAt !== null && sentAt.getTime() - msg.createdAt.getTime() >= 60_000;
+      const repliedBeforeSent = lateBot && sentAt
         ? (await prisma.message.count({
             where: {
               conversationId: msg.conversationId,
@@ -107,6 +110,8 @@ export async function POST(req: Request) {
               deletedAt: null,
               isDraft: false,
               createdAt: { gt: msg.createdAt, lt: sentAt },
+              // Ответил человек — пациент или сотрудник, а не следующий ответ агента из той же очереди.
+              OR: [{ direction: "IN" }, { authorType: "STAFF" }],
             },
           })) > 0
         : false;
@@ -116,8 +121,16 @@ export async function POST(req: Request) {
          * Удалили — у пациента сообщения нет, на экране «не ушло» с причиной.
          * Не удалили — оно у пациента, и экран говорит это прямо.
          */
-        await prisma.message.update({
-          where: { id: msg.id },
+        await prisma.message.updateMany({
+          where: {
+            id: msg.id,
+            /**
+             * «sent» и «delivered» приходят почти одновременно: второй запрос на
+             * удаление получит отказ (удалять уже нечего) и не должен перетереть
+             * «удалено» словами «удалить не удалось».
+             */
+            ...(res.ok ? {} : { OR: [{ failureReason: null }, { NOT: { failureReason: { startsWith: LATE_PREFIX } } }] }),
+          },
           data: {
             status: res.ok ? "FAILED" : "SENT",
             failureReason: res.ok ? LATE_REASON : lateKeptReason(res.error ?? "провайдер отказал"),

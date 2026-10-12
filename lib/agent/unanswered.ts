@@ -74,6 +74,11 @@ export async function markDelivery(
    * А он отвечал — просто сообщения не доходили, и разбираться было не с чем.
    */
   reason?: string | null,
+  /**
+   * Идентификатор провайдера. Без него ответ из добора не узнать ни в очереди
+   * Green API, ни в статусе «ушло с опозданием» — и снять его было бы нельзя.
+   */
+  externalId?: string | null,
 ): Promise<void> {
   const row = await prisma.message.findFirst({
     where: { companyId, conversationId, direction: "OUT", body, status: "QUEUED" },
@@ -85,7 +90,7 @@ export async function markDelivery(
     .update({
       where: { id: row.id },
       data: ok
-        ? { status: "SENT", sentAt: new Date(), failureReason: null }
+        ? { status: "SENT", sentAt: new Date(), failureReason: null, ...(externalId ? { externalId } : {}) }
         : { status: "FAILED", failureReason: reason?.slice(0, 300) ?? null },
     })
     .catch(() => {});
@@ -97,10 +102,10 @@ async function deliver(
   channel: string,
   externalUserId: string,
   reply: { text: string; buttons?: { text: string; data: string }[] },
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; externalId?: string }> {
   if (channel === "WHATSAPP") {
     const res = await sendWhatsapp(companyId, externalUserId, reply.text);
-    return { ok: res.ok, error: res.error };
+    return { ok: res.ok, error: res.error, externalId: res.ok ? res.externalId : undefined };
   }
   if (channel === "TELEGRAM") {
     const res = await sendTelegram(Number(externalUserId), reply.text, reply.buttons);
@@ -210,7 +215,15 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
     });
     if (!sent.ok) continue;
     await prisma.message
-      .update({ where: { id: msg.id }, data: { status: "SENT", sentAt: new Date() } })
+      .update({
+        where: { id: msg.id },
+        data: {
+          status: "SENT",
+          sentAt: new Date(),
+          failureReason: null,
+          ...(sent.externalId ? { externalId: sent.externalId } : {}),
+        },
+      })
       .catch(() => {});
     result.доставлено += 1;
   }
@@ -255,7 +268,7 @@ export async function answerUnanswered(companyId: string): Promise<SweepResult> 
 
       // У каналов разные ответы на отправку: приводим к одному виду.
       const sent = await deliver(companyId, conv.channel, conv.externalUserId, reply);
-      await markDelivery(companyId, conv.id, reply.text, sent.ok, sent.error);
+      await markDelivery(companyId, conv.id, reply.text, sent.ok, sent.error, sent.externalId);
 
       if (sent.ok) result.отвечено += 1;
       else {
