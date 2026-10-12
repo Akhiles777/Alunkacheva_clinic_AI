@@ -44,7 +44,7 @@ export function mediaRoot(): string {
  */
 export function pathOf(id: string): string {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("недопустимый идентификатор файла");
-  return path.join(mediaRoot(), id.slice(0, 2), id);
+  return path.join(/*turbopackIgnore: true*/ mediaRoot(), id.slice(0, 2), id);
 }
 
 export interface StoredFile {
@@ -58,8 +58,8 @@ export async function saveFile(bytes: Buffer): Promise<StoredFile> {
   if (bytes.byteLength > MAX_UPLOAD_BYTES) throw new Error("файл больше допустимого");
   const id = randomUUID();
   const file = pathOf(id);
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, bytes);
+  await mkdir(/*turbopackIgnore: true*/ path.dirname(file), { recursive: true });
+  await writeFile(/*turbopackIgnore: true*/ file, bytes);
   return {
     id,
     sizeBytes: bytes.byteLength,
@@ -69,7 +69,7 @@ export async function saveFile(bytes: Buffer): Promise<StoredFile> {
 
 export async function readStored(id: string): Promise<Buffer | null> {
   try {
-    return await readFile(pathOf(id));
+    return await readFile(/*turbopackIgnore: true*/ pathOf(id));
   } catch {
     return null;
   }
@@ -77,7 +77,7 @@ export async function readStored(id: string): Promise<Buffer | null> {
 
 export async function storedSize(id: string): Promise<number | null> {
   try {
-    return (await stat(pathOf(id))).size;
+    return (await stat(/*turbopackIgnore: true*/ pathOf(id))).size;
   } catch {
     return null;
   }
