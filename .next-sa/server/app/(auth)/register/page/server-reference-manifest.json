@@ -1,0 +1,29 @@
+{
+  "node": {
+    "00ff0e6af06624d2d393be70edd82d41709c9f3d3c": {
+      "workers": {
+        "app/(auth)/register/page": {
+          "moduleId": 378694,
+          "async": true,
+          "exportedName": "isSelfRegistrationOpen",
+          "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+        }
+      },
+      "exportedName": "isSelfRegistrationOpen",
+      "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+    },
+    "40cc330a965f181c70e77960b9846b812ba4ec0196": {
+      "workers": {
+        "app/(auth)/register/page": {
+          "moduleId": 378694,
+          "async": true,
+          "exportedName": "registerUser",
+          "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+        }
+      },
+      "exportedName": "registerUser",
+      "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+    }
+  },
+  "edge": {}
+}

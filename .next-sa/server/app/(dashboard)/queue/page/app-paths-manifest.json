@@ -1,0 +1,3 @@
+{
+  "/(dashboard)/queue/page": "app/(dashboard)/queue/page.js"
+}

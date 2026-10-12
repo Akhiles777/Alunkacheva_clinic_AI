@@ -1,0 +1,10 @@
+var R=require("../../../../chunks/[turbopack]_runtime.js")("server/app/api/webhooks/yclients/route.js")
+R.c("server/chunks/[root-of-the-server]__16lqsda._.js")
+R.c("server/chunks/WebstormProjects_clinic_lib_0xa3_ap._.js")
+R.c("server/chunks/WebstormProjects_clinic_1w5wlu9._.js")
+R.c("server/chunks/[root-of-the-server]__0oasuqo._.js")
+R.c("server/chunks/WebstormProjects_clinic_025i4y8._.js")
+R.c("server/chunks/WebstormProjects_clinic_1d7ljcs._.js")
+R.c("server/chunks/11-n_clinic__next-internal_server_app_api_webhooks_yclients_route_actions_1hznxa8.js")
+R.m(941453)
+module.exports=R.m(941453).exports

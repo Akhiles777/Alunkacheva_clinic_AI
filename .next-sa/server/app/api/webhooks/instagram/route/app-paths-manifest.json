@@ -1,0 +1,3 @@
+{
+  "/api/webhooks/instagram/route": "app/api/webhooks/instagram/route.js"
+}

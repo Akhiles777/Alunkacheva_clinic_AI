@@ -1,0 +1,17 @@
+{
+  "node": {
+    "40e2f85ced70092bb8f608f4371e34ed82b46f4eba": {
+      "workers": {
+        "app/(auth)/login/page": {
+          "moduleId": 743677,
+          "async": true,
+          "exportedName": "loginUser",
+          "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+        }
+      },
+      "exportedName": "loginUser",
+      "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+    }
+  },
+  "edge": {}
+}

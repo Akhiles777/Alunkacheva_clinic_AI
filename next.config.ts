@@ -58,7 +58,7 @@ const nextConfig: NextConfig = {
    * и падала после «Deploying outputs». Под pm2 трассировка не используется.
    */
   outputFileTracingExcludes: {
-    "*": ["./data/**", "./scripts/**", "./docs/**", "./.data/**", "./.next-build/**", "./deploy/**", "./*.md", "./*.mjs"],
+    "*": ["./.git/**", "./.env*", "./data/**", "./scripts/**", "./docs/**", "./.data/**", "./.next-build/**", "./deploy/**", "./*.md", "./*.mjs"],
   },
   // Значок dev-режима перекрывает профиль в сайдбаре и мешает скриншотам.
   devIndicators: false,

@@ -1,0 +1,12 @@
+var R=require("../../../../chunks/[turbopack]_runtime.js")("server/app/api/webhooks/telegram/route.js")
+R.c("server/chunks/[root-of-the-server]__1baqjlj._.js")
+R.c("server/chunks/WebstormProjects_clinic_lib_15uxm_6._.js")
+R.c("server/chunks/WebstormProjects_clinic_0td04ft._.js")
+R.c("server/chunks/WebstormProjects_clinic_025i4y8._.js")
+R.c("server/chunks/WebstormProjects_clinic_lib_0mnvxnw._.js")
+R.c("server/chunks/[root-of-the-server]__0oasuqo._.js")
+R.c("server/chunks/WebstormProjects_clinic_11py-v4._.js")
+R.c("server/chunks/WebstormProjects_clinic_1d7ljcs._.js")
+R.c("server/chunks/11-n_clinic__next-internal_server_app_api_webhooks_telegram_route_actions_16bf-us.js")
+R.m(86533)
+module.exports=R.m(86533).exports

@@ -1,0 +1,11 @@
+var R=require("../../../../chunks/[turbopack]_runtime.js")("server/app/api/webhooks/instagram/route.js")
+R.c("server/chunks/WebstormProjects_clinic_lib_15uxm_6._.js")
+R.c("server/chunks/WebstormProjects_clinic_025i4y8._.js")
+R.c("server/chunks/[root-of-the-server]__1m8k2ko._.js")
+R.c("server/chunks/WebstormProjects_clinic_lib_0mnvxnw._.js")
+R.c("server/chunks/WebstormProjects_clinic_1d7ljcs._.js")
+R.c("server/chunks/[root-of-the-server]__0oasuqo._.js")
+R.c("server/chunks/WebstormProjects_clinic_11py-v4._.js")
+R.c("server/chunks/11-n_clinic__next-internal_server_app_api_webhooks_instagram_route_actions_0cip0yt.js")
+R.m(554438)
+module.exports=R.m(554438).exports

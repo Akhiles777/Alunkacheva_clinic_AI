@@ -1,0 +1,677 @@
+{
+  "node": {
+    "403cc79a5cc3bfda05a00371500181f827b09bda2f": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "addNoteDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "addNoteDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "40d3c9b80298da357093c08c4cbb19b41b65702364": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getPatientRecord",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "getPatientRecord",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "40c949107ec87fcf054515a50f69e68342e63e2914": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "addPhoneDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "addPhoneDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "40bd698da3ae70aa38218e361e0e5432d65f90fdf8": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "addRelationDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "addRelationDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "40624dcc16c7640822f9ba1519318f3e5d93fa31ed": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "createPatient",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "createPatient",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "6053e96efd074354f19294650ee9ce05f169024d04": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "removePhoneDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "removePhoneDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "408f6bff86d50abd9f02c2ffcf041ccb95ec2c3a2a": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "removeRelationDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "removeRelationDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "400ac4b3a74165f983f1285afd4fd7fd4212d34995": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "resolveNoteDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "resolveNoteDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "6088c7136699994f832f2b95b003fadd5cf3a3b2f9": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "setPrimaryPhoneDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "setPrimaryPhoneDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "40eea3654f364063c1e24f9014d044024a44f9fe75": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "softDeletePatient",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "softDeletePatient",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "60d3412b9b49da5475d2f72b85a69fab0edb6827e1": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "toggleWhatsappDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "toggleWhatsappDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "408a093adfaeecdac86e1b42fe97e5aaad013c7ea6": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "returnToBotDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "returnToBotDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "60fe9acdef9283fd928eeb6eb98b39e3f1952a867f": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "setAgentEnabledDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "setAgentEnabledDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "402cb77080eb7926fb6600e7e7de25c42cff07dd70": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "markDialogReadDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "markDialogReadDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "7871e670844435fa286c21913f75c1a191971fe685": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "sendMessageDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "sendMessageDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "40944b05c66b7fd553331b61a09efe74d650ababe4": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "deleteMessageDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "deleteMessageDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "60b96da2c7f856f696f4e74a73c296c49515380721": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "editMessageDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "editMessageDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "40c6dc896f2e20cda2ce3427e313efdf0582ea28ac": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "resendMessageDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "resendMessageDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "7019959cc3b796adcb2f7410bb164b1c8fbb733d95": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "sendTemplateDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "sendTemplateDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "40510db090d7225952d65c8379fa87df4a4b8fa983": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "startDialogDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "startDialogDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "40c03f0eed7db95becc92619dc0096116d77ac3b95": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "createAppointmentDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "createAppointmentDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "60d45db045a29b76f0f9657db7be5dcd674ff8ce00": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "rescheduleApptDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "rescheduleApptDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "6088cee02641aec6f678ca6d7fcf473a20c187bdf4": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "setApptNoteDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "setApptNoteDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "60776763234eb18d09acf6a0d6a5677afc794c2156": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "setApptSourceDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "setApptSourceDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "60d073587f0ca03229eef9334da6ccf5d4fe0331a0": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "setApptStatusDb",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "setApptStatusDb",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "00001e1d7e08d616cab25f2769635f115aa5504e1d": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getCallOptions",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/call-actions.ts"
+        }
+      },
+      "exportedName": "getCallOptions",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/call-actions.ts"
+    },
+    "4083d9893b6cd5f86bb5cc7ae5027d86518868c6f4": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "recordCall",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/call-record-action.ts"
+        }
+      },
+      "exportedName": "recordCall",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/call-record-action.ts"
+    },
+    "00b9b79fc3861634cb69d8ad97e61da277fbe963d5": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "logoutUser",
+          "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+        }
+      },
+      "exportedName": "logoutUser",
+      "filename": "WebstormProjects/clinic/app/(auth)/actions.ts"
+    },
+    "0067b853752b9bc8120fc29715f5ae7c8bbb3ab4e2": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getNotifications",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+        }
+      },
+      "exportedName": "getNotifications",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+    },
+    "00c40f09b87f491b9ae69b20dec4b7d3e0d3a6d28b": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "markAllNotificationsRead",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+        }
+      },
+      "exportedName": "markAllNotificationsRead",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+    },
+    "40a06c72ab0d9601fe69f905612a44623f5415031f": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "markNotificationRead",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+        }
+      },
+      "exportedName": "markNotificationRead",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+    },
+    "00f37a6b2e1f31aee71f20e5e9a345b9e1c1a7d04e": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "sendTestPush",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+        }
+      },
+      "exportedName": "sendTestPush",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+    },
+    "00d40883236b9735b2d2ded7b3ba6573c2996c6075": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getVapidPublicKey",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+        }
+      },
+      "exportedName": "getVapidPublicKey",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+    },
+    "60413ca438f30bf36df4d87d000246ecef7b3bd3da": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "subscribePush",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+        }
+      },
+      "exportedName": "subscribePush",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/notifications-actions.ts"
+    },
+    "00ef1a812716c4ad379241411ebd238b361b51cbc7": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getClinicDayToday",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "getClinicDayToday",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "00bb54e06cfef41b3a3a4d5ac44dd8f32c91653407": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getServicesForBooking",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "getServicesForBooking",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "00cd8393885ddd770880aa5184864a1e30cd4ca9dd": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getSpecialistsForBooking",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "getSpecialistsForBooking",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "4010606ec46a42dc7ec06c8d8f2fee185e29aa6a71": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "searchPatientsForBooking",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "searchPatientsForBooking",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "008f78e92f9026ed6a58804065dba776ef54bccfbe": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getPatientRecords",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+        }
+      },
+      "exportedName": "getPatientRecords",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/patients/actions.ts"
+    },
+    "00ccd20c6c8aaacfb92684c3baab1bf45dc15cd2d7": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getConversations",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+        }
+      },
+      "exportedName": "getConversations",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/inbox/actions.ts"
+    },
+    "002a41cf70383df5e7c14ab334bf43c43c1ce68ac7": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getAppointmentsForStore",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+        }
+      },
+      "exportedName": "getAppointmentsForStore",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/schedule/actions.ts"
+    },
+    "009cc1f8e79f805545ded73ca3395e167f978aabad": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getCoursesForStore",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/courses/actions.ts"
+        }
+      },
+      "exportedName": "getCoursesForStore",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/courses/actions.ts"
+    },
+    "40c011811b0009dca8b0529a864659dda6a18dbef0": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "reportProblem",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/usage-actions.ts"
+        }
+      },
+      "exportedName": "reportProblem",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/usage-actions.ts"
+    },
+    "78dee8eda881e4032bfea9e718c0c24e0b55dbfde8": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "askAI",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/assistant-actions.ts"
+        }
+      },
+      "exportedName": "askAI",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/assistant-actions.ts"
+    },
+    "60854671f122d428423a8d39a2c423f3139440bc1b": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "noteVisit",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/visit-actions.ts"
+        }
+      },
+      "exportedName": "noteVisit",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/visit-actions.ts"
+    },
+    "001924871fe5d848395315a0e36bfd25ed7fb922be": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getCurrentUser",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/user-actions.ts"
+        }
+      },
+      "exportedName": "getCurrentUser",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/user-actions.ts"
+    },
+    "00fea16c3188019ccb065399bb0ac63d81257e2e1b": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getWeeklyDynamics",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/actions.ts"
+        }
+      },
+      "exportedName": "getWeeklyDynamics",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/actions.ts"
+    },
+    "402b112c9209b15ef1bd872d1418c987578cd908c7": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getOwnerReport",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/actions.ts"
+        }
+      },
+      "exportedName": "getOwnerReport",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/actions.ts"
+    },
+    "407e690b53cccaca0beab9da90b9eb717156259cdf": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getOwnerAiContext",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/actions.ts"
+        }
+      },
+      "exportedName": "getOwnerAiContext",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/actions.ts"
+    },
+    "0093108a8446fb394b3f3a216a430238b41ab27e86": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getWeeklyDigests",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/digest-actions.ts"
+        }
+      },
+      "exportedName": "getWeeklyDigests",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/digest-actions.ts"
+    },
+    "4067f54152cebf4f9898bad9240d67dfa9826b7a54": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "appendAiTurn",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+        }
+      },
+      "exportedName": "appendAiTurn",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+    },
+    "404e847b795a2d378211337c7f9913dd4a79c237fe": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "deleteAiChat",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+        }
+      },
+      "exportedName": "deleteAiChat",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+    },
+    "4020490b85d99d666e32a543da2f447b509ed8212e": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "getAiChat",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+        }
+      },
+      "exportedName": "getAiChat",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+    },
+    "001265ac106188282e790e6338d27e7606dbd42db8": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "listAiChats",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+        }
+      },
+      "exportedName": "listAiChats",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+    },
+    "609bf59b535cacc27189604d8ec0da2dcb8002335a": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "renameAiChat",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+        }
+      },
+      "exportedName": "renameAiChat",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/owner/chat-actions.ts"
+    },
+    "4026f10cb4ca7c9c0c37d48edbf20cd2cf91f3c9de": {
+      "workers": {
+        "app/(dashboard)/owner/page": {
+          "moduleId": 731290,
+          "async": true,
+          "exportedName": "resolveProblem",
+          "filename": "WebstormProjects/clinic/app/(dashboard)/_components/usage-actions.ts"
+        }
+      },
+      "exportedName": "resolveProblem",
+      "filename": "WebstormProjects/clinic/app/(dashboard)/_components/usage-actions.ts"
+    }
+  },
+  "edge": {}
+}

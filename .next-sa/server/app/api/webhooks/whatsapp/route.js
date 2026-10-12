@@ -1,0 +1,11 @@
+var R=require("../../../../chunks/[turbopack]_runtime.js")("server/app/api/webhooks/whatsapp/route.js")
+R.c("server/chunks/[root-of-the-server]__1ffifg_._.js")
+R.c("server/chunks/WebstormProjects_clinic_11py-v4._.js")
+R.c("server/chunks/WebstormProjects_clinic_0q91_9x._.js")
+R.c("server/chunks/WebstormProjects_clinic_lib_19fozi7._.js")
+R.c("server/chunks/WebstormProjects_clinic_025i4y8._.js")
+R.c("server/chunks/WebstormProjects_clinic_1d7ljcs._.js")
+R.c("server/chunks/[root-of-the-server]__0oasuqo._.js")
+R.c("server/chunks/11-n_clinic__next-internal_server_app_api_webhooks_whatsapp_route_actions_0rbaro7.js")
+R.m(583050)
+module.exports=R.m(583050).exports

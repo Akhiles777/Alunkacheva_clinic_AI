@@ -1,0 +1,3 @@
+module.exports=[856024,a=>{"use strict";var b=a.i(670889),c=a.i(272876);a.s(["default",0,function({children:a}){return(0,b.jsx)("div",{className:"bg-bg flex min-h-screen items-center justify-center px-4 py-10",children:(0,b.jsxs)("div",{className:"w-full max-w-[380px]",children:[(0,b.jsxs)("div",{className:"mb-6 text-center",children:[(0,b.jsx)("div",{className:"text-lg font-medium tracking-[-0.015em]",children:c.CLINIC_NAME}),(0,b.jsx)("div",{className:"text-text-subtle text-xs",children:c.CLINIC_TAGLINE})]}),a]})})}])},774154,a=>{a.n(a.i(856024))}];
+
+//# sourceMappingURL=WebstormProjects_clinic_app_%28auth%29_layout_tsx_056hapz._.js.map
