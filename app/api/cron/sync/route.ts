@@ -20,8 +20,13 @@ import { runFastCycle, runNightCycle, runSyncCycle, schedulerState } from "@/lib
  */
 
 export const runtime = "nodejs";
-/** Полная выгрузка длинная: месячные окна за несколько лет. */
-export const maxDuration = 800;
+/**
+ * Предел для бессерверного хостинга; под pm2 он ни на что не влияет — там
+ * выгрузку ведёт планировщик внутри процесса. 300 — потолок тарифа Vercel
+ * Hobby: со значением 800 (с 17 августа) Vercel отказывал каждой публикации
+ * демо-стенда на шаге «Deploying outputs», и сайт месяц стоял на старой сборке.
+ */
+export const maxDuration = 300;
 
 function authorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET?.trim();
