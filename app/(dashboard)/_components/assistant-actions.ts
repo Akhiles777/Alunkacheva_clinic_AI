@@ -23,6 +23,31 @@ import { buildAskedPeriod, buildClinicSnapshot } from "@/lib/assistant/server-co
 import { personaFor } from "@/lib/assistant/personas";
 import { toPlainText } from "@/lib/assistant/plain-text";
 import { sanitizeError } from "@/lib/agent/run-log";
+import { runAnalystTool, toolSpecs } from "@/lib/server/analyst-tools";
+
+interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+/** Сколько раз подряд модель может попросить расчёт, прежде чем обязана ответить. */
+const MAX_TOOL_STEPS = 6;
+
+/**
+ * Как пользоваться расчётами. Сводка отвечает на частые вопросы сразу; всё,
+ * чего в ней нет, модель не выводит сама, а запрашивает у платформы.
+ */
+const TOOLS_RULES = [
+  "У тебя есть РАСЧЁТЫ — функции, которые считают по базе клиники теми же правилами, что отчёты.",
+  "Если готового числа нет в сводке — вызови подходящий расчёт, а не отвечай «нет данных».",
+  "Любая арифметика (проценты, разница, доля, «если вырастет на 10%», «сколько это в месяц») — только через calculate.",
+  "Можно вызывать несколько расчётов подряд, например два периода и сравнение, простой кабинетов и загрузку по часам.",
+  "Даты пиши в виде ГГГГ-ММ-ДД; сегодняшняя дата — первая строка сводки. «Прошлый месяц», «за лето», «с начала года» переводи в даты сам.",
+  "Отвечай как аналитик: главный вывод числом, затем почему так, затем 2–3 конкретных действия с ожидаемым эффектом в рублях (посчитанным через calculate).",
+  "Если число — оценка или верхняя граница (упущенная выручка, план по прайсу), так и скажи одним словом.",
+  "Расчёт вернул ошибку — исправь даты и вызови ещё раз; не получилось — скажи, чего не хватает.",
+].join(" ");
 
 /**
  * Ассистент говорит от роли вошедшего сотрудника. Роль берём из сессии, а не
@@ -118,8 +143,17 @@ export async function askAI(
    * недельные итоги. Глубокий разбор по такому объёму пишется дольше, и
    * прежний срок обрывал его на середине генерации.
    */
+  /**
+   * Расчёты по запросу модели — владельцу и управляющему с правом на выручку.
+   * Остальным ролям хватает сводки: их вопросы про день, а не про экономику.
+   */
+  const useTools = canSeeRevenue && (role === "OWNER" || role === "MANAGER");
+  /**
+   * Срок на весь разбор, а не на один запрос: с расчётами это несколько
+   * обращений к модели подряд.
+   */
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
+  const timeout = setTimeout(() => controller.abort(), useTools ? 150_000 : 60_000);
 
   /**
    * Размер справки — в журнал. Если провайдер начнёт отказывать по длине,
@@ -129,35 +163,71 @@ export async function askAI(
     console.warn(`[аналитик] справка ${fullContext.length} знаков — близко к пределу запроса`);
   }
   try {
-    const res = await fetch(`${BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        temperature: 0.4,
-        /**
-         * Запас намеренно выше ожидаемой длины: краткость задаётся промптом, а
-         * не обрезкой. Обрыв ответа на полуслове хуже длинного ответа.
-         *
-         * Девятисот не хватало. На просьбу «проведи глубокий анализ» разбор
-         * обрывался словом «Важн» — владелец видел половину мысли и не мог
-         * понять, это всё или связь пропала.
-         */
-        max_tokens: 1800,
-        messages: [
-          // Инструкции + свежий срез базы. Пересобираем каждый запрос — данные
-          // могли измениться между репликами.
-          { role: "system", content: `${systemPrompt}\n\nДанные (только чтение):\n${fullContext}` },
-          // Память диалога: предыдущие реплики, чтобы ИИ понимал контекст беседы.
-          ...history.slice(-12).map((t) => ({ role: t.role, content: t.content })),
-          { role: "user", content: question },
+    type Msg = Record<string, unknown>;
+    const messages: Msg[] = [
+      /**
+       * Инструкции + свежий срез базы. Пересобираем каждый запрос — данные
+       * могли измениться между репликами. Помечены для кэша провайдера: при
+       * расчётах модель вызывается несколько раз подряд, и сводка в 12 тысяч
+       * токенов на каждом шаге стоила бы как отдельный вопрос.
+       */
+      {
+        role: "system",
+        content: [
+          {
+            type: "text",
+            text: `${systemPrompt}${useTools ? ` ${TOOLS_RULES}` : ""}\n\nДанные (только чтение):\n${fullContext}`,
+            cache_control: { type: "ephemeral" },
+          },
         ],
-      }),
-      signal: controller.signal,
-    });
+      },
+      // Память диалога: предыдущие реплики, чтобы ИИ понимал контекст беседы.
+      ...history.slice(-12).map((t) => ({ role: t.role, content: t.content })),
+      { role: "user", content: question },
+    ];
+
+    let res: Response | null = null;
+    for (let step = 0; step <= MAX_TOOL_STEPS; step += 1) {
+      const lastStep = step === MAX_TOOL_STEPS;
+      res = await fetch(`${BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          temperature: 0.4,
+          /**
+           * Запас намеренно выше ожидаемой длины: краткость задаётся промптом, а
+           * не обрезкой. Обрыв ответа на полуслове хуже длинного ответа.
+           *
+           * Девятисот не хватало. На просьбу «проведи глубокий анализ» разбор
+           * обрывался словом «Важн» — владелец видел половину мысли и не мог
+           * понять, это всё или связь пропала.
+           */
+          max_tokens: 1800,
+          messages,
+          // На последнем шаге расчёты не предлагаем: пора отвечать тем, что собрано.
+          ...(useTools && !lastStep ? { tools: toolSpecs(), tool_choice: "auto" } : {}),
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) break;
+      const step$ = (await res.clone().json()) as {
+        choices?: { message?: { content?: string | null; tool_calls?: ToolCall[] }; finish_reason?: string }[];
+      };
+      const msg = step$.choices?.[0]?.message;
+      const calls = msg?.tool_calls ?? [];
+      if (!useTools || calls.length === 0) break;
+      messages.push({ role: "assistant", content: msg?.content ?? "", tool_calls: calls });
+      for (const call of calls) {
+        const output = await runAnalystTool(session.companyId, call.function.name, call.function.arguments);
+        console.log(`[аналитик] расчёт ${call.function.name} — ${output.length} знаков`);
+        messages.push({ role: "tool", tool_call_id: call.id, content: output });
+      }
+    }
+    if (!res) return { text: null };
 
     if (!res.ok) {
       /**

@@ -22,6 +22,10 @@
 # `git pull` встал намертво. В репозитории им делать нечего.
 /.next-build/
 /.next-prev/
+# Временные сборки для проверок (NEXT_DIST_DIR): не коммитить.
+/.next-sa/
+/.next-demo/
+/.next-check/
 
 # production
 /build

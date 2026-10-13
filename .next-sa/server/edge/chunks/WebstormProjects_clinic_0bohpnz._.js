@@ -1,3 +1,0 @@
-(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["chunks/WebstormProjects_clinic_0bohpnz._.js",772674,(e,t,n)=>{self._ENTRIES||={};let s=Promise.resolve().then(()=>e.i(944937));s.catch(()=>{}),self._ENTRIES.middleware_instrumentation=new Proxy(s,{get(e,t){if("then"===t)return(t,n)=>e.then(t,n);let n=(...n)=>e.then(e=>(0,e[t])(...n));return n.then=(n,s)=>e.then(e=>e[t]).then(n,s),n}})},944937,e=>{"use strict";async function t(){}e.s(["register",0,t])}]);
-
-//# sourceMappingURL=WebstormProjects_clinic_0bohpnz._.js.map

@@ -111,7 +111,7 @@ export function periodLabel(period: PeriodKey): string {
  * Теперь знаменатель берётся из «Настройки → Клиника». Пустое расписание —
  * повод показать это честно, а не подставить выдуманные часы: см. FALLBACK_DAY.
  */
-type Schedule = Map<number, Interval>;
+export type Schedule = Map<number, Interval>;
 
 /**
  * Если расписание не заполнено вовсе. Двенадцать часов — прежнее поведение:
@@ -119,7 +119,7 @@ type Schedule = Map<number, Interval>;
  */
 const FALLBACK_DAY: Interval = { startMinute: 9 * 60, endMinute: 21 * 60 };
 
-async function loadSchedule(companyId: string): Promise<Schedule> {
+export async function loadSchedule(companyId: string): Promise<Schedule> {
   const rows = await prisma.clinicSchedule.findMany({
     where: { companyId },
     select: { weekday: true, startMinute: true, endMinute: true },
@@ -142,13 +142,13 @@ async function loadSchedule(companyId: string): Promise<Schedule> {
  * на сервере в UTC весь перебор дней съезжал на сутки назад: график субботы
  * применялся к пятнице, а закрытое воскресенье выпадало на субботу.
  */
-function clinicWeekday(date: Date, tz = "Europe/Moscow"): number {
+export function clinicWeekday(date: Date, tz = "Europe/Moscow"): number {
   const name = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(date);
   const order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   return order.indexOf(name) + 1;
 }
 
-function dayInterval(schedule: Schedule, date: Date): Interval | null {
+export function dayInterval(schedule: Schedule, date: Date): Interval | null {
   if (schedule.size === 0) return FALLBACK_DAY;
   return schedule.get(clinicWeekday(date)) ?? null;
 }
@@ -185,7 +185,7 @@ export function workingMinutesBetween(
   return minutes;
 }
 
-function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
+export function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: tz,
     hour: "2-digit",
@@ -197,7 +197,7 @@ function minuteOfDay(at: Date, tz = "Europe/Moscow"): number {
   return h * 60 + m;
 }
 
-function isoDate(at: Date, tz = "Europe/Moscow"): string {
+export function isoDate(at: Date, tz = "Europe/Moscow"): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
     year: "numeric",
@@ -224,7 +224,13 @@ function isoDate(at: Date, tz = "Europe/Moscow"): string {
  */
 function denominatorEnd(period: PeriodKey, from: Date, to: Date, now: Date): Date {
   // «Неделя» — тоже календарный отрезок: последняя полная неделя.
-  const calendar = isMonthKey(period) || isWeekKey(period) || period === "week";
+  /**
+   * И отрезок «1–31 августа» тоже: его конец задан, а не «сегодня». Без этого
+   * рабочих дней за август выходило 63 (от 1 августа до сегодняшнего дня), и
+   * загрузка кабинетов за отрезок занижалась вдвое (проверка аналитика,
+   * 13 октября).
+   */
+  const calendar = isMonthKey(period) || isWeekKey(period) || isRangeKey(period) || period === "week";
   const end = calendar ? to : now;
   const today = endOfToday(now);
   if (end > today) return today > from ? today : from;
