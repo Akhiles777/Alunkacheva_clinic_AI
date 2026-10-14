@@ -463,6 +463,8 @@ export function usableKnowledgeWhere(companyId: string) {
   return {
     companyId,
     isActive: true,
+    // Записи об акциях — только через lib/agent/promo.ts, никогда в общем потоке.
+    promoId: null,
     OR: [{ needsDoctorApproval: false }, { approvedAt: { not: null } }],
   };
 }

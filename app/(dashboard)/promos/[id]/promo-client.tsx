@@ -14,6 +14,7 @@ import {
 import { formatMoney, formatNumber } from "@/lib/format";
 import type { PromoDetail } from "@/lib/server/promos";
 import { saveSchool, savePromo } from "../actions";
+import { PromoKnowledge } from "./promo-knowledge";
 
 export interface PromoView {
   id: string | null;
@@ -43,11 +44,13 @@ export function PromoClient({
   detail,
   choices,
   canEdit,
+  canApprove,
 }: {
   initial: PromoView;
   detail: PromoDetail | null;
   choices: Choice[];
   canEdit: boolean;
+  canApprove: boolean;
 }) {
   const router = useRouter();
   const [form, setForm] = useState(initial);
@@ -132,6 +135,15 @@ export function PromoClient({
               schools={detail.schools}
               canEdit={canEdit}
               onChange={() => router.refresh()}
+            />
+          ) : null}
+
+          {detail ? (
+            <PromoKnowledge
+              promoId={detail.id}
+              entries={detail.knowledge}
+              canEdit={canEdit}
+              canApprove={canApprove}
             />
           ) : null}
 
@@ -240,7 +252,7 @@ export function PromoClient({
               </Field>
               <Field
                 label="Агент знает об акции"
-                hint="подключается следующим этапом — пока агент об акции не знает, что бы здесь ни стояло"
+                hint="рассказывает только тому, кто спросил сам, и только записями ниже"
               >
                 <Toggle
                   checked={form.agentEnabled}

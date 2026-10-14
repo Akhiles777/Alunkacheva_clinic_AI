@@ -180,6 +180,8 @@ import { askSpecialist, medicalQueryPending, specialistNames, specialistQueryPen
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { amenOnly, collapseFormulas, courtesyFormulaWord } from "./courtesy-words";
 import { complexMedical, managementTopic } from "./specialist-rules";
+import { SCHOOL_QUESTION, ageOutside, askedSchool, matchSchool, promoTriggered, shouldAskSchool, statedChildAges, visiblePromos } from "./promo";
+import { attachByAgent, familyAttributed, promosForAgent } from "@/lib/server/promos";
 import { WEEKDAY_WHEN, daysAsked, sameSpecialty, lastNamedStaff, relativeDaysAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
 /**
@@ -401,8 +403,20 @@ async function saveMessage(input: {
 interface TurnLog {
   startedAt: Date;
   knowledge: Set<string>;
+  /**
+   * Записи справочника об акции, видимые В ЭТОМ разговоре (lib/agent/promo.ts).
+   * Пусто — агент об акции не знает: в общий справочник они не входят никогда.
+   */
+  promoKnowledge?: KnowledgeRow[];
 }
+type KnowledgeRow = { id: string; topic: string; question: string; answer: string };
 const turnLog = new AsyncLocalStorage<TurnLog>();
+
+/** Общий справочник плюс записи акции, если разговор сейчас о ней. */
+function withPromoRows<T extends KnowledgeRow>(rows: T[]): T[] {
+  const extra = turnLog.getStore()?.promoKnowledge ?? [];
+  return extra.length ? [...rows, ...(extra as T[])] : rows;
+}
 
 function noteKnowledge(...rows: ({ id?: string } | null | undefined)[]): void {
   const turn = turnLog.getStore();
@@ -747,10 +761,12 @@ async function clinicContext(
 ): Promise<string> {
   const [services, knowledge, schedule, staff] = await Promise.all([
     getServices(companyId),
-    prisma.knowledgeEntry.findMany({
-      where: usableKnowledgeWhere(companyId),
-      select: { id: true, topic: true, question: true, answer: true },
-    }),
+    prisma.knowledgeEntry
+      .findMany({
+        where: usableKnowledgeWhere(companyId),
+        select: { id: true, topic: true, question: true, answer: true },
+      })
+      .then(withPromoRows),
     clinicHours(companyId),
     /**
      * Кто принимает. Списка специалистов у агента не было вовсе, и на вопрос
@@ -5270,6 +5286,110 @@ async function offeredSlotAsk(conversationId: string): Promise<string | null> {
  * уже задан — пациент написал его первым сообщением, и переспрашивать «чем могу
  * помочь» значит заставлять человека повторяться.
  */
+// ─────────────────────────────────────────────── акция клиники
+
+type AgentPromo = Awaited<ReturnType<typeof promosForAgent>>[number];
+interface PromoTurn {
+  visible: AgentPromo[];
+  /** Ответ уже готов (undefined — дальше обычный путь, null — промолчать). */
+  reply?: AgentReply | null;
+}
+
+/** Вопрос о пригодности и смысле анализов — медицина, даже если `medical()` его не узнал. */
+const PROMO_MEDICAL_ASK =
+  /(?<!\p{L})(?:противопоказ\p{L}*|подойд\p{L}*|подходит|поможет|опасн\p{L}*|вредн\p{L}*|что\s+(?:означа|показыва)\p{L}*|можно\s+ли|нужно\s+ли|готов\p{L}*\s+к|подготов\p{L}*)/iu;
+
+async function promoTurn(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+  own: string,
+  said: Turn[],
+): Promise<PromoTurn> {
+  const promos = await promosForAgent(ctx.companyId);
+  if (!promos.length) return { visible: [] };
+  const patientTexts = [own, ...said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content))];
+  const visible = visiblePromos(promos, patientTexts, new Date());
+  if (!visible.length) return { visible };
+  const turn = turnLog.getStore();
+  if (turn) turn.promoKnowledge = visible.flatMap((p) => p.entries);
+  const p = visible[0];
+
+  // Возраст вне акции — решение не агента: передаём человеку.
+  if (ageOutside(statedChildAges([own]), p)) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Школьная акция: возраст ребёнка вне границ акции").catch(() => {});
+    return {
+      visible,
+      reply: await respond(ctx, conversation.id, {
+        text: "Передал(а) администратору — он подскажет, что подойдёт ребёнку по возрасту, и ответит здесь же.",
+      }),
+    };
+  }
+
+  // Ответ на наш вопрос про школу.
+  const lastAgent = [...said].reverse().find((t) => t.role === "assistant")?.content ?? "";
+  if (askedSchool([lastAgent]) && !hasQuestion(own)) {
+    const m = matchSchool(withoutQuote(own), p.schools);
+    if (m.kind === "declined") {
+      return { visible, reply: await respond(ctx, conversation.id, { text: "Поняла, спасибо!" }) };
+    }
+    if (m.kind === "match" && conversation.patientId) {
+      const done = await attachByAgent({
+        companyId: ctx.companyId,
+        patientId: conversation.patientId,
+        conversationId: conversation.id,
+        schoolId: m.schoolId,
+      });
+      if (done !== "closed") {
+        const name = p.schools.find((s) => s.id === m.schoolId)?.name ?? "";
+        return { visible, reply: await respond(ctx, conversation.id, { text: `Спасибо! Отметил(а): ${name}.` }) };
+      }
+    }
+    // Невнятно, две похожие школы или нет карточки — школу не угадываем.
+    const note = `Школьная акция: школа не определена — ответ пациента «${withoutQuote(own).slice(0, 120)}»`;
+    await prisma.dialogNote.create({ data: { companyId: ctx.companyId, conversationId: conversation.id, body: note } }).catch(() => {});
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Школьная акция, школа не определена").catch(() => {});
+    return {
+      visible,
+      reply: await respond(ctx, conversation.id, { text: "Спасибо! Передал(а) администратору — он уточнит название школы." }),
+    };
+  }
+  return { visible };
+}
+
+async function promoInfo(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+  own: string,
+  promo: PromoTurn,
+  history: Turn[],
+): Promise<AgentReply | null | undefined> {
+  const p = promo.visible.find((x) => promoTriggered(own, x));
+  if (!p) return undefined;
+  // Несколько вопросов в одном сообщении — ведёт модель, записи акции у неё в справке.
+  if (questionParts(own).length > 1) return undefined;
+  const best = matchKnowledge(own, p.entries);
+  if (PROMO_MEDICAL_ASK.test(own)) {
+    // Пригодность, противопоказания, смысл анализов — только дословно или человеку.
+    if (best && confidentMatch(best, own)) {
+      await logAgentRun({ companyId: ctx.companyId, conversationId: conversation.id, outcome: "OK", knowledgeEntryIds: knowledgeIdOf(best.row) });
+      return respond(ctx, conversation.id, { text: best.row.answer.trim() });
+    }
+    await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Школьная акция: медицинский вопрос без готовой справки").catch(() => {});
+    return respond(ctx, conversation.id, { text: "Этот вопрос передал(а) администратору — ответим здесь же." });
+  }
+  const entry = best && best.score > 0 ? best.row : p.entries[0];
+  const attributed = await familyAttributed(ctx.companyId, p.id, conversation.patientId, conversation.id);
+  const askSchool = shouldAskSchool({
+    agentTexts: history.filter((t) => t.role === "assistant").map((t) => t.content),
+    attributed,
+    schools: p.schools.length,
+  });
+  await logAgentRun({ companyId: ctx.companyId, conversationId: conversation.id, outcome: "OK", knowledgeEntryIds: knowledgeIdOf(entry) });
+  return respond(ctx, conversation.id, {
+    text: askSchool ? `${entry.answer.trim()}\n\n${SCHOOL_QUESTION}` : entry.answer.trim(),
+  });
+}
+
 async function replyToQuestion(
   ctx: AgentContext,
   conversation: { id: string; consentGrantedAt: Date | null; patientId: string | null },
@@ -5480,6 +5600,18 @@ async function replyToQuestion(
   const said = sessionOf(history);
 
   /**
+   * Акция клиники (lib/agent/promo.ts). Записи о ней попадают в справку агента,
+   * только если акция идёт, «агент знает» и пациент В ЭТОМ разговоре сам о ней
+   * заговорил. Ответ про школу и возраст вне акции — здесь, раньше вежливых
+   * ответов: «Нет» на наш вопрос про школу — ответ, а не прощание.
+   */
+  const promo = await promoTurn(ctx, conversation, own, said).catch((e) => {
+    console.error("[agent] акция не обработана:", (e as Error)?.message ?? e);
+    return null;
+  });
+  if (promo?.reply !== undefined) return promo.reply;
+
+  /**
    * «Хорошо», «спасибо», «до свидания» — отвечаем сами.
    *
    * Это подтверждение, а не вопрос. На боевом стенде такое «Хорошо» ушло в
@@ -5661,10 +5793,12 @@ async function replyToQuestion(
     return respond(ctx, conversation.id, { text: hello, buttons: mainMenu() });
   }
 
-  const allKnowledge = await prisma.knowledgeEntry.findMany({
-    where: usableKnowledgeWhere(ctx.companyId),
-    select: { id: true, topic: true, question: true, answer: true },
-  });
+  const allKnowledge = withPromoRows(
+    await prisma.knowledgeEntry.findMany({
+      where: usableKnowledgeWhere(ctx.companyId),
+      select: { id: true, topic: true, question: true, answer: true },
+    }),
+  );
 
   /**
    * Записи про согласие на обработку данных исключаем, когда согласие уже
@@ -5760,6 +5894,16 @@ async function replyToQuestion(
   const cancelsForIllness = cantCome(own) && !hasQuestion(own);
   /** «Принимаете грудничков?», «укол, препарат свой» — о наличии услуги, а не о здоровье. */
   const availabilityAsk = serviceAvailabilityAsk(own);
+
+  /**
+   * Вопрос об акции — ответ дословно записью справочника акции и один раз
+   * вопрос про школу. Медицинский вопрос об акции идёт медицинской веткой ниже:
+   * записи акции у неё в справке, а нет подходящей — человеку (§6, правило 1).
+   */
+  if (promo?.visible.length && settings.mode === "on" && !medical(own)) {
+    const info = await promoInfo(ctx, conversation, own, promo, history);
+    if (info !== undefined) return info;
+  }
 
   if (
     medical(own) &&

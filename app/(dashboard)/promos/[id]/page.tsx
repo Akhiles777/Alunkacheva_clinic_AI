@@ -75,6 +75,7 @@ export default async function PromoPage({
       detail={detail}
       choices={choices}
       canEdit={canEdit}
+      canApprove={session.role === "DOCTOR" || session.role === "OWNER"}
     />
   );
 }

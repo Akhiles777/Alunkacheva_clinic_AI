@@ -2199,17 +2199,23 @@ model KnowledgeEntry {
   needsDoctorApproval Boolean   @default(false)
   approvedById        String?
   approvedAt          DateTime? @db.Timestamptz(3)
+  /// Запись об акции. Агенту видна ТОЛЬКО пока акция идёт, у неё стоит «агент
+  /// знает» и пациент сам о ней заговорил (lib/agent/promo.ts). В общий
+  /// справочник агента такие записи не входят никогда.
+  promoId             String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  promo      Promo?     @relation(fields: [promoId], references: [id], onDelete: Restrict)
   service    Service?   @relation(fields: [serviceId], references: [id], onDelete: SetNull)
   updatedBy  StaffUser? @relation("KnowledgeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   approvedBy StaffUser? @relation("KnowledgeApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
 
   @@index([companyId, isActive])
   @@index([companyId, serviceId])
+  @@index([promoId])
   @@map("knowledge_entries")
 }
 
@@ -2634,6 +2640,7 @@ model Promo {
   company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
   schools      PartnerSchool[]
   attributions PartnerAttribution[]
+  knowledge    KnowledgeEntry[]
 
   @@unique([companyId, slug])
   @@map("promos")

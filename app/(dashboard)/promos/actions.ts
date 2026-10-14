@@ -8,6 +8,7 @@ import { requirePermission } from "@/lib/server/authz";
 import { requireId } from "@/lib/server/require-id";
 import { writeAudit } from "@/lib/server/audit";
 import { clinicDayRange, startOfClinicDay } from "@/lib/clinic-time";
+import { looksMedical } from "@/lib/agent/gaps";
 import {
   attachToSchool,
   detachFromSchool,
@@ -324,5 +325,126 @@ export async function detachPatientFromSchool(
     entityType: "partner_attribution",
     entityId: attributionId,
     meta: { removed: true },
+  });
+}
+
+// ─────────────────────────────────────────────── что агент знает об акции
+
+/**
+ * Записи справочника об акции. Правила те же, что у общего справочника (§6):
+ * медицинскую запись утверждает врач или владелец, правка текста утверждение
+ * снимает и выключает запись. Удаления нет — запись выключают.
+ */
+const PromoKnowledgeInput = z.object({
+  promoId: z.string().min(1),
+  id: z.string().min(1).optional(),
+  topic: z.string().trim().min(2, "у записи должна быть тема").max(200),
+  question: z.string().trim().min(2, "напишите, на какой вопрос отвечает запись").max(500),
+  answer: z.string().trim().min(2, "у записи должен быть ответ").max(4000),
+  medical: z.boolean(),
+});
+
+export async function savePromoKnowledge(form: z.input<typeof PromoKnowledgeInput>): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  const parsed = PromoKnowledgeInput.safeParse(form);
+  if (!parsed.success) fail(parsed.error);
+  const k = parsed.data;
+  const promo = await prisma.promo.findFirst({ where: { id: k.promoId, companyId: session.companyId }, select: { id: true } });
+  if (!promo) throw new Error("Акция не найдена.");
+  let entityId = k.id ?? null;
+  if (k.id) {
+    const before = await prisma.knowledgeEntry.findFirst({
+      where: { id: k.id, companyId: session.companyId, promoId: promo.id },
+      select: { topic: true, question: true, answer: true, needsDoctorApproval: true, approvedAt: true },
+    });
+    if (!before) throw new Error("Запись не найдена.");
+    const changed = before.topic !== k.topic || before.question !== k.question || before.answer !== k.answer;
+    // Медицинская отметка — из базы: снять её отправкой формы нельзя.
+    const reapprove = before.needsDoctorApproval && before.approvedAt && changed;
+    await prisma.knowledgeEntry.update({
+      where: { id: k.id },
+      data: {
+        topic: k.topic,
+        question: k.question,
+        answer: k.answer,
+        updatedById: session.userId,
+        ...(reapprove ? { approvedAt: null, approvedById: null, isActive: false } : {}),
+      },
+    });
+  } else {
+    const medical = k.medical || looksMedical(`${k.topic} ${k.question} ${k.answer}`);
+    entityId = (
+      await prisma.knowledgeEntry.create({
+        data: {
+          companyId: session.companyId,
+          promoId: promo.id,
+          topic: k.topic,
+          question: k.question,
+          answer: k.answer,
+          needsDoctorApproval: medical,
+          // Неутверждённая медицинская запись не включается никогда.
+          isActive: !medical,
+          updatedById: session.userId,
+        },
+        select: { id: true },
+      })
+    ).id;
+  }
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "knowledge",
+    entityId,
+    meta: { promoId: promo.id, edited: Boolean(k.id) },
+  });
+  revalidatePath(`/promos/${promo.id}`);
+}
+
+export async function setPromoKnowledgeActive(id: string, active: boolean): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  requireId(id, "запись");
+  const row = await prisma.knowledgeEntry.findFirst({
+    where: { id, companyId: session.companyId, promoId: { not: null } },
+    select: { promoId: true, needsDoctorApproval: true, approvedAt: true },
+  });
+  if (!row) throw new Error("Запись не найдена.");
+  if (active && row.needsDoctorApproval && !row.approvedAt) {
+    throw new Error("Медицинская запись: включить можно после утверждения врачом.");
+  }
+  await prisma.knowledgeEntry.update({ where: { id }, data: { isActive: active, updatedById: session.userId } });
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "knowledge",
+    entityId: id,
+    meta: { promoId: row.promoId, active },
+  });
+  revalidatePath(`/promos/${row.promoId}`);
+}
+
+/** Утвердить медицинскую запись акции — врач или владелец, как в общем справочнике. */
+export async function approvePromoKnowledge(id: string): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  requireId(id, "запись");
+  if (session.role !== "DOCTOR" && session.role !== "OWNER") {
+    throw new Error("Утвердить медицинскую справку может врач или владелец.");
+  }
+  const r = await prisma.knowledgeEntry.updateMany({
+    where: { id, companyId: session.companyId, promoId: { not: null }, needsDoctorApproval: true },
+    data: { approvedAt: new Date(), approvedById: session.userId },
+  });
+  if (!r.count) throw new Error("Запись не найдена или не требует утверждения.");
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "knowledge",
+    entityId: id,
+    meta: { approved: true },
   });
 }

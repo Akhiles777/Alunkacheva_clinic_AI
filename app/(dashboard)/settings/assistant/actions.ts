@@ -33,7 +33,9 @@ export interface AssistantConfig {
 export async function getKnowledge(): Promise<KnowledgeItem[]> {
   const session = await getSession();
   const rows = await prisma.knowledgeEntry.findMany({
-    where: { companyId: session.companyId },
+    // Записи об акциях правятся на экране акции: здесь они смешались бы с
+    // общими и могли бы стать общими при сохранении.
+    where: { companyId: session.companyId, promoId: null },
     // Устойчивый порядок: у записей с одинаковой темой он иначе прыгает при
     // каждом сохранении, и строка «уезжает» из-под курсора.
     orderBy: [{ topic: "asc" }, { createdAt: "asc" }],
@@ -99,7 +101,7 @@ export async function saveKnowledge(items: KnowledgeItem[]): Promise<KnowledgeIt
    * даже когда тему переименовали.
    */
   const existing = await prisma.knowledgeEntry.findMany({
-    where: { companyId: session.companyId },
+    where: { companyId: session.companyId, promoId: null },
     select: {
       id: true,
       topic: true,

@@ -294,6 +294,16 @@ export interface PromoDetail {
     totals: SchoolTotals;
   }[];
   totals: SchoolTotals;
+  /** Что агент знает об акции — записи справочника, привязанные к ней. */
+  knowledge: {
+    id: string;
+    topic: string;
+    question: string;
+    answer: string;
+    isActive: boolean;
+    needsDoctorApproval: boolean;
+    approvedAt: string | null;
+  }[];
 }
 
 export async function getPromo(
@@ -315,6 +325,11 @@ export async function getPromo(
     }),
     totalsFor({ companyId, promoId: p.id }),
   ]);
+  const knowledge = await prisma.knowledgeEntry.findMany({
+    where: { companyId, promoId: p.id },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, topic: true, question: true, answer: true, isActive: true, needsDoctorApproval: true, approvedAt: true },
+  });
   const known = new Set(services.map((s) => s.yclientsServiceId));
   return {
     id: p.id,
@@ -345,6 +360,7 @@ export async function getPromo(
       })),
     ),
     totals,
+    knowledge: knowledge.map((k) => ({ ...k, approvedAt: k.approvedAt?.toISOString() ?? null })),
   };
 }
 
@@ -807,4 +823,92 @@ export async function detachFromSchool(input: {
   });
   if (r.count) await recomputePartnerBonuses(input.companyId);
   return r.count > 0;
+}
+
+// ─────────────────────────────────────────────── агент
+
+/**
+ * Акции, которые МОГУТ быть видны агенту сейчас, со школами и записями
+ * справочника. Решение «видна ли в этом разговоре» — `visiblePromos` в
+ * lib/agent/promo.ts; здесь только факты. Записи — по тем же правилам, что
+ * общий справочник: включена и, если медицинская, утверждена врачом.
+ */
+export async function promosForAgent(companyId: string, now = new Date()) {
+  const rows = await prisma.promo.findMany({
+    where: { companyId, isActive: true, agentEnabled: true, startsAt: { lte: now }, endsAt: { gte: now } },
+    select: {
+      id: true,
+      isActive: true,
+      agentEnabled: true,
+      startsAt: true,
+      endsAt: true,
+      ageMin: true,
+      ageMax: true,
+      bonusAmount: true,
+      schools: { where: { isActive: true }, select: { id: true, name: true } },
+      knowledge: {
+        where: { isActive: true, OR: [{ needsDoctorApproval: false }, { approvedAt: { not: null } }] },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, topic: true, question: true, answer: true },
+      },
+    },
+  });
+  return rows.map((r) => ({ ...r, entries: r.knowledge }));
+}
+
+/** Есть ли у семьи пациента привязка по акции: тогда про школу не спрашиваем. */
+export async function familyAttributed(
+  companyId: string,
+  promoId: string,
+  patientId: string | null,
+  conversationId: string,
+): Promise<boolean> {
+  if (patientId) return (await familyAttributions(companyId, promoId, patientId, conversationId)).length > 0;
+  return (await prisma.partnerAttribution.count({ where: { companyId, promoId, conversationId, removedAt: null } })) > 0;
+}
+
+/**
+ * Привязка, которую ставит агент по словам пациента. Только ПЕРВЫЙ ребёнок
+ * семьи: второго добавляет администратор, агент — никогда. Есть привязка в
+ * семье — ничего не делаем.
+ */
+export async function attachByAgent(input: {
+  companyId: string;
+  patientId: string;
+  conversationId: string;
+  schoolId: string;
+  now?: Date;
+}): Promise<"attached" | "exists" | "closed"> {
+  const now = input.now ?? new Date();
+  const school = await prisma.partnerSchool.findFirst({
+    where: { id: input.schoolId, companyId: input.companyId, isActive: true },
+    select: { id: true, promo: { select: { id: true, isActive: true, endsAt: true, bonusAmount: true } } },
+  });
+  if (!school || !canAttribute(school.promo, now)) return "closed";
+  if ((await familyAttributions(input.companyId, school.promo.id, input.patientId, input.conversationId)).length > 0) {
+    return "exists";
+  }
+  const previous = await prisma.partnerAttribution.findUnique({
+    where: { patientId_promoId_childNo: { patientId: input.patientId, promoId: school.promo.id, childNo: 1 } },
+    select: { id: true },
+  });
+  const data = {
+    schoolId: school.id,
+    source: "AGENT" as const,
+    conversationId: input.conversationId,
+    bonusAmountFrozen: school.promo.bonusAmount,
+    attributedAt: now,
+    createdById: null,
+    isExtraChild: false,
+    note: null,
+    removedAt: null,
+    removedById: null,
+  };
+  if (previous) await prisma.partnerAttribution.update({ where: { id: previous.id }, data });
+  else
+    await prisma.partnerAttribution.create({
+      data: { ...data, companyId: input.companyId, promoId: school.promo.id, patientId: input.patientId, childNo: 1 },
+    });
+  await recomputePartnerBonuses(input.companyId, now);
+  return "attached";
 }

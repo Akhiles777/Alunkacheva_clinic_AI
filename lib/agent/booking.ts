@@ -85,7 +85,7 @@ async function knowledgeDurations(
   if (hit && Date.now() - hit.at < 60_000) return hit.map;
   const [entries, staff] = await Promise.all([
     prisma.knowledgeEntry.findMany({
-      where: { companyId, isActive: true, OR: [{ needsDoctorApproval: false }, { approvedAt: { not: null } }] },
+      where: { companyId, isActive: true, promoId: null, OR: [{ needsDoctorApproval: false }, { approvedAt: { not: null } }] },
       select: { answer: true },
     }),
     prisma.staff.findMany({ where: { companyId, isActive: true, deletedAt: null }, select: { name: true } }),
