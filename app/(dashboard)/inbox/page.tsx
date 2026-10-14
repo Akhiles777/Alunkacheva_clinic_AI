@@ -50,6 +50,7 @@ import { SpecialistQueries } from "./specialist-queries";
 import { ComposeOverlay } from "../_components/compose-overlay";
 import { AssistantThread } from "./assistant-thread";
 import { ContactPanel } from "./contact-panel";
+import { PromoBlock } from "./promo-block";
 import { AdminAssistant } from "../_components/admin-assistant";
 import { PatientCardBody } from "../_components/patient-card";
 
@@ -836,6 +837,11 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
 
       <div className="thread-collapsible contents">
         <ContactPanel key={dialog.id} dialog={dialog} onChanged={refresh} />
+        {/* Привязка к школе-партнёру — тренировочным перепискам не положена:
+            бонус школе — настоящие деньги. */}
+        {dialog.patientId && !dialog.practice ? (
+          <PromoBlock key={`promo-${dialog.patientId}`} patientId={dialog.patientId} conversationId={dialog.id} />
+        ) : null}
       </div>
 
       {/* Что спросили у врача и что она ответила — видно прямо здесь. */}

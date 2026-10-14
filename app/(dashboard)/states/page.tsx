@@ -9,6 +9,9 @@ import type { AgentStats } from "@/lib/server/agent-stats";
 import type { SourceStat } from "@/lib/metrics/types";
 import { type GapsData } from "../settings/assistant/gaps-block";
 import { QueueClient, type QueueData } from "../queue/queue-client";
+import { SchoolClient } from "../schools/[id]/school-client";
+import { PartnerReportView } from "@/app/partner/[token]/report-view";
+import type { SchoolDetail } from "@/lib/server/promos";
 import { CourseEconomicsBlock } from "../_components/course-economics";
 import { DossierBody } from "../_components/patient-dossier";
 import type { DossierView } from "../patients/actions";
@@ -631,6 +634,68 @@ function Case({
   );
 }
 
+const SCHOOL_EMPTY: SchoolDetail = {
+  id: "s-empty",
+  name: "Школа подготовки «Росток»",
+  contactName: null,
+  contactPhone: null,
+  isActive: true,
+  reportToken: "demo-token",
+  promo: { id: "p1", name: "Школьный check-up", endsAt: "2026-11-15T20:59:59.000Z" },
+  totals: { attributed: 0, arrived: 0, bonusEarned: 0, reversed: 0, bonusReversed: 0 },
+  patients: [],
+};
+
+const SCHOOL_FULL: SchoolDetail = {
+  ...SCHOOL_EMPTY,
+  id: "s-full",
+  name: "Центр раннего развития и подготовки к школе «Маленький гений» при гимназии № 13",
+  contactName: "Магомедова Патимат Абдулкадыровна",
+  contactPhone: "+7 928 000-00-00",
+  totals: { attributed: 1284, arrived: 1031, bonusEarned: 515500, reversed: 2, bonusReversed: 1000 },
+  patients: [
+    {
+      attributionId: "a1",
+      patientId: "p1",
+      patientName: "Абдурахманова-Гаджимагомедова Хадижат Магомедрасуловна",
+      childNo: 1,
+      isExtraChild: false,
+      note: "Амина",
+      source: "ADMIN",
+      attributedAt: "2026-10-05T10:00:00.000Z",
+      createdBy: "Ирина",
+      removedAt: null,
+      bonus: { status: "EARNED", amount: 500, earnedAt: "2026-10-10T09:00:00.000Z", reverseReason: null },
+    },
+    {
+      attributionId: "a2",
+      patientId: "p1",
+      patientName: "Абдурахманова-Гаджимагомедова Хадижат Магомедрасуловна",
+      childNo: 2,
+      isExtraChild: true,
+      note: "Ислам",
+      source: "ADMIN",
+      attributedAt: "2026-10-06T10:00:00.000Z",
+      createdBy: "Ирина",
+      removedAt: null,
+      bonus: null,
+    },
+    {
+      attributionId: "a3",
+      patientId: "p2",
+      patientName: "Алиева Зарема",
+      childNo: 1,
+      isExtraChild: false,
+      note: null,
+      source: "AGENT",
+      attributedAt: "2026-10-07T10:00:00.000Z",
+      createdBy: "агент",
+      removedAt: null,
+      bonus: { status: "REVERSED", amount: 500, earnedAt: "2026-10-09T09:00:00.000Z", reverseReason: "неявка" },
+    },
+  ],
+};
+
 export default function StatesPage() {
   if (process.env.NODE_ENV === "production") notFound();
   return (
@@ -789,6 +854,29 @@ export default function StatesPage() {
         Очередь «Кому позвонить». Пустая — это не сбой: у всех, кто мог бы
         попасть в список, есть будущая запись. Так и написано словами.
       */}
+      <Case title="Школа: никого не привязали" note="нули числом и слова, а не пустота">
+        <div className="border-border rounded-xl border">
+          <SchoolClient school={SCHOOL_EMPTY} reportUrl="https://example.ru/partner/demo-token" canEdit />
+        </div>
+      </Case>
+
+      <Case title="Школа: второй ребёнок, снятый бонус, длинные названия" note="снятое стоит отдельной строкой">
+        <div className="border-border rounded-xl border">
+          <SchoolClient school={SCHOOL_FULL} reportUrl="https://example.ru/partner/demo-token" canEdit={false} />
+        </div>
+      </Case>
+
+      <Case title="Отчёт для школы: пока пусто и крупные числа" note="только итоги — ни имён, ни дат">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="border-border bg-raise rounded-xl border">
+            <PartnerReportView report={{ school: SCHOOL_EMPTY.name, promo: "Школьный check-up", attributed: 0, arrived: 0, bonusEarned: 0 }} />
+          </div>
+          <div className="border-border bg-raise rounded-xl border">
+            <PartnerReportView report={{ school: SCHOOL_FULL.name, promo: "Школьный check-up", attributed: 1284, arrived: 1031, bonusEarned: 515500 }} />
+          </div>
+        </div>
+      </Case>
+
       <Case title="Кому позвонить: звонить некому" note="пусто — это результат, а не поломка">
         <div className="border-border rounded-xl border">
           <QueueClient data={QUEUE_EMPTY} />

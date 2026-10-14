@@ -324,6 +324,10 @@ model Company {
   notifications            Notification[]
   staffRates               StaffRate[]
   payrollPayouts           PayrollPayout[]
+  promos                   Promo[]
+  partnerSchools           PartnerSchool[]
+  partnerAttributions      PartnerAttribution[]
+  partnerBonuses           PartnerBonus[]
 
   @@map("companies")
 }
@@ -363,25 +367,26 @@ model Patient {
   updatedAt DateTime  @updatedAt @db.Timestamptz(3)
   deletedAt DateTime? @db.Timestamptz(3)
 
-  company            Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  source             Source?            @relation(fields: [sourceId], references: [id], onDelete: SetNull)
-  conversations      Conversation[]
-  inquiries          Inquiry[]
-  appointments       Appointment[]      @relation("AppointmentPatient")
-  coursePurchases    CoursePurchase[]
-  bookedAppointments Appointment[]      @relation("AppointmentBookedByPatient")
-  courses            Course[]
-  callbackOutreaches CallbackOutreach[]
+  company             Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  source              Source?              @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  conversations       Conversation[]
+  inquiries           Inquiry[]
+  appointments        Appointment[]        @relation("AppointmentPatient")
+  coursePurchases     CoursePurchase[]
+  bookedAppointments  Appointment[]        @relation("AppointmentBookedByPatient")
+  courses             Course[]
+  callbackOutreaches  CallbackOutreach[]
   // Телефон вынесен в отдельную таблицу: у пациента несколько номеров,
   // WhatsApp и звонки бывают на разных. Поиск идёт по всем.
-  phones             PatientPhone[]
+  phones              PatientPhone[]
   // Родство: pair (patientId → relatedPatientId). Две стороны отношения.
-  relationsOut       PatientRelation[]  @relation("RelationOwner")
-  relationsIn        PatientRelation[]  @relation("RelationTarget")
-  notes              PatientNote[]
-  callLogs           CallLog[]
-  consents           PatientConsent[]
-  specialistQueries  SpecialistQuery[]
+  relationsOut        PatientRelation[]    @relation("RelationOwner")
+  relationsIn         PatientRelation[]    @relation("RelationTarget")
+  notes               PatientNote[]
+  callLogs            CallLog[]
+  consents            PatientConsent[]
+  specialistQueries   SpecialistQuery[]
+  partnerAttributions PartnerAttribution[]
 
   @@unique([companyId, yclientsId])
   @@index([companyId, firstSeenAt])
@@ -2584,4 +2589,136 @@ model SlotHold {
   @@index([companyId, staffId, startAt])
   @@index([conversationId, state])
   @@map("slot_holds")
+}
+
+// ─────────────────────────────────────────────────────────── акции и школы-партнёры
+
+/// Кто поставил привязку к школе: администратор руками или агент по словам
+/// пациента. Агент второго ребёнка не добавляет никогда (§5, «Школьная акция»).
+enum PartnerSource {
+  ADMIN
+  AGENT
+}
+
+enum PartnerBonusStatus {
+  EARNED
+  REVERSED
+}
+
+/// Акция клиники («Школьный check-up»). Цены — справочные: что стоит в записи,
+/// решает YCLIENTS, а засчитываются визиты по услугам из serviceIds.
+model Promo {
+  id           String   @id @default(cuid())
+  companyId    String
+  name         String
+  slug         String
+  description  String?
+  /// Цена акции и сумма услуг по отдельности — для экрана и справки агента.
+  priceTotal   Decimal  @db.Decimal(12, 2)
+  priceRegular Decimal  @db.Decimal(12, 2)
+  ageMin       Int?
+  ageMax       Int?
+  /// Услуги YCLIENTS, визит по которым засчитывается в акцию.
+  serviceIds   Int[]
+  startsAt     DateTime @db.Timestamptz(3)
+  endsAt       DateTime @db.Timestamptz(3)
+  /// Бонус школе за пришедшего. В привязке замораживается на момент привязки.
+  bonusAmount  Decimal  @db.Decimal(12, 2)
+  isActive     Boolean  @default(true)
+  /// Знает ли об акции пациентский агент (волна 4). По умолчанию — нет.
+  agentEnabled Boolean  @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  schools      PartnerSchool[]
+  attributions PartnerAttribution[]
+
+  @@unique([companyId, slug])
+  @@map("promos")
+}
+
+/// Школа-партнёр акции. reportToken — адрес публичного отчёта школы: только
+/// агрегаты, без имён, телефонов, услуг и дат.
+model PartnerSchool {
+  id           String   @id @default(cuid())
+  companyId    String
+  promoId      String
+  name         String
+  contactName  String?
+  contactPhone String?
+  reportToken  String   @unique
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  createdById  String?
+
+  company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  promo        Promo                @relation(fields: [promoId], references: [id], onDelete: Restrict)
+  attributions PartnerAttribution[]
+  bonuses      PartnerBonus[]
+
+  @@index([companyId, promoId])
+  @@map("partner_schools")
+}
+
+/// Пациент пришёл по акции от школы.
+///
+/// Ключ — пациент, акция и НОМЕР РЕБЁНКА. Ребёнка записывают на карточку
+/// родителя, а телефон у нас уникален на клинику: при ключе «пациент + акция»
+/// второму ребёнку той же семьи привязку завести было бы некуда. Второй и
+/// дальше (childNo > 1) ставит только администратор, явно (isExtraChild).
+model PartnerAttribution {
+  id                String        @id @default(cuid())
+  companyId         String
+  schoolId          String
+  promoId           String
+  patientId         String
+  conversationId    String?
+  source            PartnerSource
+  /// Бонус на момент привязки: смена суммы в акции прошлое не переписывает.
+  bonusAmountFrozen Decimal       @db.Decimal(12, 2)
+  attributedAt      DateTime      @db.Timestamptz(3)
+  createdById       String?
+  isExtraChild      Boolean       @default(false)
+  childNo           Int           @default(1)
+  note              String?
+  /// Снята руками. Строка остаётся (физического удаления нет), бонус по ней
+  /// снимается с причиной.
+  removedAt         DateTime?     @db.Timestamptz(3)
+  removedById       String?
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+
+  company Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  school  PartnerSchool @relation(fields: [schoolId], references: [id], onDelete: Restrict)
+  promo   Promo         @relation(fields: [promoId], references: [id], onDelete: Restrict)
+  patient Patient       @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  bonus   PartnerBonus?
+
+  @@unique([patientId, promoId, childNo])
+  @@index([companyId, schoolId])
+  @@index([companyId, promoId])
+  @@map("partner_attributions")
+}
+
+/// Бонус школе — ОДИН на привязку, а не на визит: check-up заводят и одной
+/// услугой, и четырьмя, и при бонусе на визит школа получила бы 2000 ₽ вместо 500.
+model PartnerBonus {
+  id                       String             @id @default(cuid())
+  companyId                String
+  schoolId                 String
+  attributionId            String             @unique
+  amount                   Decimal            @db.Decimal(12, 2)
+  status                   PartnerBonusStatus
+  triggeredByAppointmentId String
+  earnedAt                 DateTime           @db.Timestamptz(3)
+  reversedAt               DateTime?          @db.Timestamptz(3)
+  reverseReason            String?
+
+  company     Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  school      PartnerSchool      @relation(fields: [schoolId], references: [id], onDelete: Restrict)
+  attribution PartnerAttribution @relation(fields: [attributionId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, schoolId])
+  @@map("partner_bonuses")
 }

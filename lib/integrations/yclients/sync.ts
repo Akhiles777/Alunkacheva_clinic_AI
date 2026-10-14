@@ -22,6 +22,7 @@ import { pushPendingAppointments } from "./write-back";
 import { linkCourses } from "@/lib/courses/link";
 import type { RawTransaction } from "@/lib/courses/purchases";
 import { normalizePhone } from "@/lib/phone";
+import { recomputePartnerBonuses } from "@/lib/server/promos";
 import {
   mapClient,
   mapRecord,
@@ -51,7 +52,7 @@ import type {
  */
 export interface SyncResult {
   skipped: boolean;
-  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "sources" | "patientSources" | "courseSessions" | "courseSessionsRepriced", number>>;
+  counts: Partial<Record<"services" | "staff" | "resources" | "clients" | "records" | "visitKinds" | "rooms" | "firstSeen" | "sources" | "patientSources" | "courseSessions" | "courseSessionsRepriced" | "partnerBonuses", number>>;
   errors: string[];
 }
 
@@ -139,6 +140,15 @@ export async function syncAll(companyId: string, options: SyncOptions = {}): Pro
     counts.patientSources = (await recomputePatientSources(companyId, {
       patientIds: await recentlyTouchedPatients(companyId),
     })).derived;
+    /**
+     * Бонусы школам-партнёрам: отметку «пришёл» и отмены приносит только
+     * выгрузка. Сбой пересчёта выгрузку не обрывает — следующий круг догонит.
+     */
+    const bonuses = await recomputePartnerBonuses(companyId).catch((e) => {
+      errors.push(`Бонусы школам пересчитать не удалось: ${(e as Error).message}`);
+      return null;
+    });
+    if (bonuses) counts.partnerBonuses = bonuses.earned + bonuses.reversed;
     /**
      * Курсы собираются из записей — после них, а не до: разбор опирается на
      * стоимость визитов, которую только что записала выгрузка.

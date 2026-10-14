@@ -18,6 +18,7 @@ import { handBackAndRemind } from "@/lib/agent/handback";
 import { runQualityCheck } from "@/lib/server/agent-quality";
 import { deliverWeeklyDigest } from "@/lib/server/weekly-digest-delivery";
 import { CLINIC_TZ } from "@/lib/clinic-time";
+import { recomputePartnerBonuses } from "@/lib/server/promos";
 import { PROXY_CHECK_INTERVAL_MIN, runProxyWatch } from "@/lib/server/instagram-proxy-watch";
 import { QUEUE_CHECK_INTERVAL_MIN, runWhatsappQueueWatch } from "@/lib/server/whatsapp-queue-watch";
 
@@ -331,6 +332,12 @@ async function syncRecent(
    * тем более.
    */
   const sources = await recomputeAppointmentSources(companyId, patientIds);
+  // Пришёл по акции — бонус школе тем же кругом, а не через четверть часа.
+  if (patientIds.length) {
+    await recomputePartnerBonuses(companyId).catch((e) =>
+      console.error(`[бонусы школам] ${(e as Error).message}`),
+    );
+  }
   return { records: sync.records, recomputed: kinds.updated, sources: sources.derived };
 }
 
