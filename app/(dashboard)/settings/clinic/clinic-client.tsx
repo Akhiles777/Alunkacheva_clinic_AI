@@ -96,6 +96,14 @@ export function ClinicClient({ initial }: { initial: ClinicData }) {
             </button>
           </div>
         </Field>
+        <Field label="Адрес" hint="подставляется в шаблоны сообщений вместо {{address}}" htmlFor="clinic-address">
+          <TextInput
+            id="clinic-address"
+            value={form.address ?? ""}
+            onChange={(e) => patch({ address: e.target.value.slice(0, 200) })}
+            placeholder="Махачкала, ул. Островского, 20А, 2 этаж"
+          />
+        </Field>
         <Field label="Граница отчётных суток" hint="время, когда закрывается день в отчётах">
           <TimeInput
             minute={form.dayBoundaryMinute}

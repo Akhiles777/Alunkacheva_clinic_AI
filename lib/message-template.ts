@@ -44,6 +44,7 @@ export const VARIABLE_LABEL: Record<string, string> = {
   service: "услуга ближайшей записи",
   staff: "специалист ближайшей записи",
   clinic: "название клиники",
+  address: "адрес клиники (Настройки → Клиника)",
 };
 
 export function missingLabel(missing: string[]): string {

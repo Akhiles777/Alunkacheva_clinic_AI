@@ -52,3 +52,14 @@ describe("код шаблона", () => {
     expect(codeFromTitle("!!!")).toBe("template");
   });
 });
+
+describe("{{address}}", () => {
+  it("подставляется из настроек клиники", () => {
+    expect(fillTemplate("Ждём вас: {{address}}", { address: "ул. Островского, 20А" })).toEqual({ ok: true, text: "Ждём вас: ул. Островского, 20А" });
+  });
+  it("не задан — отправка отменяется и сказано, где заполнить", () => {
+    const r = fillTemplate("Ждём вас: {{address}}", { address: null });
+    expect(r).toEqual({ ok: false, missing: ["address"] });
+    expect(missingLabel(["address"])).toMatch(/Настройки → Клиника/);
+  });
+});

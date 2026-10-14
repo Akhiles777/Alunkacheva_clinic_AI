@@ -20,6 +20,7 @@ export type InboxAction =
   | "escape"
   | "help"
   | "reply"
+  | "templates"
   | null;
 
 export interface KeyContext {
@@ -62,6 +63,8 @@ export function hotkeyAction(e: KeyContext): InboxAction {
       return "nextWaiting";
     case "r":
       return "reply";
+    case "/":
+      return "templates";
     case "Escape":
       return "escape";
     case "?":
@@ -76,6 +79,7 @@ export const HOTKEYS: { keys: string; what: string }[] = [
   { keys: "↑ ↓ · j k", what: "предыдущий и следующий диалог" },
   { keys: "u", what: "следующий, кто ждёт ответа" },
   { keys: "r", what: "ответить — курсор в поле ввода" },
+  { keys: "/", what: "шаблоны и быстрые ответы — поиск по мере ввода" },
   { keys: "Enter", what: "отправить (Shift+Enter — новая строка)" },
   { keys: "⌘/Ctrl + Enter", what: "отправить, не убирая рук с текста" },
   { keys: "⌘/Ctrl + K", what: "поиск по пациентам и перепискам" },

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
+import { patientLinkClick } from "./patient-overlay";
 import { linkPatientDb, renameContactDb, searchPatientsForLink } from "./actions";
 import type { Dialog } from "@/app/_data/store";
 
@@ -17,6 +18,12 @@ export function ContactPanel({ dialog, onChanged }: { dialog: Dialog; onChanged:
   // key по диалогу в родителе гарантирует, что при переключении переписки
   // состояние панели создаётся заново — эффект для сброса не нужен.
   const [mode, setMode] = useState<"idle" | "rename" | "link">("idle");
+  // «Найти пациента» из правой колонки открывает поиск здесь же, а не уводит в «Пациенты».
+  useEffect(() => {
+    const open = () => setMode("link");
+    window.addEventListener("link-dialog-patient", open);
+    return () => window.removeEventListener("link-dialog-patient", open);
+  }, []);
   const [name, setName] = useState(dialog.name);
   const [query, setQuery] = useState("");
   const [found, setFound] = useState<{ id: string; name: string; phone: string | null }[]>([]);
@@ -120,7 +127,11 @@ export function ContactPanel({ dialog, onChanged }: { dialog: Dialog; onChanged:
   return (
     <div className="border-border-soft flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-5 py-2 text-xs">
       {dialog.patientId ? (
-        <Link href={`/patients/${dialog.patientId}`} className="text-accent-text hover:underline">
+        <Link
+          href={`/patients/${dialog.patientId}`}
+          onClick={(e) => patientLinkClick(e, dialog.patientId!)}
+          className="text-accent-text hover:underline"
+        >
           Карточка клиента
         </Link>
       ) : (

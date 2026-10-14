@@ -33,6 +33,7 @@ import type { ConversationStatus } from "@/generated/prisma/enums";
 import { KIND_LABEL, type AttachmentKind } from "@/lib/agent/attachments";
 import { splitQuote } from "@/lib/agent/quoted";
 import { unreadCount, waitingSince } from "@/lib/inbox/waiting";
+import { scheduleChangeOf, type ScheduleChange } from "@/lib/inbox/urgent";
 import { requireId } from "@/lib/server/require-id";
 
 /**
@@ -146,10 +147,11 @@ async function fillForDialog(
         },
       },
       contactName: true,
-      company: { select: { name: true } },
+      company: { select: { name: true, settings: { where: { key: "clinic" }, select: { value: true } } } },
     },
   });
   if (!conv) return { ok: false, error: "Диалог не найден" };
+  const clinicBlob = conv.company.settings[0]?.value as { address?: string } | undefined;
 
   const next = conv.patient?.appointments[0];
   const filled = fillTemplate(template.bodyTemplate, {
@@ -164,6 +166,7 @@ async function fillForDialog(
       : null,
     staff: next?.staff?.name ?? null,
     clinic: conv.company.name,
+    address: clinicBlob?.address ?? null,
   });
 
   if (!filled.ok) {
@@ -408,6 +411,8 @@ export interface DialogRecord {
   unreadCount: number;
   /** Первое обращение этого человека: с новым говорят иначе. */
   firstTime: boolean;
+  /** Пациент просит отменить или перенести запись — срочное (`lib/inbox/urgent`). */
+  scheduleChange: ScheduleChange;
   /** Тренировочная переписка: наружу из неё ничего не уходит. */
   practice: boolean;
   /**
@@ -805,6 +810,7 @@ export async function getConversations(): Promise<DialogRecord[]> {
       waitingSince: waiting ? waiting.toISOString() : null,
       unreadCount: unreadCount(queue, c.staffReadAt),
       firstTime,
+      scheduleChange: scheduleChangeOf(ordered.map((m) => ({ direction: m.direction, body: m.body }))),
       messages,
     };
   });

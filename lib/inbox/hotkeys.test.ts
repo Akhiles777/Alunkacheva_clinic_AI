@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hotkeyAction, nextWaiting, step } from "./hotkeys";
+import { HOTKEYS, hotkeyAction, nextWaiting, step } from "./hotkeys";
 
 describe("горячие клавиши инбокса", () => {
   it("во время набора буквы не переключают диалог", () => {
@@ -68,5 +68,17 @@ describe("следующий, кто ждёт", () => {
 
   it("ждущих нет — некуда идти", () => {
     expect(nextWaiting([{ id: "a", waiting: false }], "a")).toBeNull();
+  });
+});
+
+describe("«/» — шаблоны", () => {
+  it("из списка открывает шаблоны", () => {
+    expect(hotkeyAction({ key: "/", typing: false })).toBe("templates");
+  });
+  it("во время набора «/» — просто знак", () => {
+    expect(hotkeyAction({ key: "/", typing: true })).toBeNull();
+  });
+  it("есть в шпаргалке", () => {
+    expect(HOTKEYS.some((h) => h.keys === "/")).toBe(true);
   });
 });

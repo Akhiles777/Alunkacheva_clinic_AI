@@ -311,6 +311,8 @@ export interface Dialog {
   unreadCount?: number;
   /** Первое обращение этого человека: с новым говорят иначе. */
   firstTime?: boolean;
+  /** Просит отменить или перенести запись — срочное. */
+  scheduleChange?: "cancel" | "move" | null;
   /** Тренировочная переписка: наружу из неё ничего не уходит. */
   practice?: boolean;
   /** Назревшее напоминание: диалог всплывает в списке в назначенный момент. */
@@ -614,6 +616,7 @@ export function hydrateDialogs(records: DialogRecord[], requestedAt: number = Da
       waitingSince: r.waitingSince,
       unreadCount: r.unreadCount,
       firstTime: r.firstTime,
+      scheduleChange: r.scheduleChange,
       practice: r.practice,
       reminder: r.reminder,
       scheduled: r.scheduled,

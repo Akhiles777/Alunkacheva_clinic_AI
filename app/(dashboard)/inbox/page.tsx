@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { PatientOverlay, patientLinkClick } from "./patient-overlay";
 import { HANDBACK_HOURS } from "@/lib/agent/handback-rule";
 import { reportMaybeStale } from "@/lib/client/stale-build";
 import { HOTKEYS, hotkeyAction, nextWaiting, step } from "@/lib/inbox/hotkeys";
+import { URGENT_WAIT_MS, waitLabel } from "@/lib/inbox/waiting";
+import { VIEWS, applyView, viewCounts, type InboxView } from "@/lib/inbox/views";
 import { AGENT_DOES, AGENT_DOES_NOT, ARTICLES } from "@/lib/help/topics";
 import {
   CHANNEL_LABEL,
@@ -202,6 +205,22 @@ const NOTE_SHORT: Record<string, string> = {
   CUSTOM: "заметка",
 };
 
+/** «Сейчас» для подписей ожидания: после загрузки и раз в 30 секунд. */
+function useNow(): number | null {
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    // Первое значение — после гидрации, а не при рендере: иначе серверная
+    // разметка разойдётся с клиентской на секунды.
+    const first = setTimeout(() => setNow(Date.now()), 0);
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(t);
+    };
+  }, []);
+  return now;
+}
+
 function DialogRow({
   dialog,
   active,
@@ -221,6 +240,15 @@ function DialogRow({
   const patient = dialog.patientId ? db.patients.find((p) => p.id === dialog.patientId) : undefined;
   const notes = patient ? activeNotes(patient) : [];
   const unread = dialog.unreadCount ?? 0;
+  /**
+   * «Ждёт 12 мин» прямо в строке. Время сервера знает, а «сейчас» — только
+   * вкладка, поэтому подпись появляется после загрузки и обновляется сама:
+   * иначе разметка сервера и браузера расходятся на минуту и React её
+   * перерисовывает целиком.
+   */
+  const now = useNow();
+  const waitedMs = now && dialog.unread && dialog.waitingSince ? now - Date.parse(dialog.waitingSince) : 0;
+  const waited = waitedMs > 0 ? waitLabel(waitedMs) : null;
 
   return (
     <button
@@ -283,6 +311,20 @@ function DialogRow({
         ) : null}
         {(dialog.noteCount ?? 0) > 0 ? (
           <span className="text-text-subtle text-2xs">· заметки {dialog.noteCount}</span>
+        ) : null}
+        {dialog.scheduleChange ? (
+          /* Отмена и перенос — срочное: освободившееся время можно отдать
+             другому, только если узнать о нём сразу. */
+          <span className="bg-accent text-accent-contrast rounded-sm px-1.5 py-px text-2xs font-medium">
+            {dialog.scheduleChange === "cancel" ? "отмена" : "перенос"}
+          </span>
+        ) : null}
+        {waited ? (
+          <span
+            className={`num text-2xs ${waitedMs >= URGENT_WAIT_MS ? "text-accent-text font-medium" : "text-text-subtle"}`}
+          >
+            · {waited}
+          </span>
         ) : null}
         {/* Новый человек: с ним ещё ничего не связывает, и уходит он молча. */}
         {dialog.firstTime && dialog.unread ? (
@@ -617,7 +659,11 @@ function Thread({ dialog, onBack, refresh }: { dialog: Dialog; onBack: () => voi
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium">
               {dialog.patientId ? (
-                <Link href={`/patients/${dialog.patientId}`} className="hover:underline">
+                <Link
+                  href={`/patients/${dialog.patientId}`}
+                  onClick={(e) => patientLinkClick(e, dialog.patientId!)}
+                  className="hover:underline"
+                >
                   {dialog.name}
                 </Link>
               ) : (
@@ -1201,6 +1247,7 @@ export default function InboxPage() {
   }, []);
   const [composing, setComposing] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [view, setView] = useState<InboxView>("all");
 
   /**
    * Порядок — по ожиданию, а не по времени последнего сообщения: пациент,
@@ -1225,9 +1272,18 @@ export default function InboxPage() {
      * не туда, а человек читает сообщение и не понимает, куда делась строка.
      */
     const open = selectedId ? db.dialogs.find((d) => d.id === selectedId) : undefined;
-    const rows = open && !matching.some((d) => d.id === open.id) ? [...matching, open] : matching;
-    return withRemindersFirst(rows);
-  }, [db.dialogs, selectedId]);
+    // Фильтр — по правилу из lib/inbox/views; открытая переписка остаётся под курсором и в нём.
+    const filtered = applyView(
+      matching.map((d) => ({ ...d, escalated: d.status === "escalated" })),
+      view,
+    );
+    const rows = open && !filtered.some((d) => d.id === open.id) ? [...filtered, { ...open, escalated: open.status === "escalated" }] : filtered;
+    return view === "waiting" ? rows : withRemindersFirst(rows);
+  }, [db.dialogs, selectedId, view]);
+  const counts = useMemo(
+    () => viewCounts(db.dialogs.filter((d) => d.status !== "closed").map((d) => ({ ...d, escalated: d.status === "escalated" }))),
+    [db.dialogs],
+  );
   const selected = db.dialogs.find((d) => d.id === selectedId) ?? null;
   const patient = selected?.patientId ? findPatient(selected.patientId) : undefined;
 
@@ -1332,6 +1388,18 @@ export default function InboxPage() {
         if (id) open(id);
         return;
       }
+      if (action === "templates") {
+        e.preventDefault();
+        // «/» из списка — сразу в выбор шаблонов: поле получает «/», и список открывается сам.
+        const input = document.querySelector<HTMLTextAreaElement>("[data-composer-input]");
+        if (input) {
+          const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+          setter?.call(input, "/");
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.focus();
+        }
+        return;
+      }
       if (action === "reply") {
         e.preventDefault();
         // Курсор в поле ввода: «ответить» — это единственное, ради чего
@@ -1346,6 +1414,7 @@ export default function InboxPage() {
   return (
     <div className="flex h-full min-h-0 flex-1">
       {helpOpen ? <Hotkeys onClose={() => setHelpOpen(false)} /> : null}
+      <PatientOverlay />
       <div
         className={`border-border flex w-[300px] flex-none flex-col border-r max-md:w-full ${selected ? "max-md:hidden" : ""}`}
       >
@@ -1382,7 +1451,31 @@ export default function InboxPage() {
               день, врачи, пациенты, рассылка записанным
             </span>
           </button>
-          {list.length === 0 ? (
+          {/* Фильтры одним щелчком: срочное и «кому писать первым». */}
+          <div className="border-border-soft flex flex-wrap gap-1 border-b px-3 py-2">
+            {VIEWS.map((v) => (
+              <button
+                key={v.key}
+                type="button"
+                onClick={() => setView(v.key)}
+                aria-pressed={view === v.key}
+                className={`rounded-full border px-2 py-0.5 text-2xs ${
+                  view === v.key ? "border-accent bg-accent-tint text-accent-text font-medium" : "border-border text-text-muted hover:bg-hover"
+                }`}
+              >
+                {v.label}
+                {v.key !== "all" && counts[v.key] > 0 ? <span className="num ml-1">{counts[v.key]}</span> : null}
+              </button>
+            ))}
+          </div>
+          {list.length === 0 && view !== "all" ? (
+            <p className="text-text-muted px-4 py-6 text-sm">
+              В этом фильтре пусто.{" "}
+              <button type="button" onClick={() => setView("all")} className="text-accent-text hover:underline">
+                Показать все
+              </button>
+            </p>
+          ) : list.length === 0 ? (
             /* Пусто — значит разобрано всё. Заодно единственное место, где
                видно, что шпаргалка открывается клавишей «?». */
             <p className="text-text-muted px-4 py-6 text-sm leading-snug">
@@ -1435,9 +1528,13 @@ export default function InboxPage() {
               Номер не найден в базе. Один номер бывает у семьи — свяжите диалог
               с карточкой вручную, чтобы не приклеить чужую историю.
             </p>
-            <Link href="/patients" className="text-accent-text mt-3 inline-block text-sm hover:underline">
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new Event("link-dialog-patient"))}
+              className="text-accent-text mt-3 inline-block text-sm hover:underline"
+            >
               Найти пациента
-            </Link>
+            </button>
             <div className="border-border-soft mt-5 border-t pt-5">
               <div className="text-text-subtle mb-2.5 text-2xs">Ассистент администратора</div>
               <AdminAssistant key={selected.id} dialogId={selected.id} patient={null} />
