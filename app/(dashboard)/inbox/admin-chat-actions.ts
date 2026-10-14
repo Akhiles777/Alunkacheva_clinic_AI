@@ -125,6 +125,10 @@ export async function askAdmin(question: string): Promise<AdminChatTurn> {
   });
   const memory = memoryFrom(lastAnswer?.meta);
 
+  /**
+   * Сбой расчёта — словами в чате, а не «нет связи с сервером»: связь была,
+   * сломался ответ, и администратор должен это видеть (ТЗ 4B.8).
+   */
   const answer = await answerAdmin(text, {
     companyId,
     canSeeRevenue,
@@ -132,6 +136,11 @@ export async function askAdmin(question: string): Promise<AdminChatTurn> {
     canViewOthers,
     ownStaffId,
     memory,
+  }).catch((e: unknown) => {
+    console.error(`[ассистент] ответ не собран: ${(e as Error)?.message ?? e}`);
+    return {
+      text: "Не смог посчитать — внутри ошибка, разработчик увидит её в журнале. Переформулируйте вопрос или спросите иначе.",
+    } as Awaited<ReturnType<typeof answerAdmin>>;
   });
   const after_ = nextMemory(memory, answer.memory);
 

@@ -13,7 +13,7 @@ import { toPlainText } from "@/lib/assistant/plain-text";
  * Нет ключа или сбой — возвращаем null, и агент честно говорит, что не знает,
  * вместо выдумки.
  */
-const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1").replace(/\/+$/, "");
+export const BASE_URL = (process.env.ROUTER_AI_BASE_URL || "https://routerai.ru/api/v1").replace(/\/+$/, "");
 /**
  * Модель бота пациентов — Haiku 5.5 (решение заказчика, 9 октября: на 4.5
  * агент «лажал» — «Ва iyyaka» вперемешку с кириллицей, свои суждения о
@@ -52,7 +52,7 @@ const BOT_REASONING = (process.env.ROUTER_AI_BOT_REASONING ?? "low").trim();
 export const STAFF_MARK = "[Администратор клиники]";
 
 /** Модель и размышление — одинаково во всех запросах бота. */
-function modelParams(): { model: string; reasoning?: { effort: string } } {
+export function modelParams(): { model: string; reasoning?: { effort: string } } {
   return BOT_REASONING ? { model: MODEL, reasoning: { effort: BOT_REASONING } } : { model: MODEL };
 }
 

@@ -16,6 +16,12 @@ import {
   patientPromoState,
   type AttachResult,
   type PatientPromoState,
+  ensureSchoolPromo,
+  markParticipantDone,
+  revokeParticipantBonus,
+  searchPatientsForPromo,
+  setParticipantSchool,
+  unmarkParticipantDone,
 } from "@/lib/server/promos";
 
 /**
@@ -271,7 +277,8 @@ export async function loadPatientPromos(
 
 const AttachInput = z.object({
   patientId: z.string().min(1),
-  schoolId: z.string().min(1),
+  // Пусто — пришёл по акции сам, без школы.
+  schoolId: z.string().min(1).nullable(),
   conversationId: z.string().min(1).nullable(),
   childName: z.string().trim().max(120).nullable(),
   extraChild: z.boolean(),
@@ -447,4 +454,109 @@ export async function approvePromoKnowledge(id: string): Promise<void> {
     entityId: id,
     meta: { approved: true },
   });
+}
+
+// ─────────────────────────────────────────────── одна акция: экран
+
+const ItemInput = z.object({
+  title: z.string().trim().min(2).max(200),
+  price: z.number().finite().min(0).max(1_000_000),
+  yclientsServiceId: z.number().int().positive().nullable(),
+});
+
+const SettingsInput = z
+  .object({
+    name: z.string().trim().min(2, "у акции должно быть название").max(120),
+    description: z.string().trim().max(2000).nullable(),
+    priceTotal: money,
+    priceRegular: money,
+    ageMin: z.number().int().min(0).max(120).nullable(),
+    ageMax: z.number().int().min(0).max(120).nullable(),
+    startsOn: dateKey,
+    endsOn: dateKey,
+    bonusAmount: money,
+    isActive: z.boolean(),
+    agentEnabled: z.boolean(),
+    items: z.array(ItemInput).max(20),
+  })
+  .refine((p) => p.endsOn >= p.startsOn, "акция не может закончиться раньше, чем началась");
+
+/** Условия акции и её состав. Засчитываются визиты по услугам, связанным с позициями. */
+export async function saveSchoolPromo(form: z.input<typeof SettingsInput>): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "EDIT_SETTINGS");
+  const parsed = SettingsInput.safeParse(form);
+  if (!parsed.success) fail(parsed.error);
+  const p = parsed.data;
+  const id = await ensureSchoolPromo(session.companyId);
+  await prisma.promo.update({
+    where: { id },
+    data: {
+      name: p.name,
+      description: p.description || null,
+      priceTotal: p.priceTotal,
+      priceRegular: p.priceRegular,
+      ageMin: p.ageMin,
+      ageMax: p.ageMax,
+      startsAt: startOfClinicDay(new Date(`${p.startsOn}T12:00:00Z`)),
+      endsAt: new Date(clinicDayRange(new Date(`${p.endsOn}T12:00:00Z`)).end.getTime() - 1),
+      bonusAmount: p.bonusAmount,
+      isActive: p.isActive,
+      agentEnabled: p.agentEnabled,
+      items: p.items as unknown as object[],
+      serviceIds: [...new Set(p.items.flatMap((i) => (i.yclientsServiceId ? [i.yclientsServiceId] : [])))],
+    },
+  });
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "promo",
+    entityId: id,
+    meta: { items: p.items.length, agentEnabled: p.agentEnabled, isActive: p.isActive, endsOn: p.endsOn },
+  });
+  revalidatePath("/promos");
+}
+
+export async function findPatientsForPromo(q: string): Promise<{ id: string; name: string; phoneTail: string | null }[]> {
+  const session = await getSession();
+  await requirePermission(session, "MESSAGE_PATIENTS");
+  return searchPatientsForPromo(session.companyId, String(q ?? "").slice(0, 100));
+}
+
+async function participantAction(
+  attributionId: string,
+  what: string,
+  run: (companyId: string, actorId: string | null) => Promise<void>,
+): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "MESSAGE_PATIENTS");
+  requireId(attributionId, "участник");
+  await run(session.companyId, session.userId);
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "partner_attribution",
+    entityId: attributionId,
+    meta: { action: what },
+  });
+  revalidatePath("/promos");
+}
+
+/** «Прошёл всё» — руками; есть школа — бонус ставится сразу. */
+export async function markPromoDone(attributionId: string): Promise<void> {
+  await participantAction(attributionId, "done", (c, a) => markParticipantDone(c, a, attributionId));
+}
+
+export async function unmarkPromoDone(attributionId: string): Promise<void> {
+  await participantAction(attributionId, "undone", (c, a) => unmarkParticipantDone(c, a, attributionId));
+}
+
+export async function revokePromoBonus(attributionId: string, reason: string | null): Promise<void> {
+  await participantAction(attributionId, "revoke_bonus", (c, a) => revokeParticipantBonus(c, a, attributionId, reason));
+}
+
+export async function setPromoParticipantSchool(attributionId: string, schoolId: string | null): Promise<void> {
+  await participantAction(attributionId, "set_school", (c, a) => setParticipantSchool(c, a, attributionId, schoolId));
 }

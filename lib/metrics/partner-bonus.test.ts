@@ -363,3 +363,33 @@ describe("итоги школы и окно привязки", () => {
     ).toBe(false);
   });
 });
+
+describe("ручное не перетирается", () => {
+  const v = (id: string, status = "ARRIVED") => ({
+    id,
+    startAt: new Date("2026-10-10T09:00:00Z"),
+    status,
+    deleted: false,
+    services: [{ yclientsServiceId: 101, quantity: 1 }],
+  });
+  const p: PromoRule = { serviceIds: [101], startsAt: new Date("2026-10-01T00:00:00Z"), endsAt: new Date("2026-11-15T20:59:59Z") };
+  const base = { id: "a1", childNo: 1, attributedAt: new Date("2026-10-05T00:00:00Z"), removed: false, bonusAmountFrozen: 500 };
+
+  it("бонус, поставленный руками, пересчёт не снимает даже при отмене визита", () => {
+    const a = { ...base, bonus: { id: "b1", status: "EARNED" as const, triggeredByAppointmentId: null, manual: true } };
+    expect(bonusActions(p, [a], [v("v1", "CANCELLED")])).toEqual([]);
+  });
+
+  it("снятый руками бонус пересчёт не возвращает", () => {
+    const a = { ...base, bonus: { id: "b1", status: "REVERSED" as const, triggeredByAppointmentId: null, manual: true, reversedAt: new Date("2026-10-01T00:00:00Z") } };
+    expect(bonusActions(p, [a], [v("v1")])).toEqual([]);
+  });
+
+  it("участник без школы бонуса не получает", () => {
+    expect(bonusActions(p, [{ ...base, bonus: null, hasSchool: false }], [v("v1")])).toEqual([]);
+  });
+
+  it("«прошёл» отмечено руками — автоматика бонус не дублирует", () => {
+    expect(bonusActions(p, [{ ...base, bonus: null, completed: true }], [v("v1")])).toEqual([]);
+  });
+});

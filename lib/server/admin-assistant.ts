@@ -12,6 +12,7 @@ import {
 } from "@/lib/server/analytics";
 import { composeMessage, delayTextFrom, sendAtFrom, situationOf } from "@/lib/assistant/admin-compose";
 import { EMPTY_MEMORY, asksSameAgain, resolveRef, type AdminMemory } from "@/lib/assistant/admin-memory";
+import { intentFrom, maskPhones, understandAdmin } from "@/lib/assistant/admin-understand";
 import { visitTitle } from "@/lib/visit-title";
 import { answerAboutPatient, type AnswerFacts } from "@/lib/metrics/patient-answer";
 import { explainUnmarked, UNMARKED_LABEL, type KnownMove, type OtherBooking } from "@/lib/metrics/unmarked";
@@ -152,7 +153,44 @@ function filtered(
   return appts
     .filter(active)
     .filter((a) => (staffId ? a.staffId === staffId : true))
-    .filter((a) => (serviceId ? a.serviceIds.includes(serviceId) : true));
+    .filter((a) => (serviceId ? a.serviceIds.includes(serviceId) || sameKind(a.title, serviceId) : true));
+}
+
+/**
+ * Вид услуги по строке прайса: «БОС-терапия» → «бос». Записи на соседние строки
+ * того же вида («БОС-терапия, курс», «НАК + БОС») — та же услуга для вопроса
+ * «кто завтра на БОС»: администратор спрашивает о виде, а не о строке прайса.
+ */
+const SERVICE_STEM = new Map<string, string>();
+function rememberServiceStems(services: { id: string; title: string }[]): void {
+  const GENERIC = /^(?:при[её]м|консультац|детск|взросл|первичн|повторн|курс|сеанс|прием)/iu;
+  for (const s of services) {
+    const word = s.title
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .split(/[^a-zа-я0-9]+/u)
+      .find((w) => w.length >= 3 && !GENERIC.test(w));
+    if (word) SERVICE_STEM.set(s.id, word.slice(0, Math.max(3, Math.min(6, word.length - 2))));
+  }
+}
+function sameKind(title: string, serviceId: string): boolean {
+  const stem = SERVICE_STEM.get(serviceId);
+  return Boolean(stem) && title.toLowerCase().replace(/ё/g, "е").includes(stem!);
+}
+
+/** Пациенты по номеру: последние десять цифр в любом из телефонов карточки. */
+async function patientsByPhone(companyId: string, digits10: string): Promise<{ id: string; name: string | null }[]> {
+  const rows = await prisma.patientPhone.findMany({
+    where: { companyId, phone: { endsWith: digits10 }, patient: { deletedAt: null } },
+    select: { patient: { select: { id: true, name: true } } },
+    take: 5,
+  });
+  return [...new Map(rows.map((r) => [r.patient.id, r.patient])).values()];
+}
+
+/** Приписать к ответу оговорку («номер не нашёл, нашёл по имени»). */
+function withNote(note: string, answer: AdminAnswer): AdminAnswer {
+  return note ? { ...answer, text: `${note}${answer.text}` } : answer;
 }
 
 /**
@@ -223,7 +261,20 @@ export async function answerAdmin(question: string, ctx: AdminContext): Promise<
     }),
   ]);
 
-  const intent = parseAdminQuestion(question, { staff, services }, now);
+  const known = { staff, services };
+  rememberServiceStems(services);
+
+  /**
+   * Понимает вопрос модель, считает код (`lib/assistant/admin-understand.ts`).
+   * Модели уходит только сам вопрос с заглушкой вместо телефона; нет модели или
+   * ответ не по форме — разбирают прежние правила.
+   */
+  const { phones } = maskPhones(question);
+  const understood = await understandAdmin(question, known, now);
+  let intent: AdminIntent = understood
+    ? intentFrom(understood, known, now, (t) => sendAtFrom(t, now))
+    : parseAdminQuestion(question, known, now);
+  if (intent.kind === "patient" && !intent.question) intent = { ...intent, question };
   const nameOf = (id: string | null) => staff.find((s) => s.id === id)?.name ?? null;
 
   /**
@@ -256,50 +307,76 @@ export async function answerAdmin(question: string, ctx: AdminContext): Promise<
       memory.lastText,
     );
   }
-  const refId = ref.kind === "patient" ? ref.patientId : null;
-  const writes = ASKS_WRITE.test(question) && !/(?<!\p{L})(?:всем|всех|все)(?!\p{L})/iu.test(question);
-  const again = asksSameAgain(question) && memory.lastText ? memory.lastText : null;
+  let refId = ref.kind === "patient" ? ref.patientId : null;
+  if (!refId && understood?.refers_to_previous && memory.focus) refId = memory.focus;
+  const picked = ref.kind === "patient" && (ref.how === "other" || ref.how === "ordinal" || ref.how === "name");
 
   /**
-   * Пациента назвали местоимением или выбрали из списка, а в самой реплике
-   * имени нет — действие относится к нему. «А ей напиши, что перенос на
-   * понедельник», «вторая», «нет, другой» (после письма — то же письмо ей).
+   * Телефон в вопросе — самый надёжный адрес (§4): «Предупреди Сумаю
+   * (7988…)» находит ровно её, а не всех, в чьём имени есть «Сум».
    */
-  if (refId && !personNameIn(question, staff)) {
+  const PERSONAL = new Set(["message_one", "patient", "contacts", "explain", "find", "unknown"]);
+  let phoneNote = "";
+  if (phones.length > 0 && PERSONAL.has(intent.kind)) {
+    const byPhone = await patientsByPhone(ctx.companyId, phones[0]);
+    if (byPhone.length === 1) refId = byPhone[0].id;
+    else {
+      const shown = `+7 ${phones[0].slice(0, 3)} ${phones[0].slice(3, 6)}-${phones[0].slice(6, 8)}-${phones[0].slice(8)}`;
+      phoneNote = `Номер ${shown} в базе не нашёл. `;
+      const hasName = "name" in intent && Boolean(intent.name);
+      if (!hasName) {
+        return { text: `${phoneNote}Проверьте цифры — или назовите пациента по имени и фамилии.` };
+      }
+    }
+  }
+  const named = "name" in intent && Boolean(intent.name);
+  const byRef = refId !== null && (!named || phones.length > 0 || picked);
+  const again = asksSameAgain(question) && memory.lastText ? memory.lastText : null;
+  const writes =
+    intent.kind === "message_one" ||
+    (!understood && ASKS_WRITE.test(question) && !/(?<!\p{L})(?:всем|всех|все)(?!\p{L})/iu.test(question));
+  const messageText = intent.kind === "message_one" ? intent.text : broadcastText(question);
+
+  /**
+   * Пациент известен без имени в реплике — по местоимению, выбору из списка
+   * или телефону. «А ей напиши, что перенос на понедельник», «вторая», «нет,
+   * другой» (после письма — то же письмо ей).
+   */
+  if (byRef && refId) {
     if (intent.kind === "explain") return explainAnswer(ctx, refId, now);
-    const picked = ref.kind === "patient" && (ref.how === "other" || ref.how === "ordinal" || ref.how === "name");
-    // Выбрали адресата из списка, а письмо уже продиктовано — готовим его ему.
     if (writes || (picked && (again || memory.lastText))) {
-      return messageOne(
-        ctx,
-        {
-          kind: "message_one",
-          name: "",
-          text: broadcastText(question) || again || memory.lastText || "",
-          situation: situationOf(question),
-          delayText: delayTextFrom(question),
-          sendAtIso: sendAtFrom(question, now)?.toISOString() ?? null,
-          date: dateFrom(question.toLowerCase(), now),
-          staffId: null,
-          serviceId: null,
-        },
-        now,
-        refId,
+      return withNote(
+        phoneNote,
+        await messageOne(
+          ctx,
+          {
+            kind: "message_one",
+            name: "",
+            text: messageText || again || memory.lastText || "",
+            situation: intent.kind === "message_one" ? intent.situation : situationOf(question),
+            delayText: intent.kind === "message_one" ? intent.delayText : delayTextFrom(question),
+            sendAtIso: intent.kind === "message_one" ? intent.sendAtIso : (sendAtFrom(question, now)?.toISOString() ?? null),
+            date: intent.kind === "message_one" ? intent.date : dateFrom(question.toLowerCase(), now),
+            staffId: null,
+            serviceId: null,
+          },
+          now,
+          refId,
+          question,
+        ),
       );
     }
-    if (/телефон|номер|как\s+связаться/iu.test(question)) return limited ? { text: ONLY_OWN } : contacts(ctx, "", refId);
-    if (ref.kind === "patient" && (ref.how === "ordinal" || ref.how === "name" || ref.how === "other")) {
-      // Выбрали из списка без нового вопроса — справка по выбранному.
+    if (intent.kind === "contacts") return limited ? { text: ONLY_OWN } : contacts(ctx, "", refId);
+    if (picked || intent.kind === "patient" || intent.kind === "unknown" || intent.kind === "find") {
       return patientAnswer(ctx, "", question, refId);
     }
-    if (intent.kind === "unknown" || intent.kind === "patient") return patientAnswer(ctx, "", question, refId);
   }
 
   /**
    * Просьба написать без адресата. «Отправь сразу, без подтверждения» — отказ:
    * без подтверждения не уходит ничего, ни при какой формулировке.
    */
-  if (writes && !refId && !personNameIn(question, staff) && intent.kind !== "broadcast") {
+  if (writes && !refId && !named) {
     if (/сразу|без\s+подтвержд|не\s+спрашива/iu.test(question)) {
       return {
         text:
@@ -307,11 +384,11 @@ export async function answerAdmin(question: string, ctx: AdminContext): Promise<
           "я покажу адресата и текст, а отправит кнопка «Отправить».",
       };
     }
-    return { text: "Кому написать? Назовите пациента — имя или фамилию, — и что написать после двоеточия." };
+    return { text: "Кому написать? Назовите пациента — имя, фамилию или номер телефона." };
   }
 
   /** «И Патимат тоже» — то же письмо другому адресату. */
-  if (intent.kind === "patient" && again) {
+  if ((intent.kind === "patient" || intent.kind === "message_one") && again && named) {
     return messageOne(
       ctx,
       {
@@ -335,7 +412,7 @@ export async function answerAdmin(question: string, ctx: AdminContext): Promise<
    * Это единственное место, где ассистент отвечает вопросом: назвать не того
    * врача значит посчитать чужой день, а в рассылке — написать чужим людям.
    */
-  const ambiguous = staffIn(question, staff);
+  const ambiguous = staffIn(understood ? (understood.staff ?? "") : question, staff);
   if (ambiguous.one === null && ambiguous.many.length > 1 && intent.kind !== "patient") {
     return {
       text:
@@ -394,7 +471,7 @@ export async function answerAdmin(question: string, ctx: AdminContext): Promise<
       return limited ? { text: ONLY_OWN } : newPatients(ctx, intent.date, now);
 
     case "message_one":
-      return messageOne(ctx, intent, now);
+      return withNote(phoneNote, await messageOne(ctx, intent, now, null, question));
 
     case "patients_total":
       return limited ? { text: ONLY_OWN } : patientsTotal(ctx);
@@ -736,6 +813,8 @@ async function messageOne(
   intent: Extract<AdminIntent, { kind: "message_one" }>,
   now: Date,
   refId: string | null = null,
+  /** Поручение администратора дословно — по нему проверяются числа в тексте письма. */
+  question: string | null = null,
 ): Promise<AdminAnswer> {
   if (!ctx.canMessage) {
     return { text: "Писать пациентам может сотрудник с таким правом — у вашей учётки его нет." };
@@ -776,7 +855,7 @@ async function messageOne(
    * клиники под названную ситуацию. Сочинять от себя нельзя: это письмо уйдёт
    * от имени клиники.
    */
-  const text = intent.text
+  const draft = intent.text
     ? intent.text
     : intent.situation
       ? composeMessage(intent.situation, {
@@ -786,6 +865,24 @@ async function messageOne(
           delayText: intent.delayText,
         })
       : "";
+  /**
+   * {{date}}, {{time}}, {{doctor}}, {{service}} — из БЛИЖАЙШЕЙ записи пациента,
+   * {{name}} — его имя. Текст сочиняет модель по поручению, но фактов у неё нет:
+   * их подставляет код, и записи впереди нет — так и говорим, а не отправляем
+   * письмо с дырой (как с шаблонами WhatsApp).
+   */
+  const filled = draft ? await fillFacts(ctx.companyId, patient, draft, now) : { text: "", missing: [] as string[] };
+  if (filled.missing.length > 0) {
+    return {
+      memory: { focus: patient.id },
+      text:
+        `${patient.name ?? "Пациент"}: в тексте нужны ${filled.missing.join(", ")}, а записи впереди у пациента нет. ` +
+        "Напишите текст сами после двоеточия — или уточните, о какой записи речь.",
+    };
+  }
+  const text = filled.text;
+  /** Число, которого не было в поручении и нет в записи, — повод перечитать текст. */
+  const strangeNumbers = question ? numbersNotIn(text, `${question} ${filled.facts ?? ""}`) : [];
   if (!text) {
     return {
       memory: { focus: patient.id },
@@ -808,7 +905,9 @@ async function messageOne(
   const scheduled = intent.sendAtIso ? new Date(intent.sendAtIso) : null;
   const cannotSchedule = scheduled !== null && !dialog;
 
-  const when = appt ? `${intent.date.label} в ${TIME.format(appt.startAt)}, ${appt.title}` : "записи в этот день нет";
+  const when = appt
+    ? `${intent.date.label} в ${TIME.format(appt.startAt)}, ${appt.title}`
+    : await nearestBookingLabel(ctx.companyId, patient.id, now);
   return {
     text:
       `${patient.name ?? "Пациент"} — ${when}. ` +
@@ -818,7 +917,8 @@ async function messageOne(
           ? "Отложить не получится: переписки с этим человеком ещё нет, а завести её можно только отправкой. Могу отправить сразу — подтвердите."
           : scheduled
             ? `Отправлю ${whenLabel(scheduled)} — проверьте текст и адресата.`
-            : "Проверьте текст и адресата — отправлю после подтверждения."),
+            : "Проверьте текст и адресата — отправлю после подтверждения.") +
+      (strangeNumbers.length ? ` В тексте есть ${strangeNumbers.join(", ")} — этого не было в вашем поручении, перечитайте.` : ""),
     plan: {
       kind: "one",
       text,
@@ -1158,10 +1258,19 @@ async function findPatients(
       deletedAt: null,
       AND: stems.map((stem) => ({ name: { contains: stem, mode: "insensitive" as const } })),
     },
-    take: 10,
+    take: 200,
     select: { id: true, name: true },
   });
-  return rows;
+  /**
+   * Только с НАЧАЛА слова: «Сумая» не находит «Касумову» и «Гаджикасумову» —
+   * подстрока «сум» стоит у них в середине фамилии (живой случай, 14 октября).
+   */
+  const norm = (t: string) => t.toLowerCase().replace(/ё/g, "е");
+  const hits = rows.filter((r) => {
+    const parts = norm(r.name ?? "").split(/[^\p{L}]+/u);
+    return stems.every((st) => parts.some((w) => w.startsWith(norm(st))));
+  });
+  return hits.slice(0, 15);
 }
 
 async function patientAnswer(
@@ -1438,7 +1547,7 @@ async function broadcast(
    * рассылке не подставляем — получатели могут быть у разных специалистов;
    * оно появится, только если рассылка идёт по одному врачу.
    */
-  const text = intent.text
+  const draft = intent.text
     ? intent.text
     : intent.situation
       ? composeMessage(intent.situation, {
@@ -1447,6 +1556,8 @@ async function broadcast(
           delayText: intent.delayText,
         })
       : "";
+  // Общий текст на всех: заготовок «на каждого» у рассылки нет — вырезаем.
+  const text = draft.replace(/\{\{[^}]*\}\}/g, "").replace(/\s+([,!.])/g, "$1").replace(/[ \t]{2,}/g, " ").trim();
   if (!text) {
     return {
       text:
@@ -1813,4 +1924,80 @@ async function courseServiceWhere(serviceId: string | null): Promise<{ service?:
   const title = (await prisma.service.findUnique({ where: { id: serviceId }, select: { title: true } }))?.title ?? "";
   const stem = title.split(/[\s,+()-]+/u).find((w) => w.length >= 3) ?? title;
   return stem ? { service: { title: { contains: stem, mode: "insensitive" } } } : {};
+}
+
+// ─────────────────────────────────────────────── факты для письма
+
+const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+
+/** Имя для обращения: «Мамедова Сумайсат Гасангусейновна» → «Сумайсат». */
+function firstName(full: string | null): string | null {
+  const parts = (full ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return null;
+  return parts.length >= 2 ? parts[1] : parts[0];
+}
+
+async function fillFacts(
+  companyId: string,
+  patient: { id: string; name: string | null },
+  draft: string,
+  now: Date,
+): Promise<{ text: string; missing: string[]; facts?: string }> {
+  const needs = (k: string) => draft.includes(`{{${k}}}`);
+  const missing: string[] = [];
+  let text = draft;
+  const name = firstName(patient.name);
+  text = text.replace(/\{\{name\}\}/g, name ?? "").replace(/,\s*!/g, "!").replace(/\s+,/g, ",");
+  let facts = "";
+  if (needs("date") || needs("time") || needs("doctor") || needs("service")) {
+    const next = await prisma.appointment.findFirst({
+      where: { companyId, patientId: patient.id, deletedAt: null, startAt: { gte: now }, status: { notIn: ["CANCELLED", "NO_SHOW"] } },
+      orderBy: { startAt: "asc" },
+      select: {
+        startAt: true,
+        staff: { select: { name: true } },
+        primaryService: { select: { title: true } },
+        services: { select: { service: { select: { title: true } } } },
+      },
+    });
+    if (!next) {
+      for (const [k, w] of [["date", "дата"], ["time", "время"], ["doctor", "врач"], ["service", "услуга"]] as const) {
+        if (needs(k)) missing.push(`${w} записи`);
+      }
+      return { text, missing };
+    }
+    const key = clinicDateKey(next.startAt);
+    const [, m, d] = key.split("-").map(Number);
+    const date = `${d} ${MONTHS_GEN[m - 1]}`;
+    const time = TIME.format(next.startAt);
+    const service = visitTitle(next.services.map((x) => ({ title: x.service.title })), next.primaryService?.title ?? "приём");
+    text = text
+      .replace(/\{\{date\}\}/g, date)
+      .replace(/\{\{time\}\}/g, time)
+      .replace(/\{\{doctor\}\}/g, next.staff?.name ?? "врач")
+      .replace(/\{\{service\}\}/g, service);
+    facts = `${d} ${time} ${service}`;
+  }
+  // Незнакомые заготовки модели в письмо не уходят.
+  text = text.replace(/\{\{[^}]*\}\}/g, "").replace(/[ \t]{2,}/g, " ").trim();
+  return { text, missing, facts };
+}
+
+/** Числа письма, которых нет в поручении и в подставленных фактах. */
+function numbersNotIn(text: string, source: string): string[] {
+  const have = new Set(source.match(/\d+/g) ?? []);
+  return [...new Set((text.match(/\d+/g) ?? []).filter((n) => !have.has(n)))];
+}
+
+/** «ближайшая запись 15 октября в 08:00, Остеопатия» — или «записи впереди нет». */
+async function nearestBookingLabel(companyId: string, patientId: string, now: Date): Promise<string> {
+  const next = await prisma.appointment.findFirst({
+    where: { companyId, patientId, deletedAt: null, startAt: { gte: now }, status: { notIn: ["CANCELLED", "NO_SHOW"] } },
+    orderBy: { startAt: "asc" },
+    select: { startAt: true, primaryService: { select: { title: true } }, services: { select: { service: { select: { title: true } } } } },
+  });
+  if (!next) return "записи впереди нет";
+  const [, m, d] = clinicDateKey(next.startAt).split("-").map(Number);
+  const title = visitTitle(next.services.map((x) => ({ title: x.service.title })), next.primaryService?.title ?? "приём");
+  return `ближайшая запись ${d} ${MONTHS_GEN[m - 1]} в ${TIME.format(next.startAt)}, ${title}`;
 }

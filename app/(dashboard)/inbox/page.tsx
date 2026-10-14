@@ -7,7 +7,6 @@ import { HANDBACK_HOURS } from "@/lib/agent/handback-rule";
 import { reportMaybeStale } from "@/lib/client/stale-build";
 import { HOTKEYS, hotkeyAction, nextWaiting, step } from "@/lib/inbox/hotkeys";
 import { URGENT_WAIT_MS, waitLabel } from "@/lib/inbox/waiting";
-import { VIEWS, applyView, viewCounts, type InboxView } from "@/lib/inbox/views";
 import { AGENT_DOES, AGENT_DOES_NOT, ARTICLES } from "@/lib/help/topics";
 import {
   CHANNEL_LABEL,
@@ -1253,7 +1252,6 @@ export default function InboxPage() {
   }, []);
   const [composing, setComposing] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [view, setView] = useState<InboxView>("all");
 
   /**
    * Порядок — по ожиданию, а не по времени последнего сообщения: пациент,
@@ -1270,26 +1268,8 @@ export default function InboxPage() {
      * Наверх поднимается только то, о чём он сам попросил, — назревшее
      * напоминание.
      */
-    const matching = db.dialogs.filter((d) => d.status !== "closed");
-    /**
-     * Открытая переписка остаётся в списке, даже если перестала подходить под
-     * фильтр. Иначе она исчезает прямо под курсором: открыл диалог из «Нужен
-     * ответ» — он тут же прочитан и пропал, список дёрнулся, стрелки повели
-     * не туда, а человек читает сообщение и не понимает, куда делась строка.
-     */
-    const open = selectedId ? db.dialogs.find((d) => d.id === selectedId) : undefined;
-    // Фильтр — по правилу из lib/inbox/views; открытая переписка остаётся под курсором и в нём.
-    const filtered = applyView(
-      matching.map((d) => ({ ...d, escalated: d.status === "escalated" })),
-      view,
-    );
-    const rows = open && !filtered.some((d) => d.id === open.id) ? [...filtered, { ...open, escalated: open.status === "escalated" }] : filtered;
-    return view === "waiting" ? rows : withRemindersFirst(rows);
-  }, [db.dialogs, selectedId, view]);
-  const counts = useMemo(
-    () => viewCounts(db.dialogs.filter((d) => d.status !== "closed").map((d) => ({ ...d, escalated: d.status === "escalated" }))),
-    [db.dialogs],
-  );
+    return withRemindersFirst(db.dialogs.filter((d) => d.status !== "closed"));
+  }, [db.dialogs]);
   const selected = db.dialogs.find((d) => d.id === selectedId) ?? null;
   const patient = selected?.patientId ? findPatient(selected.patientId) : undefined;
 
@@ -1457,31 +1437,7 @@ export default function InboxPage() {
               день, врачи, пациенты, рассылка записанным
             </span>
           </button>
-          {/* Фильтры одним щелчком: срочное и «кому писать первым». */}
-          <div className="border-border-soft flex flex-wrap gap-1 border-b px-3 py-2">
-            {VIEWS.map((v) => (
-              <button
-                key={v.key}
-                type="button"
-                onClick={() => setView(v.key)}
-                aria-pressed={view === v.key}
-                className={`rounded-full border px-2 py-0.5 text-2xs ${
-                  view === v.key ? "border-accent bg-accent-tint text-accent-text font-medium" : "border-border text-text-muted hover:bg-hover"
-                }`}
-              >
-                {v.label}
-                {v.key !== "all" && counts[v.key] > 0 ? <span className="num ml-1">{counts[v.key]}</span> : null}
-              </button>
-            ))}
-          </div>
-          {list.length === 0 && view !== "all" ? (
-            <p className="text-text-muted px-4 py-6 text-sm">
-              В этом фильтре пусто.{" "}
-              <button type="button" onClick={() => setView("all")} className="text-accent-text hover:underline">
-                Показать все
-              </button>
-            </p>
-          ) : list.length === 0 ? (
+          {list.length === 0 ? (
             /* Пусто — значит разобрано всё. Заодно единственное место, где
                видно, что шпаргалка открывается клавишей «?». */
             <p className="text-text-muted px-4 py-6 text-sm leading-snug">

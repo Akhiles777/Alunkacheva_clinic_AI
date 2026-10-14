@@ -3,8 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { PromoDetail } from "@/lib/server/promos";
-import { Group, TextInput, Textarea, Toggle } from "../../settings/_components/ui";
-import { approvePromoKnowledge, savePromoKnowledge, setPromoKnowledgeActive } from "../actions";
+import { Group, TextInput, Textarea, Toggle } from "../settings/_components/ui";
+import { approvePromoKnowledge, savePromoKnowledge, setPromoKnowledgeActive } from "./actions";
 
 type Entry = PromoDetail["knowledge"][number];
 

@@ -33,8 +33,8 @@ const NAV_COMMON: NavItem[] = [
   { label: "Курсы", href: "/courses" },
   // Рабочая очередь администратора: кому звонить и что предложить.
   { label: "Кому позвонить", href: "/queue" },
-  // Акции и школы-партнёры: бонусы, ссылки отчётов для школ.
-  { label: "Акции", href: "/promos" },
+  // Акция клиники одна — «Школьный check-up»: участники, школы, бонусы.
+  { label: "Школьный check-up", href: "/promos" },
   { label: "Кабинеты", href: "/schedule" },
   { label: "Отчёты", href: "/analytics" },
 ];

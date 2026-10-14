@@ -32,7 +32,9 @@ import { MAX_UPLOAD_BYTES } from "@/lib/media/chunks";
 export { MAX_UPLOAD_BYTES };
 
 export function mediaRoot(): string {
-  return process.env.MEDIA_DIR ?? path.join(/*turbopackIgnore: true*/ process.cwd(), ".data", "media");
+  // `||`, а не `??`: в .env стоит MEDIA_DIR="" — пустая строка, и с `??` файлы
+  // ложились в корень проекта, а не в своё хранилище.
+  return process.env.MEDIA_DIR?.trim() || path.join(/*turbopackIgnore: true*/ process.cwd(), ".data", "media");
 }
 
 /**
@@ -70,18 +72,33 @@ export async function saveFile(bytes: Buffer): Promise<StoredFile> {
 
 export async function readStored(id: string): Promise<Buffer | null> {
   try {
-    return await readFile(/*turbopackIgnore: true*/ pathOf(id));
+    const at = await locate(id);
+    if (!at) return null;
+    return await readFile(/*turbopackIgnore: true*/ at.path);
   } catch {
     return null;
   }
 }
 
 export async function storedSize(id: string): Promise<number | null> {
-  try {
-    return (await stat(/*turbopackIgnore: true*/ pathOf(id))).size;
-  } catch {
-    return null;
+  return (await locate(id))?.size ?? null;
+}
+
+/**
+ * Где лежит файл. Сначала хранилище; потом — старое место: пока `MEDIA_DIR=""`
+ * читалось как настоящий путь, файлы ложились в `<проект>/<две буквы>/<id>`, и
+ * после правки они не должны пропасть.
+ */
+export async function locate(id: string): Promise<{ path: string; size: number } | null> {
+  const legacy = path.join(/*turbopackIgnore: true*/ process.cwd(), id.slice(0, 2), id);
+  for (const p of [pathOf(id), legacy]) {
+    try {
+      return { path: p, size: (await stat(/*turbopackIgnore: true*/ p)).size };
+    } catch {
+      // нет здесь — смотрим дальше
+    }
   }
+  return null;
 }
 
 /**

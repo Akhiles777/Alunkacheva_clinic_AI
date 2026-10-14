@@ -59,7 +59,7 @@ function PromoRow({
     try {
       const r = await attachPatientToSchool({
         patientId,
-        schoolId,
+        schoolId: schoolId || null,
         conversationId,
         childName: childName.trim() || null,
         extraChild,
@@ -84,7 +84,7 @@ function PromoRow({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <Link href={`/promos/${promo.id}`} className="text-text-muted hover:text-text">
+        <Link href="/promos" className="text-text-muted hover:text-text">
           {promo.name}
         </Link>
         {promo.attributions.map((a) => (
@@ -118,7 +118,7 @@ function PromoRow({
         {!has && !promo.open ? <span className="text-text-subtle">акция закончилась</span> : null}
         {promo.open && !open ? (
           <button type="button" onClick={() => setOpen(true)} className="text-accent-text hover:underline">
-            {has ? "Ещё ребёнок" : "Привязать к школе"}
+            {has ? "Ещё ребёнок" : "Добавить в акцию"}
           </button>
         ) : null}
       </div>
@@ -134,7 +134,7 @@ function PromoRow({
             }}
             className="border-border-input bg-surface rounded-md border px-2 py-1 text-xs"
           >
-            <option value="">выберите школу</option>
+            <option value="">без школы</option>
             {promo.schools.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -150,7 +150,7 @@ function PromoRow({
           />
           <button
             type="button"
-            disabled={!schoolId || busy}
+            disabled={busy}
             onClick={() => attach(false)}
             className="bg-accent text-accent-contrast rounded-md px-2.5 py-1 font-medium disabled:opacity-45"
           >
@@ -167,9 +167,7 @@ function PromoRow({
           >
             Отмена
           </button>
-          {promo.schools.length === 0 ? (
-            <span className="text-text-subtle">школ в акции пока нет — их заводят на экране акции</span>
-          ) : null}
+
         </div>
       ) : null}
 

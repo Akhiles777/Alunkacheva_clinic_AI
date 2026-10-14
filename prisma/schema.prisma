@@ -2637,6 +2637,10 @@ model Promo {
   isActive     Boolean  @default(true)
   /// Знает ли об акции пациентский агент (волна 4). По умолчанию — нет.
   agentEnabled Boolean  @default(false)
+  /// Состав акции: [{ title, price, yclientsServiceId | null }]. Позиция может
+  /// быть не заведена в YCLIENTS — тогда визит по ней сам не засчитается, и
+  /// администратор отмечает «прошёл» руками.
+  items        Json     @default("[]")
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -2682,7 +2686,8 @@ model PartnerSchool {
 model PartnerAttribution {
   id                String        @id @default(cuid())
   companyId         String
-  schoolId          String
+  /// Школа необязательна: человек мог прийти по акции сам. Бонус — только школе.
+  schoolId          String?
   promoId           String
   patientId         String
   conversationId    String?
@@ -2698,12 +2703,15 @@ model PartnerAttribution {
   /// снимается с причиной.
   removedAt         DateTime?     @db.Timestamptz(3)
   removedById       String?
+  /// «Прошёл всё» — отметка администратора руками. Сильнее автоматики.
+  completedAt       DateTime?     @db.Timestamptz(3)
+  completedById     String?
   updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
 
-  company Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  school  PartnerSchool @relation(fields: [schoolId], references: [id], onDelete: Restrict)
-  promo   Promo         @relation(fields: [promoId], references: [id], onDelete: Restrict)
-  patient Patient       @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  company Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  school  PartnerSchool? @relation(fields: [schoolId], references: [id], onDelete: Restrict)
+  promo   Promo          @relation(fields: [promoId], references: [id], onDelete: Restrict)
+  patient Patient        @relation(fields: [patientId], references: [id], onDelete: Restrict)
   bonus   PartnerBonus?
 
   @@unique([patientId, promoId, childNo])
@@ -2721,7 +2729,11 @@ model PartnerBonus {
   attributionId            String             @unique
   amount                   Decimal            @db.Decimal(12, 2)
   status                   PartnerBonusStatus
-  triggeredByAppointmentId String
+  /// Визит-основание; пусто — бонус поставлен руками.
+  triggeredByAppointmentId String?
+  /// Начислен или снят руками: пересчёт его не трогает (ручное не перетирается).
+  manual                   Boolean            @default(false)
+  setById                  String?
   earnedAt                 DateTime           @db.Timestamptz(3)
   reversedAt               DateTime?          @db.Timestamptz(3)
   reverseReason            String?

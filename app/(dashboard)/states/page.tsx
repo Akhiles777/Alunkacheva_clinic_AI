@@ -9,7 +9,6 @@ import type { AgentStats } from "@/lib/server/agent-stats";
 import type { SourceStat } from "@/lib/metrics/types";
 import { type GapsData } from "../settings/assistant/gaps-block";
 import { QueueClient, type QueueData } from "../queue/queue-client";
-import { SchoolClient } from "../schools/[id]/school-client";
 import { PartnerReportView } from "@/app/partner/[token]/report-view";
 import type { SchoolDetail } from "@/lib/server/promos";
 import { CourseEconomicsBlock } from "../_components/course-economics";
@@ -854,18 +853,6 @@ export default function StatesPage() {
         Очередь «Кому позвонить». Пустая — это не сбой: у всех, кто мог бы
         попасть в список, есть будущая запись. Так и написано словами.
       */}
-      <Case title="Школа: никого не привязали" note="нули числом и слова, а не пустота">
-        <div className="border-border rounded-xl border">
-          <SchoolClient school={SCHOOL_EMPTY} reportUrl="https://example.ru/partner/demo-token" canEdit />
-        </div>
-      </Case>
-
-      <Case title="Школа: второй ребёнок, снятый бонус, длинные названия" note="снятое стоит отдельной строкой">
-        <div className="border-border rounded-xl border">
-          <SchoolClient school={SCHOOL_FULL} reportUrl="https://example.ru/partner/demo-token" canEdit={false} />
-        </div>
-      </Case>
-
       <Case title="Отчёт для школы: пока пусто и крупные числа" note="только итоги — ни имён, ни дат">
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="border-border bg-raise rounded-xl border">

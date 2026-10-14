@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import { freshFileUrl } from "@/lib/integrations/whatsapp/green-api";
 import { cacheMessageAttachments, fetchRemote } from "@/lib/media/remote-cache";
-import { pathOf, storedSize } from "@/lib/media/store";
+import { locate, pathOf } from "@/lib/media/store";
 import { getSessionOrNull } from "@/lib/server/session";
 import { fileLink } from "@/lib/integrations/telegram/client";
 import { prisma } from "@/lib/db";
@@ -65,7 +65,10 @@ export async function GET(req: Request) {
       where: { id: ref, companyId: session.companyId, deletedAt: null },
       select: { storageId: true, mimeType: true, fileName: true },
     });
-    if (!row) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
+    if (!row) {
+      console.warn(`[media] LOCAL ${ref}: карточки файла нет`);
+      return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
+    }
     return localFile(row.storageId, row.mimeType, req.headers.get("range"));
   }
 
@@ -90,6 +93,7 @@ export async function GET(req: Request) {
      */
     const found = await whatsappFile(ref, session.companyId, Number(url.searchParams.get("i") ?? 0));
     if (!found) {
+      console.warn(`[media] WHATSAPP msg=${ref}: вложение не найдено в сообщении`);
       return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
     }
     // Уже сохранён у нас — отдаём с диска.
@@ -105,6 +109,8 @@ export async function GET(req: Request) {
       if (fresh) got = await fetchRemote(fresh, init);
     }
     if (!got.ok) {
+      // Только номер сообщения и причина — без ссылки и данных пациента (§7).
+      console.warn(`[media] WHATSAPP msg=${ref}: провайдер не отдал файл (${got.reason})`);
       return NextResponse.json(
         {
           error:
@@ -256,8 +262,12 @@ function proxied(upstream: Response, declaredType: string | null): NextResponse 
  * перемотку голосового не умеет никто. Теперь — 206 на запрос диапазона.
  */
 async function localFile(storageId: string, mimeType: string | null, range: string | null): Promise<NextResponse> {
-  const size = await storedSize(storageId);
-  if (size === null) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
+  const at = await locate(storageId);
+  const size = at?.size ?? null;
+  if (!at || size === null) {
+    console.warn(`[media] файл ${storageId} не найден на диске (${pathOf(storageId)})`);
+    return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
+  }
   const type = mimeType || "application/octet-stream";
   const base = {
     "Content-Type": type,
@@ -274,12 +284,12 @@ async function localFile(storageId: string, mimeType: string | null, range: stri
       return new NextResponse(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
     }
     start = Math.max(0, start);
-    const stream = Readable.toWeb(createReadStream(pathOf(storageId), { start, end })) as ReadableStream;
+    const stream = Readable.toWeb(createReadStream(at.path, { start, end })) as ReadableStream;
     return new NextResponse(stream, {
       status: 206,
       headers: { ...base, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${size}` },
     });
   }
-  const stream = Readable.toWeb(createReadStream(pathOf(storageId))) as ReadableStream;
+  const stream = Readable.toWeb(createReadStream(at.path)) as ReadableStream;
   return new NextResponse(stream, { headers: { ...base, "Content-Length": String(size) } });
 }

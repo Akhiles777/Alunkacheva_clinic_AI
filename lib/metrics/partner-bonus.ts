@@ -48,8 +48,11 @@ export interface VisitFact {
 export interface BonusFact {
   id: string;
   status: "EARNED" | "REVERSED";
-  triggeredByAppointmentId: string;
+  /** Пусто — бонус поставлен руками. */
+  triggeredByAppointmentId: string | null;
   reversedAt?: Date | null;
+  /** Поставлен или снят руками: автоматика его не трогает ни в какую сторону. */
+  manual?: boolean;
 }
 
 export interface AttributionFact {
@@ -59,6 +62,10 @@ export interface AttributionFact {
   removed: boolean;
   bonusAmountFrozen: number;
   bonus: BonusFact | null;
+  /** Без школы бонуса нет: человек пришёл по акции сам. */
+  hasSchool?: boolean;
+  /** «Прошёл всё» отмечено руками — бонус ставит администратор, а не правило. */
+  completed?: boolean;
 }
 
 export type BonusAction =
@@ -175,6 +182,8 @@ export function bonusActions(
   const markUsed = (id: string) => used.set(id, (used.get(id) ?? 0) + 1);
   for (const a of attributions) {
     if (a.bonus?.status !== "EARNED") continue;
+    // Ручное не перетирается: и начисленное руками, и снятое руками.
+    if (a.bonus.manual || !a.bonus.triggeredByAppointmentId) continue;
     const reason = a.removed
       ? "привязка снята"
       : lostReason(byId.get(a.bonus.triggeredByAppointmentId), serviceIds);
@@ -197,7 +206,14 @@ export function bonusActions(
     a.bonus.reversedAt != null &&
     a.attributedAt.getTime() > a.bonus.reversedAt.getTime();
   const pending = attributions
-    .filter((a) => !a.removed && (!a.bonus || reopened(a)))
+    .filter(
+      (a) =>
+        !a.removed &&
+        a.hasSchool !== false &&
+        !a.completed &&
+        !a.bonus?.manual &&
+        (!a.bonus || reopened(a)),
+    )
     .sort((a, b) => a.childNo - b.childNo);
   for (const a of pending) {
     const visit = qualifying.find(
