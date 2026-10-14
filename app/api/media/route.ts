@@ -1,8 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
+import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
+import { freshFileUrl } from "@/lib/integrations/whatsapp/green-api";
+import { cacheMessageAttachments, fetchRemote } from "@/lib/media/remote-cache";
+import { pathOf, storedSize } from "@/lib/media/store";
 import { getSessionOrNull } from "@/lib/server/session";
 import { fileLink } from "@/lib/integrations/telegram/client";
 import { prisma } from "@/lib/db";
-import { readStored } from "@/lib/media/store";
 
 /**
  * Отдача вложений пациента сотруднику.
@@ -16,9 +20,10 @@ import { readStored } from "@/lib/media/store";
  *      это сведения о факте обращения за помощью, то есть врачебная тайна
  *      (§7, ст. 13 323-ФЗ). Отдаём только вошедшему сотруднику.
  *
- * Файл не сохраняется у нас: он живёт у провайдера, мы лишь передаём его в
- * ответ. Своего хранилища у платформы пока нет, и заводить его молча —
- * значит разнести медицинские данные ещё по одному месту.
+ * Файлы WhatsApp сохраняются у нас при получении (`lib/media/remote-cache`):
+ * ссылка провайдера живёт ограниченное время, и вложения переставали
+ * открываться. Старые, пришедшие до этого, берутся по ссылке, а если она
+ * истекла — по свежей (`downloadFile`), и тут же сохраняются к себе.
  */
 
 export const runtime = "nodejs";
@@ -61,18 +66,7 @@ export async function GET(req: Request) {
       select: { storageId: true, mimeType: true, fileName: true },
     });
     if (!row) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
-    const bytes = await readStored(row.storageId);
-    if (!bytes) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
-    return new NextResponse(new Uint8Array(bytes), {
-      headers: {
-        "Content-Type": row.mimeType || "application/octet-stream",
-        "Content-Length": String(bytes.byteLength),
-        // Тот же кэш, что у чужих вложений: только у сотрудника и ненадолго.
-        "Cache-Control": "private, max-age=300",
-        "Content-Disposition": "inline",
-        "Accept-Ranges": "none",
-      },
-    });
+    return localFile(row.storageId, row.mimeType, req.headers.get("range"));
   }
 
   if (provider === "TELEGRAM") {
@@ -98,8 +92,34 @@ export async function GET(req: Request) {
     if (!found) {
       return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
     }
+    // Уже сохранён у нас — отдаём с диска.
+    if (found.local) return localFile(found.local.storageId, found.local.mimeType, req.headers.get("range"));
     source = found.url;
     declaredType = found.mimeType;
+    const range = req.headers.get("range");
+    const init = range ? { headers: { Range: range } } : {};
+    let got = await fetchRemote(source, init);
+    // Ссылка истекла — просим у провайдера свежую по номеру сообщения.
+    if (!got.ok && got.reason === "expired" && found.externalId) {
+      const fresh = await freshFileUrl(session.companyId, found.chatId, found.externalId);
+      if (fresh) got = await fetchRemote(fresh, init);
+    }
+    if (!got.ok) {
+      return NextResponse.json(
+        {
+          error:
+            got.reason === "expired"
+              ? "Файл больше не хранится у WhatsApp — попросите пациента прислать его ещё раз"
+              : got.reason === "too_big"
+                ? "Файл слишком большой для просмотра в переписке"
+                : "WhatsApp сейчас не отдаёт файл — попробуйте позже",
+        },
+        { status: got.reason === "expired" ? 410 : 502 },
+      );
+    }
+    // Пока открыли — сохраняем к себе, чтобы следующее открытие не зависело от провайдера.
+    after(() => cacheMessageAttachments(ref).catch(() => 0));
+    return proxied(got.response, declaredType);
   } else {
     return NextResponse.json({ error: "неизвестный источник" }, { status: 400 });
   }
@@ -173,18 +193,32 @@ async function whatsappFile(
   messageId: string,
   companyId: string,
   index: number,
-): Promise<{ url: string; mimeType: string | null } | null> {
+): Promise<{
+  url: string;
+  mimeType: string | null;
+  chatId: string;
+  externalId: string | null;
+  local: { storageId: string; mimeType: string } | null;
+} | null> {
   const message = await prisma.message.findFirst({
     where: { id: messageId, conversation: { companyId } },
-    select: { attachments: true },
+    select: { attachments: true, externalId: true, conversation: { select: { externalUserId: true } } },
   });
   if (!message) return null;
   const list = Array.isArray(message.attachments) ? message.attachments : [];
   const item = list[Number.isFinite(index) && index >= 0 ? index : 0];
   if (!item || typeof item !== "object") return null;
-  const attachment = item as { source?: { url?: unknown }; mimeType?: unknown };
+  const attachment = item as { source?: { url?: unknown; provider?: unknown; mediaId?: unknown }; mimeType?: unknown };
+  // Сохранён у нас, пока экран показывал старую ссылку, — отдаём свой файл.
+  let local: { storageId: string; mimeType: string } | null = null;
+  if (attachment.source?.provider === "LOCAL" && typeof attachment.source.mediaId === "string") {
+    local = await prisma.mediaFile.findFirst({
+      where: { id: attachment.source.mediaId, companyId, deletedAt: null },
+      select: { storageId: true, mimeType: true },
+    });
+  }
   const raw = attachment.source?.url;
-  if (typeof raw !== "string") return null;
+  if (typeof raw !== "string") return local ? { url: "", mimeType: null, chatId: "", externalId: null, local } : null;
   try {
     if (new URL(raw).protocol !== "https:") return null;
   } catch {
@@ -193,5 +227,59 @@ async function whatsappFile(
   return {
     url: raw,
     mimeType: typeof attachment.mimeType === "string" ? attachment.mimeType : null,
+    chatId: message.conversation.externalUserId,
+    externalId: message.externalId,
+    local,
   };
+}
+
+/** Ответ провайдера — дальше как есть, с типом, который браузер согласится играть. */
+function proxied(upstream: Response, declaredType: string | null): NextResponse {
+  const headers = new Headers({
+    "Content-Type": playableType(upstream.headers.get("content-type"), declaredType),
+    "Cache-Control": "private, max-age=300",
+    "Content-Disposition": "inline",
+    "Accept-Ranges": "bytes",
+  });
+  for (const key of ["content-length", "content-range"]) {
+    const value = upstream.headers.get(key);
+    if (value) headers.set(key, value);
+  }
+  return new NextResponse(upstream.body, { status: upstream.status, headers });
+}
+
+/**
+ * Свой файл с диска — потоком и с поддержкой частей.
+ *
+ * Прежде файл читался в память целиком и отдавался с `Accept-Ranges: none`.
+ * Safari (iPhone и Mac) видео без частичных ответов не воспроизводит вовсе, а
+ * перемотку голосового не умеет никто. Теперь — 206 на запрос диапазона.
+ */
+async function localFile(storageId: string, mimeType: string | null, range: string | null): Promise<NextResponse> {
+  const size = await storedSize(storageId);
+  if (size === null) return NextResponse.json({ error: "файл недоступен" }, { status: 404 });
+  const type = mimeType || "application/octet-stream";
+  const base = {
+    "Content-Type": type,
+    "Cache-Control": "private, max-age=300",
+    "Content-Disposition": "inline",
+    "Accept-Ranges": "bytes",
+  };
+  const m = range ? /^bytes=(\d*)-(\d*)$/.exec(range.trim()) : null;
+  if (m && (m[1] || m[2])) {
+    let start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]));
+    let end = m[1] && m[2] ? Number(m[2]) : size - 1;
+    end = Math.min(end, size - 1);
+    if (start > end || start >= size) {
+      return new NextResponse(null, { status: 416, headers: { "Content-Range": `bytes */${size}` } });
+    }
+    start = Math.max(0, start);
+    const stream = Readable.toWeb(createReadStream(pathOf(storageId), { start, end })) as ReadableStream;
+    return new NextResponse(stream, {
+      status: 206,
+      headers: { ...base, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${size}` },
+    });
+  }
+  const stream = Readable.toWeb(createReadStream(pathOf(storageId))) as ReadableStream;
+  return new NextResponse(stream, { headers: { ...base, "Content-Length": String(size) } });
 }

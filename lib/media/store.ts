@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile, open } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -28,7 +28,8 @@ import path from "node:path";
  */
 
 /** Больше этого не принимаем ни от кого: у провайдеров пределы ниже. */
-export const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+import { MAX_UPLOAD_BYTES } from "@/lib/media/chunks";
+export { MAX_UPLOAD_BYTES };
 
 export function mediaRoot(): string {
   return process.env.MEDIA_DIR ?? path.join(/*turbopackIgnore: true*/ process.cwd(), ".data", "media");
@@ -81,4 +82,47 @@ export async function storedSize(id: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Записать файл потоком — без того, чтобы держать его целиком в памяти.
+ *
+ * На сервере 2 ГБ и рядом второй проект: видео пациента на 15 МБ, прочитанное
+ * в буфер разом, — это 15 МБ на каждый одновременный запрос. Пишем кусками во
+ * временный файл и переименовываем только после успеха: оборванная запись не
+ * должна выглядеть как готовый файл. Больше предела — запись прекращается и
+ * временный файл удаляется.
+ */
+export async function saveStream(
+  chunks: AsyncIterable<Uint8Array>,
+  limitBytes: number = MAX_UPLOAD_BYTES,
+): Promise<StoredFile> {
+  const id = randomUUID();
+  const file = pathOf(id);
+  const tmp = `${file}.part`;
+  await mkdir(/*turbopackIgnore: true*/ path.dirname(file), { recursive: true });
+  const handle = await open(/*turbopackIgnore: true*/ tmp, "w");
+  const hash = createHash("sha256");
+  let size = 0;
+  try {
+    for await (const chunk of chunks) {
+      size += chunk.byteLength;
+      if (size > limitBytes) throw new Error("файл больше допустимого");
+      hash.update(chunk);
+      await handle.write(chunk);
+    }
+    await handle.close();
+    if (size === 0) throw new Error("пустой файл");
+    await rename(/*turbopackIgnore: true*/ tmp, file);
+    return { id, sizeBytes: size, sha256: hash.digest("hex") };
+  } catch (e) {
+    await handle.close().catch(() => {});
+    await rm(/*turbopackIgnore: true*/ tmp, { force: true }).catch(() => {});
+    throw e;
+  }
+}
+
+/** Части загрузки по очереди — источник для `saveStream`. */
+export async function* readParts(paths: string[]): AsyncIterable<Uint8Array> {
+  for (const p of paths) yield await readFile(/*turbopackIgnore: true*/ p);
 }

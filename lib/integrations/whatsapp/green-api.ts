@@ -358,6 +358,41 @@ export async function deleteMessage(
   return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
 
+/**
+ * Свежая ссылка на файл сообщения (метод downloadFile).
+ *
+ * Ссылка из вебхука живёт ограниченное время — срок хранения файлов, по
+ * словам Green API, задаёт WhatsApp, — и через какое-то время проигрыватель
+ * в переписке получал 404. По номеру сообщения провайдер выдаёт новую, пока
+ * файл у него есть. null — файла больше нет или провайдер не ответил.
+ */
+export async function freshFileUrl(
+  companyId: string,
+  chatId: string,
+  idMessage: string,
+): Promise<string | null> {
+  if (!isWhatsappEnabled()) return null;
+  const creds = await loadCredentials(companyId);
+  if (!creds) return null;
+  // Чтение, а не отправка: повтор на обрыве безопасен.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const r = await fetch(`${GREEN_API_BASE}${ENDPOINTS.downloadFile(creds.idInstance, creds.apiToken)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chatId, idMessage }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!r.ok) return null;
+      const data = (await r.json().catch(() => ({}))) as { downloadUrl?: unknown };
+      return typeof data.downloadUrl === "string" && data.downloadUrl.startsWith("https://") ? data.downloadUrl : null;
+    } catch {
+      // обрыв сети — одна повторная попытка
+    }
+  }
+  return null;
+}
+
 /** Сообщение, ждущее отправки в очереди провайдера. */
 export interface QueuedMessage {
   /** Идентификатор, который провайдер вернул при постановке (`idMessage`). */

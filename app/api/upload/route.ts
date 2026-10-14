@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getSessionOrNull } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
-import { saveFile, MAX_UPLOAD_BYTES } from "@/lib/media/store";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { saveStream, readParts, mediaRoot, MAX_UPLOAD_BYTES } from "@/lib/media/store";
+import { chunkPlan } from "@/lib/media/chunks";
 import { checkFile, humanSize, type SendChannel } from "@/lib/media/limits";
 
 /**
@@ -39,10 +42,47 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Файл не дошёл целиком — попробуйте ещё раз" }, { status: 400 });
   }
 
-  const file = form.get("file");
   const channel = String(form.get("channel") ?? "") as SendChannel;
-  if (!(file instanceof File)) {
-    return NextResponse.json({ error: "Файл не выбран" }, { status: 400 });
+  /**
+   * Файл приходит ЧАСТЯМИ (`chunk`, `uploadId`, `index`, `total`).
+   *
+   * nginx по умолчанию принимает тело запроса до 1 МБ, а в нашем конфиге
+   * предел не поднят: фото с телефона (2–5 МБ) получало 413 HTML-страницей, и
+   * поле ввода писало «проверьте связь». Части по 512 КБ проходят при любом
+   * пределе, а обрыв на одной из них повторяется без повтора всего файла.
+   * Целый файл одним запросом по-прежнему принимается.
+   */
+  const chunked = form.get("chunk");
+  let file: { name: string; type: string; size: number; bytes: () => Promise<ArrayBuffer> };
+  let assembled: string[] | null = null;
+  if (chunked instanceof File) {
+    const plan = chunkPlan({
+      uploadId: String(form.get("uploadId") ?? ""),
+      index: Number(form.get("index")),
+      total: Number(form.get("total")),
+      size: Number(form.get("size")),
+      chunkBytes: chunked.size,
+    });
+    if (!plan.ok) return NextResponse.json({ error: plan.error }, { status: 400 });
+    const dir = path.join(/*turbopackIgnore: true*/ mediaRoot(), "uploads", `${session.userId ?? "anon"}-${plan.uploadId}`);
+    await mkdir(/*turbopackIgnore: true*/ dir, { recursive: true });
+    await writeFile(/*turbopackIgnore: true*/ path.join(dir, String(plan.index).padStart(5, "0")), Buffer.from(await chunked.arrayBuffer()));
+    const have = (await readdir(/*turbopackIgnore: true*/ dir)).filter((n) => /^\d{5}$/.test(n)).sort();
+    if (have.length < plan.total) return NextResponse.json({ received: have.length, total: plan.total });
+    assembled = have.map((n) => path.join(dir, n));
+    file = {
+      name: String(form.get("name") ?? "файл"),
+      type: String(form.get("type") ?? ""),
+      size: plan.size,
+      bytes: async () => new ArrayBuffer(0),
+    };
+    void cleanupOld(path.join(/*turbopackIgnore: true*/ mediaRoot(), "uploads"));
+  } else {
+    const whole = form.get("file");
+    if (!(whole instanceof File)) {
+      return NextResponse.json({ error: "Файл не выбран" }, { status: 400 });
+    }
+    file = { name: whole.name, type: whole.type, size: whole.size, bytes: () => whole.arrayBuffer() };
   }
   if (channel !== "WHATSAPP" && channel !== "TELEGRAM" && channel !== "INSTAGRAM") {
     return NextResponse.json({ error: "Неизвестный канал" }, { status: 400 });
@@ -72,7 +112,12 @@ export async function POST(req: Request) {
 
   let stored;
   try {
-    stored = await saveFile(Buffer.from(await file.arrayBuffer()));
+    stored = assembled
+      ? await saveStream(readParts(assembled))
+      : await saveStream((async function* () {
+          yield new Uint8Array(await file.bytes());
+        })());
+    if (assembled) await rm(/*turbopackIgnore: true*/ path.dirname(assembled[0]), { recursive: true, force: true });
   } catch (e) {
     console.error(`[вложение] не сохранилось: ${(e as Error).message}`);
     return NextResponse.json({ error: "Файл не сохранился на сервере" }, { status: 500 });
@@ -97,4 +142,17 @@ export async function POST(req: Request) {
     // Тот же адрес, что у вложений пациента: проверка входа и клиники там же.
     href: `/api/media?provider=LOCAL&ref=${encodeURIComponent(row.id)}`,
   });
+}
+
+/** Брошенные загрузки старше часа — убрать: обрыв не должен копить мусор на диске. */
+async function cleanupOld(root: string): Promise<void> {
+  try {
+    for (const name of await readdir(/*turbopackIgnore: true*/ root)) {
+      const p = path.join(root, name);
+      const st = await stat(/*turbopackIgnore: true*/ p);
+      if (Date.now() - st.mtimeMs > 3600_000) await rm(/*turbopackIgnore: true*/ p, { recursive: true, force: true });
+    }
+  } catch {
+    // не к спеху
+  }
 }

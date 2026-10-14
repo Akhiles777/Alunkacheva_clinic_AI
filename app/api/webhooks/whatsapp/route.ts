@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
+import { cacheMessageAttachments } from "@/lib/media/remote-cache";
 import { deliveryPatch, stageOf } from "@/lib/integrations/delivery";
 import { LATE_PREFIX, LATE_REASON, lateKeptReason, shouldRetract } from "@/lib/integrations/whatsapp/late-delivery";
 import { prisma } from "@/lib/db";
@@ -169,6 +170,25 @@ export async function POST(req: Request) {
      */
     return NextResponse.json({ ok: true, kind: event.kind });
   }
+  /**
+   * Файлы сообщения — к себе, после ответа провайдеру.
+   *
+   * Ссылка Green API живёт ограниченное время, и вложения, которые хранились
+   * только ссылкой, через какое-то время переставали открываться. Вебхук
+   * отвечает сразу (иначе провайдер пришлёт событие ещё раз), а файл
+   * сохраняется следом (`after`): сообщение к этому моменту уже в базе.
+   */
+  if (event.attachments.some((a) => a.source.provider === "WHATSAPP")) {
+    const externalId = event.externalId;
+    after(async () => {
+      const saved = await prisma.message.findFirst({
+        where: { channel: "WHATSAPP", externalId },
+        select: { id: true },
+      });
+      if (saved) await cacheMessageAttachments(saved.id).catch((e) => console.error("[вложение] не сохранилось:", (e as Error).message));
+    });
+  }
+
 
   /**
    * Чью клинику касается сообщение.

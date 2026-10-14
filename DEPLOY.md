@@ -561,6 +561,11 @@ server {
     listen 443 ssl;
     # ssl_certificate / ssl_certificate_key — ваши
 
+    # Файлы пациентам (фото, видео, документы). По умолчанию nginx принимает
+    # тело запроса до 1 МБ, и фото с телефона получало 413. Платформа грузит
+    # файлы частями по 512 КБ и работает и без этой строки, но с ней — быстрее.
+    client_max_body_size 40m;
+
     location / {
         proxy_pass http://127.0.0.1:3001;   # тот же порт, что PORT в .env
         proxy_http_version 1.1;

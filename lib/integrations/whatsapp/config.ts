@@ -57,6 +57,8 @@ export const ENDPOINTS = {
    * Времени постановки в очередь у элементов нет, а очистить можно только всю
    * очередь целиком (`lib/server/whatsapp-queue-watch.ts`).
    */
+  /** Свежая ссылка на файл сообщения: прежняя из вебхука живёт ограниченное время. */
+  downloadFile: (id: string, token: string) => `/waInstance${id}/downloadFile/${token}`,
   showMessagesQueue: (id: string, token: string) => `/waInstance${id}/showMessagesQueue/${token}`,
   clearMessagesQueue: (id: string, token: string) => `/waInstance${id}/clearMessagesQueue/${token}`,
   /**

@@ -68,20 +68,46 @@ import { PatientCardBody } from "../_components/patient-card";
  * кого поломка: у него, у нас или у пациента. Показываем ссылку словами —
  * файл чаще всего открывается по ней, а если нет, то ясно, что делать.
  */
+/**
+ * Почему файл не открылся — словами сервера.
+ *
+ * Браузер на ошибку загрузки картинки или видео не говорит ничего, а сервер
+ * знает причину: ссылка WhatsApp истекла и файла у провайдера больше нет,
+ * провайдер сейчас недоступен, сессия закончилась. Спрашиваем тот же адрес ещё
+ * раз и показываем его ответ — администратор понимает, просить ли пациента
+ * прислать файл снова или просто подождать.
+ */
+function MediaFailed({ href, what }: { href: string; what: string }) {
+  const [reason, setReason] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void fetch(href, { headers: { Range: "bytes=0-0" } })
+      .then(async (r) => {
+        const json = (r.headers.get("content-type") ?? "").includes("application/json")
+          ? ((await r.json()) as { error?: string })
+          : null;
+        if (alive) setReason(r.ok ? null : (json?.error ?? null));
+      })
+      .catch(() => {
+        if (alive) setReason("нет связи с платформой");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [href]);
+  return (
+    <div className="border-border text-text-muted text-2xs rounded-md border border-dashed px-2 py-1.5">
+      {what} не открылось{reason ? ` — ${reason[0].toLowerCase()}${reason.slice(1)}` : ""}.{" "}
+      <a href={href} target="_blank" rel="noreferrer" className="text-accent-text underline decoration-dotted">
+        Попробовать открыть
+      </a>
+    </div>
+  );
+}
+
 function Photo({ href, label }: { href: string; label: string }) {
   const [broken, setBroken] = useState(false);
-  if (broken) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        className="text-accent-text text-2xs underline decoration-dotted"
-      >
-        Фотография не открылась — скачать файл
-      </a>
-    );
-  }
+  if (broken) return <MediaFailed href={href} what="Фото" />;
   return (
     <a href={href} target="_blank" rel="noreferrer">
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -96,6 +122,19 @@ function Photo({ href, label }: { href: string; label: string }) {
   );
 }
 
+function Video({ href }: { href: string }) {
+  const [broken, setBroken] = useState(false);
+  if (broken) return <MediaFailed href={href} what="Видео" />;
+  // metadata, а не none: без первых байт браузер не покажет ни длительность, ни кадр.
+  return <video controls preload="metadata" src={href} onError={() => setBroken(true)} className="max-h-56 w-full rounded-lg" />;
+}
+
+function Audio({ href }: { href: string }) {
+  const [broken, setBroken] = useState(false);
+  if (broken) return <MediaFailed href={href} what="Голосовое" />;
+  return <audio controls preload="metadata" src={href} onError={() => setBroken(true)} className="w-full max-w-[260px]" />;
+}
+
 function Attachment({ a }: { a: DialogAttachmentRecord }) {
   // Файла нет — геопозиция или контакт. Осталась подпись, и это правильно:
   // пустое место выглядело бы как несработавшая загрузка.
@@ -106,7 +145,7 @@ function Attachment({ a }: { a: DialogAttachmentRecord }) {
   if (a.kind === "voice" || a.kind === "audio") {
     return (
       <div>
-        <audio controls preload="metadata" src={a.href} className="w-full max-w-[260px]" />
+        <Audio href={a.href} />
         <div className="flex items-baseline gap-2">
           {a.durationSec ? (
             <span className="text-text-subtle num text-2xs">{formatDuration(a.durationSec)}</span>
@@ -135,7 +174,7 @@ function Attachment({ a }: { a: DialogAttachmentRecord }) {
   }
 
   if (a.kind === "video") {
-    return <video controls preload="none" src={a.href} className="max-h-56 w-full rounded-lg" />;
+    return <Video href={a.href} />;
   }
 
   return (

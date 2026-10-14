@@ -7,6 +7,7 @@ import { previewTemplateDb } from "./actions";
 import { draftWarningsAction } from "./assistant-actions";
 import type { DraftWarning } from "@/lib/agent/draft-warnings";
 import { noteUse } from "../_components/usage-actions";
+import { sliceFile, uploadErrorText } from "@/lib/media/chunks";
 
 /**
  * Поле ввода администратора: текст, файлы, голосовое.
@@ -50,6 +51,8 @@ export interface ComposerProps {
 interface Picked extends OutgoingAttachment {
   /** Пока файл грузится, показываем его же, но серым и без «Отправить». */
   uploading?: boolean;
+  /** Доля загруженного, 0…1 — видно, что большой файл идёт, а не завис. */
+  progress?: number;
 }
 
 /** Часто используемые — не библиотека на полмегабайта ради десяти значков. */
@@ -149,19 +152,11 @@ export function Composer({
       };
       setFiles((prev) => [...prev, temp]);
 
-      const form = new FormData();
-      form.append("file", file);
-      form.append("channel", channel);
       try {
-        const res = await fetch("/api/upload", { method: "POST", body: form });
-        const data = (await res.json()) as {
-          id?: string;
-          kind?: string;
-          fileName?: string | null;
-          href?: string;
-          durationSec?: number | null;
-          error?: string;
-        };
+        const data = await uploadInParts(file, channel, (share) =>
+          setFiles((prev) => prev.map((f) => (f.mediaId === temp.mediaId ? { ...f, progress: share } : f))),
+        );
+        const res = { ok: !data.error };
         if (!res.ok || !data.id || !data.href) {
           setFiles((prev) => prev.filter((f) => f.mediaId !== temp.mediaId));
           setError(data.error ?? "Файл не загрузился");
@@ -183,7 +178,7 @@ export function Composer({
         );
       } catch {
         setFiles((prev) => prev.filter((f) => f.mediaId !== temp.mediaId));
-        setError("Файл не дошёл до сервера — проверьте связь и попробуйте ещё раз");
+        setError("Связь оборвалась три раза подряд — файл не загрузился. Проверьте интернет и прикрепите ещё раз");
       }
     }
   }
@@ -360,7 +355,9 @@ export function Composer({
               )}
               <span className="max-w-[160px] truncate text-xs">{f.label}</span>
               {f.uploading ? (
-                <span className="text-text-subtle text-2xs">загружается…</span>
+                <span className="text-text-subtle text-2xs num">
+                  {f.progress !== undefined && f.progress < 1 ? `загружается ${Math.round(f.progress * 100)}%` : "загружается…"}
+                </span>
               ) : (
                 <button
                   type="button"
@@ -737,4 +734,56 @@ function VoiceButton({
       )}
     </button>
   );
+}
+
+interface UploadResult {
+  id?: string;
+  kind?: string;
+  fileName?: string | null;
+  href?: string;
+  durationSec?: number | null;
+  error?: string;
+}
+
+/**
+ * Загрузить файл частями (`lib/media/chunks`).
+ *
+ * Части по 512 КБ проходят через nginx при любом пределе размера запроса, а
+ * обрыв повторяет одну часть, а не весь файл: до трёх попыток с паузой.
+ * Ответ не в JSON (страница ошибки nginx) объясняется словами, а не
+ * «проверьте связь».
+ */
+async function uploadInParts(file: File, channel: string, onProgress: (share: number) => void): Promise<UploadResult> {
+  const parts = sliceFile(file.size);
+  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  let last: UploadResult = {};
+  for (const [index, part] of parts.entries()) {
+    const form = new FormData();
+    form.append("chunk", file.slice(part.start, part.end), "part");
+    form.append("uploadId", uploadId);
+    form.append("index", String(index));
+    form.append("total", String(parts.length));
+    form.append("size", String(file.size));
+    form.append("name", file.name || "файл");
+    form.append("type", file.type || "");
+    form.append("channel", channel);
+    let attempt = 0;
+    for (;;) {
+      try {
+        const res = await fetch("/api/upload", { method: "POST", body: form });
+        const json = (res.headers.get("content-type") ?? "").includes("application/json")
+          ? ((await res.json()) as UploadResult)
+          : null;
+        if (!res.ok) return { error: json?.error ?? uploadErrorText(res.status) };
+        last = json ?? {};
+        break;
+      } catch (e) {
+        attempt += 1;
+        if (attempt >= 3) throw e;
+        await new Promise((r) => setTimeout(r, 800 * attempt));
+      }
+    }
+    onProgress((index + 1) / parts.length);
+  }
+  return last.id ? last : { error: last.error ?? "Файл не загрузился" };
 }
