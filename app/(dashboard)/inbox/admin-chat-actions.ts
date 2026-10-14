@@ -1,12 +1,15 @@
 "use server";
 
 import crypto from "node:crypto";
+import { after } from "next/server";
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/server/session";
 import { can } from "@/lib/server/authz";
 import { writeAudit } from "@/lib/server/audit";
 import { requireId } from "@/lib/server/require-id";
 import { answerAdmin, planBroadcast, type BroadcastPlan } from "@/lib/server/admin-assistant";
+import { LARGE_BROADCAST, type PlanAudience } from "@/lib/assistant/admin-intents";
+import { memoryFrom, nextMemory } from "@/lib/assistant/admin-memory";
 import { startDialogDb } from "./actions";
 import { scheduleDialogTask } from "./dialog-actions";
 
@@ -110,24 +113,56 @@ export async function askAdmin(question: string): Promise<AdminChatTurn> {
   const text = question.trim().slice(0, 2000);
   if (!text) return { role: "assistant", text: "Напишите вопрос — отвечу по данным клиники." };
 
+  /**
+   * Память разговора — из последнего ответа ассистента: о ком шла речь и какой
+   * список показан. «А ей напиши» без неё не значит ничего.
+   */
+  const chatId = await chatFor(companyId, userId);
+  const lastAnswer = await prisma.aiChatMessage.findFirst({
+    where: { chatId, role: "ASSISTANT" },
+    orderBy: { createdAt: "desc" },
+    select: { meta: true },
+  });
+  const memory = memoryFrom(lastAnswer?.meta);
+
   const answer = await answerAdmin(text, {
     companyId,
     canSeeRevenue,
     canMessage,
     canViewOthers,
     ownStaffId,
+    memory,
   });
+  const after_ = nextMemory(memory, answer.memory);
 
-  const chatId = await chatFor(companyId, userId);
   await prisma.$transaction([
     prisma.aiChatMessage.createMany({
       data: [
         { chatId, role: "USER", text },
-        { chatId, role: "ASSISTANT", text: answer.text },
+        { chatId, role: "ASSISTANT", text: answer.text, meta: after_ as unknown as object },
       ],
     }),
     prisma.aiChat.update({ where: { id: chatId }, data: { lastMessageAt: new Date() } }),
   ]);
+
+  /**
+   * Каждый вопрос ассистенту — в журнал аудита (ТЗ 4B.8): кто, о каком
+   * пациенте, что спросил. Журнал живёт в нашей базе в РФ; наружу вопрос не
+   * уходит — ассистент отвечает кодом, без внешней модели.
+   */
+  await writeAudit({
+    companyId,
+    actorId: userId,
+    action: "PATIENT_VIEW",
+    entityType: "admin_assistant",
+    entityId: after_.focus,
+    meta: {
+      question: text.slice(0, 300),
+      patientId: after_.focus,
+      candidates: after_.candidates.map((c) => c.id),
+      plan: answer.plan ? { kind: answer.plan.kind, recipients: answer.plan.targets.length } : null,
+    },
+  }).catch(() => {});
 
   return { role: "assistant", text: answer.text, plan: answer.plan };
 }
@@ -204,6 +239,10 @@ export async function confirmBroadcast(input: {
   patientId?: string | null;
   /** Когда отправить; пусто — сразу. Исполняет отложенное сервер (`DialogTask`). */
   sendAtIso?: string | null;
+  /** Условие рассылки, если не «записанным на день»: список пересчитается по нему. */
+  audience?: PlanAudience | null;
+  /** Больше LARGE_BROADCAST получателей — администратор подтвердил отдельно. */
+  largeConfirmed?: boolean;
 }): Promise<BroadcastResult> {
   const { companyId, userId, canMessage, canSeeRevenue } = await chatSession();
   if (!canMessage) {
@@ -234,7 +273,13 @@ export async function confirmBroadcast(input: {
 
   const plan = await planBroadcast(
     { companyId, canSeeRevenue, canMessage },
-    { dayIso: input.dayIso, staffId: input.staffId, serviceId: input.serviceId, text: body },
+    {
+      dayIso: input.dayIso,
+      staffId: input.staffId,
+      serviceId: input.serviceId,
+      text: body,
+      audience: input.audience ?? null,
+    },
   );
 
   const skipped = plan.targets
@@ -259,6 +304,20 @@ export async function confirmBroadcast(input: {
     plan.targets.filter((t) => t.blocked === null && !got.has(t.patientId)).length - willSend.length;
 
   /**
+   * Больше LARGE_BROADCAST получателей — только со вторым подтверждением.
+   * Проверяем на сервере по ПЕРЕСЧИТАННОМУ списку: экран мог показать 28, а к
+   * нажатию записались ещё пятеро.
+   */
+  if (willSend.length > LARGE_BROADCAST && !input.largeConfirmed) {
+    return {
+      sent: 0,
+      failed: [],
+      skipped,
+      text: `Получателей ${willSend.length} — больше ${LARGE_BROADCAST}. Нужно отдельное подтверждение: отметьте его под списком и отправьте ещё раз. Ничего не отправлено.`,
+    };
+  }
+
+  /**
    * Отложенная рассылка: каждому — своя задача в его переписке, её исполнит
    * круг выгрузки (§5). Тем, с кем переписки ещё нет, отложить нельзя: задача
    * живёт на диалоге, а диалог заводится только отправкой. Такие получатели
@@ -268,9 +327,50 @@ export async function confirmBroadcast(input: {
     return scheduleForAll({ companyId, userId }, willSend, body, input.sendAtIso, skipped, overflow);
   }
 
+  /**
+   * Рассылка уходит в фоне и с паузой между сообщениями: Green API банит номера
+   * за всплески, а шестьдесят сообщений залпом — это всплеск. Ответ экрану —
+   * сразу: «начал, итог появится здесь»; итог пишется в этот же чат.
+   */
+  const chatId = await chatFor(companyId, userId);
+  const startedText =
+    `Начал отправку: ${willSend.length} ${willSend.length === 1 ? "сообщение" : "сообщений"}, по одному с паузой в несколько секунд. ` +
+    "Итог — кому ушло, кому нет и почему — появится здесь, когда закончу." +
+    (skipped.length > 0 ? `\nПропущено ${skipped.length}: ${skipped.map((x) => `${x.name} — ${x.reason}`).join("; ")}` : "") +
+    (overflow > 0 ? `\nЕщё ${overflow} осталось за пределом одной рассылки (${MAX_RECIPIENTS}).` : "");
+  await prisma.$transaction([
+    prisma.aiChatMessage.create({ data: { chatId, role: "ASSISTANT", text: startedText } }),
+    prisma.aiChat.update({ where: { id: chatId }, data: { lastMessageAt: new Date() } }),
+  ]);
+
+  after(() =>
+    sendThrottled({ companyId, userId, chatId }, willSend, body, plan, skipped, overflow).catch((e) =>
+      console.error(`[рассылка] оборвалась: ${(e as Error)?.message ?? e}`),
+    ),
+  );
+
+  return { sent: 0, failed: [], skipped, text: startedText };
+}
+
+/** Пауза между сообщениями рассылки: 3–5 секунд, не ровный такт. */
+async function pauseBetweenSends(): Promise<void> {
+  const ms = 3000 + Math.floor(Math.random() * 2000);
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+async function sendThrottled(
+  who: { companyId: string; userId: string; chatId: string },
+  willSend: { patientId: string; name: string }[],
+  body: string,
+  plan: BroadcastPlan,
+  skipped: { name: string; reason: string }[],
+  overflow: number,
+): Promise<void> {
   const failed: { name: string; reason: string }[] = [];
+  const results: { patientId: string; ok: boolean; reason: string | null }[] = [];
   let sent = 0;
-  for (const target of willSend) {
+  for (const [i, target] of willSend.entries()) {
+    if (i > 0) await pauseBetweenSends();
     /**
      * Отправляем тем же путём, что и «Написать» вручную: он находит
      * существующую переписку, заводит новую с настоящим адресом чата, отвечает
@@ -290,6 +390,7 @@ export async function confirmBroadcast(input: {
     }));
     if (res.ok) sent += 1;
     else failed.push({ name: target.name, reason: res.error ?? "не ушло" });
+    results.push({ patientId: target.patientId, ok: res.ok, reason: res.ok ? null : (res.error ?? "не ушло") });
   }
 
   /**
@@ -297,17 +398,21 @@ export async function confirmBroadcast(input: {
    * строка журнала на всю рассылку; каждое сообщение и так лежит в переписке.
    */
   await writeAudit({
-    companyId,
-    actorId: userId,
+    companyId: who.companyId,
+    actorId: who.userId,
     action: "MESSAGE_SEND",
     entityType: "broadcast",
     entityId: plan.dayIso,
     meta: {
       staffId: plan.staffId,
       serviceId: plan.serviceId,
+      audience: plan.audience ?? null,
       recipients: willSend.length,
       sent,
       failed: failed.length,
+      // Журнал рассылки по каждому: кому ушло, кому нет и почему (ТЗ 4B.5).
+      results,
+      skipped: skipped.length,
     },
   }).catch(() => {
     // Журнал не должен мешать отправке: сообщения уже ушли.
@@ -336,14 +441,11 @@ export async function confirmBroadcast(input: {
     );
   }
 
-  const chatId = await chatFor(companyId, userId);
   const report = lines.join("\n");
   await prisma.$transaction([
-    prisma.aiChatMessage.create({ data: { chatId, role: "ASSISTANT", text: report } }),
-    prisma.aiChat.update({ where: { id: chatId }, data: { lastMessageAt: new Date() } }),
+    prisma.aiChatMessage.create({ data: { chatId: who.chatId, role: "ASSISTANT", text: report } }),
+    prisma.aiChat.update({ where: { id: who.chatId }, data: { lastMessageAt: new Date() } }),
   ]);
-
-  return { sent, failed, skipped, text: report };
 }
 
 /**

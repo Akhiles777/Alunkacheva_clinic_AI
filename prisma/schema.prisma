@@ -1502,6 +1502,10 @@ model AiChatMessage {
   chatId String
   role   AiChatRole
   text   String
+  /// Память разговора ассистента администратора: о ком шла речь и какой
+  /// список показан («а ей тоже», «второй»). Только идентификаторы — имена и
+  /// телефоны здесь не хранятся, их берём из базы.
+  meta   Json?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 

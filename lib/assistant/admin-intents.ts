@@ -81,7 +81,42 @@ export type AdminIntent =
       delayText: string | null;
       /** Когда отправить; пусто — сейчас. */
       sendAtIso: string | null;
+      /**
+       * Кому: записанным на день, тем, кто на курсе, от школы, кто был за
+       * период — или «всем» без условия. Последнее не рассылается никогда.
+       */
+      audience: BroadcastAudience;
+      /** Название школы, как его написали. */
+      schoolText: string | null;
+      /** Период «кто был»: «в сентябре», «на прошлой неделе». */
+      period: "last_week" | "this_week" | "last_month" | "this_month" | "month" | null;
+      /** Месяц для «в сентябре» (0–11). */
+      month: number | null;
     }
+  /**
+   * «Зачем агент ей это написал?» — основание ответа пациентского агента из
+   * журнала попыток (`AgentRun`): что спросил пациент, какие записи справочника
+   * легли в ответ. Нет записи в журнале — «не знаю», а не придуманная причина.
+   */
+  | { kind: "explain"; name: string | null }
+  /**
+   * Найти пациентов: по имени или его части, по любому из телефонов, по
+   * услуге, врачу, периоду, курсу. Несколько — список, выбирает администратор.
+   */
+  | {
+      kind: "find";
+      name: string | null;
+      phoneDigits: string | null;
+      staffId: string | null;
+      serviceId: string | null;
+      course: boolean;
+      period: "last_week" | "this_week" | "last_month" | "this_month" | null;
+      date: DateRef | null;
+    }
+  /** Медицинский вопрос — не к ассистенту (§6, правило 1). */
+  | { kind: "medical_refusal" }
+  /** Второго ребёнка к школе добавляет только администратор — руками (ТЗ 3.4). */
+  | { kind: "child_refusal" }
   /** Разобрать не удалось: покажем, что умеем. */
   | { kind: "unknown" };
 
@@ -262,7 +297,55 @@ export function broadcastText(question: string): string {
   return "";
 }
 
-const ASKS_BROADCAST =
+export type BroadcastAudience = "booked" | "course" | "school" | "visited" | "none";
+
+/** Период словами: «на прошлой неделе», «в этом месяце». */
+export function periodWord(low: string): "last_week" | "this_week" | "last_month" | "this_month" | null {
+  if (/прошл\p{L}*\s+недел/iu.test(low)) return "last_week";
+  if (/(?:эт\p{L}*|текущ\p{L}*)\s+недел/iu.test(low)) return "this_week";
+  if (/прошл\p{L}*\s+месяц/iu.test(low)) return "last_month";
+  if (/(?:эт\p{L}*|текущ\p{L}*)\s+месяц/iu.test(low)) return "this_month";
+  return null;
+}
+
+/** Месяц, названный в вопросе: «в сентябре» → 8. */
+export function monthWord(low: string): number | null {
+  for (const [re, m] of MONTHS) if (new RegExp(`(?<!\\p{L})(?:в|за)\\s+${re.source}`, "iu").test(low)) return m;
+  return null;
+}
+
+/**
+ * Кому рассылка. Без условия («напиши всем пациентам») — `none`: такую
+ * рассылку не готовим вовсе, нужен критерий — запись, курс, школа, период.
+ */
+export function audienceOf(low: string): BroadcastAudience {
+  if (/(?<!\p{L})школ\p{L}*/iu.test(low)) return "school";
+  if (/(?<!\p{L})курс\p{L}*/iu.test(low)) return "course";
+  if (/(?<!\p{L})(?:был\p{L}*|ходил\p{L}*|приходил\p{L}*|посещал\p{L}*)(?!\p{L})/iu.test(low)) return "visited";
+  if (/запис\p{L}*|(?<!\p{L})(?:сегодня|завтра|послезавтра)(?!\p{L})|\d{1,2}[.\s]+(?:\d{1,2}|[а-я]{3,})/iu.test(low)) return "booked";
+  return "none";
+}
+
+const EXPLAIN =
+  /(?<!\p{L})(?:зачем|почему|с\s+чего|на\s+каком\s+основании|откуда)(?!\p{L})[^?]{0,60}(?:написал\p{L}*|ответил\p{L}*|отправил\p{L}*|сказал\p{L}*|предложил\p{L}*|назвал\p{L}*|пишет|отвечает|взял\p{L}*)/iu;
+const FIND =
+  /^(?:а\s+)?(?:найди|найти|поищи|ищи|покажи\s+(?:пациент|карточк|всех)|кто\s+такая|кто\s+такой|чей\s+номер|чей\s+телефон)|(?<!\p{L})(?:все[хм]?|кто|у\s+кого)\s+(?:с|на)\s+(?:[\p{L}-]+\s+)?[\p{L}-]*курс/iu;
+const MEDICAL_ASK =
+  /(?<!\p{L})(?:противопоказ\p{L}*|симптом\p{L}*|диагноз\p{L}*|как\s+лечить|чем\s+лечить|лечени\p{L}*|дозировк\p{L}*|что\s+делать\s+(?:при|если)|температур\p{L}*|болит|болеть|можно\s+ли\s+(?:ребенку|ребёнку|при|беременн))/iu;
+const SECOND_CHILD =
+  /(?:втор\p{L}*|ещ[её]\s+одн\p{L}*|ещ[её])\s+(?:реб[её]н\p{L}*|дет\p{L}*|сын\p{L}*|доч\p{L}*)[^.?!]{0,60}(?:школ|акци|привяж|добав)|(?:привяж\p{L}*|добав\p{L}*)[^.?!]{0,40}(?:втор\p{L}*|ещ[её])\s+(?:реб[её]н\p{L}*|дет\p{L}*)/iu;
+
+/** Цифры телефона в вопросе: от четырёх подряд — иначе это время или сумма. */
+export function phoneDigitsIn(text: string): string | null {
+  const m = text.replace(/[\s()-]/g, "").match(/\+?\d{4,11}/);
+  if (!m) return null;
+  // «14:30», «5000 ₽» — не телефон.
+  if (/\d{1,2}:\d{2}/.test(text) && m[0].length <= 4) return null;
+  if (/₽|руб/i.test(text)) return null;
+  return m[0].replace(/^\+/, "");
+}
+
+export const ASKS_BROADCAST =
   /(?:отправ\p{L}*|напиш\p{L}*|разошл\p{L}*|рассыл\p{L}*|сообщ\p{L}*|предупред\p{L}*|оповест\p{L}*|напомн\p{L}*)/iu;
 
 /**
@@ -301,6 +384,29 @@ export function parseAdminQuestion(
   const date = dateFrom(low, now);
   const staff = staffIn(q, known.staff);
   const service = serviceIn(q, known.services);
+
+  /** Второго ребёнка к школе привязывает администратор сам, в карточке. */
+  if (SECOND_CHILD.test(low)) return { kind: "child_refusal" };
+
+  /** «Зачем агент ей это написал?» — раньше рассылки: «написал» там тоже есть. */
+  if (EXPLAIN.test(low)) return { kind: "explain", name: personName(q, known.staff) };
+
+  /** Медицинский вопрос — не к ассистенту, а к врачу. */
+  if (MEDICAL_ASK.test(low) && !ASKS_BROADCAST.test(low)) return { kind: "medical_refusal" };
+
+  // «Отправь всем на БОС-курсе» — рассылка, а не поиск.
+  if (FIND.test(low) && !ASKS_BROADCAST.test(low.split(":")[0])) {
+    return {
+      kind: "find",
+      name: personName(q, known.staff),
+      phoneDigits: phoneDigitsIn(q),
+      staffId: staff.one?.id ?? null,
+      serviceId: service?.id ?? null,
+      course: /(?<!\p{L})курс\p{L}*/iu.test(low),
+      period: periodWord(low),
+      date: /(?<!\p{L})(?:сегодня|завтра|вчера|послезавтра)(?!\p{L})|\d{1,2}\s+[а-яё]{3,}|\d{1,2}\.\d{1,2}/iu.test(low) ? date : null,
+    };
+  }
 
   /**
    * Сообщение ОДНОМУ пациенту: «через 5 часов напиши Патимат, что врач
@@ -341,10 +447,16 @@ export function parseAdminQuestion(
    * записанным к Ирине сегодня». Без адресата рассылки не бывает — это уже
    * просто сообщение, и его отправляют из переписки.
    */
-  if (ASKS_BROADCAST.test(low) && /(?:всем|запис\p{L}*|пациент\p{L}*)/iu.test(low)) {
+  if (ASKS_BROADCAST.test(low) && /(?:всем|всех|запис\p{L}*|пациент\p{L}*)/iu.test(low)) {
     const sendAt = sendAtFrom(q, now);
+    const audience = audienceOf(low.split(":")[0]);
+    const school = /(?<!\p{L})школ\p{L}*\s+([^:]+?)(?:\s*:|$)/iu.exec(q.split(":")[0] + ":");
     return {
       kind: "broadcast",
+      audience,
+      schoolText: school ? school[1].trim() : null,
+      period: monthWord(low) !== null ? "month" : periodWord(low),
+      month: monthWord(low),
       date,
       staffId: staff.one?.id ?? null,
       serviceId: service?.id ?? null,
@@ -454,7 +566,7 @@ export function parseAdminQuestion(
  * «Сколько должна Магомедова?» — это Магомедова. Флаг `i` рядом с `\p{Lu}`
  * складывает регистры, поэтому регистр проверяем без него.
  */
-function personName(question: string, staff: KnownStaff[]): string | null {
+export function personName(question: string, staff: KnownStaff[]): string | null {
   /**
    * Разделители включают двоеточие и кавычки: «напиши Алиевой: Мы вас ждём» —
    * без этого «Алиевой:» оставалось одним словом и именем не считалось, а
@@ -485,6 +597,8 @@ export interface BroadcastTarget {
   when: string;
   /** Почему сообщение не уйдёт: нет номера, Instagram, тренировочная переписка. */
   blocked: string | null;
+  /** Телефон и канал — администратор видит, что не перепутал адресата. */
+  contact?: string;
 }
 
 export interface BroadcastPlan {
@@ -505,12 +619,30 @@ export interface BroadcastPlan {
   sendAtIso: string | null;
   /** «сегодня в 17:40» — как момент отправки выглядит на экране. */
   sendAtLabel: string | null;
+  /**
+   * Кому, если не «записанным на день»: курс, школа, кто был за период. По
+   * этим условиям список пересчитывается при подтверждении — с экрана приходят
+   * только условия, не список.
+   */
+  audience?: PlanAudience | null;
+  /** Больше LARGE_BROADCAST получателей — нужно отдельное подтверждение. */
+  large?: boolean;
 }
+
+export type PlanAudience =
+  | { kind: "course"; serviceId: string | null; label: string }
+  | { kind: "school"; schoolId: string; label: string }
+  | { kind: "visited"; fromIso: string; toIso: string; serviceId: string | null; staffId: string | null; label: string };
+
+/** С какого числа получателей рассылка требует второго подтверждения. */
+export const LARGE_BROADCAST = 30;
 
 export interface AdminAnswer {
   text: string;
   /** Рассылка ждёт подтверждения: экран показывает список и две кнопки. */
   plan?: BroadcastPlan;
+  /** Что ответ меняет в памяти разговора (`admin-memory`). */
+  memory?: Partial<import("./admin-memory").AdminMemory>;
 }
 
 /** Что умеет ассистент — один список на все случаи: справка и «не понял». */
@@ -531,6 +663,10 @@ export const ADMIN_ABILITIES = [
   "сколько всего пациентов в базе",
   "письмо одному пациенту: «через 5 часов напиши Патимат, что врач задерживается» — с подтверждением",
   "рассылка записанным: «отправь всем, кто записан сегодня к Ирине: текст» — с подтверждением",
+  "рассылка по условию: «всем на БОС-курсе», «всем от школы Росток», «всем, кто был на остеопатии в сентябре» — без условия не рассылаю",
+  "найти пациента: «найди Диану с прошлой недели», по части телефона, «все с БОС-курсом» — из нескольких выбираете вы",
+  "помню, о ком речь: «вторая», «а ей напиши…», «нет, другой», «и Патимат тоже»",
+  "почему агент так ответил: «зачем агент ей это написал?» — по журналу ответов, без догадок",
   "готовые ситуации для письма: врач задерживается, заболел, приём переносится, напоминание, клиника не работает",
   "отложенная отправка: «через час», «в 18:00», «завтра утром»",
 ];

@@ -27,6 +27,7 @@ const HINTS = [
   "Кто записан завтра?",
   "Какие свободные окна сегодня?",
   "Кто не пришёл сегодня?",
+  "Найди пациентов на БОС-курсе",
 ];
 
 export function AssistantThread({ onBack }: { onBack: () => void }) {
@@ -37,6 +38,10 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
   /** План рассылки ждёт подтверждения: до нажатия не уходит ничего. */
   const [plan, setPlan] = useState<BroadcastPlan | null>(null);
   const [sending, setSending] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [largeConfirmed, setLargeConfirmed] = useState(false);
+  /** Когда началась фоновая рассылка: пока ждём её итога, чат перечитывается. */
+  const [waitReport, setWaitReport] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -54,6 +59,21 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
   }, []);
 
   useEffect(() => {
+    if (waitReport === null) return;
+    const t = setInterval(() => {
+      void getAdminChat()
+        .then((chat) => {
+          const last = chat.turns[chat.turns.length - 1];
+          setTurns(chat.turns);
+          // Итог пришёл — или ждём уже дольше десяти минут: перестаём.
+          if ((last && !/^Начал отправку/.test(last.text)) || Date.now() - waitReport > 10 * 60_000) setWaitReport(null);
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [waitReport]);
+
+  useEffect(() => {
     const box = listRef.current;
     if (box) box.scrollTo({ top: box.scrollHeight });
   }, [turns.length, plan, thinking]);
@@ -69,7 +89,11 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
     void askAdmin(text)
       .then((answer) => {
         setTurns((t) => [...t, answer]);
-        if (answer.plan) setPlan(answer.plan);
+        if (answer.plan) {
+          setPlan(answer.plan);
+          setEditing(false);
+          setLargeConfirmed(false);
+        }
       })
       .catch(() =>
         setTurns((t) => [
@@ -91,10 +115,14 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
       text: plan.text,
       patientId: plan.patientId,
       sendAtIso: plan.sendAtIso,
+      audience: plan.audience ?? null,
+      largeConfirmed,
     })
       .then((res) => {
         setTurns((t) => [...t, { role: "assistant", text: res.text }]);
         setPlan(null);
+        // Рассылка идёт в фоне с паузами — итог придёт в этот чат; ждём его.
+        if (/^Начал отправку/.test(res.text)) setWaitReport(Date.now());
       })
       .catch(() =>
         setTurns((t) => [
@@ -106,6 +134,8 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
   }
 
   const willSend = plan?.targets.filter((t) => t.blocked === null) ?? [];
+  // Больше 30 получателей — второе подтверждение, отдельной галочкой.
+  const needsLarge = Boolean(plan?.large);
   const blocked = plan?.targets.filter((t) => t.blocked !== null) ?? [];
 
   return (
@@ -178,9 +208,20 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
             <div className="text-text text-sm font-medium">
               {plan.kind === "one" ? "Проверьте сообщение" : "Проверьте рассылку"}
             </div>
-            <div className="border-border-soft bg-surface mt-2 rounded-md border px-3 py-2 text-sm whitespace-pre-wrap">
-              {plan.text}
-            </div>
+            {/* «Изменить» — правка текста до отправки: уйдёт ровно то, что в поле. */}
+            {editing ? (
+              <textarea
+                aria-label="Текст сообщения"
+                value={plan.text}
+                rows={4}
+                onChange={(e) => setPlan({ ...plan, text: e.target.value })}
+                className="border-border-input bg-surface mt-2 w-full rounded-md border px-3 py-2 text-sm"
+              />
+            ) : (
+              <div className="border-border-soft bg-surface mt-2 rounded-md border px-3 py-2 text-sm whitespace-pre-wrap">
+                {plan.text}
+              </div>
+            )}
             <div className="text-text-muted mt-2 text-xs">
               {/*
                 Имя врача после слова «Получатель» читалось как адресат:
@@ -189,7 +230,7 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
                 подписан отдельно.
               */}
               {plan.kind === "one"
-                ? `Получатель: ${plan.targets[0]?.name ?? "—"}`
+                ? `Получатель: ${plan.targets[0]?.name ?? "—"}${plan.targets[0]?.contact ? ` · ${plan.targets[0].contact}` : ""}`
                 : `Уйдёт ${willSend.length} ${willSend.length === 1 ? "пациенту" : "пациентам"}`}
               {plan.staffName ? ` · врач ${plan.staffName}` : ""} · {plan.dateLabel}
               {/*
@@ -204,6 +245,7 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
               {willSend.map((t) => (
                 <li key={t.patientId} className="text-text-muted text-xs">
                   • {t.name} — {t.when}
+                  {t.contact ? <span className="text-text-subtle"> · {t.contact}</span> : null}
                 </li>
               ))}
             </ul>
@@ -213,11 +255,25 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
                 {blocked.map((t) => `${t.name} (${t.blocked})`).join(", ")}
               </div>
             ) : null}
+            {needsLarge ? (
+              <label className="text-text mt-3 flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={largeConfirmed}
+                  onChange={(e) => setLargeConfirmed(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Получателей {willSend.length} — больше 30. Подтверждаю, что список проверен: сообщения уйдут по
+                  одному, с паузой в несколько секунд, итог появится здесь.
+                </span>
+              </label>
+            ) : null}
             <div className="mt-3 flex items-center gap-2">
               <button
                 type="button"
                 onClick={send}
-                disabled={sending || willSend.length === 0}
+                disabled={sending || willSend.length === 0 || !plan.text.trim() || (needsLarge && !largeConfirmed)}
                 className="bg-accent text-accent-contrast rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-45"
               >
                 {sending
@@ -229,6 +285,13 @@ export function AssistantThread({ onBack }: { onBack: () => void }) {
                     : plan.kind === "one"
                       ? "Отправить"
                       : `Отправить ${willSend.length}`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing((v) => !v)}
+                className="text-text-muted hover:text-text text-sm"
+              >
+                {editing ? "Готово" : "Изменить"}
               </button>
               <button
                 type="button"

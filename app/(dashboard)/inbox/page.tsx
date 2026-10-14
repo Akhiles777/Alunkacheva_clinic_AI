@@ -1422,7 +1422,7 @@ export default function InboxPage() {
       {helpOpen ? <Hotkeys onClose={() => setHelpOpen(false)} /> : null}
       <PatientOverlay />
       <div
-        className={`border-border flex w-[300px] flex-none flex-col border-r max-md:w-full ${selected ? "max-md:hidden" : ""}`}
+        className={`border-border flex w-[300px] flex-none flex-col border-r max-md:w-full ${selected || selectedId === ASSISTANT_ID ? "max-md:hidden" : ""}`}
       >
         <div className="border-border flex-none border-b px-4 py-3.5">
           <div className="flex items-center justify-between">

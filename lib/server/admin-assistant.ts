@@ -10,20 +10,28 @@ import {
   periodBounds,
   roomOccupancyBetween,
 } from "@/lib/server/analytics";
-import { composeMessage } from "@/lib/assistant/admin-compose";
+import { composeMessage, delayTextFrom, sendAtFrom, situationOf } from "@/lib/assistant/admin-compose";
+import { EMPTY_MEMORY, asksSameAgain, resolveRef, type AdminMemory } from "@/lib/assistant/admin-memory";
 import { visitTitle } from "@/lib/visit-title";
 import { answerAboutPatient, type AnswerFacts } from "@/lib/metrics/patient-answer";
 import { explainUnmarked, UNMARKED_LABEL, type KnownMove, type OtherBooking } from "@/lib/metrics/unmarked";
 import {
   ADMIN_ABILITIES,
+  ASKS_BROADCAST as ASKS_WRITE,
+  broadcastText,
+  dateFrom,
   parseAdminQuestion,
+  personName as personNameIn,
   staffIn,
   type AdminAnswer,
   type AdminIntent,
   type BroadcastPlan,
   type BroadcastTarget,
   type DateRef,
+  type PlanAudience,
+  LARGE_BROADCAST,
 } from "@/lib/assistant/admin-intents";
+import { matchSchool } from "@/lib/agent/promo";
 
 export type { AdminAnswer, BroadcastPlan, BroadcastTarget };
 
@@ -186,6 +194,8 @@ export interface AdminContext {
   canViewOthers?: boolean;
   /** Кто он в справочнике сотрудников — чтобы ограничить ответы его приёмами. */
   ownStaffId?: string | null;
+  /** Память разговора: о ком шла речь и какой список показан. */
+  memory?: AdminMemory;
   now?: Date;
 }
 
@@ -231,6 +241,93 @@ export async function answerAdmin(question: string, ctx: AdminContext): Promise<
     };
   }
   const mine = (id: string | null) => (limited ? (ctx.ownStaffId ?? null) : id);
+
+  /**
+   * Память разговора: «ей», «вторая», «нет, другой». Среди нескольких
+   * подходящих ассистент не выбирает сам — список и вопрос.
+   */
+  const memory = ctx.memory ?? EMPTY_MEMORY;
+  const ref = resolveRef(question, memory);
+  if (ref.kind === "choose") {
+    return chooseAmong(
+      ref.candidates.map((c) => ({ id: c.id, name: c.name })),
+      "Уточните, о ком речь",
+      "Ответьте номером из списка или фамилией — сам я не выбираю.",
+      memory.lastText,
+    );
+  }
+  const refId = ref.kind === "patient" ? ref.patientId : null;
+  const writes = ASKS_WRITE.test(question) && !/(?<!\p{L})(?:всем|всех|все)(?!\p{L})/iu.test(question);
+  const again = asksSameAgain(question) && memory.lastText ? memory.lastText : null;
+
+  /**
+   * Пациента назвали местоимением или выбрали из списка, а в самой реплике
+   * имени нет — действие относится к нему. «А ей напиши, что перенос на
+   * понедельник», «вторая», «нет, другой» (после письма — то же письмо ей).
+   */
+  if (refId && !personNameIn(question, staff)) {
+    if (intent.kind === "explain") return explainAnswer(ctx, refId, now);
+    const picked = ref.kind === "patient" && (ref.how === "other" || ref.how === "ordinal" || ref.how === "name");
+    // Выбрали адресата из списка, а письмо уже продиктовано — готовим его ему.
+    if (writes || (picked && (again || memory.lastText))) {
+      return messageOne(
+        ctx,
+        {
+          kind: "message_one",
+          name: "",
+          text: broadcastText(question) || again || memory.lastText || "",
+          situation: situationOf(question),
+          delayText: delayTextFrom(question),
+          sendAtIso: sendAtFrom(question, now)?.toISOString() ?? null,
+          date: dateFrom(question.toLowerCase(), now),
+          staffId: null,
+          serviceId: null,
+        },
+        now,
+        refId,
+      );
+    }
+    if (/телефон|номер|как\s+связаться/iu.test(question)) return limited ? { text: ONLY_OWN } : contacts(ctx, "", refId);
+    if (ref.kind === "patient" && (ref.how === "ordinal" || ref.how === "name" || ref.how === "other")) {
+      // Выбрали из списка без нового вопроса — справка по выбранному.
+      return patientAnswer(ctx, "", question, refId);
+    }
+    if (intent.kind === "unknown" || intent.kind === "patient") return patientAnswer(ctx, "", question, refId);
+  }
+
+  /**
+   * Просьба написать без адресата. «Отправь сразу, без подтверждения» — отказ:
+   * без подтверждения не уходит ничего, ни при какой формулировке.
+   */
+  if (writes && !refId && !personNameIn(question, staff) && intent.kind !== "broadcast") {
+    if (/сразу|без\s+подтвержд|не\s+спрашива/iu.test(question)) {
+      return {
+        text:
+          "Без подтверждения я не отправляю никогда — так устроено намеренно. Скажите, кому и что написать, " +
+          "я покажу адресата и текст, а отправит кнопка «Отправить».",
+      };
+    }
+    return { text: "Кому написать? Назовите пациента — имя или фамилию, — и что написать после двоеточия." };
+  }
+
+  /** «И Патимат тоже» — то же письмо другому адресату. */
+  if (intent.kind === "patient" && again) {
+    return messageOne(
+      ctx,
+      {
+        kind: "message_one",
+        name: intent.name,
+        text: again,
+        situation: null,
+        delayText: null,
+        sendAtIso: null,
+        date: dateFrom(question.toLowerCase(), now),
+        staffId: null,
+        serviceId: null,
+      },
+      now,
+    );
+  }
 
   /**
    * Врача назвали, но их двое с таким именем — переспрашиваем.
@@ -319,6 +416,36 @@ export async function answerAdmin(question: string, ctx: AdminContext): Promise<
 
     case "patient":
       return patientAnswer(ctx, intent.name, intent.question);
+
+    case "explain": {
+      if (!intent.name) {
+        return memory.focus
+          ? explainAnswer(ctx, memory.focus, now)
+          : { text: "О ком речь? Назовите пациента — подниму журнал ответов агента по его переписке." };
+      }
+      const found = await findPatients(ctx.companyId, intent.name);
+      if (found.length === 0) return { text: `Пациента «${intent.name}» в базе не нашёл.` };
+      if (found.length > 1) return chooseAmong(found, "Таких несколько");
+      return explainAnswer(ctx, found[0].id, now);
+    }
+
+    case "find":
+      return findAnswer(ctx, intent, now);
+
+    case "medical_refusal":
+      return {
+        text:
+          "На медицинские вопросы я не отвечаю своими словами — ни вам, ни пациенту. Если ответ клиники " +
+          "заведён в справочнике, агент отвечает им дословно; если нет — вопрос решает врач. " +
+          "Могу найти пациента или его визиты — скажите, кого.",
+      };
+
+    case "child_refusal":
+      return {
+        text:
+          "Второго ребёнка к школе я не привязываю — это решение администратора. В «Диалогах» откройте " +
+          "переписку: в строке акции «Ещё ребёнок» — система покажет, кто из семьи уже привязан, и спросит.",
+      };
 
 
     case "broadcast":
@@ -608,12 +735,13 @@ async function messageOne(
   ctx: AdminContext,
   intent: Extract<AdminIntent, { kind: "message_one" }>,
   now: Date,
+  refId: string | null = null,
 ): Promise<AdminAnswer> {
   if (!ctx.canMessage) {
     return { text: "Писать пациентам может сотрудник с таким правом — у вашей учётки его нет." };
   }
 
-  let found = await findPatients(ctx.companyId, intent.name);
+  let found = await findPatients(ctx.companyId, intent.name, refId);
   if (found.length === 0) {
     return {
       text: `Пациента «${intent.name}» в базе не нашёл. Проверьте написание — или откройте переписку и напишите оттуда.`,
@@ -632,11 +760,12 @@ async function messageOne(
     if (narrowed.length === 1) found = narrowed;
   }
   if (found.length > 1) {
-    return {
-      text:
-        `Таких пациентов несколько: ${found.map((p) => p.name ?? "без имени").join(", ")}. ` +
-        "Назовите фамилию с именем или скажите, к какому врачу и на какой день он записан.",
-    };
+    return chooseAmong(
+      found,
+      "Таких пациентов несколько",
+      "Ответьте номером из списка или фамилией — или скажите, к какому врачу и на какой день он записан.",
+      text0(intent),
+    );
   }
 
   const patient = found[0];
@@ -659,6 +788,7 @@ async function messageOne(
       : "";
   if (!text) {
     return {
+      memory: { focus: patient.id },
       text:
         `${patient.name ?? "Пациент"} — нашёл. Теперь скажите, что написать: ` +
         "или своими словами после двоеточия, или ситуацией — «врач задерживается», " +
@@ -666,29 +796,9 @@ async function messageOne(
     };
   }
 
-  const phone = await prisma.patientPhone.findFirst({
-    where: { companyId: ctx.companyId, patientId: patient.id },
-    orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
-    select: { phone: true },
-  });
-  const dialog = await prisma.conversation.findFirst({
-    where: {
-      companyId: ctx.companyId,
-      patientId: patient.id,
-      deletedAt: null,
-      NOT: { externalUserId: { startsWith: "local-" } },
-    },
-    orderBy: { lastMessageAt: "desc" },
-    select: { id: true, channel: true, isPractice: true },
-  });
-
-  const blocked = dialog?.isPractice
-    ? "тренировочная переписка — наружу не уходит"
-    : !dialog && !phone
-      ? "нет номера в карточке"
-      : dialog?.channel === "INSTAGRAM"
-        ? "Instagram: первым пишет пациент"
-        : null;
+  const delivery = (await deliveryOf(ctx.companyId, [patient.id], now)).get(patient.id)!;
+  const dialog = delivery.hasDialog;
+  const blocked = delivery.blocked;
 
   /**
    * Отложенную отправку исполняет сервер по переписке (`DialogTask`), значит
@@ -718,6 +828,7 @@ async function messageOne(
           name: patient.name ?? "Пациент",
           when,
           blocked,
+          contact: delivery.contact,
         },
       ],
       dayIso: clinicDateKey(day.start),
@@ -729,7 +840,86 @@ async function messageOne(
       sendAtIso: cannotSchedule ? null : (intent.sendAtIso ?? null),
       sendAtLabel: cannotSchedule || !scheduled ? null : whenLabel(scheduled),
     },
+    memory: { focus: patient.id, lastText: text },
   };
+}
+
+/**
+ * Куда уйдёт сообщение и уйдёт ли — для каждого получателя ДО отправки.
+ *
+ * Instagram: свободный текст Meta пропускает только в 24-часовом окне после
+ * сообщения пациента (§5). Открыто — пишем, закрыто — говорим словами заранее.
+ * У WhatsApp через Green API окна нет: там работает сессия номера клиники.
+ */
+export async function deliveryOf(
+  companyId: string,
+  patientIds: string[],
+  now: Date = new Date(),
+): Promise<Map<string, { contact: string; blocked: string | null; hasDialog: boolean }>> {
+  const out = new Map<string, { contact: string; blocked: string | null; hasDialog: boolean }>();
+  if (patientIds.length === 0) return out;
+  const [phones, dialogs] = await Promise.all([
+    prisma.patientPhone.findMany({
+      where: { companyId, patientId: { in: patientIds } },
+      orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+      select: { patientId: true, phone: true },
+    }),
+    prisma.conversation.findMany({
+      where: { companyId, patientId: { in: patientIds }, deletedAt: null, NOT: { externalUserId: { startsWith: "local-" } } },
+      orderBy: { lastMessageAt: "desc" },
+      select: {
+        patientId: true,
+        channel: true,
+        isPractice: true,
+        messages: { where: { direction: "IN" }, orderBy: { createdAt: "desc" }, take: 1, select: { createdAt: true } },
+      },
+    }),
+  ]);
+  for (const id of patientIds) {
+    const phone = phones.find((p) => p.patientId === id)?.phone ?? null;
+    const dialog = dialogs.find((d) => d.patientId === id) ?? null;
+    const channel = dialog ? CHANNEL_NAME[dialog.channel] ?? dialog.channel : phone ? "WhatsApp" : null;
+    const lastIn = dialog?.messages[0]?.createdAt ?? null;
+    const igOpen = lastIn !== null && now.getTime() - lastIn.getTime() < 24 * 3600_000;
+    const blocked = dialog?.isPractice
+      ? "тренировочная переписка — наружу не уходит"
+      : !dialog && !phone
+        ? "нет номера в карточке"
+        : dialog?.channel === "INSTAGRAM" && !igOpen
+          ? "Instagram: окно ответа 24 ч закрыто — свободный текст не уйдёт"
+          : null;
+    out.set(id, {
+      contact: [phone, channel].filter(Boolean).join(" · ") || "контактов нет",
+      blocked,
+      hasDialog: dialog !== null,
+    });
+  }
+  return out;
+}
+
+const CHANNEL_NAME: Record<string, string> = { WHATSAPP: "WhatsApp", INSTAGRAM: "Instagram", TELEGRAM: "Telegram" };
+
+/**
+ * Несколько подходящих — показываем нумерованный список и НИЧЕГО не делаем:
+ * выбирает администратор, номером или фамилией (`admin-memory`).
+ */
+function chooseAmong(
+  found: { id: string; name: string | null }[],
+  lead: string,
+  tail = "Ответьте номером из списка или фамилией.",
+  lastText: string | null = null,
+): AdminAnswer {
+  const list = found.slice(0, 15).map((p) => ({ id: p.id, name: p.name ?? "без имени" }));
+  return {
+    text: `${lead}:\n${list.map((p, i) => `${i + 1}. ${p.name}`).join("\n")}\n${tail}`,
+    // Текст письма живёт, только пока ждём выбора адресата для него.
+    memory: { focus: null, candidates: list, lastText },
+  };
+}
+
+/** Текст письма, если администратор его уже продиктовал: при уточнении адресата он не теряется. */
+function text0(intent: Extract<AdminIntent, { kind: "message_one" }>): string | null {
+  return intent.text || null;
 }
 
 /**
@@ -772,12 +962,10 @@ async function patientsTotal(ctx: AdminContext): Promise<AdminAnswer> {
 }
 
 /** Телефон и канал: то же, что видно в карточке. */
-async function contacts(ctx: AdminContext, name: string): Promise<AdminAnswer> {
-  const found = await findPatients(ctx.companyId, name);
+async function contacts(ctx: AdminContext, name: string, refId: string | null = null): Promise<AdminAnswer> {
+  const found = await findPatients(ctx.companyId, name, refId);
   if (found.length === 0) return { text: `Пациента «${name}» в базе не нашёл.` };
-  if (found.length > 1) {
-    return { text: `Таких несколько: ${found.map((p) => p.name ?? "без имени").join(", ")}. Назовите точнее.` };
-  }
+  if (found.length > 1) return chooseAmong(found, "Таких несколько");
   const [phones, dialog] = await Promise.all([
     prisma.patientPhone.findMany({
       where: { companyId: ctx.companyId, patientId: found[0].id },
@@ -791,9 +979,10 @@ async function contacts(ctx: AdminContext, name: string): Promise<AdminAnswer> {
     }),
   ]);
   if (phones.length === 0) {
-    return { text: `${found[0].name ?? "Пациент"}: номера в карточке нет.` };
+    return { text: `${found[0].name ?? "Пациент"}: номера в карточке нет.`, memory: { focus: found[0].id } };
   }
   return {
+    memory: { focus: found[0].id },
     text:
       `${found[0].name ?? "Пациент"}: ${phones.map((p) => p.phone + (p.usedForWhatsapp ? " (WhatsApp)" : "")).join(", ")}` +
       (dialog ? `. Переписка есть — канал ${dialog.channel === "INSTAGRAM" ? "Instagram" : "WhatsApp"}.` : ". Переписки пока нет."),
@@ -947,7 +1136,16 @@ async function newPatients(ctx: AdminContext, date: DateRef, now: Date): Promise
 async function findPatients(
   companyId: string,
   name: string,
+  /** Пациент из памяти разговора («ей», «вторая»): ищем его, а не по имени. */
+  refId: string | null = null,
 ): Promise<{ id: string; name: string | null }[]> {
+  if (refId) {
+    const one = await prisma.patient.findFirst({
+      where: { id: refId, companyId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+    return one ? [one] : [];
+  }
   const words = name
     .split(/\s+/)
     .map((w) => w.trim())
@@ -970,18 +1168,13 @@ async function patientAnswer(
   ctx: AdminContext,
   name: string,
   question: string,
+  refId: string | null = null,
 ): Promise<AdminAnswer> {
-  const found = await findPatients(ctx.companyId, name);
+  const found = await findPatients(ctx.companyId, name, refId);
   if (found.length === 0) {
     return { text: `Пациента «${name}» в базе не нашёл. Проверьте написание или откройте карточку.` };
   }
-  if (found.length > 1) {
-    return {
-      text:
-        `Таких несколько: ${found.map((p) => p.name ?? "без имени").join(", ")}. ` +
-        "Назовите точнее — фамилию с именем.",
-    };
-  }
+  if (found.length > 1) return chooseAmong(found, "Таких несколько");
   const patient = found[0];
 
   /**
@@ -1085,11 +1278,15 @@ async function patientAnswer(
     ];
     if (ctx.canSeeRevenue) parts.push(answerAboutPatient("должен ли что-то", facts).text);
     const summary = parts.join(" ");
-    return { text: `${patient.name ?? "Пациент"}: ${ctx.canSeeRevenue ? summary : hideMoney(summary)}` };
+    return {
+      text: `${patient.name ?? "Пациент"}: ${ctx.canSeeRevenue ? summary : hideMoney(summary)}`,
+      memory: { focus: patient.id },
+    };
   }
 
   return {
     text: `${patient.name ?? "Пациент"}: ${ctx.canSeeRevenue ? answer.text : hideMoney(answer.text)}`,
+    memory: { focus: patient.id },
   };
 }
 
@@ -1108,60 +1305,32 @@ export async function planBroadcast(
     serviceId: string | null;
     text: string;
     sendAtIso?: string | null;
+    audience?: PlanAudience | null;
   },
   now = new Date(),
 ): Promise<BroadcastPlan> {
+  if (input.audience) return planAudience(ctx, input.audience, input.text, input.sendAtIso ?? null, now);
   const day = dayOf({ offset: null, iso: input.dayIso, label: input.dayIso }, now);
   const appts = filtered(await apptsOfDay(ctx.companyId, day), input.staffId, input.serviceId)
     // Прошедшие приёмы не трогаем: предупреждать о переносе задним числом незачем.
     .filter((a) => a.status !== "NO_SHOW" && a.endAt > now);
 
   const patientIds = [...new Set(appts.map((a) => a.patientId).filter(Boolean))] as string[];
-  const [phones, dialogs] = await Promise.all([
-    patientIds.length
-      ? prisma.patientPhone.findMany({
-          where: { companyId: ctx.companyId, patientId: { in: patientIds } },
-          select: { patientId: true },
-        })
-      : Promise.resolve([]),
-    patientIds.length
-      ? prisma.conversation.findMany({
-          where: {
-            companyId: ctx.companyId,
-            patientId: { in: patientIds },
-            deletedAt: null,
-            NOT: { externalUserId: { startsWith: "local-" } },
-          },
-          select: { patientId: true, channel: true, isPractice: true },
-        })
-      : Promise.resolve([]),
-  ]);
-  const hasPhone = new Set(phones.map((p) => p.patientId));
-  const byPatient = new Map(dialogs.map((d) => [d.patientId, d]));
+  const delivery = await deliveryOf(ctx.companyId, patientIds, now);
 
   const seen = new Set<string>();
   const targets: BroadcastTarget[] = [];
   for (const a of appts) {
     if (!a.patientId || seen.has(a.patientId)) continue;
     seen.add(a.patientId);
-    const dialog = byPatient.get(a.patientId);
-    /**
-     * Почему не уйдёт — говорим заранее, а не после нажатия. Instagram:
-     * первым там пишет пациент, это ограничение Meta (§5). Тренировочная
-     * переписка наружу не уходит вовсе.
-     */
-    const blocked = dialog?.isPractice
-      ? "тренировочная переписка — наружу не уходит"
-      : !dialog && !hasPhone.has(a.patientId)
-        ? "нет номера в карточке"
-        : dialog?.channel === "INSTAGRAM"
-          ? "Instagram: первым пишет пациент"
-          : null;
+    // Почему не уйдёт — говорим заранее, а не после нажатия (`deliveryOf`).
+    const d = delivery.get(a.patientId)!;
     targets.push({
       patientId: a.patientId,
       name: a.patientName,
       when: `${TIME.format(a.startAt)} · ${a.title}${input.staffId ? "" : `, ${a.staffName}`}`,
-      blocked,
+      blocked: d.blocked,
+      contact: d.contact,
     });
   }
 
@@ -1183,6 +1352,75 @@ export async function planBroadcast(
     patientId: null,
     sendAtIso: input.sendAtIso ?? null,
     sendAtLabel: input.sendAtIso ? whenLabel(new Date(input.sendAtIso)) : null,
+    audience: null,
+    large: targets.filter((t) => t.blocked === null).length > LARGE_BROADCAST,
+  };
+}
+
+/**
+ * Получатели не по записи на день, а по условию: курс, школа, кто был за
+ * период. Условие обязательно — «всем пациентам» без него не готовим (ТЗ 4B.5).
+ */
+async function planAudience(
+  ctx: AdminContext,
+  audience: PlanAudience,
+  text: string,
+  sendAtIso: string | null,
+  now: Date,
+): Promise<BroadcastPlan> {
+  const why = new Map<string, string>();
+  if (audience.kind === "course") {
+    const rows = await prisma.course.findMany({
+      where: { companyId: ctx.companyId, status: "ACTIVE", ...(await courseServiceWhere(audience.serviceId)) },
+      select: { patientId: true, sessionsUsed: true, sessionsTotal: true, service: { select: { title: true } } },
+    });
+    for (const r of rows) if (!why.has(r.patientId)) why.set(r.patientId, `${r.service.title} · ${r.sessionsUsed}/${r.sessionsTotal}`);
+  } else if (audience.kind === "school") {
+    const rows = await prisma.partnerAttribution.findMany({
+      where: { companyId: ctx.companyId, schoolId: audience.schoolId, removedAt: null },
+      select: { patientId: true, note: true },
+    });
+    for (const r of rows) if (!why.has(r.patientId)) why.set(r.patientId, `от школы${r.note ? ` · ${r.note}` : ""}`);
+  } else {
+    const rows = await prisma.appointment.findMany({
+      where: {
+        companyId: ctx.companyId,
+        deletedAt: null,
+        status: "ARRIVED",
+        startAt: { gte: new Date(audience.fromIso), lt: new Date(audience.toIso) },
+        ...(audience.staffId ? { staffId: audience.staffId } : {}),
+        ...(audience.serviceId ? { services: { some: { serviceId: audience.serviceId } } } : {}),
+      },
+      orderBy: { startAt: "desc" },
+      select: { patientId: true, startAt: true },
+    });
+    for (const r of rows) if (!why.has(r.patientId)) why.set(r.patientId, `был(а) ${DAY_LABEL.format(r.startAt)}`);
+  }
+  const ids = [...why.keys()];
+  const [patients, delivery] = await Promise.all([
+    prisma.patient.findMany({ where: { companyId: ctx.companyId, id: { in: ids }, deletedAt: null }, select: { id: true, name: true } }),
+    deliveryOf(ctx.companyId, ids, now),
+  ]);
+  const targets: BroadcastTarget[] = patients
+    .map((p) => {
+      const d = delivery.get(p.id)!;
+      return { patientId: p.id, name: p.name ?? "без имени", when: why.get(p.id) ?? "", blocked: d.blocked, contact: d.contact };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+  return {
+    kind: "broadcast",
+    text: text.trim(),
+    targets,
+    dayIso: clinicDateKey(now),
+    staffId: null,
+    serviceId: null,
+    staffName: null,
+    dateLabel: audience.label,
+    patientId: null,
+    sendAtIso,
+    sendAtLabel: sendAtIso ? whenLabel(new Date(sendAtIso)) : null,
+    audience,
+    large: targets.filter((t) => t.blocked === null).length > LARGE_BROADCAST,
   };
 }
 
@@ -1218,6 +1456,25 @@ async function broadcast(
     };
   }
 
+  /**
+   * Рассылка «всем» без условия не готовится никогда: нужен критерий — запись,
+   * курс, услуга с периодом, школа. Промах в такой рассылке виден всей базе.
+   */
+  if (intent.audience === "none") {
+    return {
+      text:
+        "Всем пациентам без условия я не рассылаю. Скажите, кому: записанным на день " +
+        "(«всем, кто записан завтра к Ирине»), тем, кто на курсе («всем на БОС-курсе»), " +
+        "кто был за период («всем, кто был на остеопатии в сентябре») или от школы («всем от школы Росток»).",
+    };
+  }
+  if (intent.audience !== "booked") {
+    const audience = await audienceFor(ctx, intent, now);
+    if ("text" in audience) return audience;
+    const plan = await planBroadcast(ctx, { dayIso: clinicDateKey(now), staffId: null, serviceId: null, text, sendAtIso: intent.sendAtIso, audience }, now);
+    return broadcastSummary(plan, audience.label);
+  }
+
   const day = dayOf(intent.date, now);
   const plan = await planBroadcast(
     ctx,
@@ -1244,10 +1501,89 @@ async function broadcast(
       (plan.sendAtLabel
         ? `Отправлю ${plan.sendAtLabel}. `
         : "") +
+      largeNote(plan) +
       "Проверьте текст и список — отправлю только после подтверждения.",
     plan,
   };
 }
+
+function largeNote(plan: BroadcastPlan): string {
+  return plan.large
+    ? `Получателей больше ${LARGE_BROADCAST} — перед отправкой нужно отдельное подтверждение, а уходить сообщения будут с паузой, не залпом. `
+    : "";
+}
+
+function broadcastSummary(plan: BroadcastPlan, label: string): AdminAnswer {
+  const willSend = plan.targets.filter((t) => t.blocked === null);
+  if (plan.targets.length === 0) return { text: `По условию «${label}» никого не нашёл — отправлять некому.` };
+  return {
+    text:
+      `Готов отправить ${willSend.length} ${plural(willSend.length, "пациенту", "пациентам", "пациентам")} ` +
+      `из ${plan.targets.length} · ${label}. ` +
+      (plan.sendAtLabel ? `Отправлю ${plan.sendAtLabel}. ` : "") +
+      largeNote(plan) +
+      "Проверьте текст и список — отправлю только после подтверждения.",
+    plan,
+  };
+}
+
+/** Условие рассылки из слов администратора — или вопрос, если условие не однозначно. */
+async function audienceFor(
+  ctx: AdminContext,
+  intent: Extract<AdminIntent, { kind: "broadcast" }>,
+  now: Date,
+): Promise<PlanAudience | { text: string }> {
+  const serviceTitle = intent.serviceId
+    ? ((await prisma.service.findUnique({ where: { id: intent.serviceId }, select: { title: true } }))?.title ?? null)
+    : null;
+  if (intent.audience === "course") {
+    return { kind: "course", serviceId: intent.serviceId, label: serviceTitle ? `на курсе «${serviceTitle}»` : "на любом действующем курсе" };
+  }
+  if (intent.audience === "school") {
+    const schools = await prisma.partnerSchool.findMany({
+      where: { companyId: ctx.companyId, isActive: true },
+      select: { id: true, name: true },
+    });
+    const m = matchSchool(intent.schoolText ?? "", schools);
+    if (m.kind === "match") {
+      return { kind: "school", schoolId: m.schoolId, label: `от школы ${schools.find((s) => s.id === m.schoolId)?.name ?? ""}` };
+    }
+    return {
+      text: schools.length
+        ? `Какой школе? ${m.kind === "ambiguous" ? "Подходят несколько: " : "Не узнал название. Есть: "}` +
+          `${(m.kind === "ambiguous" ? schools.filter((s) => m.schoolIds.includes(s.id)) : schools).map((s) => s.name).join(", ")}.`
+        : "Школ-партнёров пока нет — их заводят на экране «Акции».",
+    };
+  }
+  // «Кто был»: нужен период — иначе это вся база за всё время.
+  let range: { start: Date; end: Date } | null = null;
+  let periodLabel = "";
+  if (intent.month !== null) {
+    const y = Number(clinicDateKey(now).slice(0, 4));
+    const year = intent.month > now.getMonth() ? y - 1 : y;
+    const start = startOfClinicDay(new Date(Date.UTC(year, intent.month, 1, 12)));
+    const end = startOfClinicDay(new Date(Date.UTC(intent.month === 11 ? year + 1 : year, (intent.month + 1) % 12, 1, 12)));
+    range = { start, end };
+    periodLabel = `в ${MONTH_PREP[intent.month]}`;
+  } else if (intent.period && intent.period !== "month") {
+    range = periodRange(intent.period, now);
+    periodLabel = PERIOD_WORD[intent.period];
+  }
+  if (!range) {
+    return { text: "За какой период? Например: «всем, кто был на остеопатии в сентябре» или «на прошлой неделе»." };
+  }
+  return {
+    kind: "visited",
+    fromIso: range.start.toISOString(),
+    toIso: range.end.toISOString(),
+    serviceId: intent.serviceId,
+    staffId: intent.staffId,
+    label: `кто был${serviceTitle ? ` на «${serviceTitle}»` : ""} ${periodLabel}`,
+  };
+}
+
+const MONTH_PREP = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре", "октябре", "ноябре", "декабре"];
+const PERIOD_WORD = { last_week: "на прошлой неделе", this_week: "на этой неделе", last_month: "в прошлом месяце", this_month: "в этом месяце" } as const;
 
 /** Суммы сотруднику без права на выручку не показываем (§9). */
 function hideMoney(text: string): string {
@@ -1258,4 +1594,223 @@ function hideMoney(text: string): string {
 
 function cap(text: string): string {
   return text.length > 0 ? `${text[0].toUpperCase()}${text.slice(1)}` : text;
+}
+
+// ─────────────────────────────────────────────── «зачем агент это написал»
+
+const AT = new Intl.DateTimeFormat("ru-RU", {
+  day: "numeric",
+  month: "long",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Europe/Moscow",
+});
+
+const OUTCOME_WORD: Record<string, string> = {
+  OK: "ответ ушёл",
+  TIMEOUT: "модель не успела ответить",
+  PROVIDER_ERROR: "сбой у провайдера модели",
+  EMPTY_RESPONSE: "модель ответила пустотой",
+  ESCALATED: "агент позвал человека",
+  SUPPRESSED: "агент намеренно промолчал",
+};
+
+/**
+ * Основание последнего ответа в переписке пациента — из журнала попыток.
+ *
+ * Только факты: кто написал (агент, сотрудник, отправка через ассистента),
+ * на какую реплику пациента, какие записи справочника легли в ответ, чем
+ * кончилась попытка. Журнала нет — так и говорим: «не знаю, вот что в логе».
+ * Придуманное объяснение хуже честного «не знаю»: по нему примут решение.
+ */
+async function explainAnswer(ctx: AdminContext, patientId: string, now: Date): Promise<AdminAnswer> {
+  void now;
+  const patient = await prisma.patient.findFirst({
+    where: { id: patientId, companyId: ctx.companyId, deletedAt: null },
+    select: { id: true, name: true },
+  });
+  if (!patient) return { text: "Пациента не нашёл." };
+  if (ctx.canViewOthers === false) {
+    const own = ctx.ownStaffId
+      ? await prisma.appointment.findFirst({ where: { companyId: ctx.companyId, patientId, staffId: ctx.ownStaffId }, select: { id: true } })
+      : null;
+    if (!own) return { text: `${patient.name ?? "Пациент"}: переписка вам не видна — этот пациент у вас на приёме не значится.` };
+  }
+  const name = patient.name ?? "Пациент";
+  const last = await prisma.message.findFirst({
+    where: { companyId: ctx.companyId, direction: "OUT", conversation: { patientId, deletedAt: null } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, body: true, authorType: true, authorId: true, createdAt: true, conversationId: true, viaPlatform: true },
+  });
+  if (!last) return { text: `${name}: в переписке нет ни одного нашего сообщения.`, memory: { focus: patientId } };
+
+  const quote = last.body.length > 160 ? `${last.body.slice(0, 160)}…` : last.body;
+  const head = `${name}, ${AT.format(last.createdAt)}: «${quote}»`;
+  if (last.authorType === "STAFF") {
+    const who = last.authorId
+      ? ((await prisma.staffUser.findUnique({ where: { id: last.authorId }, select: { name: true } }))?.name ?? "сотрудник")
+      : null;
+    return {
+      memory: { focus: patientId },
+      text:
+        `${head}\n\nЭто написал не агент, а ${who ?? "сотрудник с телефона клиники"}` +
+        (who ? " — из платформы (вручную или через меня, по подтверждению сотрудника)." : ".") +
+        " Основание у такого ответа — решение человека; в журнале агента его нет.",
+    };
+  }
+
+  const [runs, before] = await Promise.all([
+    prisma.agentRun.findMany({
+      where: { companyId: ctx.companyId, conversationId: last.conversationId, messageId: last.id },
+      orderBy: { triggeredAt: "asc" },
+      select: { outcome: true, knowledgeEntryIds: true, errorText: true, model: true },
+    }),
+    prisma.message.findFirst({
+      where: { conversationId: last.conversationId, direction: "IN", createdAt: { lte: last.createdAt } },
+      orderBy: { createdAt: "desc" },
+      select: { body: true },
+    }),
+  ]);
+  const asked = before?.body ? `Пациент перед этим написал: «${before.body.length > 160 ? `${before.body.slice(0, 160)}…` : before.body}».` : "Входящей реплики перед ответом не нашёл.";
+  if (runs.length === 0) {
+    return {
+      memory: { focus: patientId },
+      text:
+        `${head}\n\n${asked}\nНе знаю, почему агент ответил именно так: в журнале попыток для этого ` +
+        "сообщения записей нет (так бывает у ответов до октября 2026 и у служебных сообщений). Причину не придумываю.",
+    };
+  }
+  const ids = [...new Set(runs.flatMap((r) => r.knowledgeEntryIds))];
+  const entries = ids.length
+    ? await prisma.knowledgeEntry.findMany({ where: { companyId: ctx.companyId, id: { in: ids } }, select: { topic: true, promoId: true } })
+    : [];
+  const lastRun = runs[runs.length - 1];
+  const lines = [head, "", asked];
+  const topic = (e: { topic: string; promoId: string | null }) => `«${e.topic}»${e.promoId ? " (запись акции)" : ""}`;
+  lines.push(
+    entries.length === 1
+      ? `Ответ — дословно запись справочника ${topic(entries[0])}.`
+      : entries.length > 1
+        ? `Модель отвечала по справке из ${entries.length} записей (в том числе ${entries.slice(0, 4).map(topic).join(", ")}). ` +
+          "Какой именно фразой она воспользовалась, журнал не говорит — угадывать не буду."
+        : "Записей справочника за этим ответом в журнале нет — значит, текст собран правилами агента (цены из прайса, шаги записи, расписание) или моделью без опоры на справку.",
+  );
+  lines.push(`Исход попытки: ${OUTCOME_WORD[lastRun.outcome] ?? lastRun.outcome}${lastRun.model ? ` · модель ${lastRun.model}` : ""}.`);
+  if (runs.length > 1) lines.push(`Попыток было ${runs.length}: первые не удались, ответ ушёл с последней.`);
+  if (lastRun.errorText) lines.push(`В журнале: ${lastRun.errorText}`);
+  return { memory: { focus: patientId }, text: lines.join("\n") };
+}
+
+// ─────────────────────────────────────────────── поиск пациентов
+
+const FIND_LIMIT = 15;
+
+/**
+ * Найти пациентов гибко: часть имени, любой из телефонов, врач, услуга,
+ * период, курс. Один — справка и он в фокусе разговора; несколько — список, и
+ * выбирает администратор. Врач без доступа к чужим видит только своих.
+ */
+async function findAnswer(
+  ctx: AdminContext,
+  intent: Extract<AdminIntent, { kind: "find" }>,
+  now: Date,
+): Promise<AdminAnswer> {
+  const limited = ctx.canViewOthers === false;
+  const range = intent.date
+    ? dayOf(intent.date, now)
+    : intent.period
+      ? periodRange(intent.period, now)
+      : null;
+  const staffId = limited ? (ctx.ownStaffId ?? "__none__") : intent.staffId;
+  // «С БОС-курсом» — услуга называет курс, а не визит: в фильтр визитов не идёт.
+  const visitService = intent.course ? null : intent.serviceId;
+  const visitFilter =
+    range || staffId || visitService
+      ? {
+          appointments: {
+            some: {
+              deletedAt: null,
+              ...(range ? { startAt: { gte: range.start, lt: range.end } } : {}),
+              ...(staffId ? { staffId } : {}),
+              ...(visitService ? { services: { some: { serviceId: visitService } } } : {}),
+            },
+          },
+        }
+      : {};
+  const words = (intent.name ?? "")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3)
+    .map((w) => w.slice(0, Math.min(6, Math.max(3, w.length - 2))));
+  if (!words.length && !intent.phoneDigits && !intent.course && !range && !intent.staffId && !intent.serviceId) {
+    return { text: "Кого искать? Назовите имя или его часть, телефон, услугу, врача, курс или период — например, «найди Диану с прошлой недели»." };
+  }
+  const rows = await prisma.patient.findMany({
+    where: {
+      companyId: ctx.companyId,
+      deletedAt: null,
+      AND: [
+        ...words.map((w) => ({ name: { contains: w, mode: "insensitive" as const } })),
+        ...(intent.phoneDigits ? [{ phones: { some: { phone: { contains: intent.phoneDigits.slice(-10) } } } }] : []),
+        ...(intent.course
+          ? [{ courses: { some: { status: "ACTIVE" as const, ...(await courseServiceWhere(intent.serviceId)) } } }]
+          : []),
+        visitFilter,
+      ],
+    },
+    orderBy: { lastVisitAt: { sort: "desc", nulls: "last" } },
+    take: FIND_LIMIT + 1,
+    select: { id: true, name: true, lastVisitAt: true, phones: { take: 1, orderBy: { isPrimary: "desc" }, select: { phone: true } } },
+  });
+  if (rows.length === 0) return { text: "Никого не нашёл по этим условиям. Попробуйте часть имени или последние цифры телефона." };
+  if (rows.length === 1) {
+    const p = rows[0];
+    const answer = await patientAnswer(ctx, "", "что по нему", p.id);
+    return { text: answer.text, memory: { focus: p.id, candidates: [], lastText: null } };
+  }
+  const shown = rows.slice(0, FIND_LIMIT);
+  const list = shown.map((p) => ({ id: p.id, name: p.name ?? "без имени" }));
+  const lines = shown.map(
+    (p, i) =>
+      `${i + 1}. ${p.name ?? "без имени"}` +
+      (p.phones[0] ? ` · …${p.phones[0].phone.slice(-4)}` : "") +
+      (p.lastVisitAt ? ` · был(а) ${DAY_LABEL.format(p.lastVisitAt)}` : ""),
+  );
+  return {
+    text:
+      `Нашёл ${rows.length > FIND_LIMIT ? `больше ${FIND_LIMIT}, показываю первых ${FIND_LIMIT}` : rows.length}:\n${lines.join("\n")}\n` +
+      "Кого из них? Ответьте номером или фамилией — сам я не выбираю.",
+    memory: { focus: null, candidates: list, lastText: null },
+  };
+}
+
+/** Границы периода словами — по суткам клиники. */
+function periodRange(
+  period: "last_week" | "this_week" | "last_month" | "this_month",
+  now: Date,
+): { start: Date; end: Date } {
+  const today = startOfClinicDay(now);
+  const dow = (new Date(today.getTime() + 12 * 3600_000).getUTCDay() + 6) % 7; // пн = 0
+  const day = 24 * 3600_000;
+  if (period === "this_week") return { start: new Date(today.getTime() - dow * day), end: new Date(today.getTime() + day) };
+  if (period === "last_week") {
+    const start = new Date(today.getTime() - (dow + 7) * day);
+    return { start, end: new Date(start.getTime() + 7 * day) };
+  }
+  const key = clinicDateKey(now);
+  const [y, m] = key.split("-").map(Number);
+  const monthStart = (yy: number, mm: number) => startOfClinicDay(new Date(Date.UTC(yy, mm, 1, 12)));
+  if (period === "this_month") return { start: monthStart(y, m - 1), end: new Date(today.getTime() + day) };
+  return { start: monthStart(m === 1 ? y - 1 : y, m === 1 ? 11 : m - 2), end: monthStart(y, m - 1) };
+}
+
+/**
+ * Курс по ВИДУ услуги, а не по строке прайса: курсы привязаны к своей строке
+ * («БОС-терапия» курсовая), а в вопросе находится первая похожая. «С
+ * БОС-курсом» — все курсы, где в названии есть «БОС».
+ */
+async function courseServiceWhere(serviceId: string | null): Promise<{ service?: { title: { contains: string; mode: "insensitive" } } }> {
+  if (!serviceId) return {};
+  const title = (await prisma.service.findUnique({ where: { id: serviceId }, select: { title: true } }))?.title ?? "";
+  const stem = title.split(/[\s,+()-]+/u).find((w) => w.length >= 3) ?? title;
+  return stem ? { service: { title: { contains: stem, mode: "insensitive" } } } : {};
 }
