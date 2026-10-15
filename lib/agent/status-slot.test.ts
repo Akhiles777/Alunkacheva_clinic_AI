@@ -278,3 +278,31 @@ describe("как агент называет окошко", () => {
     expect(looksLikeOffer(null)).toBe(false);
   });
 });
+
+describe("статус без слова «окошко» (живой, 15 октября)", () => {
+  const staff = [
+    { id: "n1", name: "Нурият Абулкасимовна" },
+    { id: "i1", name: "Ирина Алилгаджиевна" },
+  ];
+  const status = "Лотос 🪷 на завтра к Нурият Абулкасимовне: ✅10:00 ✅11:00";
+
+  it("галочки перед временем и «на завтра к Нурият» — предложение окошка", () => {
+    expect(looksLikeOffer(status)).toBe(true);
+    const offer = parseStatusOffer(status, staff)!;
+    expect(offer.staff?.id).toBe("n1");
+    expect(offer.times).toEqual([600, 660]);
+    expect(offer.day).toEqual({ kind: "relative", offset: 1 });
+  });
+
+  it("«Запишите, пожалуйста, на 10ч» — выбор окошка на 10", () => {
+    expect(pickIn("Здравствуйте! Запишите, пожалуйста, на 10ч", new Date("2026-10-15T08:00:00Z")).hours).toEqual([10]);
+  });
+
+  it("напоминание о записи с галочкой окошком не становится", () => {
+    expect(looksLikeOffer("Напоминаем: вы записаны на завтра к Нурият Абулкасимовне ✅10:00")).toBe(false);
+  });
+
+  it("время без галочки и без «к <Имя>» — по-прежнему не предложение", () => {
+    expect(looksLikeOffer("Работаем завтра с 10:00 до 18:00")).toBe(false);
+  });
+});

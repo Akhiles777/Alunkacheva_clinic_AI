@@ -2811,6 +2811,67 @@ function priceThread(own: string, userTextsOldestFirst: string[]): boolean {
   return false;
 }
 
+/**
+ * «Сколько стоит ваша консультация?» — у остеопатов консультации нет.
+ *
+ * Живой диалог 15 октября: «Доброе утро, сколько стоит ваша консультация?
+ * Детей принимаете?» → «Консультация в клинике стоит 1000 ₽». Это общая строка
+ * прайса «Консультация», а у остеопатов отдельной консультации нет: доктор
+ * осматривает и сразу работает — администратор поправила бота сама. Модель
+ * держалась за строку прайса даже при записи справочника перед глазами,
+ * поэтому отвечает код: запись справочника клиники ДОСЛОВНО и цены приёма
+ * основной услуги. Записи нет — ветка молчит, и всё идёт как прежде: факт про
+ * консультацию даёт только клиника.
+ *
+ * Названа другая услуга («консультация по БОС», «по капельницам», «невролога»)
+ * — не наш случай: там консультация бывает.
+ */
+async function consultationOffer(
+  companyId: string,
+  own: string,
+  said: { role: "user" | "assistant"; content: string }[],
+  knowledge: { id: string; topic: string; question: string; answer: string }[],
+): Promise<{ text: string; ids: string[] } | null> {
+  if (!/(?<!\p{L})консультац\p{L}*/iu.test(own)) return null;
+  if (!asksPrice(own) && !/(?<!\p{L})(?:есть\s+ли|бывает|у\s+вас\s+есть)(?!\p{L})/iu.test(own)) return null;
+  if (/(?<!\p{L})(?:бос\p{L}*|нак|капельн\p{L}*|инфуз\p{L}*|iv|ив|нейро\p{L}*|невролог\p{L}*|лотос\p{L}*|трн|анализ\p{L}*|аудит\p{L}*)(?!\p{L})/iu.test(own)) return null;
+  // Остальные части — только о детях и возрасте: «Детей принимаете?» запись отвечает сама.
+  const rest = questionParts(own).filter((part) => !/(?<!\p{L})консультац/iu.test(part));
+  if (
+    rest.some(
+      (part) =>
+        !asksPrice(part) && !/(?<!\p{L})(?:дет\p{L}*|ребен\p{L}*|ребён\p{L}*|малыш\p{L}*|возраст\p{L}*|принима\p{L}*)/iu.test(part),
+    )
+  ) {
+    return null;
+  }
+  const entry = knowledge.find(
+    (k) => /консультац/iu.test(`${k.topic} ${k.question}`) && /остеопат/iu.test(`${k.topic} ${k.question} ${k.answer}`),
+  );
+  if (!entry) return null;
+  noteKnowledge(entry);
+  const userTexts = said.filter((t) => t.role === "user").map((t) => withoutQuote(t.content));
+  const whom = talkWhom([own, ...userTexts]);
+  const offer = await mainOffer(companyId, whom, [own]).catch(() => null);
+  const nudge =
+    whom === "unknown"
+      ? "Если хотите записаться — напишите, к кому из врачей и для кого приём."
+      : "Если хотите записаться — напишите, к кому из врачей.";
+  /**
+   * «Детей принимаете?» — да, если в прайсе есть детский приём основной
+   * услуги: это факт прайса, а не догадка. Не спрашивали о детях — не говорим.
+   */
+  const kids =
+    /(?<!\p{L})(?:дет\p{L}*|ребен\p{L}*|ребён\p{L}*|малыш\p{L}*)/iu.test(own) && offer && /детск/iu.test(offer.block)
+      ? " Детей принимаем."
+      : "";
+  const head = `${entry.answer.trim()}${kids}`;
+  return {
+    text: offer ? `${head}\n\n${offer.block}\n\n${nudge}` : head,
+    ids: knowledgeIdOf(entry),
+  };
+}
+
 async function priceOffer(
   companyId: string,
   own: string,
@@ -6973,6 +7034,11 @@ async function replyToQuestion(
     !asksForSlot(own) &&
     !(await bookingRequestOpen(conversation.id, own).catch(() => false))
   ) {
+    const consult = await consultationOffer(ctx.companyId, own, said, allKnowledge).catch(() => null);
+    if (consult) {
+      await logAgentRun({ companyId: ctx.companyId, conversationId: conversation.id, outcome: "OK", knowledgeEntryIds: consult.ids });
+      return respond(ctx, conversation.id, { text: consult.text, buttons: mainMenu() });
+    }
     const offer = await priceOffer(ctx.companyId, own, said, clinicStaffNames).catch(() => null);
     if (offer) return respond(ctx, conversation.id, { text: offer, buttons: mainMenu() });
   }
