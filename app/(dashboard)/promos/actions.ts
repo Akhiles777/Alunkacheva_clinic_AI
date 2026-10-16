@@ -22,6 +22,7 @@ import {
   searchPatientsForPromo,
   setParticipantSchool,
   unmarkParticipantDone,
+  recomputePartnerBonuses,
 } from "@/lib/server/promos";
 
 /**
@@ -261,7 +262,7 @@ export async function rotateSchoolToken(schoolId: string): Promise<void> {
     entityId: schoolId,
     meta: { rotatedReportToken: true },
   });
-  revalidatePath(`/schools/${schoolId}`);
+  revalidatePath("/promos");
 }
 
 // ─────────────────────────────────────────────── карточка пациента
@@ -406,7 +407,7 @@ export async function savePromoKnowledge(form: z.input<typeof PromoKnowledgeInpu
     entityId,
     meta: { promoId: promo.id, edited: Boolean(k.id) },
   });
-  revalidatePath(`/promos/${promo.id}`);
+  revalidatePath("/promos");
 }
 
 export async function setPromoKnowledgeActive(id: string, active: boolean): Promise<void> {
@@ -430,7 +431,7 @@ export async function setPromoKnowledgeActive(id: string, active: boolean): Prom
     entityId: id,
     meta: { promoId: row.promoId, active },
   });
-  revalidatePath(`/promos/${row.promoId}`);
+  revalidatePath("/promos");
 }
 
 /** Утвердить медицинскую запись акции — врач или владелец, как в общем справочнике. */
@@ -454,6 +455,7 @@ export async function approvePromoKnowledge(id: string): Promise<void> {
     entityId: id,
     meta: { approved: true },
   });
+  revalidatePath("/promos");
 }
 
 // ─────────────────────────────────────────────── одна акция: экран
@@ -515,6 +517,8 @@ export async function saveSchoolPromo(form: z.input<typeof SettingsInput>): Prom
     entityId: id,
     meta: { items: p.items.length, agentEnabled: p.agentEnabled, isActive: p.isActive, endsOn: p.endsOn },
   });
+  // Состав и сроки решают, какие визиты засчитываются, — бонусы пересчитываем сразу, а не через круг выгрузки.
+  await recomputePartnerBonuses(session.companyId);
   revalidatePath("/promos");
 }
 

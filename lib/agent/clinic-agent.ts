@@ -100,6 +100,7 @@ import {
   timesIn,
   wantsSlot,
   forSomeoneElse,
+  tentativeReply,
   type StatusOffer,
 } from "./status-slot";
 import {
@@ -4607,15 +4608,53 @@ async function statusSlotReply(
   if (held) return changedMind(ctx, conversation, own, held, staff, now);
 
   if (quote && offerText) {
-    const offer = parseStatusOffer(offerText, staff);
-    if (!offer) return undefined;
-    // «Спасибо», «не надо», вопрос о цене — не просьба взять окошко.
-    if (!wantsSlot(own)) return undefined;
+    const aliases = await staffAliasesFor(ctx.companyId);
+    const parsed = parseStatusOffer(offerText, staff, aliases);
+    if (!parsed) return undefined;
+    const named = await statusService(ctx.companyId, offerText, parsed.staff ? [parsed.staff] : staff);
+    /**
+     * Врача в статусе нет, а услуга названа: «На сегодня освободилось окошко на
+     * Лотос в 12:00». Лотос по визитам ведёт один человек — это её окошко.
+     * Ведут несколько — врача не угадываем, окошко уходит администратору.
+     */
+    const offer =
+      !parsed.staff && !parsed.staffAmbiguous && named.leader ? { ...parsed, staff: named.leader } : parsed;
+    /**
+     * Услуга в статусе не названа — строку прайса выбирает тот же разбор, что и
+     * в разговоре (`talkChoice`): врач и «взрослый» из статуса. Иначе у Ирины
+     * Алилгаджиевны несколько взрослых строк, и новому пациенту окошко
+     * предлагалось без цены.
+     */
+    if (!named.service && offer.staff) {
+      const choice = await talkChoice(ctx.companyId, [withStaffAliases(offerText, aliases)]).catch(() => null);
+      if (choice?.service && choice.doctor?.id === offer.staff.id) {
+        const c = choice.service;
+        named.service = { id: c.id, title: c.title, price: c.price, durationMin: c.durationMin };
+      }
+    }
+    /**
+     * «Какая цена на процедуру?» в ответ на статус — вопрос о цене ЭТОЙ услуги.
+     * Цитату правила разговора не читают, и агент на такой вопрос предлагал
+     * остеопатию — при том что в статусе написано «Лотос» (живой диалог 16
+     * октября). Цена — из прайса, дальше вопрос «записать вас?». Человек назвал
+     * в вопросе другую услугу — это уже не про окошко.
+     */
+    const priceAsk = asksPrice(own) && !(await otherServiceNamed(ctx.companyId, own, named.service));
+    const lead = priceAsk ? await statusPriceLine(ctx.companyId, offer, named.service) : null;
+    if (priceAsk && !lead) return undefined;
+    // «Спасибо», «не надо» — не просьба взять окошко.
+    if (!lead && !wantsSlot(own)) return undefined;
     // Медицинский вопрос идёт своей веткой (§6): там зовут человека и врача.
     if (medical(own) && hasQuestion(own)) return undefined;
     // Новый ответ на статус отменяет прежний недоговорённый выбор.
     await releaseOpen(conversation.id);
-    return freshStatusOffer(ctx, conversation, own, quote, offer, now);
+    return freshStatusOffer(ctx, conversation, own, quote, offer, now, {
+      service: named.service,
+      // «?», «😍» и вопрос о цене — интерес, а не «беру»: спрашиваем, а не закрепляем.
+      confirm: Boolean(lead) || tentativeReply(own),
+      lead: lead ?? "",
+      aliases,
+    });
   }
   return chooseStatusSlot(ctx, conversation, own, choices, staff, now);
 }
@@ -4640,7 +4679,7 @@ async function changedMind(
 ): Promise<AgentReply | null | undefined> {
   const person = staff.find((p) => p.id === held.staffId);
   if (!person) return undefined;
-  const phrase = staffPhrase(held.statusText, person);
+  const phrase = await slotPhraseFor(ctx.companyId, held.statusText, person);
   const heldWhen = slotWhen(held.startAt);
 
   /**
@@ -4730,6 +4769,11 @@ async function changedMind(
   });
 }
 
+/** Как назвать врача окошка — словами статуса, с фамилией из справочника (`staffPhrase`). */
+async function slotPhraseFor(companyId: string, statusText: string, person: SlotStaffRow): Promise<string> {
+  return staffPhrase(statusText, person, await staffAliasesFor(companyId));
+}
+
 /** Цитата — одна из наших собственных реплик в этой переписке за двое суток. */
 async function sentByAgent(conversationId: string, quoteText: string): Promise<boolean> {
   const key = (t: string) => t.toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
@@ -4775,6 +4819,63 @@ function timesLabel(minutes: number[]): string {
   return minutes.map(hhmm).join(", ");
 }
 
+/**
+ * Услуга из статуса и тот, кто её ведёт.
+ *
+ * Только однозначно: строка прайса — одна, ведущий — один среди тех, кто
+ * вообще мог быть врачом окошка (назван в статусе — только он). Служебные
+ * строки «для персонала» и заготовки по нулю в счёт не идут (price-list).
+ */
+async function statusService(
+  companyId: string,
+  text: string,
+  pool: SlotStaffRow[],
+): Promise<{ service: SlotService | null; leader: SlotStaffRow | null }> {
+  const services = patientServices(await getServices(companyId).catch(() => []));
+  const matched = matchServices(text, services, 4, 0.5);
+  if (matched.length === 0) return { service: null, leader: null };
+  const leadersOf = await Promise.all(matched.map((m) => staffForService(companyId, m.id).catch(() => [] as string[])));
+  const inPool = (ids: string[]) => ids.filter((id) => pool.some((p) => p.id === id));
+  const leaders = new Set(leadersOf.flatMap(inPool));
+  const leader = leaders.size === 1 ? (pool.find((p) => leaders.has(p.id)) ?? null) : null;
+  // Строк несколько («БОС-терапия», «НАК + БОС») — оставляем те, что ведёт врач окошка.
+  const own = leader ?? (pool.length === 1 ? pool[0] : null);
+  const fit = own ? matched.filter((_, i) => leadersOf[i].includes(own.id)) : matched;
+  const one = fit.length === 1 ? fit[0] : null;
+  return {
+    service: one ? { id: one.id, title: one.title, price: one.price, durationMin: one.durationMin } : null,
+    leader,
+  };
+}
+
+/** В вопросе названа услуга, которой нет в статусе: «а остеопатия сколько?» на окошко Лотоса. */
+async function otherServiceNamed(companyId: string, own: string, service: SlotService | null): Promise<boolean> {
+  if (!service) return false;
+  const found = matchServices(own, patientServices(await getServices(companyId).catch(() => [])), 3, 0.5);
+  return found.length > 0 && !found.some((f) => f.id === service.id);
+}
+
+/** Цена окошка — строка прайса; не знаем однозначно — null, и цену не называем (§6.2). */
+async function statusPriceLine(
+  companyId: string,
+  offer: StatusOffer<SlotStaffRow>,
+  service: SlotService | null,
+): Promise<string | null> {
+  const svc = service ?? (offer.staff ? await serviceForSlot(companyId, offer.staff.id, offer.audience).catch(() => null) : null);
+  if (!svc || svc.price <= 1) return null;
+  return slotPriceLine(svc).trim();
+}
+
+interface FreshOptions {
+  /** Услуга, названная в статусе (`statusService`). */
+  service: SlotService | null;
+  /** Спросить «записать вас?», а не закреплять: «?», «😍», вопрос о цене. */
+  confirm: boolean;
+  /** Первая строка ответа — цена, если о ней спросили. */
+  lead: string;
+  aliases: StaffAlias[];
+}
+
 async function freshStatusOffer(
   ctx: AgentContext,
   conversation: { id: string; patientId: string | null },
@@ -4782,9 +4883,13 @@ async function freshStatusOffer(
   quote: AgentQuote,
   offer: StatusOffer<SlotStaffRow>,
   now: Date,
+  opts: FreshOptions,
 ): Promise<AgentReply | null> {
   const excerpt = quote.text.slice(0, 200);
-  const doctor = offer.staff ? ` ${staffPhrase(quote.text, offer.staff)}` : "";
+  const doctor = offer.staff ? ` ${staffPhrase(quote.text, offer.staff, opts.aliases)}` : "";
+  const withLead = (text: string) => (opts.lead ? `${opts.lead}\n\n${text}` : text);
+  const handover = (text: string, note: string): Promise<AgentReply | null> =>
+    slotHandover(ctx, conversation.id, withLead(text), note);
 
   /**
    * Пациент назвал своё время. Оно из статуса — берём его; нет — это уже не
@@ -4796,10 +4901,7 @@ async function freshStatusOffer(
   if (pick.minutes.length > 0) {
     minutes = offer.times.filter((m) => pick.minutes.includes(m));
     if (minutes.length === 0) {
-      return slotHandover(
-        ctx,
-        conversation.id,
-        `Передал(а) администратору — он проверит время ${timesLabel(pick.minutes)} и напишет здесь же.`,
+      return handover(`Передал(а) администратору — он проверит время ${timesLabel(pick.minutes)} и напишет здесь же.`,
         `Пациент отвечает на статус «${excerpt}» и просит ${timesLabel(pick.minutes)}`,
       );
     }
@@ -4814,10 +4916,7 @@ async function freshStatusOffer(
    * администратору уже есть в статусе, на который ответил человек.
    */
   if (!quote.byClinic || !offer.staff) {
-    return slotHandover(
-      ctx,
-      conversation.id,
-      `Передал(а) администратору — он проверит окошко на ${timesLabel(minutes)}${doctor} и напишет здесь же.`,
+    return handover(`Передал(а) администратору — он проверит окошко на ${timesLabel(minutes)}${doctor} и напишет здесь же.`,
       offer.staffAmbiguous
         ? `Пациент отвечает на статус с окошком, врача по статусу не определить: «${excerpt}»`
         : `Пациент отвечает на статус с окошком: «${excerpt}»`,
@@ -4852,11 +4951,11 @@ async function freshStatusOffer(
           ? `Окошки на ${timesLabel(minutes)}${doctor} уже прошли. ${SLOT_ELSEWHERE}`
           : `Окошко на ${timesLabel(minutes)}${doctor} уже прошло. ${SLOT_ELSEWHERE}`
         : `Передал(а) администратору — он проверит окошко на ${timesLabel(minutes)}${doctor} и напишет здесь же.`;
-    return slotHandover(ctx, conversation.id, text, `Пациент отвечает на статус с окошком: «${excerpt}»`);
+    return handover(text, `Пациент отвечает на статус с окошком: «${excerpt}»`);
   }
 
   const staffRow = offer.staff;
-  const service = await serviceForSlot(ctx.companyId, staffRow.id, offer.audience).catch(() => null);
+  const service = opts.service ?? (await serviceForSlot(ctx.companyId, staffRow.id, offer.audience).catch(() => null));
   const durationMin = service?.durationMin || DEFAULT_DURATION_MIN;
 
   /**
@@ -4899,10 +4998,7 @@ async function freshStatusOffer(
       future.length > 1
         ? `Окошки на ${timesLabel([...new Set(future.map((c) => c.minute))])}${doctor} уже заняли. ${SLOT_ELSEWHERE}`
         : `Окошко на ${slotWhen(future[0].at)}${doctor} уже заняли. ${SLOT_ELSEWHERE}`;
-    return slotHandover(
-      ctx,
-      conversation.id,
-      text,
+    return handover(text,
       `Окошко из статуса уже занято: «${excerpt}» — предложите пациенту другое время`,
     );
   }
@@ -4913,6 +5009,27 @@ async function freshStatusOffer(
    * закреплять молча нельзя: он мог хотеть другое. Спрашиваем.
    */
   const choseHimself = pick.minutes.length > 0 || pick.hours.length > 0 || offer.times.length === 1;
+  /**
+   * «?» или «😍» на статус, вопрос о цене — человек интересуется, но ещё не
+   * сказал «беру». Окошко свободно — так и говорим и спрашиваем; «да» следующей
+   * репликой закрепит его обычным путём (`chooseStatusSlot`).
+   */
+  if (opts.confirm && open.length === 1 && certain) {
+    await openSlotRows(
+      {
+        companyId: ctx.companyId,
+        conversationId: conversation.id,
+        patientId: conversation.patientId,
+        state: "CHOICE",
+        statusText: quote.text,
+        statusExternalId: quote.id,
+      },
+      [{ staffId: staffRow.id, serviceId: service?.id ?? null, startAt: open[0].at, durationMin }],
+    );
+    return respond(ctx, conversation.id, {
+      text: withLead(`Окошко на ${slotWhen(open[0].at)}${doctor} пока свободно. Записать вас?`),
+    });
+  }
   if (open.length === 1 && certain && choseHimself) {
     return settleStatusSlot(ctx, conversation, own, {
       staff: staffRow,
@@ -4941,10 +5058,12 @@ async function freshStatusOffer(
     future.map((c) => ({ staffId: staffRow.id, serviceId: service?.id ?? null, startAt: c.at, durationMin })),
   );
   return respond(ctx, conversation.id, {
-    text: slotQuestion(
-      future.map((c) => c.at),
-      doctor,
-      certain && future.length === 1 ? "left" : "ask",
+    text: withLead(
+      slotQuestion(
+        future.map((c) => c.at),
+        doctor,
+        certain && future.length === 1 ? "left" : "ask",
+      ),
     ),
   });
 }
@@ -5007,9 +5126,10 @@ async function chooseStatusSlot(
   if (pick.keys.length) rows = rows.filter((r) => pick.keys.includes(clinicDateKey(r.startAt)));
   else if (pick.days.length) rows = rows.filter((r) => pick.days.includes(Number(clinicDateKey(r.startAt).slice(8, 10))));
 
+  const aliases = await staffAliasesFor(ctx.companyId);
   const doctorOf = (r: OpenSlot) => {
     const person = staff.find((p) => p.id === r.staffId);
-    return person ? ` ${staffPhrase(r.statusText, person)}` : "";
+    return person ? ` ${staffPhrase(r.statusText, person, aliases)}` : "";
   };
 
   if (!narrowed) {
@@ -5085,7 +5205,7 @@ async function settleStatusSlot(
   slot: SettleInput,
 ): Promise<AgentReply | null> {
   const when = slotWhen(slot.startAt);
-  const phrase = staffPhrase(slot.statusText, slot.staff);
+  const phrase = await slotPhraseFor(ctx.companyId, slot.statusText, slot.staff);
   const ref = {
     companyId: ctx.companyId,
     conversationId: conversation.id,
@@ -5178,7 +5298,7 @@ async function freeFromSameStatus(
     { companyId: ctx.companyId, conversationId, patientId, state: "CHOICE", statusText: taken.statusText, statusExternalId: taken.statusExternalId },
     free.map((c) => ({ staffId: taken.staff.id, serviceId: taken.serviceId, startAt: c.at, durationMin: taken.durationMin })),
   );
-  const phrase = staffPhrase(taken.statusText, taken.staff);
+  const phrase = await slotPhraseFor(ctx.companyId, taken.statusText, taken.staff);
   const head = `Окошко на ${hhmm(takenMinute)} уже заняли`;
   if (free.length === 1) {
     return respond(ctx, conversationId, { text: `${head}, но свободно ${slotWhen(free[0].at)} ${phrase}. Записать вас?` });
@@ -5316,7 +5436,7 @@ async function holdOfferedSlot(
     statusExternalId: row.statusExternalId,
     rowId: row.id,
   });
-  return slotOutcome(ctx, conversation.id, held, slot, slotWhen(row.startAt), staffPhrase(row.statusText, person), "intake");
+  return slotOutcome(ctx, conversation.id, held, slot, slotWhen(row.startAt), await slotPhraseFor(ctx.companyId, row.statusText, person), "intake");
 }
 
 /** Просьба о данных после согласия, если окошко уже предложено. */
@@ -5325,7 +5445,10 @@ async function offeredSlotAsk(conversationId: string): Promise<string | null> {
   if (offered.length !== 1) return null;
   const row = offered[0];
   const person = await prisma.staff
-    .findFirst({ where: { id: row.staffId, isActive: true, deletedAt: null }, select: { id: true, name: true, specialty: true } })
+    .findFirst({
+      where: { id: row.staffId, isActive: true, deletedAt: null },
+      select: { id: true, name: true, specialty: true, companyId: true },
+    })
     .catch(() => null);
   if (!person) return null;
   const service = row.serviceId
@@ -5334,7 +5457,7 @@ async function offeredSlotAsk(conversationId: string): Promise<string | null> {
   const child = audienceIn(row.statusText) === "child";
   const weight = /остеопат/i.test(`${service?.title ?? ""} ${person.specialty ?? ""}`);
   return (
-    `Спасибо! Чтобы закрепить за вами окошко на ${slotWhen(row.startAt)} ${staffPhrase(row.statusText, person)}, ` +
+    `Спасибо! Чтобы закрепить за вами окошко на ${slotWhen(row.startAt)} ${await slotPhraseFor(person.companyId, row.statusText, person)}, ` +
     `пришлите, пожалуйста, одним сообщением: ${slotDataFields(child, weight)}.`
   );
 }

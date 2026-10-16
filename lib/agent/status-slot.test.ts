@@ -10,6 +10,7 @@ import {
   staffPhrase,
   pickIn,
   slotCandidates,
+  tentativeReply,
   timesIn,
   wantsSlot,
 } from "./status-slot";
@@ -304,5 +305,47 @@ describe("статус без слова «окошко» (живой, 15 окт
 
   it("время без галочки и без «к <Имя>» — по-прежнему не предложение", () => {
     expect(looksLikeOffer("Работаем завтра с 10:00 до 18:00")).toBe(false);
+  });
+});
+
+describe("боевые имена и ответы без слов (живые диалоги 16 октября)", () => {
+  /** Как в YCLIENTS клиники: у Ирины Алилгаджиевны фамилии нет, она есть только в справочнике. */
+  const LIVE = [
+    { id: "irina-a", name: "Ирина Алилгаджиевна" },
+    { id: "irina-o", name: "Омарова Ирина" },
+    { id: "nuriyat", name: "Нурият Абулкасимовна" },
+  ];
+  const ALIASES = [{ stem: "алункачев", name: "Ирина Алилгаджиевна" }];
+
+  it("«к Ирине Алункачевой» — Ирина Алилгаджиевна по фамилии из справочника", () => {
+    const text = "Окошко на завтра к Ирине Алункачевой в 12:30 взрослый";
+    expect(parseStatusOffer(text, LIVE)?.staffAmbiguous).toBe(true);
+    const offer = parseStatusOffer(text, LIVE, ALIASES);
+    expect(offer?.staff?.id).toBe("irina-a");
+    expect(offer?.audience).toBe("adult");
+    expect(staffPhrase(text, LIVE[0], ALIASES)).toBe("к Ирине Алункачевой");
+  });
+
+  it("название клиники врача не называет и с фамилией из справочника", () => {
+    const offer = parseStatusOffer("Клиника Алункачевой: окошко на завтра 12:15", LIVE, ALIASES);
+    expect(offer?.staff).toBeNull();
+    expect(offer?.staffAmbiguous).toBe(false);
+  });
+
+  it("статус без врача, с услугой: «на Лотос» — оборот клиники, врач в скобках", () => {
+    const text = "На сегодня освободилось окошко на Лотос в 12:00";
+    expect(looksLikeOffer(text)).toBe(true);
+    expect(parseStatusOffer(text, LIVE)?.staff).toBeNull();
+    expect(staffPhrase(text, LIVE[2])).toBe("на Лотос (Нурият Абулкасимовна)");
+    // «На сегодня», «на Пятницу» — не услуга.
+    expect(staffPhrase("Окошко на Пятницу в 12:00", LIVE[2])).toBe("(Нурият Абулкасимовна)");
+  });
+
+  it("«?» и «😍» на статус — интерес к окошку, но не «беру»", () => {
+    for (const t of ["?", "??", "😍", "😍😍", "🙏🏻", "❤️"]) {
+      expect(tentativeReply(t), t).toBe(true);
+      expect(wantsSlot(t), t).toBe(true);
+    }
+    for (const t of ["👎", "😔", "Спасибо", "Какая цена на процедуру?", "ок"]) expect(tentativeReply(t), t).toBe(false);
   });
 });

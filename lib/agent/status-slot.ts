@@ -18,6 +18,7 @@
  */
 
 import { CLINIC_TZ, clinicDateKey, startOfClinicDay } from "@/lib/clinic-time";
+import { withStaffAliases, type StaffAlias } from "./staff-alias";
 
 export interface SlotStaff {
   id: string;
@@ -197,8 +198,19 @@ function nameStems(name: string): string[] {
  * Разият»): тогда какое время чьё, из текста не понять, и врача мы не
  * назначаем никому.
  */
-export function staffInStatus<T extends SlotStaff>(text: string, staff: T[]): { staff: T | null; ambiguous: boolean } {
-  const t = norm(withoutBrand(text));
+export function staffInStatus<T extends SlotStaff>(
+  text: string,
+  staff: T[],
+  /**
+   * Фамилии из справочника (`staff-alias`). «Окошко на завтра к Ирине
+   * Алункачевой» — в YCLIENTS у врача фамилии нет, Ирин две, и без подсказки
+   * статус выглядел двояким: окошко уходило администратору (живой диалог 16
+   * октября). Подсказка ставится ПОСЛЕ снятия названия клиники: «Клиника
+   * Алункачевой» врача не называет.
+   */
+  aliases: StaffAlias[] = [],
+): { staff: T | null; ambiguous: boolean } {
+  const t = norm(withStaffAliases(withoutBrand(text), aliases));
   const hitsOf = (s: T) => nameStems(s.name).filter((stem) => new RegExp(`(?<!\\p{L})${stem}`, "u").test(t));
   const matched = staff.map((s) => ({ s, hits: hitsOf(s) })).filter((x) => x.hits.length > 0);
   if (matched.length === 0) return { staff: null, ambiguous: false };
@@ -231,11 +243,15 @@ export function looksLikeOffer(text: string | null | undefined): boolean {
  * Разобрать статус. null — это не предложение свободного окошка или в нём нет
  * ни одного времени: тогда статус для агента просто цитата, как любая другая.
  */
-export function parseStatusOffer<T extends SlotStaff>(text: string, staff: T[]): StatusOffer<T> | null {
+export function parseStatusOffer<T extends SlotStaff>(
+  text: string,
+  staff: T[],
+  aliases: StaffAlias[] = [],
+): StatusOffer<T> | null {
   if (!OFFER_WORDS.test(text) || NOT_OFFER.test(text)) return null;
   const times = timesIn(text);
   if (times.length === 0) return null;
-  const who = staffInStatus(text, staff);
+  const who = staffInStatus(text, staff, aliases);
   return {
     staff: who.staff,
     staffAmbiguous: who.ambiguous,
@@ -396,9 +412,28 @@ export function declinesSlot(own: string): boolean {
   return DECLINES.test(own);
 }
 
+/**
+ * Ответ без слов: «?» или одно восторженное «😍».
+ *
+ * На статус «Окошко на завтра к Ирине … в 12:30» человек прислал «?» — то
+ * есть «свободно ещё?», — а агент не узнал в этом ответа на окошко, и модель
+ * написала «передал администратору, он проверит» (живой диалог 16 октября).
+ * «😍» на «освободилось окошко на Лотос» — тот же интерес. Но это ещё не
+ * «беру»: закреплять по одному значку нельзя, поэтому такой ответ получает
+ * вопрос «записать вас?», а не закрепление.
+ */
+const TENTATIVE = /^(?:[?？!]+|(?:[😍🥰❤♥💖💗💕😊☺🙂🤩🙏🔥💯👌🤗😻✨\u{FE0F}\u{200D}]|\p{Extended_Pictographic}|\p{Emoji_Modifier})+)$/u;
+
+export function tentativeReply(own: string): boolean {
+  const t = own.replace(/\s+/g, "");
+  if (!t || !TENTATIVE.test(t)) return false;
+  // Отказ значком тоже бывает — им не интересуемся.
+  return !/[👎😞😔😢😭🙁☹😐😕❌🚫]/u.test(t);
+}
+
 export function wantsSlot(own: string): boolean {
   if (declinesSlot(own)) return false;
-  return WANTS.test(own) || timesIn(own).length > 0;
+  return WANTS.test(own) || timesIn(own).length > 0 || tentativeReply(own);
 }
 
 /**
@@ -521,8 +556,9 @@ export function hhmm(minute: number): string {
  * Ирине Алилгаджиевне» — берём ровно это. Нет такого оборота — называем врача
  * как в справочнике, в скобках: не красиво, но без ошибки в имени.
  */
-export function staffPhrase(statusText: string, staff: SlotStaff): string {
-  const stems = nameStems(staff.name);
+export function staffPhrase(statusText: string, staff: SlotStaff, aliases: StaffAlias[] = []): string {
+  // Фамилия из справочника — тоже слово её имени: «к Ирине Алункачевой» написала клиника.
+  const stems = [...nameStems(staff.name), ...aliases.filter((a) => a.name === staff.name).map((a) => a.stem)];
   /**
    * Между «к» и именем бывает специальность со строчной буквы: «Окошки на
    * завтра к остеопату Разият Ризвановне» — так пишет клиника. Берём оборот
@@ -536,5 +572,17 @@ export function staffPhrase(statusText: string, staff: SlotStaff): string {
       return `к ${m[1].replace(/\s+/g, " ")}${m[2].replace(/\s+/g, " ")}`;
     }
   }
+  /**
+   * Врача в статусе нет, а услуга названа: «освободилось окошко на Лотос в
+   * 12:00». Тогда оборот клиники — «на Лотос», а врач — в скобках.
+   */
+  const service = /(?<!\p{L})на\s+(\p{Lu}[\p{L}-]+(?:\s+\p{Lu}[\p{L}-]+)?)/u.exec(statusText);
+  const word = service ? norm(service[1]) : "";
+  const isService =
+    service !== null &&
+    !WEEKDAYS.some((w) => w.re.test(service[1])) &&
+    !/^(?:сегодня|завтра|послезавтра)$/u.test(word) &&
+    !stems.some((st) => word.startsWith(st));
+  if (isService) return `на ${service[1]} (${staff.name})`;
   return `(${staff.name})`;
 }

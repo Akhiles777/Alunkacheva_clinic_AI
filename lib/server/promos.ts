@@ -795,7 +795,11 @@ export async function attachToSchool(input: {
     note: input.childName?.trim() || null,
     removedAt: null,
     removedById: null,
+    // Поставили заново — это новая привязка: прежняя отметка «прошёл» к ней не относится.
+    completedAt: null,
+    completedById: null,
   };
+  if (previous) await reopenRemovedBonus(previous.id);
   const row = previous
     ? await prisma.partnerAttribution.update({
         where: { id: previous.id },
@@ -816,6 +820,23 @@ export async function attachToSchool(input: {
   return { ok: true, attributionId: row.id };
 }
 
+const REMOVED_REASON = "убран из акции";
+const SCHOOL_REMOVED_REASON = "школу убрали";
+
+/**
+ * Бонус, снятый вместе с привязкой, снова решает правило — когда привязку
+ * поставили заново (§ школьная акция: «поставили заново после снятия — бонус
+ * считается заново той же строкой»). Снятие помечалось ручным, и пересчёт
+ * такой бонус не трогал никогда: человек возвращался в акцию, приходил на
+ * приём, а школа бонуса не получала.
+ */
+async function reopenRemovedBonus(attributionId: string): Promise<void> {
+  await prisma.partnerBonus.updateMany({
+    where: { attributionId, status: "REVERSED", reverseReason: REMOVED_REASON },
+    data: { manual: false },
+  });
+}
+
 /** Снять привязку. Строка остаётся, бонус по ней снимается с причиной. */
 export async function detachFromSchool(input: {
   companyId: string;
@@ -834,7 +855,7 @@ export async function detachFromSchool(input: {
     // Убрали из акции — бонус снимается и тогда, когда его ставили руками.
     await prisma.partnerBonus.updateMany({
       where: { attributionId: input.attributionId, status: "EARNED" },
-      data: { status: "REVERSED", reversedAt: new Date(), reverseReason: "убран из акции", manual: true, setById: input.actorId },
+      data: { status: "REVERSED", reversedAt: new Date(), reverseReason: REMOVED_REASON, manual: true, setById: input.actorId },
     });
     await recomputePartnerBonuses(input.companyId);
   }
@@ -919,8 +940,13 @@ export async function attachByAgent(input: {
     note: null,
     removedAt: null,
     removedById: null,
+    completedAt: null,
+    completedById: null,
   };
-  if (previous) await prisma.partnerAttribution.update({ where: { id: previous.id }, data });
+  if (previous) {
+    await reopenRemovedBonus(previous.id);
+    await prisma.partnerAttribution.update({ where: { id: previous.id }, data });
+  }
   else
     await prisma.partnerAttribution.create({
       data: { ...data, companyId: input.companyId, promoId: school.promo.id, patientId: input.patientId, childNo: 1 },
@@ -993,38 +1019,52 @@ function itemsOf(raw: unknown): PromoItem[] {
 /** Идентификатор единственной акции клиники; нет — заводится с составом с макета. */
 export async function ensureSchoolPromo(companyId: string): Promise<string> {
   const existing = await prisma.promo.findFirst({ where: { companyId }, orderBy: { createdAt: "asc" }, select: { id: true, items: true, serviceIds: true } });
-  const services = (
-    await prisma.service.findMany({ where: { companyId }, select: { yclientsServiceId: true, title: true, price: true } })
-  ).map((s) => ({ ...s, price: num(s.price) }));
+  // Прайс нужен только для связывания состава — на каждое открытие экрана его не читаем.
+  const priced = async () =>
+    (await prisma.service.findMany({ where: { companyId }, select: { yclientsServiceId: true, title: true, price: true } })).map((s) => ({
+      ...s,
+      price: num(s.price),
+    }));
   if (existing) {
     // Акцию завели до того, как у неё появился состав, — дописываем его, ничего не теряя.
     if (itemsOf(existing.items).length === 0) {
-      const items = linkItems(services);
+      const items = linkItems(await priced());
       const ids = [...new Set([...existing.serviceIds, ...items.flatMap((i) => (i.yclientsServiceId ? [i.yclientsServiceId] : []))])];
       await prisma.promo.update({ where: { id: existing.id }, data: { items: items as unknown as object[], serviceIds: ids } });
     }
     return existing.id;
   }
-  const items = linkItems(services);
+  const items = linkItems(await priced());
   const endsAt = new Date(clinicDayRange(new Date(`${SCHOOL_PROMO.endsOn}T12:00:00Z`)).end.getTime() - 1);
-  const created = await prisma.promo.create({
-    data: {
-      companyId,
-      slug: SCHOOL_PROMO.slug,
-      name: SCHOOL_PROMO.name,
-      description: SCHOOL_PROMO.description,
-      priceTotal: SCHOOL_PROMO.priceTotal,
-      priceRegular: SCHOOL_PROMO.priceRegular,
-      ageMin: SCHOOL_PROMO.ageMin,
-      ageMax: SCHOOL_PROMO.ageMax,
-      startsAt: startOfClinicDay(),
-      endsAt,
-      bonusAmount: SCHOOL_PROMO.bonusAmount,
-      items: items as unknown as object[],
-      serviceIds: items.flatMap((i) => (i.yclientsServiceId ? [i.yclientsServiceId] : [])),
-    },
-    select: { id: true },
-  });
+  /**
+   * Два первых открытия экрана в одну секунду (две вкладки) — обе дошли бы до
+   * создания, и вторая упала бы на уникальности (клиника, slug) ошибкой на
+   * весь экран. Проигравшая берёт то, что создала первая.
+   */
+  const created = await prisma.promo
+    .create({
+      data: {
+        companyId,
+        slug: SCHOOL_PROMO.slug,
+        name: SCHOOL_PROMO.name,
+        description: SCHOOL_PROMO.description,
+        priceTotal: SCHOOL_PROMO.priceTotal,
+        priceRegular: SCHOOL_PROMO.priceRegular,
+        ageMin: SCHOOL_PROMO.ageMin,
+        ageMax: SCHOOL_PROMO.ageMax,
+        startsAt: startOfClinicDay(),
+        endsAt,
+        bonusAmount: SCHOOL_PROMO.bonusAmount,
+        items: items as unknown as object[],
+        serviceIds: items.flatMap((i) => (i.yclientsServiceId ? [i.yclientsServiceId] : [])),
+      },
+      select: { id: true },
+    })
+    .catch(async (e) => {
+      const again = await prisma.promo.findFirst({ where: { companyId }, orderBy: { createdAt: "asc" }, select: { id: true } });
+      if (again) return again;
+      throw e;
+    });
   return created.id;
 }
 
@@ -1087,13 +1127,15 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
       select: { yclientsServiceId: true, title: true, price: true, isActive: true },
     }),
     prisma.partnerSchool.findMany({ where: { companyId, promoId: id }, orderBy: { createdAt: "asc" } }),
+    // Одним запросом и действующие, и снятые: снятые нужны только итогам.
     prisma.partnerAttribution.findMany({
-      where: { companyId, promoId: id, removedAt: null },
+      where: { companyId, promoId: id },
       orderBy: { attributedAt: "desc" },
       select: {
         id: true,
         patientId: true,
         schoolId: true,
+        removedAt: true,
         childNo: true,
         note: true,
         source: true,
@@ -1111,13 +1153,11 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
       select: { id: true, topic: true, question: true, answer: true, isActive: true, needsDoctorApproval: true, approvedAt: true },
     }),
   ]);
-  const staffIds = [...new Set(rows.map((r) => r.createdById).filter((x): x is string => Boolean(x)))];
+  const all = rows;
+  const live = rows.filter((r) => r.removedAt == null);
+  const staffIds = [...new Set(live.map((r) => r.createdById).filter((x): x is string => Boolean(x)))];
   const staff = staffIds.length ? await prisma.staffUser.findMany({ where: { id: { in: staffIds } }, select: { id: true, name: true } }) : [];
   const staffName = new Map(staff.map((u) => [u.id, u.name]));
-  const all = await prisma.partnerAttribution.findMany({
-    where: { companyId, promoId: id },
-    select: { schoolId: true, removedAt: true, bonus: { select: { status: true, amount: true } } },
-  });
   const totalsOf = (filter: (r: (typeof all)[number]) => boolean) =>
     schoolTotals(all.filter(filter).map((r) => ({ removed: r.removedAt != null, bonus: r.bonus ? { status: r.bonus.status, amount: num(r.bonus.amount) } : null })));
   const items = itemsOf(p.items);
@@ -1149,7 +1189,7 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
       reportToken: s.reportToken,
       totals: totalsOf((r) => r.schoolId === s.id),
     })),
-    participants: rows.map((r) => ({
+    participants: live.map((r) => ({
       attributionId: r.id,
       patientId: r.patientId,
       patientName: r.patient.name ?? "без имени",
@@ -1214,11 +1254,20 @@ export async function searchPatientsForPromo(companyId: string, q: string): Prom
 export async function markParticipantDone(companyId: string, actorId: string | null, attributionId: string, now = new Date()): Promise<void> {
   const a = await prisma.partnerAttribution.findFirst({
     where: { id: attributionId, companyId, removedAt: null },
-    select: { id: true, schoolId: true, bonusAmountFrozen: true, bonus: { select: { id: true } } },
+    select: { id: true },
   });
   if (!a) throw new Error("Участник не найден или уже убран из акции.");
   await prisma.partnerAttribution.update({ where: { id: a.id }, data: { completedAt: now, completedById: actorId } });
-  if (!a.schoolId) return;
+  await earnManualBonus(companyId, actorId, a.id, now);
+}
+
+/** Ручной бонус школе за участника; без школы — нечего начислять. */
+async function earnManualBonus(companyId: string, actorId: string | null, attributionId: string, now: Date): Promise<void> {
+  const a = await prisma.partnerAttribution.findFirst({
+    where: { id: attributionId, companyId, removedAt: null },
+    select: { id: true, schoolId: true, bonusAmountFrozen: true, bonus: { select: { id: true } } },
+  });
+  if (!a?.schoolId) return;
   const data = {
     status: "EARNED" as const,
     amount: a.bonusAmountFrozen,
@@ -1252,19 +1301,39 @@ export async function revokeParticipantBonus(companyId: string, actorId: string 
   if (!r.count) throw new Error("Начисленного бонуса нет.");
 }
 
-/** Сменить школу участника (или убрать её). Бонус переходит за школой; без школы — снимается. */
+/**
+ * Сменить школу участника (или убрать её). Бонус переходит за школой; без
+ * школы — снимается. Школу вернули — бонус, снятый из-за её отсутствия,
+ * возвращается; участник уже отмечен «прошёл», а школу поставили позже —
+ * бонус начисляется сейчас: иначе отметка «прошёл» без школы навсегда
+ * оставляла школу без бонуса.
+ */
 export async function setParticipantSchool(companyId: string, actorId: string | null, attributionId: string, schoolId: string | null): Promise<void> {
   if (schoolId) {
-    const ok = await prisma.partnerSchool.findFirst({ where: { id: schoolId, companyId }, select: { id: true } });
-    if (!ok) throw new Error("Школа не найдена.");
+    const ok = await prisma.partnerSchool.findFirst({ where: { id: schoolId, companyId, isActive: true }, select: { id: true } });
+    if (!ok) throw new Error("Школа не найдена или выключена.");
   }
-  const r = await prisma.partnerAttribution.updateMany({ where: { id: attributionId, companyId, removedAt: null }, data: { schoolId } });
-  if (!r.count) throw new Error("Участник не найден.");
-  if (schoolId) await prisma.partnerBonus.updateMany({ where: { attributionId }, data: { schoolId } });
-  else
+  const a = await prisma.partnerAttribution.findFirst({
+    where: { id: attributionId, companyId, removedAt: null },
+    select: { id: true, completedAt: true, bonus: { select: { status: true, reverseReason: true, triggeredByAppointmentId: true } } },
+  });
+  if (!a) throw new Error("Участник не найден.");
+  await prisma.partnerAttribution.update({ where: { id: a.id }, data: { schoolId } });
+  if (schoolId) {
+    await prisma.partnerBonus.updateMany({ where: { attributionId }, data: { schoolId } });
+    if (a.bonus?.status === "REVERSED" && a.bonus.reverseReason === SCHOOL_REMOVED_REASON) {
+      await prisma.partnerBonus.updateMany({
+        where: { attributionId, status: "REVERSED" },
+        // Бонус по визиту снова решает правило: отменят визит — снимется сам.
+        data: { status: "EARNED", reversedAt: null, reverseReason: null, manual: a.bonus.triggeredByAppointmentId == null, setById: actorId },
+      });
+    } else if (a.completedAt && !a.bonus) {
+      await earnManualBonus(companyId, actorId, a.id, new Date());
+    }
+  } else
     await prisma.partnerBonus.updateMany({
       where: { attributionId, status: "EARNED" },
-      data: { status: "REVERSED", reversedAt: new Date(), reverseReason: "школу убрали", manual: true, setById: actorId },
+      data: { status: "REVERSED", reversedAt: new Date(), reverseReason: SCHOOL_REMOVED_REASON, manual: true, setById: actorId },
     });
   await recomputePartnerBonuses(companyId);
 }
