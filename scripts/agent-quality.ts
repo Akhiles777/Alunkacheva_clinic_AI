@@ -51,7 +51,7 @@ async function main() {
       _count: { _all: true },
     });
     for (const r of rows.sort((a, b) => b._count._all - a._count._all)) {
-      const label = VERDICT_LABEL[r.verdict as Verdict] ?? r.verdict;
+      const label = VERDICT_LABEL[r.verdict as Verdict] ?? (r.verdict === "UNPARSED" ? "ответ проверки не разобран" : r.verdict);
       console.log(`  ${String(r._count._all).padStart(4)}  ${r.verdict} — ${label}`);
     }
     console.log("");

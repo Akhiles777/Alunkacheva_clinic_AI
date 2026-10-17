@@ -101,7 +101,18 @@ export const VERDICT_LABEL: Record<Verdict, string> = {
  * молчаливое «OK» на непонятном ответе прячет ровно то, что мы ищем.
  */
 export function parseVerdict(raw: string): { verdict: Verdict; comment: string } | null {
-  const text = raw.trim();
+  /**
+   * Обёртку вокруг вердикта снимаем: «ВЕРДИКТ: OK — …», «**OK**: …», «Вердикт —
+   * DEVIATION». Модель так и писала, буквально следуя инструкции «ВЕРДИКТ:
+   * пояснение», и проверка считалась неразобранной — а неразобранная уходила
+   * модели снова следующей ночью.
+   */
+  const text = raw
+    .trim()
+    .replace(/^[*_«"'`\s]+/u, "")
+    .replace(/^вердикт\s*[:—–-]?\s*/iu, "")
+    .replace(/^[*_«"'`\s]+/u, "")
+    .replace(/^(OK|DEVIATION|UNSUPPORTED_CLAIM|MEDICAL_WITHOUT_SOURCE|UNFINISHED)[*_»"'`]+/i, "$1");
   /**
    * `[\s\S]*` вместо флага `s`: цель сборки ниже es2018, и флаг там не
    * существует — регулярное выражение просто не компилируется.

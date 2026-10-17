@@ -69,6 +69,13 @@ export interface SampleItem {
 
 export interface SamplePreview {
   items: SampleItem[];
+  /**
+   * Прайс и врачи — общая часть для всех ответов выборки. Уходит модели
+   * отдельным блоком с пометкой для кэша провайдера: прежде она была частью
+   * `source` у КАЖДОГО ответа, и весь прайс клиники оплачивался заново в
+   * каждом из десяти запросов за тик.
+   */
+  catalogue: string;
   /** Сколько проверок уже сделано за неделю и сколько осталось сегодня. */
   spent: number;
   budget: number;
@@ -86,6 +93,7 @@ export interface SamplePreview {
 export async function previewSample(companyId: string): Promise<SamplePreview> {
   const empty = (skipped: string | null, spent = 0, budget = 0): SamplePreview => ({
     items: [],
+    catalogue: "",
     spent,
     budget,
     skipped,
@@ -233,12 +241,11 @@ export async function previewSample(companyId: string): Promise<SamplePreview> {
         .map((id) => entryById.get(id))
         .filter(Boolean)
         .map((e) => `«${e!.topic}»: ${e!.answer}`)
-        .concat(catalogue)
         .join("\n"),
     });
   }
 
-  return { items, spent, budget, skipped: null };
+  return { items, catalogue, spent, budget, skipped: null };
 }
 
 /**
@@ -252,7 +259,7 @@ export async function runQualityCheck(companyId: string): Promise<QualityRunResu
   const key = process.env.ROUTER_AI;
   if (!key) return { sampled: 0, checked: 0, problems: 0, skipped: "нет ключа модели" };
 
-  const { items, budget, skipped } = await previewSample(companyId);
+  const { items, catalogue, budget, skipped } = await previewSample(companyId);
   if (skipped) return { sampled: 0, checked: 0, problems: 0, skipped };
 
   let checked = 0;
@@ -264,6 +271,7 @@ export async function runQualityCheck(companyId: string): Promise<QualityRunResu
       question: item.question,
       answer: item.answer,
       source: item.source,
+      catalogue,
     });
 
     /**
@@ -280,7 +288,15 @@ export async function runQualityCheck(companyId: string): Promise<QualityRunResu
      * записываем ничего: «OK» на неразобранном ответе спрятал бы ровно то,
      * что мы ищем.
      */
-    if (result.status === "unparsed") continue;
+    /**
+     * Неразобранная проверка записывается тоже — отметкой UNPARSED, без
+     * пояснения. Пока её не записывали, ответ оставался в очереди, не тратил
+     * недельный бюджет и уходил модели снова каждые полчаса, каждую ночь:
+     * десять одних и тех же запросов с полным прайсом за тик, без единого
+     * вердикта. На экран качества такая строка не попадает.
+     */
+    const verdict = result.status === "ok" ? result.verdict : UNPARSED;
+    const comment = result.status === "ok" ? result.comment : "";
 
     /**
      * `create`, а не `upsert`: `agentRunId` уникален, и повторный прогон до
@@ -293,10 +309,11 @@ export async function runQualityCheck(companyId: string): Promise<QualityRunResu
         companyId,
         agentRunId: item.runId,
         reason: item.reason,
-        verdict: result.verdict,
-        comment: result.comment,
+        verdict,
+        comment,
       },
     });
+    if (result.status !== "ok") continue;
     checked += 1;
     if (needsReview(result.verdict)) problems += 1;
   }
@@ -318,11 +335,15 @@ type JudgeResult =
   /** Ответила, но вердикта в ответе нет. Пропускаем этот ответ. */
   | { status: "unparsed" };
 
+/** Проверка состоялась, а вердикт из ответа модели не разобран. */
+export const UNPARSED = "UNPARSED";
+
 async function judge(input: {
   key: string;
   question: string;
   answer: string;
   source: string;
+  catalogue: string;
 }): Promise<JudgeResult> {
   const rules = [
     "Ты проверяешь ответ справочной службы медицинской клиники.",
@@ -333,13 +354,15 @@ async function judge(input: {
     "UNSUPPORTED_CLAIM — в ответе есть утверждение, цена, время или показание, которых в справке нет.",
     "MEDICAL_WITHOUT_SOURCE — ответ на медицинскую тему без опоры на справку.",
     "UNFINISHED — служба могла довести разговор до конца, но оборвала его или ответила не по делу.",
-    "Формат ответа строго: ВЕРДИКТ: пояснение. Ничего больше.",
+    "Прайс и список специалистов — тоже справка клиники: цены и длительность из прайса утверждениями без справки не считаются.",
+    // «ВЕРДИКТ: пояснение» модель понимала буквально и писала само слово «ВЕРДИКТ» — такой ответ не разбирался.
+    "Ответ — одна строка: первым словом сам вердикт латиницей, затем двоеточие и пояснение. Пример: «UNSUPPORTED_CLAIM: в справке нет цены 3000 ₽». Один вердикт, ничего больше.",
   ].join(" ");
 
   const body = [
     `Вопрос пациента: ${input.question || "(не сохранился)"}`,
     `Ответ службы: ${input.answer}`,
-    input.source ? `Справка клиники:\n${input.source}` : "Справка клиники: (ответ дан без справки)",
+    input.source ? `Записи справочника, на которые опирался ответ:\n${input.source}` : "Записи справочника: (ответ дан без записей справочника)",
   ].join("\n\n");
 
   const controller = new AbortController();
@@ -353,7 +376,11 @@ async function judge(input: {
         temperature: 0,
         max_tokens: 200,
         messages: [
-          { role: "system", content: rules },
+          {
+            role: "system",
+            // Правила и прайс одинаковы для всей выборки — кэш провайдера, как у аналитика.
+            content: [{ type: "text", text: `${rules}\n\n${input.catalogue}`, cache_control: { type: "ephemeral" } }],
+          },
           { role: "user", content: body },
         ],
       }),
@@ -385,7 +412,7 @@ export interface QualityProblem {
 /** Проблемные ответы, которые ещё не смотрел человек. */
 export async function qualityProblems(companyId: string, limit = 30): Promise<QualityProblem[]> {
   const rows = await prisma.agentQualityCheck.findMany({
-    where: { companyId, verdict: { not: "OK" }, reviewedAt: null },
+    where: { companyId, verdict: { notIn: ["OK", UNPARSED] }, reviewedAt: null },
     orderBy: { checkedAt: "desc" },
     take: limit,
     select: {
@@ -451,7 +478,8 @@ export interface QualitySummary {
 
 export async function qualitySummary(companyId: string): Promise<QualitySummary> {
   const rows = await prisma.agentQualityCheck.findMany({
-    where: { companyId },
+    // Неразобранная проверка — не проверка: в «проверено» и «отклонения» не идёт.
+    where: { companyId, verdict: { not: UNPARSED } },
     select: { verdict: true, confirmed: true, checkedAt: true },
     orderBy: { checkedAt: "asc" },
   });

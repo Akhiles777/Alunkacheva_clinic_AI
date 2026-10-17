@@ -76,6 +76,12 @@ describe("разбор вердикта", () => {
       comment: "назвал цену, которой нет в прайсе",
     });
     expect(parseVerdict("ok — всё по справке")?.verdict).toBe("OK");
+    // Модель буквально следовала «Формат: ВЕРДИКТ: пояснение» — такой ответ не разбирался и уходил на проверку снова.
+    expect(parseVerdict("ВЕРДИКТ: OK — ответ опирается на прайс")?.verdict).toBe("OK");
+    expect(parseVerdict("Вердикт — UNSUPPORTED_CLAIM: цены 3000 ₽ нет")?.verdict).toBe("UNSUPPORTED_CLAIM");
+    expect(parseVerdict("**DEVIATION**: врач назван не тот")).toEqual({ verdict: "DEVIATION", comment: "врач назван не тот" });
+    expect(parseVerdict("ВЕРДИКТ: DEVIATION… хотя нет, ВЕРДИКТ: OK")).toBeNull();
+    expect(parseVerdict("Ответ хороший")).toBeNull();
     // Передумала по ходу ответа — проверка не состоялась (демо-прогон 12 октября).
     expect(parseVerdict("DEVIATION: часы верные, ошибки нет.\n\nВЕРДИКТ: OK: ответ точно воспроизводит справку")).toBeNull();
   });
