@@ -13,6 +13,7 @@
  *     они оставили пациента без ответа агента и попали в «первый ответ человека».
  *
  *   npx tsx --env-file=.env scripts/promo-diagnose.ts [--date=2026-10-21] [--time=10:30] [--days=60]
+ *     [--services=32377789,32378309,32378364,32378554] [--from=ГГГГ-ММ-ДД] [--to=ГГГГ-ММ-ДД]
  */
 import { prisma } from "../lib/db";
 import { getYclientsClient } from "../lib/integrations/yclients/client";
@@ -26,7 +27,15 @@ const DAYS = Number(arg("days", "60"));
 
 /** Шаблоны уведомлений YCLIENTS — по началу текста. */
 const NOTICE =
-  /^\s*(?:вы\s+записаны\s+на\s+услугу|отменена\s+запись|ваша\s+запись|напоминаем[,\s]|запись\s+(?:перенесена|изменена)|вы\s+записаны\s+к)/iu;
+  /^\s*(?:вы\s+записаны\s+на\s+услугу|отменена\s+запись|ваша\s+запись|напоминаем[,\s]|запись\s+(?:перенесена|изменена|подтверждена)|вы\s+записаны\s+к|(?:добрый\s+(?:день|вечер)|доброе\s+утро|здравствуйте)[\s\S]{0,40}?вы\s+записаны)/iu;
+
+/** Образец текста без имён и цифр — чтобы показать шаблон, не показав человека. */
+const masked = (t: string) =>
+  t
+    .slice(0, 220)
+    .replace(/(?<=[\s«"(,.])\p{Lu}\p{Ll}+/gu, "«Имя»")
+    .replace(/\d/g, "#")
+    .replace(/\n/g, " ⏎ ");
 
 const money = (d: unknown) => Number(String(d ?? 0));
 
@@ -171,6 +180,89 @@ async function part01(companyId: string) {
   }
 }
 
+/**
+ * Записи с услугами акции за отрезок — по НОМЕРАМ услуг YCLIENTS, а не по
+ * времени: «Школьный ресурс 6+» в YCLIENTS — составная услуга, и её части
+ * («Школьный ресурс» 3210 / 800 / 2290) могут стоять в разных записях у разных
+ * специалистов в разное время.
+ *
+ *   --services=32377789,32378309,32378364,32378554 --from=2026-10-01 --to=2026-12-31
+ */
+async function part01b(companyId: string) {
+  const ids = new Set(
+    arg("services", "32377789,32378309,32378364,32378554")
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter(Boolean),
+  );
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const from = arg("from", day(new Date(Date.now() - 30 * 86_400_000)));
+  const to = arg("to", day(new Date(Date.now() + 60 * 86_400_000)));
+  console.log(`\n═══ 0.1б ЗАПИСИ С УСЛУГАМИ АКЦИИ ${[...ids].join(", ")} · ${from} — ${to} ═══`);
+  const client = await getYclientsClient(companyId);
+  if (!client) {
+    console.log("  ключи YCLIENTS не заданы");
+    return;
+  }
+  const found: YclientsRecord[] = [];
+  let scanned = 0;
+  for (let page = 1; page <= 50; page += 1) {
+    const res = await client.getPage<YclientsRecord[]>(client.endpoints.records(client.creds.companyId), {
+      start_date: from,
+      end_date: to,
+      page,
+      count: 200,
+    });
+    const rows = res.data ?? [];
+    scanned += rows.length;
+    found.push(...rows.filter((r) => (r.services ?? []).some((s) => ids.has(s.id))));
+    if (rows.length < 200) break;
+  }
+  console.log(`  просмотрено записей: ${scanned}; с услугами акции: ${found.length}`);
+  const byVisit = new Map<string, YclientsRecord[]>();
+  for (const r of found) {
+    const key = r.visit_id ? `visit ${r.visit_id}` : `запись ${r.id}`;
+    byVisit.set(key, [...(byVisit.get(key) ?? []), r]);
+  }
+  for (const [key, rows] of byVisit) {
+    console.log(`\n  ${key}: записей ${rows.length}`);
+    for (const r of rows) {
+      console.log(
+        `    запись ${r.id} · ${r.datetime} · ${Math.round((r.seance_length ?? 0) / 60)} мин · ${r.staff?.name ?? r.staff_id}` +
+          ` · клиент №${r.client?.id ?? "—"} · посещение ${r.visit_attendance ?? "—"} · удалена ${r.deleted ? "да" : "нет"}` +
+          ` · ресурсы ${(r.resource_instances ?? []).map((x) => x.resource_id).join(",") || "—"}`,
+      );
+      for (const s of r.services ?? []) {
+        console.log(
+          `        ${ids.has(s.id) ? "★" : " "} ${s.id} «${s.title ?? ""}»: cost ${s.cost ?? "—"}, first_cost ${s.first_cost ?? "—"}, ` +
+            `discount ${s.discount ?? "—"}, amount ${s.amount ?? "—"}`,
+        );
+      }
+    }
+    const sum = rows.flatMap((r) => r.services ?? []).reduce((a, s) => a + (s.cost ?? 0), 0);
+    console.log(`    сумма cost по визиту: ${sum} ₽`);
+    const ours = await prisma.appointment.findMany({
+      where: { companyId, yclientsRecordId: { in: rows.map((r) => r.id) } },
+      select: {
+        yclientsRecordId: true,
+        status: true,
+        revenue: true,
+        visitKind: true,
+        deletedAt: true,
+        room: { select: { name: true } },
+        staff: { select: { name: true } },
+      },
+    });
+    for (const a of ours) {
+      console.log(
+        `    у нас: запись ${a.yclientsRecordId} · ${a.staff.name} · ${a.room?.name ?? "кабинет —"} · ${a.status}` +
+          ` · выручка ${money(a.revenue)} · вид ${a.visitKind ?? "—"}${a.deletedAt ? " · УДАЛЕНА" : ""}`,
+      );
+    }
+    if (ours.length < rows.length) console.log(`    ► у нас ${ours.length} из ${rows.length} записей`);
+  }
+}
+
 async function part02(companyId: string) {
   console.log(`\n═══ 0.2 УВЕДОМЛЕНИЯ YCLIENTS В WHATSAPP (${DAYS} дн.) ═══`);
   const since = new Date(Date.now() - DAYS * 86_400_000);
@@ -189,7 +281,19 @@ async function part02(companyId: string) {
     orderBy: { createdAt: "asc" },
   });
   const notices = phoneSent.filter((m) => NOTICE.test(m.body));
-  console.log(`  реплик «сотрудника» с телефона: ${phoneSent.length}; из них по шаблону уведомления YCLIENTS: ${notices.length}`);
+  console.log(`  реплик «сотрудника» с телефона: ${phoneSent.length}; из них похожих на уведомление YCLIENTS: ${notices.length}`);
+  // По шаблону — сколько и один образец целиком (без имён и цифр): видно, где автоматика, а где человек.
+  const byTemplate = new Map<string, { n: number; sample: string }>();
+  for (const m of notices) {
+    const key = masked(m.body).slice(0, 40);
+    const cur = byTemplate.get(key);
+    if (cur) cur.n += 1;
+    else byTemplate.set(key, { n: 1, sample: masked(m.body) });
+  }
+  console.log(`  шаблоны (по началу текста) и образец каждого:`);
+  for (const [, t] of [...byTemplate].sort((a, b) => b[1].n - a[1].n).slice(0, 15)) {
+    console.log(`    ${String(t.n).padStart(4)}  ${t.sample}`);
+  }
 
   // Начала текстов — чтобы увидеть шаблоны, которых нет в списке. Слова с заглавной (имена) и цифры скрыты.
   const prefixes = new Map<string, number>();
@@ -242,6 +346,7 @@ async function main() {
     })) ?? (await prisma.company.findFirstOrThrow({ orderBy: { createdAt: "asc" }, select: { id: true, name: true } }));
   console.log(`клиника: ${company.name}`);
   await part01(company.id).catch((e) => console.log(`  0.1 не удалось: ${(e as Error).message}`));
+  await part01b(company.id).catch((e) => console.log(`  0.1б не удалось: ${(e as Error).message}`));
   await part02(company.id).catch((e) => console.log(`  0.2 не удалось: ${(e as Error).message}`));
 }
 
