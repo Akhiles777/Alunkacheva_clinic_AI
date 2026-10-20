@@ -40,7 +40,18 @@ rm -rf "$BUILD_DIR"
 # описания для проверки типов, а не код.
 rm -rf "$LIVE_DIR/types" "$LIVE_DIR/dev/types"
 
-NEXT_DIST_DIR="$BUILD_DIR" npm run build
+# Память сборки — своя, не по умолчанию Node.
+#
+# Проверка типов идёт в отдельном процессе Next, и его куча по умолчанию —
+# около гигабайта. Проект перерос её 20 октября: «Running TypeScript» упал с
+# «JavaScript heap out of memory» на ~970 МБ, выкатка остановилась до подмены,
+# и сервер остался на прежней версии. Предел задаётся окружением
+# (`BUILD_MAX_MEMORY_MB`): на сервере 1,9 ГБ и рядом второй проект, подбирать
+# его надо по фактам, а не правкой кода. Работающему приложению это число не
+# касается — у него свой предел, `PM2_MAX_MEMORY_MB`.
+BUILD_MEM="${BUILD_MAX_MEMORY_MB:-1536}"
+NODE_OPTIONS="--max-old-space-size=${BUILD_MEM} ${NODE_OPTIONS:-}" \
+  NEXT_DIST_DIR="$BUILD_DIR" npm run build
 
 # Сюда попадаем только при успешной сборке: set -e прервал бы выше.
 if [ ! -d "$BUILD_DIR" ]; then
