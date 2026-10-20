@@ -33,7 +33,16 @@ export interface PromoServiceConfig {
 export type PromoServiceWarning =
   | { kind: "renamed"; yclientsServiceId: number; was: string; now: string }
   | { kind: "missing"; yclientsServiceId: number; was: string | null }
-  | { kind: "inactive"; yclientsServiceId: number; title: string };
+  | { kind: "inactive"; yclientsServiceId: number; title: string }
+  /**
+   * Выбрана руками, а название на ключевые слова не похоже: «Диагностика/
+   * консультация на БОС-терапию» за 1 000 ₽. Обычные приёмы такой услуги
+   * засчитываются визитами акции, и школа получает бонус за ребёнка, пришедшего
+   * не на акцию. Так она и попала на боевую акцию — её поставил прежний код по
+   * позиции состава, а не человек. Сами не убираем: выбор услуг — решение
+   * администратора, но молча такое стоять не должно.
+   */
+  | { kind: "unlike"; yclientsServiceId: number; title: string };
 
 export interface PromoServiceSet {
   /** Все номера, визиты по которым засчитываются. */
@@ -81,6 +90,8 @@ export function promoServiceSet(config: PromoServiceConfig, catalog: CatalogServ
       continue;
     }
     if (!s.isActive) warnings.push({ kind: "inactive", yclientsServiceId: id, title: s.title });
+    if (config.serviceKeywords.length && !titleMatches(s.title, config.serviceKeywords) && !(was && titleMatches(was, config.serviceKeywords)))
+      warnings.push({ kind: "unlike", yclientsServiceId: id, title: s.title });
     if (was && norm(was) !== norm(s.title)) warnings.push({ kind: "renamed", yclientsServiceId: id, was, now: s.title });
   }
 

@@ -48,7 +48,8 @@ async function main() {
       catalog,
     );
     console.log(`  услуги акции: ${set.ids.join(", ") || "НЕТ"} (выбрано ${set.chosen.length}, по названию ${set.byKeyword.length}, исключено ${set.excluded.length})`);
-    for (const w of set.warnings) console.log(`  ! ${w.kind}: услуга ${w.yclientsServiceId}`);
+    const titleOf = (id: number) => catalog.find((s) => s.yclientsServiceId === id)?.title ?? "?";
+    for (const w of set.warnings) console.log(`  ! ${w.kind}: услуга ${w.yclientsServiceId} «${titleOf(w.yclientsServiceId)}»`);
     const until = new Date(Math.min(graceEnd(promo).getTime(), Date.now() + 90 * 86_400_000));
     const rule = { serviceIds: set.ids, startsAt: promo.startsAt, endsAt: promo.endsAt };
 
@@ -180,6 +181,20 @@ async function main() {
     const bad6 = [...perVisit].filter(([key, n]) => n > Math.max(1, ...(ourVisits.get(key)?.units.values() ?? [1])));
     if (bad6.length) fail(`визиты дали больше бонусов, чем в них людей: ${bad6.map(([k, n]) => `${k} — ${n}`).join(", ")}`);
     else ok("ни один визит не дал больше бонусов, чем в нём людей (три специалиста — один бонус)");
+
+    // Визиты, попавшие в акцию только из-за выбранной услуги «не про акцию».
+    const unlike = new Set(set.warnings.filter((w) => w.kind === "unlike").map((w) => w.yclientsServiceId));
+    if (unlike.size) {
+      const onlyUnlike = liveOurs.filter((v) =>
+        v.records.every((vr) => {
+          const rec = records.find((r) => r.id === vr.id);
+          return (rec?.services ?? []).every((x) => x.service.yclientsServiceId == null || !set.ids.includes(x.service.yclientsServiceId) || unlike.has(x.service.yclientsServiceId));
+        }),
+      );
+      console.log(
+        `  ! визитов акции только по услуге «не про акцию»: ${onlyUnlike.length} (пришли ${onlyUnlike.filter((v) => v.arrivedRecordId).length}) — проверьте выбор услуг на экране акции`,
+      );
+    }
 
     const multi = liveOurs.filter((v) => v.records.length > 1).length;
     console.log(`  · визитов акции: ${liveOurs.length}, из нескольких записей: ${multi}, пришли: ${liveOurs.filter((v) => v.arrivedRecordId).length}`);

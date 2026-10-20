@@ -1287,6 +1287,8 @@ function warningText(w: PromoServiceWarning, titleOf: (id: number) => string): s
   if (w.kind === "renamed") return `Услуга «${w.was}» переименована в YCLIENTS в «${w.now}» — проверьте, что она всё ещё про акцию.`;
   if (w.kind === "missing")
     return `Услуги «${w.was ?? titleOf(w.yclientsServiceId)}» (${w.yclientsServiceId}) больше нет в YCLIENTS — визиты по ней не придут.`;
+  if (w.kind === "unlike")
+    return `Выбрана услуга «${w.title}» — по названию она не про акцию. Её обычные приёмы считаются визитами акции и дают бонус школе. Если она здесь случайно — снимите её в настройках ниже.`;
   return `Услуга «${w.title}» выключена в YCLIENTS.`;
 }
 

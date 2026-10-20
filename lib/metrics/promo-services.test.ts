@@ -57,6 +57,19 @@ describe("услуги акции", () => {
     });
   });
 
+  it("выбранная руками услуга не про акцию — предупреждение, но из состава не убирается", () => {
+    const catalog = [...CATALOG, { yclientsServiceId: 15009373, title: "Диагностика/консультация на БОС-терапию", isActive: true }];
+    const set = promoServiceSet({ ...base, serviceIds: [15009373, 32377789] }, catalog);
+    expect(set.ids).toContain(15009373);
+    expect(set.warnings).toEqual([{ kind: "unlike", yclientsServiceId: 15009373, title: "Диагностика/консультация на БОС-терапию" }]);
+    // Переименованная школьная услуга — предупреждение о переименовании, а не «не похожа».
+    const renamed = CATALOG.map((s) => (s.yclientsServiceId === 32377789 ? { ...s, title: "Чек-ап школьника" } : s));
+    const r = promoServiceSet({ ...base, serviceIds: [32377789], serviceSnapshot: snapshotOf([32377789], CATALOG) }, renamed);
+    expect(r.warnings.map((w) => w.kind)).toEqual(["renamed"]);
+    // Без ключевых слов сравнивать не с чем — молчим.
+    expect(promoServiceSet({ ...base, serviceKeywords: [], serviceIds: [15009373] }, catalog).warnings).toEqual([]);
+  });
+
   it("название сверяется без регистра, «ё» и кавычек", () => {
     expect(titleMatches("«ШКОЛЬНЫЙ ресурс»", ["Школьн"])).toBe(true);
     expect(titleMatches("Предшкольный курс", ["школьн"])).toBe(false);
