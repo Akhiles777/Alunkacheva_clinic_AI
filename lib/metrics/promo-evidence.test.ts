@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { buildEvidenceInput, evidencePrompt, maskForModel, parseEvidenceAnswer, verifyEvidence, type DialogMessageForCheck } from "./promo-evidence";
+import {
+  buildEvidenceInput,
+  contradictionPrompt,
+  evidencePrompt,
+  maskForModel,
+  mentionsSource,
+  parseContradictionAnswer,
+  parseEvidenceAnswer,
+  verifyEvidence,
+  type DialogMessageForCheck,
+} from "./promo-evidence";
 
 const at = (m: number) => new Date(Date.UTC(2026, 9, 20, 7, m));
 const msg = (id: string, i: number, authorType: DialogMessageForCheck["authorType"], body: string): DialogMessageForCheck => ({
@@ -69,5 +79,36 @@ describe("улика школы в переписке", () => {
   it("имя в середине фразы заменяется, начало предложения — нет", () => {
     expect(maskForModel("Здравствуйте, это Зарема", [], [])).toBe("Здравствуйте, это [ИМЯ]");
     expect(maskForModel("Учительница Мадина из Ростока посоветовала", ["Росток"], [])).toBe("Учительница [ИМЯ] из Ростока посоветовала");
+  });
+});
+
+describe("пришла по метке, а назвала другую школу", () => {
+  it("модель не зовём, если об источнике в словах пациента ничего нет — сама фраза-метка не в счёт", () => {
+    expect(mentionsSource(["Здравствуйте! Хочу записать ребёнка на школьный ресурс", "Можно на субботу?"], "школьный ресурс")).toBe(false);
+    expect(mentionsSource(["Интересует запись школьного ресурса"], "школьный ресурс")).toBe(false);
+    expect(mentionsSource(["Хочу на школьный ресурс", "Мы из школы №5, нам там сказали"], "школьный ресурс")).toBe(true);
+    expect(mentionsSource(["В садике посоветовали"], "школьный ресурс")).toBe(true);
+    expect(mentionsSource(["увидела у блогера"], "школьный ресурс")).toBe(true);
+    expect(mentionsSource(["Хочу инструкцию к анализам"], "школьный ресурс")).toBe(false);
+  });
+
+  it("«да» — назван другой источник; цитата сверяется кодом, из сообщения клиники — отказ", () => {
+    const input = buildEvidenceInput(
+      [
+        { id: "a", direction: "IN", authorType: "PATIENT", body: "Хочу записать ребёнка на школьный ресурс", createdAt: new Date("2026-10-20T10:00:00Z") },
+        { id: "b", direction: "OUT", authorType: "BOT", body: "Подскажите, вы от школы «Росток»?", createdAt: new Date("2026-10-20T10:01:00Z") },
+        { id: "c", direction: "IN", authorType: "PATIENT", body: "Нет, мы из гимназии 7, там посоветовали", createdAt: new Date("2026-10-20T10:02:00Z") },
+      ],
+      "Росток",
+      [],
+      [],
+    );
+    expect(contradictionPrompt(input).system).toMatch(/ДРУГОЙ источник/);
+    const yes = parseContradictionAnswer('{"otherSource": true, "evidenceMessageId": "m3", "evidenceQuote": "мы из гимназии 7", "reason": "гимназия 7"}')!;
+    expect(verifyEvidence(yes, input)).toMatchObject({ result: "ATTRIBUTED", messageId: "c" });
+    const fromClinic = parseContradictionAnswer('{"otherSource": true, "evidenceMessageId": "m2", "evidenceQuote": "вы от школы", "reason": ""}')!;
+    expect(verifyEvidence(fromClinic, input).result).toBe("REJECTED_BY_VERIFIER");
+    expect(verifyEvidence(parseContradictionAnswer('{"otherSource": false, "reason": "не назван"}')!, input).result).toBe("NOT_FROM_SCHOOL");
+    expect(parseContradictionAnswer("не знаю")).toBeNull();
   });
 });

@@ -19,8 +19,11 @@ describe("разбор переписки акции ничего не трог�
   ])("в исходнике нет %s", (re) => {
     expect(src).not.toMatch(re);
   });
-  it("привязка по улике создаётся только «на проверке»", () => {
+  it("привязка по улике создаётся только «на проверке»; подтверждает и отклоняет только человек", () => {
     expect(src).toMatch(/reviewStatus: "REVIEW"/);
-    expect(src).not.toMatch(/reviewStatus: "CONFIRMED"/);
+    // «CONFIRMED» встречается только в условиях выборки, никогда — в записываемых данных.
+    for (const line of src.split("\n").filter((l) => l.includes('reviewStatus: "CONFIRMED"'))) expect(line).toMatch(/where:/);
+    expect(src).not.toMatch(/reviewStatus: "REJECTED"/);
+    expect(src).not.toMatch(/removedAt: new Date|partnerAttribution\.delete/);
   });
 });

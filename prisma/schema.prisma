@@ -2647,6 +2647,9 @@ model AiAttributionCheck {
   /// Хэш того, что ушло модели: повтор — только если переписка изменилась.
   inputHash         String
   result            AiCheckResult
+  /// FIND — ищем улику «от школы» у непривязанного; CONTRADICT — у привязанного
+  /// по метке ищем упоминание ДРУГОЙ школы. Попытки и повторы считаются отдельно.
+  purpose           String        @default("FIND")
   evidenceMessageId String?
   evidenceQuote     String?
   reason            String?

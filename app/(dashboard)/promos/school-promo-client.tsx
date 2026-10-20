@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import QRCode from "qrcode";
 import { formatMoney, formatNumber } from "@/lib/format";
 import type { PromoParticipant, SchoolPromoView } from "@/lib/server/promos";
@@ -93,7 +93,8 @@ export function SchoolPromoClient({
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
         <div className="flex max-w-[1040px] flex-col gap-5">
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
-            <Tile label="По метке в ссылке" value={formatNumber(st.byMarker)} />
+            <Tile label="Переходов по ссылке" value={formatNumber(st.linkClicks)} hint="с начала акции" />
+            <Tile label="По ссылке" value={formatNumber(st.byMarker)} hint="написали «школьный ресурс»" />
             <Tile label="Подтверждено по переписке" value={formatNumber(st.byEvidence)} hint={st.manual ? `и вручную ${formatNumber(st.manual)}` : undefined} />
             <Tile label="На проверке" value={formatNumber(st.inReview)} accent={st.inReview > 0} />
             <Tile label="Повторные пациенты" value={formatNumber(st.returning)} hint="привязаны, бонуса нет" />
@@ -198,7 +199,7 @@ function Review({
       <header className="border-border-soft border-b px-5 py-3">
         <h2 className="text-sm font-medium">На проверке: {formatNumber(view.review.length)}</h2>
         <p className="text-text-subtle mt-0.5 text-xs">
-          Метку стёрли, но пациент сам написал про школу. Бонус начислится только после подтверждения. Отклонённое — окончательно.
+          Разбор переписки нашёл, откуда пациент: написал про нашу школу без ссылки — или пришёл по ссылке, но назвал другую школу. Бонус — только после «Подтвердить». Отклонённое — окончательно.
         </p>
       </header>
       <ul>
@@ -209,6 +210,11 @@ function Review({
                 {r.patientName}
               </Link>
               {r.returning ? <span className="text-text-subtle text-xs"> · повторный пациент — бонуса не будет</span> : null}
+              <p className="text-text-subtle mt-0.5 text-xs">
+                {r.confidence === "MARKER"
+                  ? "Пришла по ссылке школы, но в переписке назвала другой источник. «Подтвердить» — оставить за школой, «Отклонить» — не от школы."
+                  : "Ссылки не было, но в переписке написала про школу. «Подтвердить» — привязать к школе."}
+              </p>
               {r.evidenceQuote ? <p className="text-text mt-0.5 text-sm">«{r.evidenceQuote}»</p> : null}
               {r.conversationId ? (
                 <Link href={`/inbox?d=${encodeURIComponent(r.conversationId)}`} className="text-accent-text text-xs hover:underline">
@@ -255,44 +261,57 @@ function readableLink(link: string): string {
   }
 }
 
+const noSubscribe = () => () => {};
+
 function ShareLink({ view }: { view: SchoolPromoView }) {
+  /**
+   * Короткая ссылка — адрес самой платформы + `/children`: на листовке и в чате
+   * школы её можно напечатать и набрать руками, а куда она ведёт, решают
+   * настройки ниже (app/children/route.ts). Адрес берём из открытой вкладки:
+   * платформа работает на домене клиники, и ссылка совпадёт с ним сама.
+   */
+  // Адрес вкладки известен только в браузере; на сервере — null, без расхождения при гидрации.
+  const origin = useSyncExternalStore(noSubscribe, () => window.location.origin, () => null);
+  const shortLink = origin ? `${origin}/children` : null;
   const [qr, setQr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
-    if (!view.waLink) return;
+    if (!view.waLink || !shortLink) return;
     let alive = true;
-    QRCode.toDataURL(view.waLink, { margin: 1, width: 512, errorCorrectionLevel: "M" })
+    // QR — на короткую ссылку: меньше точек, легче считать с распечатки.
+    QRCode.toDataURL(shortLink, { margin: 1, width: 512, errorCorrectionLevel: "M" })
       .then((url) => alive && setQr(url))
       .catch(() => alive && setQr(null));
     return () => {
       alive = false;
     };
-  }, [view.waLink]);
+  }, [view.waLink, shortLink]);
 
   return (
     <Group
       title="Ссылка для школы"
-      hint={`Мама нажимает — открывается WhatsApp клиники с готовым текстом и меткой ${view.waMarker}. Сообщение с меткой привязывает пациента к школе само.`}
+      hint="Мама открывает ссылку — WhatsApp клиники с готовым текстом «Хочу записать ребёнка на школьный ресурс». Сообщение с этими словами в первые сутки привязывает нового пациента к школе само."
     >
       {view.waLink ? (
         <div className="flex flex-wrap items-start gap-4">
           {qr ? (
             // Картинка собрана в браузере из ссылки — внешних сервисов нет.
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={qr} alt="QR-код ссылки на WhatsApp клиники" width={128} height={128} className="border-border rounded-md border" />
+            <img src={qr} alt="QR-код короткой ссылки на WhatsApp клиники" width={128} height={128} className="border-border rounded-md border" />
           ) : null}
           <div className="flex min-w-[240px] flex-1 flex-col gap-2">
-            {/* Показываем читаемой, копируется — рабочая, закодированная. */}
-            <code className="bg-raise border-border block rounded-md border px-3 py-2 text-xs break-all">{readableLink(view.waLink)}</code>
+            <code className="bg-raise border-border block rounded-md border px-3 py-2 text-sm break-all">{shortLink ?? "…/children"}</code>
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <button
                 type="button"
+                disabled={!shortLink}
                 onClick={async () => {
-                  await navigator.clipboard.writeText(view.waLink!).catch(() => {});
+                  if (!shortLink) return;
+                  await navigator.clipboard.writeText(shortLink).catch(() => {});
                   setCopied(true);
                   setTimeout(() => setCopied(false), 1500);
                 }}
-                className="border-border hover:bg-hover rounded-md border px-3 py-1.5"
+                className="border-border hover:bg-hover rounded-md border px-3 py-1.5 disabled:opacity-45"
               >
                 {copied ? "Скопировано" : "Скопировать"}
               </button>
@@ -301,7 +320,17 @@ function ShareLink({ view }: { view: SchoolPromoView }) {
                   Скачать QR
                 </a>
               ) : null}
+              {shortLink ? (
+                <a href={shortLink} target="_blank" rel="noreferrer" className="text-accent-text text-xs hover:underline">
+                  проверить
+                </a>
+              ) : null}
             </div>
+            <details className="text-text-subtle text-xs">
+              <summary className="cursor-pointer">куда ведёт</summary>
+              <code className="mt-1 block break-all">{readableLink(view.waLink)}</code>
+              {view.open ? null : <p className="mt-1">Акция не идёт — ссылка открывает WhatsApp клиники без готового текста.</p>}
+            </details>
           </div>
         </div>
       ) : (
@@ -943,7 +972,7 @@ function Settings({
       <Field label="Бонус школе, ₽" hint="за пришедшего нового пациента" htmlFor="sp-bonus">
         <TextInput id="sp-bonus" inputMode="numeric" value={String(form.bonusAmount)} onChange={(e) => patch({ bonusAmount: num(e.target.value) })} />
       </Field>
-      <Field label="Метка в ссылке" hint="ищется в сообщениях пациента" htmlFor="sp-marker">
+      <Field label="Метка — слова в сообщении" hint="по умолчанию «школьный ресурс», в любом падеже; первые сутки обращения" htmlFor="sp-marker">
         <TextInput id="sp-marker" value={form.waMarker} onChange={(e) => patch({ waMarker: e.target.value })} />
       </Field>
       <Field label="WhatsApp клиники для ссылки" htmlFor="sp-wa">
@@ -956,8 +985,8 @@ function Settings({
         <Toggle checked={form.agentEnabled} onChange={(v) => patch({ agentEnabled: v })} label="Агент рассказывает об акции" />
       </Field>
       <Field
-        label="Разбор переписки, если метку стёрли"
-        hint="ночью, только новые пациенты с визитом акции; найденное — на проверку, не в бонус"
+        label="Разбор переписки"
+        hint="ночью: без ссылки — ищет упоминание школы; по ссылке — упоминание другой школы. Найденное — на проверку, не в бонус"
       >
         <div className="flex flex-wrap items-center gap-3">
           <Toggle checked={form.aiReviewEnabled} onChange={(v) => patch({ aiReviewEnabled: v })} label="Разбор переписки" />

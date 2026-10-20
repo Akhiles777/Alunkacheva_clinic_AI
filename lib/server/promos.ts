@@ -14,7 +14,7 @@ import {
   type VisitFact,
 } from "@/lib/metrics/partner-bonus";
 import { promoServiceSet, snapshotFrom, type CatalogService, type PromoServiceWarning } from "@/lib/metrics/promo-services";
-import { hasMarker, inFirstDay, waLink } from "@/lib/metrics/promo-marker";
+import { DEFAULT_MARKER, LEGACY_MARKER, effectiveMarker, hasMarker, inFirstDay, markerProbe, waLink } from "@/lib/metrics/promo-marker";
 import { noticeAboutPromo, noticeMismatch, parseNotice, type ParsedNotice } from "@/lib/metrics/yclients-notice";
 import { clinicMoment } from "@/lib/agent/status-slot";
 
@@ -90,8 +90,8 @@ async function attachByMarkers(
   promo: { id: string; isActive: boolean; startsAt: Date; endsAt: Date; waMarker: string; bonusAmount: { toString(): string } },
   schoolId: string | null,
 ): Promise<number> {
-  const marker = promo.waMarker.trim();
-  if (!promo.isActive || marker.length < 2) return 0;
+  const marker = effectiveMarker(promo.waMarker);
+  if (!promo.isActive) return 0;
   const hits = await prisma.message.findMany({
     where: {
       companyId,
@@ -99,8 +99,8 @@ async function attachByMarkers(
       authorType: "PATIENT",
       deletedAt: null,
       createdAt: { gte: promo.startsAt, lte: promo.endsAt },
-      // Грубый отбор в базе — по букве метки; точная проверка — `hasMarker`.
-      body: { contains: marker.replace(/[[\]\s]/g, "").slice(0, 8), mode: "insensitive" },
+      // Грубый отбор в базе — по основе метки; точная проверка — `hasMarker`.
+      body: { contains: markerProbe(marker), mode: "insensitive" },
       conversation: { isPractice: false, patientId: { not: null } },
     },
     orderBy: { createdAt: "asc" },
@@ -1022,7 +1022,7 @@ export async function promosForAgent(companyId: string, now = new Date()) {
       },
     },
   });
-  return rows.map((r) => ({ ...r, entries: r.knowledge }));
+  return rows.map((r) => ({ ...r, waMarker: effectiveMarker(r.waMarker), entries: r.knowledge }));
 }
 
 /** Есть ли у семьи пациента привязка по акции: тогда про школу не спрашиваем. */
@@ -1049,6 +1049,44 @@ export interface PromoItem {
   title: string;
   price: number;
   yclientsServiceId: number | null;
+}
+
+/**
+ * Счётчик переходов по короткой ссылке — в общей таблице счётчиков по дням
+ * (`FeatureUse`): только число, без адреса, устройства и времени (§7). В список
+ * приёмов работы сотрудников (`FEATURES`) он не входит — это не их действие.
+ */
+export const PROMO_LINK_FEATURE = "promo-link";
+
+/**
+ * Куда ведёт короткая ссылка `/children`: WhatsApp клиники с готовым текстом.
+ * Акция не идёт (не началась, кончилась, выключена) — WhatsApp без текста:
+ * человек со старой листовки всё равно дойдёт до клиники, но не с обещанием
+ * акции, которой нет. Нет номера — null.
+ */
+export async function promoLinkTarget(now = new Date()): Promise<{ companyId: string; url: string; counted: boolean } | null> {
+  const promo = await prisma.promo.findFirst({
+    where: { waPhone: { not: null } },
+    orderBy: { createdAt: "asc" },
+    select: { companyId: true, waPhone: true, waMarker: true, isActive: true, startsAt: true, endsAt: true },
+  });
+  if (!promo) return null;
+  const running = promo.isActive && promo.startsAt <= now && now <= promo.endsAt;
+  const url = running ? waLink(promo.waPhone, effectiveMarker(promo.waMarker)) : waLink(promo.waPhone, "", "");
+  if (!url) return null;
+  return { companyId: promo.companyId, url: running ? url : url.replace(/\?text=$/, ""), counted: running };
+}
+
+/** +1 переход за день клиники. Счётчик не должен ронять переход. */
+export async function notePromoLinkClick(companyId: string): Promise<void> {
+  const day = startOfClinicDay();
+  await prisma.featureUse
+    .upsert({
+      where: { companyId_day_feature: { companyId, day, feature: PROMO_LINK_FEATURE } },
+      update: { count: { increment: 1 } },
+      create: { companyId, day, feature: PROMO_LINK_FEATURE, count: 1 },
+    })
+    .catch(() => {});
 }
 
 export const SCHOOL_PROMO = {
@@ -1104,7 +1142,7 @@ export async function ensureSchoolPromo(companyId: string): Promise<string> {
   const existing = await prisma.promo.findFirst({
     where: { companyId },
     orderBy: { createdAt: "asc" },
-    select: { id: true, items: true, serviceIds: true, waPhone: true },
+    select: { id: true, items: true, serviceIds: true, waPhone: true, waMarker: true },
   });
   // Прайс нужен только для связывания состава — на каждое открытие экрана его не читаем.
   const priced = async () =>
@@ -1116,6 +1154,12 @@ export async function ensureSchoolPromo(companyId: string): Promise<string> {
     // Акцию завели до того, как у неё появился состав, — дописываем его, ничего не теряя.
     // Номера для ссылки ещё нет — подставляем номер клиники; заданный руками не трогаем.
     if (!existing.waPhone) await prisma.promo.update({ where: { id: existing.id }, data: { waPhone: SCHOOL_PROMO.waPhone } });
+    /**
+     * Прежняя метка «[ШК]» стояла значением по умолчанию, руками её никто не
+     * ставил. Заказчик (20 октября): «школа будет одна, зачем [ШК]» — метка
+     * теперь сама фраза «школьный ресурс». Заданную руками иную метку не трогаем.
+     */
+    if (existing.waMarker.trim() === LEGACY_MARKER) await prisma.promo.update({ where: { id: existing.id }, data: { waMarker: DEFAULT_MARKER } });
     if (itemsOf(existing.items).length === 0) {
       const items = linkItems(await priced());
       // Засчитываемые услуги не трогаем: состав — для пациента и агента (см. ниже).
@@ -1145,6 +1189,7 @@ export async function ensureSchoolPromo(companyId: string): Promise<string> {
         endsAt,
         bonusAmount: SCHOOL_PROMO.bonusAmount,
         waPhone: SCHOOL_PROMO.waPhone,
+        waMarker: DEFAULT_MARKER,
         items: items as unknown as object[],
         /**
          * Засчитываемые услуги новой акции — только пойманные по названию
@@ -1217,6 +1262,8 @@ export interface PromoStats {
    * привязки нет. Не прячем — это честное число непривязанных.
    */
   visitsWithoutSource: number;
+  /** Переходов по короткой ссылке `/children` с начала акции (без превью мессенджеров). */
+  linkClicks: number;
 }
 
 export interface NoticeMismatchRow {
@@ -1410,6 +1457,10 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
     visitsWithoutSource += visits.filter(liveVisit).length;
   }
   const earned = confirmed.filter((r) => r.bonus?.status === "EARNED");
+  const clicks = await prisma.featureUse.aggregate({
+    where: { companyId, feature: PROMO_LINK_FEATURE, day: { gte: startOfClinicDay(p.startsAt) } },
+    _sum: { count: true },
+  });
   const stats: PromoStats = {
     byMarker: confirmed.filter((r) => r.confidence === "MARKER").length,
     byEvidence: confirmed.filter((r) => r.confidence === "AI_EVIDENCE").length,
@@ -1422,6 +1473,7 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
     bonusEarned: earned.reduce((t, r) => t + num(r.bonus!.amount), 0),
     reversed: confirmed.filter((r) => r.bonus?.status === "REVERSED").length,
     visitsWithoutSource,
+    linkClicks: clicks._sum.count ?? 0,
   };
 
   const participant = (r: (typeof rows)[number]): PromoParticipant => ({
@@ -1481,9 +1533,9 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
     agentEnabled: p.agentEnabled,
     aiReviewEnabled: p.aiReviewEnabled,
     open: canAttribute(p, now),
-    waMarker: p.waMarker,
+    waMarker: effectiveMarker(p.waMarker),
     waPhone: p.waPhone,
-    waLink: waLink(p.waPhone, p.waMarker),
+    waLink: waLink(p.waPhone, effectiveMarker(p.waMarker)),
     serviceKeywords: p.serviceKeywords,
     promoServices: [
       ...set.chosen.map((n) => serviceRow(n, "chosen")),

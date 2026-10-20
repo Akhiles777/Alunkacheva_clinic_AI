@@ -2,7 +2,16 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { BASE_URL, modelParams } from "@/lib/agent/llm";
 import { graceEnd } from "@/lib/metrics/partner-bonus";
-import { buildEvidenceInput, evidencePrompt, parseEvidenceAnswer, verifyEvidence } from "@/lib/metrics/promo-evidence";
+import {
+  buildEvidenceInput,
+  contradictionPrompt,
+  evidencePrompt,
+  mentionsSource,
+  parseContradictionAnswer,
+  parseEvidenceAnswer,
+  verifyEvidence,
+} from "@/lib/metrics/promo-evidence";
+import { effectiveMarker } from "@/lib/metrics/promo-marker";
 import { promoServiceSet, snapshotFrom } from "@/lib/metrics/promo-services";
 
 /**
@@ -30,6 +39,8 @@ export interface PromoAiRun {
   candidates: number;
   checked: number;
   attributed: number;
+  /** Привязанные по метке, у кого в переписке назван другой источник, — ушли на проверку. */
+  flagged?: number;
   skipped: string | null;
 }
 
@@ -73,8 +84,8 @@ export async function runPromoAiReview(companyId: string, now = new Date(), limi
     select: { patientId: true },
     distinct: ["patientId"],
   });
+  // Пусто — поиску улики делать нечего, но проверка «другой школы» у привязанных идёт всё равно.
   let pool = arrived.map((a) => a.patientId);
-  if (pool.length === 0) return { candidates: 0, checked: 0, attributed: 0, skipped: null };
 
   // Без привязки — никакой: решение человека (снял, отклонил) модель не пересматривает.
   const attributed = new Set(
@@ -102,7 +113,7 @@ export async function runPromoAiReview(companyId: string, now = new Date(), limi
   for (const c of conversations) if (c.patientId && !firstConv.has(c.patientId)) firstConv.set(c.patientId, c);
 
   const past = await prisma.aiAttributionCheck.findMany({
-    where: { promoId: promo.id, patientId: { in: [...firstConv.keys()] } },
+    where: { promoId: promo.id, purpose: "FIND", patientId: { in: [...firstConv.keys()] } },
     select: { patientId: true, inputHash: true, result: true },
   });
 
@@ -179,7 +190,95 @@ export async function runPromoAiReview(companyId: string, now = new Date(), limi
       .catch(() => false);
     if (ok) made += 1;
   }
-  return { candidates: firstConv.size, checked, attributed: made, skipped: null };
+  const contra = await contradictionPass(companyId, promo, school, key, limit - checked);
+  return { candidates: firstConv.size + contra.candidates, checked: checked + contra.checked, attributed: made, flagged: contra.flagged, skipped: null };
+}
+
+/**
+ * Пришла по метке-фразе, а в переписке назвала другую школу или другой
+ * источник (lib/metrics/promo-evidence: `contradictionPrompt`).
+ *
+ * Кого смотрим: привязки по метке, подтверждённые автоматикой и ещё не
+ * разобранные человеком, — решение человека модель не пересматривает. Модель
+ * зовём, только если в словах пациента вообще есть что-то об источнике
+ * (`mentionsSource`); повтор — только при изменившейся переписке и не больше
+ * трёх раз. Найдено и подтверждено кодом — привязка «на проверке» с цитатой:
+ * бонус снимется пересчётом («привязка не подтверждена») и вернётся, если
+ * человек нажмёт «Подтвердить».
+ */
+async function contradictionPass(
+  companyId: string,
+  promo: { id: string; waMarker: string },
+  school: { name: string; aliases: string[] },
+  key: string,
+  limit: number,
+): Promise<{ candidates: number; checked: number; flagged: number }> {
+  if (limit <= 0) return { candidates: 0, checked: 0, flagged: 0 };
+  const rows = await prisma.partnerAttribution.findMany({
+    where: { promoId: promo.id, confidence: "MARKER", reviewStatus: "CONFIRMED", reviewedAt: null, removedAt: null, conversationId: { not: null } },
+    select: { id: true, patientId: true, conversationId: true, attributedAt: true, patient: { select: { name: true } } },
+  });
+  if (rows.length === 0) return { candidates: 0, checked: 0, flagged: 0 };
+  const past = await prisma.aiAttributionCheck.findMany({
+    where: { promoId: promo.id, purpose: "CONTRADICT", patientId: { in: rows.map((r) => r.patientId) } },
+    select: { patientId: true, inputHash: true, result: true },
+  });
+  let checked = 0;
+  let flagged = 0;
+  for (const a of rows) {
+    if (checked >= limit) break;
+    const mine = past.filter((c) => c.patientId === a.patientId);
+    if (mine.length >= MAX_TRIES) continue;
+    // С сообщения с меткой и дальше: источник называют и позже, в разговоре о записи.
+    const messages = await prisma.message.findMany({
+      where: { conversationId: a.conversationId!, deletedAt: null, createdAt: { gte: new Date(a.attributedAt.getTime() - 60_000) } },
+      orderBy: { createdAt: "asc" },
+      take: 40,
+      select: { id: true, direction: true, authorType: true, body: true, createdAt: true },
+    });
+    const patientTexts = messages.filter((m) => m.direction === "IN" && m.authorType === "PATIENT").map((m) => m.body);
+    if (!mentionsSource(patientTexts, effectiveMarker(promo.waMarker))) continue;
+    const input = buildEvidenceInput(messages, school.name, school.aliases, a.patient?.name ? [a.patient.name] : []);
+    if (input.lines.length === 0) continue;
+    const prompt = contradictionPrompt(input);
+    const inputHash = createHash("sha256").update(`${prompt.system}\n${prompt.user}`).digest("hex");
+    if (mine.some((c) => c.inputHash === inputHash && c.result !== "MODEL_ERROR")) continue;
+
+    checked += 1;
+    const raw = await ask(key, prompt);
+    const answer = raw === null ? null : parseContradictionAnswer(raw);
+    const model = modelParams().model;
+    const base = { companyId, promoId: promo.id, patientId: a.patientId, conversationId: a.conversationId!, inputHash, model, purpose: "CONTRADICT" };
+    if (!answer) {
+      await prisma.aiAttributionCheck.create({ data: { ...base, result: "MODEL_ERROR", reason: raw === null ? "модель не ответила" : "ответ не по форме" } });
+      continue;
+    }
+    // «Да» у этой проверки — назван ДРУГОЙ источник; цитата сверяется тем же кодом.
+    const verdict = verifyEvidence(answer, input);
+    /**
+     * Журнал: NOT_FROM_SCHOOL — другой источник назван и подтверждён кодом;
+     * ATTRIBUTED — другого источника нет, привязка в силе; UNCLEAR и
+     * REJECTED_BY_VERIFIER — как у поиска улики.
+     */
+    const result =
+      verdict.result === "ATTRIBUTED" ? "NOT_FROM_SCHOOL" : verdict.result === "NOT_FROM_SCHOOL" ? "ATTRIBUTED" : verdict.result;
+    await prisma.aiAttributionCheck.create({
+      data: {
+        ...base,
+        result,
+        evidenceMessageId: verdict.result === "ATTRIBUTED" ? verdict.messageId : null,
+        evidenceQuote: verdict.result === "ATTRIBUTED" ? verdict.quote : null,
+        reason: verdict.result === "ATTRIBUTED" ? answer.reason || null : verdict.reason,
+      },
+    });
+    if (verdict.result !== "ATTRIBUTED") continue;
+    const r = await prisma.partnerAttribution.updateMany({
+      where: { id: a.id, reviewStatus: "CONFIRMED", reviewedAt: null },
+      data: { reviewStatus: "REVIEW", evidenceMessageId: verdict.messageId, evidenceQuote: verdict.quote },
+    });
+    flagged += r.count;
+  }
+  return { candidates: rows.length, checked, flagged };
 }
 
 async function ask(key: string, prompt: { system: string; user: string }): Promise<string | null> {
