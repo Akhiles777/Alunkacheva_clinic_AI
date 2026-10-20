@@ -182,7 +182,8 @@ import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { amenOnly, collapseFormulas, courtesyFormulaWord } from "./courtesy-words";
 import { complexMedical, managementTopic } from "./specialist-rules";
 import { SCHOOL_QUESTION, ageOutside, askedSchool, matchSchool, promoTriggered, shouldAskSchool, statedChildAges, visiblePromos } from "./promo";
-import { attachByAgent, familyAttributed, promosForAgent } from "@/lib/server/promos";
+import { familyAttributed, promosForAgent } from "@/lib/server/promos";
+import { hasMarker } from "@/lib/metrics/promo-marker";
 import { WEEKDAY_WHEN, daysAsked, sameSpecialty, lastNamedStaff, relativeDaysAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
 
 /**
@@ -5509,33 +5510,15 @@ async function promoTurn(
     };
   }
 
-  // Ответ на наш вопрос про школу.
+  /**
+   * Ответ на наш вопрос про школу. Привязку он НЕ создаёт (п. 8 спецификации):
+   * слова пациента — улика, а не решение. Её найдёт разбор переписки и отдаст
+   * человеку на подтверждение; агент только благодарит.
+   */
   const lastAgent = [...said].reverse().find((t) => t.role === "assistant")?.content ?? "";
   if (askedSchool([lastAgent]) && !hasQuestion(own)) {
     const m = matchSchool(withoutQuote(own), p.schools);
-    if (m.kind === "declined") {
-      return { visible, reply: await respond(ctx, conversation.id, { text: "Поняла, спасибо!" }) };
-    }
-    if (m.kind === "match" && conversation.patientId) {
-      const done = await attachByAgent({
-        companyId: ctx.companyId,
-        patientId: conversation.patientId,
-        conversationId: conversation.id,
-        schoolId: m.schoolId,
-      });
-      if (done !== "closed") {
-        const name = p.schools.find((s) => s.id === m.schoolId)?.name ?? "";
-        return { visible, reply: await respond(ctx, conversation.id, { text: `Спасибо! Отметил(а): ${name}.` }) };
-      }
-    }
-    // Невнятно, две похожие школы или нет карточки — школу не угадываем.
-    const note = `Школьная акция: школа не определена — ответ пациента «${withoutQuote(own).slice(0, 120)}»`;
-    await prisma.dialogNote.create({ data: { companyId: ctx.companyId, conversationId: conversation.id, body: note } }).catch(() => {});
-    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Школьная акция, школа не определена").catch(() => {});
-    return {
-      visible,
-      reply: await respond(ctx, conversation.id, { text: "Спасибо! Передал(а) администратору — он уточнит название школы." }),
-    };
+    return { visible, reply: await respond(ctx, conversation.id, { text: m.kind === "declined" ? "Поняла, спасибо!" : "Спасибо, учту!" }) };
   }
   return { visible };
 }
@@ -5567,6 +5550,8 @@ async function promoInfo(
     agentTexts: history.filter((t) => t.role === "assistant").map((t) => t.content),
     attributed,
     schools: p.schools.length,
+    // Пришёл по ссылке с меткой — откуда он, уже известно.
+    marked: Boolean(p.waMarker) && [own, ...history.filter((t) => t.role === "user").map((t) => t.content)].some((t) => hasMarker(t, p.waMarker!)),
   });
   await logAgentRun({ companyId: ctx.companyId, conversationId: conversation.id, outcome: "OK", knowledgeEntryIds: knowledgeIdOf(entry) });
   return respond(ctx, conversation.id, {

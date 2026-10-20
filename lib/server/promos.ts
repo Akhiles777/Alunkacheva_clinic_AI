@@ -1,16 +1,22 @@
 import { randomBytes } from "node:crypto";
 import { prisma } from "@/lib/db";
-import { clinicDateKey, clinicDayRange, startOfClinicDay } from "@/lib/clinic-time";
+import { CLINIC_TZ, clinicDateKey, clinicDayRange, startOfClinicDay } from "@/lib/clinic-time";
 import {
   bonusActions,
   canAttribute,
   graceEnd,
   schoolTotals,
+  visitKeyOf,
+  promoVisits,
   type AttributionFact,
   type BonusAction,
   type SchoolTotals,
   type VisitFact,
 } from "@/lib/metrics/partner-bonus";
+import { promoServiceSet, snapshotFrom, type CatalogService, type PromoServiceWarning } from "@/lib/metrics/promo-services";
+import { hasMarker, inFirstDay, waLink } from "@/lib/metrics/promo-marker";
+import { noticeAboutPromo, noticeMismatch, parseNotice, type ParsedNotice } from "@/lib/metrics/yclients-notice";
+import { clinicMoment } from "@/lib/agent/status-slot";
 
 /**
  * Акции и школы-партнёры: данные экранов, привязка пациентов и пересчёт
@@ -27,22 +33,168 @@ export function newReportToken(): string {
 
 // ─────────────────────────────────────────────── пересчёт бонусов
 
+/** Справочник услуг клиники для состава акции. */
+async function serviceCatalog(companyId: string): Promise<CatalogService[]> {
+  return prisma.service.findMany({
+    where: { companyId, yclientsServiceId: { not: null } },
+    select: { yclientsServiceId: true, title: true, isActive: true },
+  });
+}
+
+/** Услуги акции: выбранные плюс пойманные по названию (`promoServiceSet`). */
+function serviceSetOf(
+  promo: { serviceIds: number[]; serviceKeywords: string[]; excludedServiceIds: number[]; serviceSnapshot: unknown },
+  catalog: CatalogService[],
+) {
+  return promoServiceSet(
+    {
+      serviceIds: promo.serviceIds,
+      serviceKeywords: promo.serviceKeywords,
+      excludedServiceIds: promo.excludedServiceIds,
+      serviceSnapshot: snapshotFrom(promo.serviceSnapshot),
+    },
+    catalog,
+  );
+}
+
+/**
+ * Пациенты, которых клиника знала до начала акции: карточка появилась раньше
+ * или есть запись раньше. Их привязка остаётся (видно, откуда пришли), но
+ * бонуса школе не приносит — школа привела не их.
+ */
+async function returningPatients(companyId: string, patientIds: string[], startsAt: Date): Promise<Set<string>> {
+  if (patientIds.length === 0) return new Set();
+  const [early, visits] = await Promise.all([
+    prisma.patient.findMany({ where: { companyId, id: { in: patientIds }, firstSeenAt: { lt: startsAt } }, select: { id: true } }),
+    prisma.appointment.findMany({
+      where: { companyId, patientId: { in: patientIds }, deletedAt: null, startAt: { lt: startsAt } },
+      select: { patientId: true },
+      distinct: ["patientId"],
+    }),
+  ]);
+  return new Set([...early.map((p) => p.id), ...visits.map((v) => v.patientId)]);
+}
+
+/**
+ * Привязка по метке: сообщение ПАЦИЕНТА с меткой школы в первые сутки
+ * обращения, пока акция идёт. Идёт тем же кругом, что пересчёт бонусов, а не
+ * в вебхуке: у нового пациента карточки в момент сообщения часто ещё нет —
+ * она появится, когда администратор запишет его в YCLIENTS, и привязка
+ * поставится на ближайшем круге.
+ *
+ * Привязка уже есть — не трогаем (решение человека важнее метки), кроме одной:
+ * «на проверке» по улике модели метка подтверждает сама.
+ */
+async function attachByMarkers(
+  companyId: string,
+  promo: { id: string; isActive: boolean; startsAt: Date; endsAt: Date; waMarker: string; bonusAmount: { toString(): string } },
+  schoolId: string | null,
+): Promise<number> {
+  const marker = promo.waMarker.trim();
+  if (!promo.isActive || marker.length < 2) return 0;
+  const hits = await prisma.message.findMany({
+    where: {
+      companyId,
+      direction: "IN",
+      authorType: "PATIENT",
+      deletedAt: null,
+      createdAt: { gte: promo.startsAt, lte: promo.endsAt },
+      // Грубый отбор в базе — по букве метки; точная проверка — `hasMarker`.
+      body: { contains: marker.replace(/[[\]\s]/g, "").slice(0, 8), mode: "insensitive" },
+      conversation: { isPractice: false, patientId: { not: null } },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, body: true, createdAt: true, conversationId: true, conversation: { select: { patientId: true } } },
+  });
+  let attached = 0;
+  const seen = new Set<string>();
+  for (const hit of hits) {
+    const patientId = hit.conversation.patientId!;
+    if (seen.has(patientId) || !hasMarker(hit.body, marker)) continue;
+    const before = await prisma.message.findMany({
+      where: { conversationId: hit.conversationId, direction: "IN", deletedAt: null, createdAt: { lt: hit.createdAt, gte: new Date(hit.createdAt.getTime() - 14 * 86_400_000) } },
+      select: { createdAt: true },
+    });
+    if (!inFirstDay(hit.createdAt, before.map((m) => m.createdAt))) continue;
+    seen.add(patientId);
+
+    const existing = await prisma.partnerAttribution.findMany({
+      where: { companyId, promoId: promo.id, patientId },
+      select: { id: true, confidence: true, reviewStatus: true },
+    });
+    const review = existing.find((a) => a.confidence === "AI_EVIDENCE" && a.reviewStatus === "REVIEW");
+    if (review) {
+      await prisma.partnerAttribution.update({
+        where: { id: review.id },
+        data: { confidence: "MARKER", reviewStatus: "CONFIRMED", evidenceMessageId: hit.id, evidenceQuote: marker, attributedAt: hit.createdAt },
+      });
+      attached += 1;
+      continue;
+    }
+    if (existing.length > 0) continue;
+    const returning = (await returningPatients(companyId, [patientId], promo.startsAt)).has(patientId);
+    const created = await prisma.partnerAttribution
+      .create({
+        data: {
+          companyId,
+          promoId: promo.id,
+          patientId,
+          schoolId,
+          conversationId: hit.conversationId,
+          source: "AGENT",
+          confidence: "MARKER",
+          reviewStatus: "CONFIRMED",
+          evidenceMessageId: hit.id,
+          evidenceQuote: marker,
+          bonusAmountFrozen: promo.bonusAmount.toString(),
+          attributedAt: hit.createdAt,
+          childNo: 1,
+          returningPatient: returning,
+        },
+        select: { id: true },
+      })
+      .then(() => true)
+      // Параллельный круг успел первым — уникальность держит база.
+      .catch(() => false);
+    if (created) attached += 1;
+  }
+  return attached;
+}
+
 /**
  * Пересчитать бонусы по всем акциям клиники. Идемпотентно: идёт после каждой
- * выгрузки YCLIENTS, и повтор на тех же фактах ничего не меняет.
+ * выгрузки YCLIENTS, и повтор на тех же фактах ничего не меняет. Сначала
+ * ставятся привязки по метке, потом считаются бонусы.
  */
 export async function recomputePartnerBonuses(
   companyId: string,
   now = new Date(),
   options: { dryRun?: boolean; plan?: BonusAction[] } = {},
-): Promise<{ earned: number; reversed: number }> {
+): Promise<{ earned: number; reversed: number; retargeted: number; attached: number }> {
   const promos = await prisma.promo.findMany({
     where: { companyId },
-    select: { id: true, serviceIds: true, startsAt: true, endsAt: true },
+    select: {
+      id: true,
+      isActive: true,
+      serviceIds: true,
+      serviceKeywords: true,
+      excludedServiceIds: true,
+      serviceSnapshot: true,
+      startsAt: true,
+      endsAt: true,
+      waMarker: true,
+      bonusAmount: true,
+      schools: { where: { isActive: true }, orderBy: { createdAt: "asc" }, take: 1, select: { id: true } },
+    },
   });
+  const catalog = promos.length ? await serviceCatalog(companyId) : [];
   let earned = 0;
   let reversed = 0;
+  let retargeted = 0;
+  let attached = 0;
   for (const promo of promos) {
+    if (!options.dryRun) attached += await attachByMarkers(companyId, promo, promo.schools[0]?.id ?? null);
+    const rule = { serviceIds: serviceSetOf(promo, catalog).ids, startsAt: promo.startsAt, endsAt: promo.endsAt };
     const attributions = await prisma.partnerAttribution.findMany({
       where: { companyId, promoId: promo.id },
       select: {
@@ -53,72 +205,44 @@ export async function recomputePartnerBonuses(
         attributedAt: true,
         removedAt: true,
         completedAt: true,
+        reviewStatus: true,
+        returningPatient: true,
         bonusAmountFrozen: true,
         bonus: {
-          select: {
-            id: true,
-            status: true,
-            triggeredByAppointmentId: true,
-            reversedAt: true,
-            manual: true,
-          },
+          select: { id: true, status: true, triggeredByAppointmentId: true, triggeredByVisitKey: true, reversedAt: true, manual: true },
         },
       },
     });
-    // Всё решено и снять нечего — к записям не ходим.
-    const open = attributions.filter(
-      (a) =>
-        !a.bonus ||
-        a.bonus.status === "EARNED" ||
-        (a.bonus.reversedAt && a.attributedAt > a.bonus.reversedAt),
-    );
-    if (!open.length) continue;
-    const patientIds = [...new Set(open.map((a) => a.patientId))];
-    const visits = await prisma.appointment.findMany({
-      where: {
-        companyId,
-        patientId: { in: patientIds },
-        startAt: { gte: promo.startsAt, lte: graceEnd(promo) },
-      },
-      select: {
-        id: true,
-        patientId: true,
-        startAt: true,
-        status: true,
-        deletedAt: true,
-        services: {
-          select: {
-            quantity: true,
-            service: { select: { yclientsServiceId: true } },
-          },
-        },
-      },
+    if (!attributions.length) continue;
+    const patientIds = [...new Set(attributions.map((a) => a.patientId))];
+
+    // «Повторный пациент» — факт, а не настройка: держим отметку в согласии с данными.
+    const returning = await returningPatients(companyId, patientIds, promo.startsAt);
+    const flip = attributions.filter((a) => a.returningPatient !== returning.has(a.patientId));
+    if (flip.length && !options.dryRun) {
+      for (const a of flip) {
+        await prisma.partnerAttribution.update({ where: { id: a.id }, data: { returningPatient: returning.has(a.patientId) } });
+      }
+    }
+
+    const recordSelect = {
+      id: true,
+      yclientsVisitId: true,
+      patientId: true,
+      startAt: true,
+      status: true,
+      deletedAt: true,
+      services: { select: { quantity: true, service: { select: { yclientsServiceId: true } } } },
+    } as const;
+    const records = await prisma.appointment.findMany({
+      where: { companyId, patientId: { in: patientIds }, startAt: { gte: promo.startsAt, lte: graceEnd(promo) } },
+      select: recordSelect,
     });
     // Основание начисленного бонуса могло уехать за окно — его тоже нужно видеть.
-    const triggerIds = open
+    const missing = attributions
       .map((a) => a.bonus?.triggeredByAppointmentId)
-      .filter((x): x is string => Boolean(x));
-    const missing = triggerIds.filter((id) => !visits.some((v) => v.id === id));
-    if (missing.length) {
-      visits.push(
-        ...(await prisma.appointment.findMany({
-          where: { companyId, id: { in: missing } },
-          select: {
-            id: true,
-            patientId: true,
-            startAt: true,
-            status: true,
-            deletedAt: true,
-            services: {
-              select: {
-                quantity: true,
-                service: { select: { yclientsServiceId: true } },
-              },
-            },
-          },
-        })),
-      );
-    }
+      .filter((x): x is string => Boolean(x) && !records.some((r) => r.id === x));
+    if (missing.length) records.push(...(await prisma.appointment.findMany({ where: { companyId, id: { in: missing } }, select: recordSelect })));
 
     for (const patientId of patientIds) {
       const mine = attributions.filter((a) => a.patientId === patientId);
@@ -130,42 +254,45 @@ export async function recomputePartnerBonuses(
         bonusAmountFrozen: num(a.bonusAmountFrozen),
         hasSchool: a.schoolId != null,
         completed: a.completedAt != null,
+        confirmed: a.reviewStatus === "CONFIRMED",
+        returning: returning.has(a.patientId),
         bonus: a.bonus
           ? {
               id: a.bonus.id,
               status: a.bonus.status,
               triggeredByAppointmentId: a.bonus.triggeredByAppointmentId,
+              triggeredByVisitKey: a.bonus.triggeredByVisitKey,
               reversedAt: a.bonus.reversedAt,
               manual: a.bonus.manual,
             }
           : null,
       }));
-      const visitFacts: VisitFact[] = visits
+      const visitFacts: VisitFact[] = records
         .filter((v) => v.patientId === patientId)
         .map((v) => ({
           id: v.id,
           startAt: v.startAt,
           status: v.status,
           deleted: v.deletedAt != null,
-          services: v.services.map((s) => ({
-            yclientsServiceId: s.service.yclientsServiceId,
-            quantity: s.quantity,
-          })),
+          visitKey: visitKeyOf(v),
+          services: v.services.map((s) => ({ yclientsServiceId: s.service.yclientsServiceId, quantity: s.quantity })),
         }));
-      for (const act of bonusActions(promo, facts, visitFacts)) {
+      for (const act of bonusActions(rule, facts, visitFacts)) {
         options.plan?.push(act);
         // Сухой прогон: только считаем, что изменилось бы.
         if (options.dryRun) {
           if (act.kind === "earn") earned += 1;
+          else if (act.kind === "retarget") retargeted += 1;
           else reversed += 1;
           continue;
         }
         if (act.kind === "earn" && act.bonusId) {
           const r = await prisma.partnerBonus.updateMany({
-            where: { id: act.bonusId, status: "REVERSED" },
+            where: { id: act.bonusId, status: "REVERSED", manual: false },
             data: {
               status: "EARNED",
               triggeredByAppointmentId: act.appointmentId,
+              triggeredByVisitKey: act.visitKey,
               earnedAt: act.earnedAt,
               amount: act.amount,
               reversedAt: null,
@@ -186,27 +313,30 @@ export async function recomputePartnerBonuses(
                 amount: act.amount,
                 status: "EARNED",
                 triggeredByAppointmentId: act.appointmentId,
+                triggeredByVisitKey: act.visitKey,
                 earnedAt: act.earnedAt,
               },
             })
             .then(() => true)
             .catch(() => false);
           if (created) earned += 1;
+        } else if (act.kind === "retarget") {
+          const r = await prisma.partnerBonus.updateMany({
+            where: { id: act.bonusId, status: "EARNED", manual: false },
+            data: { triggeredByAppointmentId: act.appointmentId, triggeredByVisitKey: act.visitKey },
+          });
+          retargeted += r.count;
         } else {
           const r = await prisma.partnerBonus.updateMany({
             where: { id: act.bonusId, status: "EARNED" },
-            data: {
-              status: "REVERSED",
-              reversedAt: now,
-              reverseReason: act.reason,
-            },
+            data: { status: "REVERSED", reversedAt: now, reverseReason: act.reason },
           });
           reversed += r.count;
         }
       }
     }
   }
-  return { earned, reversed };
+  return { earned, reversed, retargeted, attached };
 }
 
 // ─────────────────────────────────────────────── экраны клиники
@@ -227,8 +357,9 @@ async function totalsFor(where: {
   promoId?: string;
   schoolId?: string;
 }): Promise<SchoolTotals> {
+  // Только подтверждённые: «на проверке» и отклонённые школе не засчитываются.
   const rows = await prisma.partnerAttribution.findMany({
-    where,
+    where: { ...where, reviewStatus: "CONFIRMED" },
     select: {
       removedAt: true,
       bonus: { select: { status: true, amount: true } },
@@ -882,6 +1013,7 @@ export async function promosForAgent(companyId: string, now = new Date()) {
       ageMin: true,
       ageMax: true,
       bonusAmount: true,
+      waMarker: true,
       schools: { where: { isActive: true }, select: { id: true, name: true } },
       knowledge: {
         where: { isActive: true, OR: [{ needsDoctorApproval: false }, { approvedAt: { not: null } }] },
@@ -902,57 +1034,6 @@ export async function familyAttributed(
 ): Promise<boolean> {
   if (patientId) return (await familyAttributions(companyId, promoId, patientId, conversationId)).length > 0;
   return (await prisma.partnerAttribution.count({ where: { companyId, promoId, conversationId, removedAt: null } })) > 0;
-}
-
-/**
- * Привязка, которую ставит агент по словам пациента. Только ПЕРВЫЙ ребёнок
- * семьи: второго добавляет администратор, агент — никогда. Есть привязка в
- * семье — ничего не делаем.
- */
-export async function attachByAgent(input: {
-  companyId: string;
-  patientId: string;
-  conversationId: string;
-  schoolId: string;
-  now?: Date;
-}): Promise<"attached" | "exists" | "closed"> {
-  const now = input.now ?? new Date();
-  const school = await prisma.partnerSchool.findFirst({
-    where: { id: input.schoolId, companyId: input.companyId, isActive: true },
-    select: { id: true, promo: { select: { id: true, isActive: true, endsAt: true, bonusAmount: true } } },
-  });
-  if (!school || !canAttribute(school.promo, now)) return "closed";
-  if ((await familyAttributions(input.companyId, school.promo.id, input.patientId, input.conversationId)).length > 0) {
-    return "exists";
-  }
-  const previous = await prisma.partnerAttribution.findUnique({
-    where: { patientId_promoId_childNo: { patientId: input.patientId, promoId: school.promo.id, childNo: 1 } },
-    select: { id: true },
-  });
-  const data = {
-    schoolId: school.id,
-    source: "AGENT" as const,
-    conversationId: input.conversationId,
-    bonusAmountFrozen: school.promo.bonusAmount,
-    attributedAt: now,
-    createdById: null,
-    isExtraChild: false,
-    note: null,
-    removedAt: null,
-    removedById: null,
-    completedAt: null,
-    completedById: null,
-  };
-  if (previous) {
-    await reopenRemovedBonus(previous.id);
-    await prisma.partnerAttribution.update({ where: { id: previous.id }, data });
-  }
-  else
-    await prisma.partnerAttribution.create({
-      data: { ...data, companyId: input.companyId, promoId: school.promo.id, patientId: input.patientId, childNo: 1 },
-    });
-  await recomputePartnerBonuses(input.companyId, now);
-  return "attached";
 }
 
 // ─────────────────────────────────────────────── одна акция: «Школьный check-up»
@@ -980,6 +1061,8 @@ export const SCHOOL_PROMO = {
   ageMax: 14,
   endsOn: "2026-11-15",
   bonusAmount: 500,
+  /** Номер WhatsApp клиники для ссылки со школьных материалов. */
+  waPhone: "79285169512",
   items: [
     { title: "Приём детского остеопата", price: 4000, match: /остео/i, also: /дет/i },
     { title: "Диагностика у БОС-специалиста", price: 1000, match: /бос/i, also: /диагност/i },
@@ -1018,7 +1101,11 @@ function itemsOf(raw: unknown): PromoItem[] {
 
 /** Идентификатор единственной акции клиники; нет — заводится с составом с макета. */
 export async function ensureSchoolPromo(companyId: string): Promise<string> {
-  const existing = await prisma.promo.findFirst({ where: { companyId }, orderBy: { createdAt: "asc" }, select: { id: true, items: true, serviceIds: true } });
+  const existing = await prisma.promo.findFirst({
+    where: { companyId },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, items: true, serviceIds: true, waPhone: true },
+  });
   // Прайс нужен только для связывания состава — на каждое открытие экрана его не читаем.
   const priced = async () =>
     (await prisma.service.findMany({ where: { companyId }, select: { yclientsServiceId: true, title: true, price: true } })).map((s) => ({
@@ -1027,10 +1114,12 @@ export async function ensureSchoolPromo(companyId: string): Promise<string> {
     }));
   if (existing) {
     // Акцию завели до того, как у неё появился состав, — дописываем его, ничего не теряя.
+    // Номера для ссылки ещё нет — подставляем номер клиники; заданный руками не трогаем.
+    if (!existing.waPhone) await prisma.promo.update({ where: { id: existing.id }, data: { waPhone: SCHOOL_PROMO.waPhone } });
     if (itemsOf(existing.items).length === 0) {
       const items = linkItems(await priced());
-      const ids = [...new Set([...existing.serviceIds, ...items.flatMap((i) => (i.yclientsServiceId ? [i.yclientsServiceId] : []))])];
-      await prisma.promo.update({ where: { id: existing.id }, data: { items: items as unknown as object[], serviceIds: ids } });
+      // Засчитываемые услуги не трогаем: состав — для пациента и агента (см. ниже).
+      await prisma.promo.update({ where: { id: existing.id }, data: { items: items as unknown as object[] } });
     }
     return existing.id;
   }
@@ -1055,8 +1144,15 @@ export async function ensureSchoolPromo(companyId: string): Promise<string> {
         startsAt: startOfClinicDay(),
         endsAt,
         bonusAmount: SCHOOL_PROMO.bonusAmount,
+        waPhone: SCHOOL_PROMO.waPhone,
         items: items as unknown as object[],
-        serviceIds: items.flatMap((i) => (i.yclientsServiceId ? [i.yclientsServiceId] : [])),
+        /**
+         * Засчитываемые услуги новой акции — только пойманные по названию
+         * («Школьный ресурс 6+» и части). Обычные строки, совпавшие с позициями
+         * состава («детский приём остеопата 4000»), сюда не идут: иначе любой
+         * обычный детский приём привязанного пациента стал бы визитом акции.
+         */
+        serviceIds: [],
       },
       select: { id: true },
     })
@@ -1068,7 +1164,7 @@ export async function ensureSchoolPromo(companyId: string): Promise<string> {
   return created.id;
 }
 
-export type ParticipantStatus = "waiting" | "done" | "bonus" | "reversed" | "no_school";
+export type ParticipantStatus = "waiting" | "done" | "bonus" | "reversed" | "no_school" | "returning";
 
 export interface PromoParticipant {
   attributionId: string;
@@ -1078,13 +1174,57 @@ export interface PromoParticipant {
   schoolId: string | null;
   schoolName: string | null;
   childNo: number;
+  isExtraChild: boolean;
   note: string | null;
   source: "ADMIN" | "AGENT";
+  confidence: "MARKER" | "AI_EVIDENCE" | "MANUAL";
+  reviewStatus: "CONFIRMED" | "REVIEW" | "REJECTED";
+  returning: boolean;
+  evidenceQuote: string | null;
+  conversationId: string | null;
   attributedAt: string;
   createdBy: string | null;
   completedAt: string | null;
   status: ParticipantStatus;
   bonus: { status: "EARNED" | "REVERSED"; amount: number; manual: boolean; reason: string | null; at: string } | null;
+}
+
+/** Строка состава услуг акции на экране. */
+export interface PromoServiceRow {
+  yclientsServiceId: number;
+  title: string;
+  price: number;
+  /** chosen — выбрана руками; keyword — поймана по названию; excluded — исключена руками. */
+  how: "chosen" | "keyword" | "excluded";
+}
+
+export interface PromoStats {
+  byMarker: number;
+  byEvidence: number;
+  manual: number;
+  inReview: number;
+  /** Повторные пациенты: привязка есть, бонуса нет. */
+  returning: number;
+  /** Привязанные (подтверждённые), у кого есть живой визит акции. */
+  booked: number;
+  /** Привязанные (подтверждённые), у кого визит акции «пришёл». */
+  arrived: number;
+  bonusCount: number;
+  bonusEarned: number;
+  reversed: number;
+  /**
+   * Визиты акции без источника: пациент пришёл или записан на услугу акции, а
+   * привязки нет. Не прячем — это честное число непривязанных.
+   */
+  visitsWithoutSource: number;
+}
+
+export interface NoticeMismatchRow {
+  messageId: string;
+  conversationId: string;
+  patientName: string | null;
+  at: string;
+  kind: "booked-missing" | "cancelled-alive" | "no-card";
 }
 
 export interface SchoolPromoView {
@@ -1100,22 +1240,77 @@ export interface SchoolPromoView {
   bonusAmount: number;
   isActive: boolean;
   agentEnabled: boolean;
+  aiReviewEnabled: boolean;
   open: boolean;
+  waMarker: string;
+  waPhone: string | null;
+  waLink: string | null;
+  serviceKeywords: string[];
+  promoServices: PromoServiceRow[];
+  serviceWarnings: string[];
   items: (PromoItem & { serviceTitle: string | null })[];
   services: { yclientsServiceId: number; title: string; price: number }[];
-  schools: { id: string; name: string; contactName: string | null; contactPhone: string | null; isActive: boolean; reportToken: string; totals: SchoolTotals }[];
+  schools: {
+    id: string;
+    name: string;
+    aliases: string[];
+    contactName: string | null;
+    contactPhone: string | null;
+    isActive: boolean;
+    reportToken: string;
+    totals: SchoolTotals;
+  }[];
   participants: PromoParticipant[];
+  review: PromoParticipant[];
+  stats: PromoStats;
+  mismatches: NoticeMismatchRow[];
   totals: SchoolTotals;
   knowledge: PromoDetail["knowledge"];
 }
 
-function statusOf(a: { schoolId: string | null; completedAt: Date | null; bonus: { status: string } | null }): ParticipantStatus {
+function statusOf(a: {
+  schoolId: string | null;
+  completedAt: Date | null;
+  returningPatient: boolean;
+  bonus: { status: string } | null;
+}): ParticipantStatus {
   if (a.bonus?.status === "EARNED") return "bonus";
   if (a.bonus?.status === "REVERSED") return "reversed";
   if (a.completedAt) return "done";
   if (!a.schoolId) return "no_school";
+  if (a.returningPatient) return "returning";
   return "waiting";
 }
+
+/** Предупреждение о составе — словами, для экрана. */
+function warningText(w: PromoServiceWarning, titleOf: (id: number) => string): string {
+  if (w.kind === "renamed") return `Услуга «${w.was}» переименована в YCLIENTS в «${w.now}» — проверьте, что она всё ещё про акцию.`;
+  if (w.kind === "missing")
+    return `Услуги «${w.was ?? titleOf(w.yclientsServiceId)}» (${w.yclientsServiceId}) больше нет в YCLIENTS — визиты по ней не придут.`;
+  return `Услуга «${w.title}» выключена в YCLIENTS.`;
+}
+
+const attributionSelect = {
+  id: true,
+  patientId: true,
+  schoolId: true,
+  childNo: true,
+  isExtraChild: true,
+  note: true,
+  source: true,
+  confidence: true,
+  reviewStatus: true,
+  returningPatient: true,
+  evidenceQuote: true,
+  conversationId: true,
+  attributedAt: true,
+  createdById: true,
+  completedAt: true,
+  removedAt: true,
+  patient: { select: { name: true, phones: { take: 1, orderBy: { isPrimary: "desc" as const }, select: { phone: true } } } },
+  school: { select: { name: true } },
+  bonus: { select: { status: true, amount: true, manual: true, reverseReason: true, earnedAt: true, reversedAt: true } },
+} as const;
 
 export async function getSchoolPromoView(companyId: string, now = new Date()): Promise<SchoolPromoView> {
   const id = await ensureSchoolPromo(companyId);
@@ -1131,21 +1326,7 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
     prisma.partnerAttribution.findMany({
       where: { companyId, promoId: id },
       orderBy: { attributedAt: "desc" },
-      select: {
-        id: true,
-        patientId: true,
-        schoolId: true,
-        removedAt: true,
-        childNo: true,
-        note: true,
-        source: true,
-        attributedAt: true,
-        createdById: true,
-        completedAt: true,
-        patient: { select: { name: true, phones: { take: 1, orderBy: { isPrimary: "desc" }, select: { phone: true } } } },
-        school: { select: { name: true } },
-        bonus: { select: { status: true, amount: true, manual: true, reverseReason: true, earnedAt: true, reversedAt: true } },
-      },
+      select: attributionSelect,
     }),
     prisma.knowledgeEntry.findMany({
       where: { companyId, promoId: id },
@@ -1153,13 +1334,134 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
       select: { id: true, topic: true, question: true, answer: true, isActive: true, needsDoctorApproval: true, approvedAt: true },
     }),
   ]);
-  const all = rows;
-  const live = rows.filter((r) => r.removedAt == null);
+  const live = rows.filter((r) => r.removedAt == null && r.reviewStatus !== "REJECTED");
+  const confirmed = live.filter((r) => r.reviewStatus === "CONFIRMED");
   const staffIds = [...new Set(live.map((r) => r.createdById).filter((x): x is string => Boolean(x)))];
   const staff = staffIds.length ? await prisma.staffUser.findMany({ where: { id: { in: staffIds } }, select: { id: true, name: true } }) : [];
   const staffName = new Map(staff.map((u) => [u.id, u.name]));
-  const totalsOf = (filter: (r: (typeof all)[number]) => boolean) =>
-    schoolTotals(all.filter(filter).map((r) => ({ removed: r.removedAt != null, bonus: r.bonus ? { status: r.bonus.status, amount: num(r.bonus.amount) } : null })));
+
+  // Итоги — только подтверждённые привязки: «на проверке» школе ещё не засчитано.
+  const counted = rows.filter((r) => r.reviewStatus === "CONFIRMED");
+  const totalsOf = (filter: (r: (typeof rows)[number]) => boolean) =>
+    schoolTotals(
+      counted
+        .filter(filter)
+        .map((r) => ({ removed: r.removedAt != null, bonus: r.bonus ? { status: r.bonus.status, amount: num(r.bonus.amount) } : null })),
+    );
+
+  const catalog: CatalogService[] = services.map((s) => ({ yclientsServiceId: s.yclientsServiceId, title: s.title, isActive: s.isActive }));
+  const set = serviceSetOf(p, catalog);
+  const svcById = new Map(services.map((s) => [s.yclientsServiceId!, s]));
+  const titleOf = (n: number) => svcById.get(n)?.title ?? String(n);
+  const serviceRow = (n: number, how: PromoServiceRow["how"]): PromoServiceRow => ({
+    yclientsServiceId: n,
+    title: titleOf(n),
+    price: num(svcById.get(n)?.price),
+    how,
+  });
+
+  // Визиты акции всех пациентов — для «записались», «пришли» и «без источника».
+  const rule = { serviceIds: set.ids, startsAt: p.startsAt, endsAt: p.endsAt };
+  const records = set.ids.length
+    ? await prisma.appointment.findMany({
+        where: {
+          companyId,
+          startAt: { gte: p.startsAt, lte: graceEnd(p) },
+          services: { some: { service: { yclientsServiceId: { in: set.ids } } } },
+        },
+        select: {
+          id: true,
+          yclientsVisitId: true,
+          patientId: true,
+          startAt: true,
+          status: true,
+          deletedAt: true,
+          services: { select: { quantity: true, service: { select: { yclientsServiceId: true } } } },
+        },
+      })
+    : [];
+  const visitsByPatient = new Map<string, ReturnType<typeof promoVisits>>();
+  for (const pid of new Set(records.map((r) => r.patientId))) {
+    visitsByPatient.set(
+      pid,
+      promoVisits(
+        rule,
+        records
+          .filter((r) => r.patientId === pid)
+          .map((r) => ({
+            id: r.id,
+            startAt: r.startAt,
+            status: r.status,
+            deleted: r.deletedAt != null,
+            visitKey: visitKeyOf(r),
+            services: r.services.map((x) => ({ yclientsServiceId: x.service.yclientsServiceId, quantity: x.quantity })),
+          })),
+      ),
+    );
+  }
+  const liveVisit = (v: ReturnType<typeof promoVisits>[number]) => v.records.some((r) => !r.deleted && r.status !== "CANCELLED");
+  const confirmedPatients = new Set(confirmed.map((r) => r.patientId));
+  const anyAttributed = new Set(live.map((r) => r.patientId));
+  let visitsWithoutSource = 0;
+  for (const [pid, visits] of visitsByPatient) {
+    if (anyAttributed.has(pid)) continue;
+    visitsWithoutSource += visits.filter(liveVisit).length;
+  }
+  const earned = confirmed.filter((r) => r.bonus?.status === "EARNED");
+  const stats: PromoStats = {
+    byMarker: confirmed.filter((r) => r.confidence === "MARKER").length,
+    byEvidence: confirmed.filter((r) => r.confidence === "AI_EVIDENCE").length,
+    manual: confirmed.filter((r) => r.confidence === "MANUAL").length,
+    inReview: live.filter((r) => r.reviewStatus === "REVIEW").length,
+    returning: confirmed.filter((r) => r.returningPatient).length,
+    booked: [...confirmedPatients].filter((pid) => (visitsByPatient.get(pid) ?? []).some(liveVisit)).length,
+    arrived: [...confirmedPatients].filter((pid) => (visitsByPatient.get(pid) ?? []).some((v) => v.arrivedRecordId)).length,
+    bonusCount: earned.length,
+    bonusEarned: earned.reduce((t, r) => t + num(r.bonus!.amount), 0),
+    reversed: confirmed.filter((r) => r.bonus?.status === "REVERSED").length,
+    visitsWithoutSource,
+  };
+
+  const participant = (r: (typeof rows)[number]): PromoParticipant => ({
+    attributionId: r.id,
+    patientId: r.patientId,
+    patientName: r.patient.name ?? "без имени",
+    phoneTail: r.patient.phones[0]?.phone.slice(-4) ?? null,
+    schoolId: r.schoolId,
+    schoolName: r.school?.name ?? null,
+    childNo: r.childNo,
+    isExtraChild: r.isExtraChild,
+    note: r.note,
+    source: r.source,
+    confidence: r.confidence,
+    reviewStatus: r.reviewStatus,
+    returning: r.returningPatient,
+    evidenceQuote: r.evidenceQuote,
+    conversationId: r.conversationId,
+    attributedAt: r.attributedAt.toISOString(),
+    createdBy:
+      r.confidence === "MARKER"
+        ? "по метке в ссылке"
+        : r.confidence === "AI_EVIDENCE"
+          ? "по переписке"
+          : r.source === "AGENT"
+            ? "агент"
+            : r.createdById
+              ? (staffName.get(r.createdById) ?? null)
+              : null,
+    completedAt: r.completedAt?.toISOString() ?? null,
+    status: statusOf(r),
+    bonus: r.bonus
+      ? {
+          status: r.bonus.status,
+          amount: num(r.bonus.amount),
+          manual: r.bonus.manual,
+          reason: r.bonus.reverseReason,
+          at: (r.bonus.status === "REVERSED" && r.bonus.reversedAt ? r.bonus.reversedAt : r.bonus.earnedAt).toISOString(),
+        }
+      : null,
+  });
+
   const items = itemsOf(p.items);
   const byYc = new Map(services.map((s) => [s.yclientsServiceId!, s.title]));
   return {
@@ -1175,7 +1477,18 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
     bonusAmount: num(p.bonusAmount),
     isActive: p.isActive,
     agentEnabled: p.agentEnabled,
+    aiReviewEnabled: p.aiReviewEnabled,
     open: canAttribute(p, now),
+    waMarker: p.waMarker,
+    waPhone: p.waPhone,
+    waLink: waLink(p.waPhone, p.waMarker),
+    serviceKeywords: p.serviceKeywords,
+    promoServices: [
+      ...set.chosen.map((n) => serviceRow(n, "chosen")),
+      ...set.byKeyword.map((n) => serviceRow(n, "keyword")),
+      ...set.excluded.map((n) => serviceRow(n, "excluded")),
+    ],
+    serviceWarnings: set.warnings.map((w) => warningText(w, titleOf)),
     items: items.map((i) => ({ ...i, serviceTitle: i.yclientsServiceId ? (byYc.get(i.yclientsServiceId) ?? null) : null })),
     services: services
       .filter((s) => s.isActive)
@@ -1183,39 +1496,78 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
     schools: schools.map((s) => ({
       id: s.id,
       name: s.name,
+      aliases: s.aliases,
       contactName: s.contactName,
       contactPhone: s.contactPhone,
       isActive: s.isActive,
       reportToken: s.reportToken,
       totals: totalsOf((r) => r.schoolId === s.id),
     })),
-    participants: live.map((r) => ({
-      attributionId: r.id,
-      patientId: r.patientId,
-      patientName: r.patient.name ?? "без имени",
-      phoneTail: r.patient.phones[0]?.phone.slice(-4) ?? null,
-      schoolId: r.schoolId,
-      schoolName: r.school?.name ?? null,
-      childNo: r.childNo,
-      note: r.note,
-      source: r.source,
-      attributedAt: r.attributedAt.toISOString(),
-      createdBy: r.source === "AGENT" ? "агент" : r.createdById ? (staffName.get(r.createdById) ?? null) : null,
-      completedAt: r.completedAt?.toISOString() ?? null,
-      status: statusOf(r),
-      bonus: r.bonus
-        ? {
-            status: r.bonus.status,
-            amount: num(r.bonus.amount),
-            manual: r.bonus.manual,
-            reason: r.bonus.reverseReason,
-            at: (r.bonus.status === "REVERSED" && r.bonus.reversedAt ? r.bonus.reversedAt : r.bonus.earnedAt).toISOString(),
-          }
-        : null,
-    })),
+    participants: live.filter((r) => r.reviewStatus === "CONFIRMED").map(participant),
+    review: live.filter((r) => r.reviewStatus === "REVIEW").map(participant),
+    stats,
+    mismatches: await noticeMismatches(companyId, p, set.ids),
     totals: totalsOf(() => true),
     knowledge: knowledge.map((k) => ({ ...k, approvedAt: k.approvedAt?.toISOString() ?? null })),
   };
+}
+
+/**
+ * Сверка с уведомлениями YCLIENTS (только флаг). Уведомление о записи на
+ * услугу акции, а записи у нас нет; или отмена, а запись жива. Из уведомлений
+ * ничего не создаётся: источник истины — API YCLIENTS (§2).
+ */
+async function noticeMismatches(
+  companyId: string,
+  promo: { startsAt: Date; endsAt: Date; serviceKeywords: string[] },
+  ids: number[],
+): Promise<NoticeMismatchRow[]> {
+  const keywords = promo.serviceKeywords.filter((k) => k.trim().length >= 3);
+  if (keywords.length === 0) return [];
+  const messages = await prisma.message.findMany({
+    where: {
+      companyId,
+      direction: "OUT",
+      authorType: "STAFF",
+      deletedAt: null,
+      createdAt: { gte: promo.startsAt },
+      OR: keywords.map((k) => ({ body: { contains: k.trim(), mode: "insensitive" as const } })),
+      conversation: { isPractice: false },
+    },
+    orderBy: { createdAt: "asc" },
+    take: 500,
+    select: { id: true, body: true, createdAt: true, conversationId: true, conversation: { select: { patientId: true, patient: { select: { name: true } } } } },
+  });
+  // Последнее уведомление на один приём решает: «записаны», потом «отменена» — значит отменена.
+  const latest = new Map<string, { m: (typeof messages)[number]; notice: ParsedNotice; at: Date }>();
+  for (const m of messages) {
+    const notice = parseNotice(m.body);
+    if (!notice || !noticeAboutPromo(notice, keywords)) continue;
+    const { year, month, day, hour, minute } = notice.local;
+    const key = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const at = clinicMoment(key, hour * 60 + minute, CLINIC_TZ);
+    latest.set(`${m.conversationId}|${at.toISOString()}`, { m, notice, at });
+  }
+  const out: NoticeMismatchRow[] = [];
+  for (const { m, notice, at } of latest.values()) {
+    const patientId = m.conversation.patientId;
+    if (!patientId) {
+      out.push({ messageId: m.id, conversationId: m.conversationId, patientName: null, at: at.toISOString(), kind: "no-card" });
+      continue;
+    }
+    const near = await prisma.appointment.findMany({
+      where: {
+        companyId,
+        patientId,
+        startAt: { gte: new Date(at.getTime() - 10 * 60_000), lte: new Date(at.getTime() + 10 * 60_000) },
+        ...(ids.length ? { services: { some: { service: { yclientsServiceId: { in: ids } } } } } : {}),
+      },
+      select: { status: true, deletedAt: true },
+    });
+    const kind = noticeMismatch(notice, near.map((r) => ({ status: r.status, deleted: r.deletedAt != null })));
+    if (kind) out.push({ messageId: m.id, conversationId: m.conversationId, patientName: m.conversation.patient?.name ?? null, at: at.toISOString(), kind });
+  }
+  return out;
 }
 
 /** Найти пациента для добавления в акцию: по началу слов имени или по цифрам телефона. */

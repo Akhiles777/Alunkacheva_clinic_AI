@@ -5,7 +5,7 @@ import { getSchoolPromoView } from "@/lib/server/promos";
 import { appUrl } from "@/lib/server/app-url";
 import { SchoolPromoClient } from "./school-promo-client";
 
-export const metadata = { title: "Школьный check-up" };
+export const metadata = { title: "Школьный ресурс" };
 
 /**
  * Акция у клиники одна — «Школьный check-up» (решение заказчика, 15 октября),
@@ -20,7 +20,7 @@ export default async function PromosPage() {
   if (!canEdit && !canMessage) {
     return (
       <div className="flex-1 overflow-auto px-7 py-8 max-md:px-5">
-        <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Школьный check-up</h1>
+        <h1 className="text-xl leading-none font-medium tracking-[-0.015em]">Школьный ресурс</h1>
         <p className="text-text-muted mt-3 max-w-[60ch] text-sm leading-relaxed">
           Раздел доступен тем, кто ведёт переписку с пациентами или настройки клиники.
         </p>
@@ -40,6 +40,7 @@ export default async function PromosPage() {
       canEdit={canEdit}
       canMessage={canMessage}
       canApprove={session.role === "DOCTOR" || session.role === "OWNER"}
+      canReview={session.role === "ADMIN" || session.role === "OWNER"}
     />
   );
 }

@@ -13,6 +13,8 @@
  * акции для агента не существует.
  */
 
+import { hasMarker } from "@/lib/metrics/promo-marker";
+
 /** Вопрос про школу — дословно один: по нему же узнаём, что уже спрашивали. */
 export const SCHOOL_QUESTION = "Подскажите, вы узнали о нас от школы подготовки?";
 
@@ -24,6 +26,9 @@ const EXPLICIT = [
   /(?<!\p{L})чекап\p{L}*/iu,
   /(?<!\p{L})школьн\p{L}*/iu,
   /(?<!\p{L})акци\p{L}*/iu,
+  // Название в YCLIENTS — «Школьный ресурс 6+». Голое «ресурс» не берём: у клиники
+  // инфузии «Био-Ресурс» и «Абсолютный ресурс», и вопрос о них открыл бы акцию.
+  /(?<!\p{L})ресурс\p{L}*\s*6\s*\+?/iu,
 ];
 
 export interface AgeRange {
@@ -92,6 +97,8 @@ export function promoVisible(promo: PromoGate, now: Date): boolean {
 export interface PromoForAgent<E> extends PromoGate, AgeRange {
   id: string;
   entries: E[];
+  /** Метка из ссылки школы («[ШК]»): сообщение с ней — тоже разговор об акции. */
+  waMarker?: string;
 }
 
 /**
@@ -104,7 +111,10 @@ export interface PromoForAgent<E> extends PromoGate, AgeRange {
  */
 export function visiblePromos<P extends PromoForAgent<unknown>>(promos: P[], patientTexts: string[], now: Date): P[] {
   return promos.filter(
-    (p) => p.entries.length > 0 && promoVisible(p, now) && patientTexts.some((t) => promoTriggered(t, p)),
+    (p) =>
+      p.entries.length > 0 &&
+      promoVisible(p, now) &&
+      patientTexts.some((t) => promoTriggered(t, p) || (p.waMarker ? hasMarker(t, p.waMarker) : false)),
   );
 }
 
@@ -114,9 +124,13 @@ export function askedSchool(agentTexts: string[]): boolean {
   return agentTexts.some((t) => t.toLowerCase().includes(key));
 }
 
-/** Вопрос про школу — один раз и только тем, кто ещё не привязан. */
-export function shouldAskSchool(input: { agentTexts: string[]; attributed: boolean; schools: number }): boolean {
-  return input.schools > 0 && !input.attributed && !askedSchool(input.agentTexts);
+/**
+ * Вопрос про школу — один раз, только тем, кто ещё не привязан и пришёл без
+ * метки. Ответ привязку НЕ создаёт: он остаётся в переписке уликой, и её
+ * найдёт разбор переписки — с подтверждением человеком (п. 8 спецификации).
+ */
+export function shouldAskSchool(input: { agentTexts: string[]; attributed: boolean; schools: number; marked?: boolean }): boolean {
+  return input.schools > 0 && !input.attributed && !input.marked && !askedSchool(input.agentTexts);
 }
 
 // ─────────────────────────────────────────────── ответ про школу

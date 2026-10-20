@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import QRCode from "qrcode";
 import { formatMoney, formatNumber } from "@/lib/format";
 import type { PromoParticipant, SchoolPromoView } from "@/lib/server/promos";
 import { Field, Group, SaveBar, TextInput, Textarea, Toggle } from "../settings/_components/ui";
@@ -12,8 +13,10 @@ import {
   detachPatientFromSchool,
   findPatientsForPromo,
   markPromoDone,
+  reviewPromoAttribution,
   revokePromoBonus,
   rotateSchoolToken,
+  runPromoAiReview,
   saveSchool,
   saveSchoolPromo,
   setPromoParticipantSchool,
@@ -22,6 +25,7 @@ import {
 
 const dateFmt = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long" });
 const shortFmt = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
+const whenFmt = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 const STATUS: Record<PromoParticipant["status"], { label: string; tone: string }> = {
   waiting: { label: "ждём визита", tone: "text-text-muted" },
@@ -29,6 +33,13 @@ const STATUS: Record<PromoParticipant["status"], { label: string; tone: string }
   bonus: { label: "прошёл · бонус начислен", tone: "text-text font-medium" },
   reversed: { label: "бонус снят", tone: "text-accent-text" },
   no_school: { label: "без школы — бонуса нет", tone: "text-text-subtle" },
+  returning: { label: "повторный пациент — бонуса нет", tone: "text-text-subtle" },
+};
+
+const HOW: Record<PromoParticipant["confidence"], string> = {
+  MARKER: "метка",
+  AI_EVIDENCE: "по переписке",
+  MANUAL: "вручную",
 };
 
 export function SchoolPromoClient({
@@ -37,17 +48,19 @@ export function SchoolPromoClient({
   canEdit,
   canMessage,
   canApprove,
+  canReview,
 }: {
   view: SchoolPromoView;
   reportBase: string;
   canEdit: boolean;
   canMessage: boolean;
   canApprove: boolean;
+  /** Подтвердить или отклонить привязку по переписке — администратор и владелец. */
+  canReview: boolean;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const done = view.participants.filter((p) => p.status === "bonus" || p.status === "done").length;
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -64,6 +77,7 @@ export function SchoolPromoClient({
     }
   }
 
+  const st = view.stats;
   return (
     <>
       <header className="border-border flex-none border-b px-7 py-[18px] max-md:px-5">
@@ -71,29 +85,37 @@ export function SchoolPromoClient({
         <p className="text-text-muted mt-1.5 text-xs">
           {formatMoney(view.priceTotal)} вместо {formatMoney(view.priceRegular)}
           {view.ageMin != null || view.ageMax != null ? ` · ${view.ageMin ?? "…"}–${view.ageMax ?? "…"} лет` : ""} · до{" "}
-          {dateFmt.format(new Date(`${view.endsOn}T12:00:00Z`))} · бонус школе {formatMoney(view.bonusAmount)}
+          {dateFmt.format(new Date(`${view.endsOn}T12:00:00Z`))} · бонус школе {formatMoney(view.bonusAmount)} за пришедшего
           {view.open ? "" : " · акция закончилась или выключена — новых участников не добавить"}
         </p>
       </header>
 
       <div className="flex-1 overflow-auto px-7 py-6 max-md:px-5">
         <div className="flex max-w-[1040px] flex-col gap-5">
-          <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-            <Tile label="Участников" value={formatNumber(view.participants.length)} />
-            <Tile label="Прошли" value={formatNumber(done)} />
-            <Tile label="Бонус школам" value={formatMoney(view.totals.bonusEarned)} />
-            <Tile label="Снято бонусов" value={formatNumber(view.totals.reversed)} hint={view.totals.reversed ? `на ${formatMoney(view.totals.bonusReversed)}` : undefined} />
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+            <Tile label="По метке в ссылке" value={formatNumber(st.byMarker)} />
+            <Tile label="Подтверждено по переписке" value={formatNumber(st.byEvidence)} hint={st.manual ? `и вручную ${formatNumber(st.manual)}` : undefined} />
+            <Tile label="На проверке" value={formatNumber(st.inReview)} accent={st.inReview > 0} />
+            <Tile label="Повторные пациенты" value={formatNumber(st.returning)} hint="привязаны, бонуса нет" />
+            <Tile label="Записались" value={formatNumber(st.booked)} />
+            <Tile label="Пришли" value={formatNumber(st.arrived)} />
+            <Tile label="Бонус начислен" value={formatMoney(st.bonusEarned)} hint={`за ${formatNumber(st.bonusCount)}`} />
+            <Tile label="Снято бонусов" value={formatNumber(st.reversed)} />
+            <Tile label="Визиты акции без источника" value={formatNumber(st.visitsWithoutSource)} hint="пришли или записаны, а привязки нет" />
           </div>
 
           {error ? <p className="text-accent-text text-sm">{error}</p> : null}
 
+          <Warnings view={view} />
+          {view.review.length > 0 ? <Review view={view} canReview={canReview} busy={busy} run={run} /> : null}
+          <ShareLink view={view} />
           <Participants view={view} canMessage={canMessage} busy={busy} run={run} />
           <Schools view={view} reportBase={reportBase} canEdit={canEdit} run={run} />
 
           <details className="border-border bg-surface rounded-xl border">
-            <summary className="cursor-pointer px-5 py-3 text-sm font-medium">Условия и состав акции</summary>
+            <summary className="cursor-pointer px-5 py-3 text-sm font-medium">Условия, состав и услуги акции</summary>
             <div className="border-border-soft border-t">
-              <Settings view={view} canEdit={canEdit} onSaved={() => router.refresh()} />
+              <Settings view={view} canEdit={canEdit} onSaved={() => router.refresh()} run={run} />
             </div>
           </details>
 
@@ -111,13 +133,181 @@ export function SchoolPromoClient({
   );
 }
 
-function Tile({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Tile({ label, value, hint, accent }: { label: string; value: string; hint?: string; accent?: boolean }) {
   return (
-    <div className="border-border bg-surface rounded-xl border px-4 py-3">
+    <div className={`bg-surface rounded-xl border px-4 py-3 ${accent ? "border-accent" : "border-border"}`}>
       <p className="text-text-subtle text-2xs">{label}</p>
-      <p className="num mt-1 text-lg font-medium">{value}</p>
+      <p className={`num mt-1 text-lg font-medium ${accent ? "text-accent-text" : ""}`}>{value}</p>
       {hint ? <p className="text-text-subtle mt-0.5 text-2xs">{hint}</p> : null}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────── предупреждения
+
+function Warnings({ view }: { view: SchoolPromoView }) {
+  if (view.serviceWarnings.length === 0 && view.mismatches.length === 0) return null;
+  const MISMATCH: Record<SchoolPromoView["mismatches"][number]["kind"], string> = {
+    "booked-missing": "уведомление YCLIENTS о записи на услугу акции есть, а записи у нас нет",
+    "cancelled-alive": "уведомление YCLIENTS об отмене есть, а запись у нас не отменена",
+    "no-card": "уведомление о записи на акцию в переписке без карточки пациента",
+  };
+  return (
+    <section className="border-border bg-surface rounded-xl border px-5 py-3">
+      <h2 className="text-sm font-medium">Проверьте</h2>
+      <ul className="mt-1.5 flex flex-col gap-1 text-sm">
+        {view.serviceWarnings.map((w) => (
+          <li key={w} className="text-accent-text">
+            {w}
+          </li>
+        ))}
+        {view.mismatches.map((m) => (
+          <li key={m.messageId}>
+            <span className="text-accent-text">Расхождение:</span> {m.patientName ?? "пациент без карточки"}, приём{" "}
+            {whenFmt.format(new Date(m.at))} — {MISMATCH[m.kind]}.{" "}
+            <Link href={`/inbox?d=${encodeURIComponent(m.conversationId)}`} className="text-accent-text text-xs hover:underline">
+              переписка
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {view.mismatches.length > 0 ? (
+        <p className="text-text-subtle mt-1.5 text-xs">
+          Из уведомлений ничего не создаётся: источник — YCLIENTS. Обычно расхождение уходит со следующей выгрузкой; осталось — проверьте запись.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────── на проверке
+
+function Review({
+  view,
+  canReview,
+  busy,
+  run,
+}: {
+  view: SchoolPromoView;
+  canReview: boolean;
+  busy: boolean;
+  run: (a: () => Promise<unknown>) => Promise<boolean>;
+}) {
+  return (
+    <section className="border-accent bg-surface rounded-xl border">
+      <header className="border-border-soft border-b px-5 py-3">
+        <h2 className="text-sm font-medium">На проверке: {formatNumber(view.review.length)}</h2>
+        <p className="text-text-subtle mt-0.5 text-xs">
+          Метку стёрли, но пациент сам написал про школу. Бонус начислится только после подтверждения. Отклонённое — окончательно.
+        </p>
+      </header>
+      <ul>
+        {view.review.map((r) => (
+          <li key={r.attributionId} className="border-border-soft flex flex-wrap items-center gap-x-4 gap-y-2 border-t px-5 py-3 first:border-t-0">
+            <div className="min-w-[240px] flex-1">
+              <Link href={`/patients/${r.patientId}`} className="text-sm hover:underline">
+                {r.patientName}
+              </Link>
+              {r.returning ? <span className="text-text-subtle text-xs"> · повторный пациент — бонуса не будет</span> : null}
+              {r.evidenceQuote ? <p className="text-text mt-0.5 text-sm">«{r.evidenceQuote}»</p> : null}
+              {r.conversationId ? (
+                <Link href={`/inbox?d=${encodeURIComponent(r.conversationId)}`} className="text-accent-text text-xs hover:underline">
+                  открыть переписку
+                </Link>
+              ) : null}
+            </div>
+            {canReview ? (
+              <span className="flex items-center gap-2 text-xs">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void run(() => reviewPromoAttribution(r.attributionId, "confirm"))}
+                  className="bg-accent text-accent-contrast rounded-md px-2.5 py-1 font-medium disabled:opacity-45"
+                >
+                  Подтвердить
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void run(() => reviewPromoAttribution(r.attributionId, "reject"))}
+                  className="border-border hover:bg-hover rounded-md border px-2.5 py-1"
+                >
+                  Отклонить
+                </button>
+              </span>
+            ) : (
+              <span className="text-text-subtle text-xs">решает администратор или владелец</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────── ссылка и QR
+
+function readableLink(link: string): string {
+  try {
+    return decodeURIComponent(link);
+  } catch {
+    return link;
+  }
+}
+
+function ShareLink({ view }: { view: SchoolPromoView }) {
+  const [qr, setQr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!view.waLink) return;
+    let alive = true;
+    QRCode.toDataURL(view.waLink, { margin: 1, width: 512, errorCorrectionLevel: "M" })
+      .then((url) => alive && setQr(url))
+      .catch(() => alive && setQr(null));
+    return () => {
+      alive = false;
+    };
+  }, [view.waLink]);
+
+  return (
+    <Group
+      title="Ссылка для школы"
+      hint={`Мама нажимает — открывается WhatsApp клиники с готовым текстом и меткой ${view.waMarker}. Сообщение с меткой привязывает пациента к школе само.`}
+    >
+      {view.waLink ? (
+        <div className="flex flex-wrap items-start gap-4">
+          {qr ? (
+            // Картинка собрана в браузере из ссылки — внешних сервисов нет.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={qr} alt="QR-код ссылки на WhatsApp клиники" width={128} height={128} className="border-border rounded-md border" />
+          ) : null}
+          <div className="flex min-w-[240px] flex-1 flex-col gap-2">
+            {/* Показываем читаемой, копируется — рабочая, закодированная. */}
+            <code className="bg-raise border-border block rounded-md border px-3 py-2 text-xs break-all">{readableLink(view.waLink)}</code>
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <button
+                type="button"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(view.waLink!).catch(() => {});
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                }}
+                className="border-border hover:bg-hover rounded-md border px-3 py-1.5"
+              >
+                {copied ? "Скопировано" : "Скопировать"}
+              </button>
+              {qr ? (
+                <a href={qr} download="whatsapp-shkolny-resurs-qr.png" className="border-border hover:bg-hover rounded-md border px-3 py-1.5">
+                  Скачать QR
+                </a>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <p className="text-text-muted text-sm">Укажите номер WhatsApp клиники в условиях акции — без него ссылку не собрать.</p>
+      )}
+    </Group>
   );
 }
 
@@ -140,8 +330,8 @@ function Participants({
       <header className="border-border-soft border-b px-5 py-3">
         <h2 className="text-sm font-medium">Участники</h2>
         <p className="text-text-subtle mt-0.5 text-xs">
-          Бонус школе начисляется сам, когда в YCLIENTS отмечен визит по услуге акции, — или кнопкой «Прошёл». Ручные отметки
-          автоматика не трогает.
+          Бонус школе начисляется сам, когда в YCLIENTS отмечен визит по услуге акции, — один на участника, сколько бы специалистов
+          ни было в визите. Или кнопкой «Прошёл». Ручные отметки автоматика не трогает.
         </p>
       </header>
       {canMessage && view.open ? <AddParticipant schools={activeSchools} run={run} /> : null}
@@ -156,9 +346,11 @@ function Participants({
                   {p.patientName}
                 </Link>
                 {p.phoneTail ? <span className="text-text-subtle num text-xs"> · …{p.phoneTail}</span> : null}
+                {p.isExtraChild ? <span className="text-text-muted text-xs"> · ребёнок {p.childNo}</span> : null}
                 {p.note ? <span className="text-text-muted text-sm"> · {p.note}</span> : null}
                 <p className="text-text-subtle text-2xs">
-                  {p.source === "AGENT" ? "добавил агент" : `добавил(а) ${p.createdBy ?? "сотрудник"}`} · {shortFmt.format(new Date(p.attributedAt))}
+                  <span className="bg-raise border-border mr-1 rounded border px-1 py-px">{HOW[p.confidence]}</span>
+                  {p.createdBy ?? "сотрудник"} · {shortFmt.format(new Date(p.attributedAt))}
                 </p>
               </div>
               <select
@@ -182,7 +374,7 @@ function Participants({
               </span>
               {canMessage ? (
                 <span className="flex flex-wrap items-center gap-2 text-xs">
-                  {p.status === "waiting" || p.status === "no_school" || p.status === "reversed" ? (
+                  {p.status === "waiting" || p.status === "no_school" || p.status === "reversed" || p.status === "returning" ? (
                     <button
                       type="button"
                       disabled={busy}
@@ -210,15 +402,38 @@ function Participants({
                       Снять бонус
                     </button>
                   ) : null}
+                  {view.open && p.childNo === 1 ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        const name = prompt("Имя второго ребёнка (необязательно)");
+                        if (name === null) return;
+                        void run(async () => {
+                          const r = await attachPatientToSchool({
+                            patientId: p.patientId,
+                            schoolId: p.schoolId,
+                            conversationId: p.conversationId,
+                            childName: name.trim() || null,
+                            extraChild: true,
+                          });
+                          if (!r.ok) throw new Error("reason" in r ? r.reason : "Не получилось добавить второго ребёнка");
+                        });
+                      }}
+                      className="text-text-muted hover:text-text"
+                    >
+                      Добавить второго ребёнка
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => {
-                      if (confirm(`Убрать ${p.patientName} из акции? Начисленный бонус будет снят.`)) void run(() => detachPatientFromSchool(p.attributionId));
+                      if (confirm(`Снять привязку ${p.patientName}? Начисленный бонус будет снят.`)) void run(() => detachPatientFromSchool(p.attributionId));
                     }}
                     className="text-text-muted hover:text-text"
                   >
-                    Убрать
+                    Снять привязку
                   </button>
                 </span>
               ) : null}
@@ -240,7 +455,7 @@ function AddParticipant({
   const [q, setQ] = useState("");
   const [found, setFound] = useState<{ id: string; name: string; phoneTail: string | null }[]>([]);
   const [picked, setPicked] = useState<{ id: string; name: string } | null>(null);
-  const [schoolId, setSchoolId] = useState("");
+  const [schoolId, setSchoolId] = useState(schools[0]?.id ?? "");
   const [childName, setChildName] = useState("");
   const [family, setFamily] = useState<{ who: string; school: string }[] | null>(null);
   const [reason, setReason] = useState<string | null>(null);
@@ -351,7 +566,7 @@ function AddParticipant({
   );
 }
 
-// ─────────────────────────────────────────────── школы
+// ─────────────────────────────────────────────── школа
 
 function Schools({
   view,
@@ -368,54 +583,60 @@ function Schools({
   const [contact, setContact] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
   return (
-    <Group title="Школы-партнёры" hint="Ссылка для школы — только итоги: сколько привязано, пришло и сумма бонуса. Без имён и дат.">
-      {view.schools.length === 0 ? <p className="text-text-muted text-sm">Школ пока нет.</p> : null}
+    <Group
+      title="Школа"
+      hint="Отчёт для школы — только итоги: сколько привязано, пришло и сумма бонуса. Без имён и дат. Синонимы — как ещё родители называют школу в переписке."
+    >
+      {view.schools.length === 0 ? <p className="text-text-muted text-sm">Школы пока нет — добавьте её ниже.</p> : null}
       <ul className="flex flex-col">
         {view.schools.map((s) => {
           const url = `${reportBase}/partner/${s.reportToken}`;
           return (
-            <li key={s.id} className="border-border-soft flex flex-wrap items-center gap-x-4 gap-y-1 border-b py-2.5 last:border-b-0">
-              <span className="min-w-[200px] flex-1 text-sm">
-                {s.name}
-                {s.contactName ? <span className="text-text-subtle text-xs"> · {s.contactName}</span> : null}
-                {!s.isActive ? <span className="text-text-subtle text-xs"> · выключена</span> : null}
-              </span>
-              <span className="num text-text-muted text-xs">
-                участников {formatNumber(s.totals.attributed)} · пришли {formatNumber(s.totals.arrived)} · {formatMoney(s.totals.bonusEarned)}
-              </span>
-              <button
-                type="button"
-                className="text-accent-text text-xs hover:underline"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(url).catch(() => {});
-                  setCopied(s.id);
-                  setTimeout(() => setCopied(null), 1500);
-                }}
-              >
-                {copied === s.id ? "Скопировано" : "Ссылка для школы"}
-              </button>
-              {canEdit ? (
-                <span className="flex items-center gap-3 text-xs">
-                  <button
-                    type="button"
-                    className="text-text-muted hover:text-text"
-                    onClick={() => {
-                      if (confirm("Старая ссылка перестанет открываться. Выдать новую?")) void run(() => rotateSchoolToken(s.id));
-                    }}
-                  >
-                    Новая ссылка
-                  </button>
-                  <Toggle
-                    checked={s.isActive}
-                    label={`Школа ${s.name} участвует`}
-                    onChange={(v) =>
-                      void run(() =>
-                        saveSchool({ id: s.id, promoId: view.id, name: s.name, contactName: s.contactName, contactPhone: s.contactPhone, isActive: v }),
-                      )
-                    }
-                  />
+            <li key={s.id} className="border-border-soft flex flex-col gap-2 border-b py-2.5 last:border-b-0">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span className="min-w-[200px] flex-1 text-sm">
+                  {s.name}
+                  {s.contactName ? <span className="text-text-subtle text-xs"> · {s.contactName}</span> : null}
+                  {!s.isActive ? <span className="text-text-subtle text-xs"> · выключена</span> : null}
                 </span>
-              ) : null}
+                <span className="num text-text-muted text-xs">
+                  участников {formatNumber(s.totals.attributed)} · пришли {formatNumber(s.totals.arrived)} · {formatMoney(s.totals.bonusEarned)}
+                </span>
+                <button
+                  type="button"
+                  className="text-accent-text text-xs hover:underline"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(url).catch(() => {});
+                    setCopied(s.id);
+                    setTimeout(() => setCopied(null), 1500);
+                  }}
+                >
+                  {copied === s.id ? "Скопировано" : "Отчёт для школы"}
+                </button>
+                {canEdit ? (
+                  <span className="flex items-center gap-3 text-xs">
+                    <button
+                      type="button"
+                      className="text-text-muted hover:text-text"
+                      onClick={() => {
+                        if (confirm("Старая ссылка на отчёт перестанет открываться. Выдать новую?")) void run(() => rotateSchoolToken(s.id));
+                      }}
+                    >
+                      Новая ссылка
+                    </button>
+                    <Toggle
+                      checked={s.isActive}
+                      label={`Школа ${s.name} участвует`}
+                      onChange={(v) =>
+                        void run(() =>
+                          saveSchool({ id: s.id, promoId: view.id, name: s.name, contactName: s.contactName, contactPhone: s.contactPhone, isActive: v }),
+                        )
+                      }
+                    />
+                  </span>
+                ) : null}
+              </div>
+              {canEdit ? <AliasEditor school={s} promoId={view.id} run={run} /> : s.aliases.length ? <p className="text-text-subtle text-xs">синонимы: {s.aliases.join(", ")}</p> : null}
             </li>
           );
         })}
@@ -447,9 +668,68 @@ function Schools({
   );
 }
 
-// ─────────────────────────────────────────────── условия и состав
+function AliasEditor({
+  school,
+  promoId,
+  run,
+}: {
+  school: SchoolPromoView["schools"][number];
+  promoId: string;
+  run: (a: () => Promise<unknown>) => Promise<boolean>;
+}) {
+  const [text, setText] = useState(school.aliases.join(", "));
+  const list = text
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 2);
+  const changed = list.join("|") !== school.aliases.join("|");
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="min-w-[240px] flex-1">
+        <TextInput
+          aria-label={`Синонимы школы ${school.name}`}
+          placeholder="Синонимы через запятую: «Росток», «подготовка у Мадины»"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </div>
+      <button
+        type="button"
+        disabled={!changed}
+        onClick={() =>
+          void run(() =>
+            saveSchool({
+              id: school.id,
+              promoId,
+              name: school.name,
+              contactName: school.contactName,
+              contactPhone: school.contactPhone,
+              isActive: school.isActive,
+              aliases: list,
+            }),
+          )
+        }
+        className="border-border hover:bg-hover rounded-md border px-3 py-1.5 text-xs disabled:opacity-45"
+      >
+        Сохранить синонимы
+      </button>
+    </div>
+  );
+}
 
-function Settings({ view, canEdit, onSaved }: { view: SchoolPromoView; canEdit: boolean; onSaved: () => void }) {
+// ─────────────────────────────────────────────── условия, состав, услуги
+
+function Settings({
+  view,
+  canEdit,
+  onSaved,
+  run,
+}: {
+  view: SchoolPromoView;
+  canEdit: boolean;
+  onSaved: () => void;
+  run: (a: () => Promise<unknown>) => Promise<boolean>;
+}) {
   const [form, setForm] = useState({
     name: view.name,
     description: view.description ?? "",
@@ -462,34 +742,139 @@ function Settings({ view, canEdit, onSaved }: { view: SchoolPromoView; canEdit: 
     bonusAmount: view.bonusAmount,
     isActive: view.isActive,
     agentEnabled: view.agentEnabled,
+    aiReviewEnabled: view.aiReviewEnabled,
+    waMarker: view.waMarker,
+    waPhone: view.waPhone ?? "",
+    serviceIds: view.promoServices.filter((s) => s.how === "chosen").map((s) => s.yclientsServiceId),
+    serviceKeywords: view.serviceKeywords.join(", "),
+    excludedServiceIds: view.promoServices.filter((s) => s.how === "excluded").map((s) => s.yclientsServiceId),
     items: view.items.map((i) => ({ title: i.title, price: i.price, yclientsServiceId: i.yclientsServiceId })),
   });
+  const [pick, setPick] = useState("");
+  const [aiNote, setAiNote] = useState<string | null>(null);
   const patch = (next: Partial<typeof form>) => setForm((f) => ({ ...f, ...next }));
   const num = (v: string) => (v.trim() === "" ? 0 : Number(v.replace(",", ".")));
   const intOrNull = (v: string) => (v.trim() === "" ? null : Number.parseInt(v, 10));
   const sum = form.items.reduce((t, i) => t + (Number.isFinite(i.price) ? i.price : 0), 0);
+  const titleOf = (id: number) => view.services.find((s) => s.yclientsServiceId === id)?.title ?? view.promoServices.find((s) => s.yclientsServiceId === id)?.title ?? String(id);
+
+  const servicesList = (
+    <ul className="mt-2 flex flex-col gap-1 text-sm">
+      {view.promoServices.length === 0 ? <li className="text-accent-text">Ни одной услуги акции — визиты не засчитаются никому.</li> : null}
+      {view.promoServices.map((s) => (
+        <li key={`${s.how}-${s.yclientsServiceId}`} className="flex flex-wrap items-center gap-x-3">
+          <span className={s.how === "excluded" ? "text-text-subtle line-through" : ""}>
+            {s.title} <span className="text-text-subtle num text-xs">· {formatMoney(s.price)} · {s.yclientsServiceId}</span>
+          </span>
+          <span className="text-text-subtle text-xs">
+            {s.how === "chosen" ? "выбрана" : s.how === "keyword" ? "поймана по названию" : "исключена вручную"}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 
   if (!canEdit) {
     return (
-      <ul className="flex flex-col gap-1 px-5 py-4 text-sm">
-        {view.items.map((i) => (
-          <li key={i.title}>
-            {i.title} — {formatMoney(i.price)}
-            <span className="text-text-subtle text-xs"> · {i.serviceTitle ? `в YCLIENTS: ${i.serviceTitle}` : "в YCLIENTS не связана"}</span>
-          </li>
-        ))}
-      </ul>
+      <div className="flex flex-col gap-3 px-5 py-4 text-sm">
+        <div>
+          <p className="font-medium">Услуги YCLIENTS, визиты по которым засчитываются</p>
+          {servicesList}
+        </div>
+        <ul className="flex flex-col gap-1">
+          {view.items.map((i) => (
+            <li key={i.title}>
+              {i.title} — {formatMoney(i.price)}
+            </li>
+          ))}
+        </ul>
+      </div>
     );
   }
 
+  const keywordRows = view.promoServices.filter((s) => s.how === "keyword" || s.how === "excluded");
   return (
     <div className="flex flex-col gap-4 px-5 py-4">
       <div>
-        <p className="text-sm font-medium">Состав</p>
+        <p className="text-sm font-medium">Услуги YCLIENTS, визиты по которым засчитываются</p>
         <p className="text-text-subtle mt-0.5 text-xs">
-          Позиция, связанная со строкой прайса YCLIENTS, засчитывается сама, когда визит отмечен «пришёл». Не связанную — отмечайте
-          «Прошёл» у участника.
+          Всё, что начинается со слов ниже, ловится само — и «Школьный ресурс 6+», и его части у разных специалистов. Лишнее исключите,
+          недостающее выберите из списка. Визит из нескольких записей — один визит.
         </p>
+        {servicesList}
+        <div className="mt-3 flex flex-col gap-2">
+          <Field label="Ловить по началу названия" hint="через запятую" htmlFor="sp-kw">
+            <TextInput id="sp-kw" value={form.serviceKeywords} onChange={(e) => patch({ serviceKeywords: e.target.value })} />
+          </Field>
+          {keywordRows.length ? (
+            <ul className="flex flex-col gap-1 text-xs">
+              {keywordRows.map((s) => {
+                const off = form.excludedServiceIds.includes(s.yclientsServiceId);
+                return (
+                  <li key={s.yclientsServiceId}>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!off}
+                        onChange={(e) =>
+                          patch({
+                            excludedServiceIds: e.target.checked
+                              ? form.excludedServiceIds.filter((x) => x !== s.yclientsServiceId)
+                              : [...form.excludedServiceIds, s.yclientsServiceId],
+                          })
+                        }
+                      />
+                      {s.title} · {s.yclientsServiceId} — {off ? "исключена" : "в акции"}
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+          <div>
+            <p className="text-xs">Выбраны вручную:</p>
+            <ul className="mt-1 flex flex-wrap gap-1.5">
+              {form.serviceIds.map((id) => (
+                <li key={id} className="bg-raise border-border inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs">
+                  {titleOf(id)}
+                  <button
+                    type="button"
+                    aria-label={`Убрать ${titleOf(id)}`}
+                    onClick={() => patch({ serviceIds: form.serviceIds.filter((x) => x !== id) })}
+                    className="text-text-muted hover:text-text"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+              {form.serviceIds.length === 0 ? <li className="text-text-subtle text-xs">нет</li> : null}
+            </ul>
+            <select
+              aria-label="Добавить услугу YCLIENTS"
+              value={pick}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setPick("");
+                if (v && !form.serviceIds.includes(v)) patch({ serviceIds: [...form.serviceIds, v] });
+              }}
+              className="border-border-input bg-surface mt-1.5 max-w-[420px] rounded-md border px-2 py-2 text-xs"
+            >
+              <option value="">+ выбрать услугу из YCLIENTS</option>
+              {view.services
+                .filter((s) => !form.serviceIds.includes(s.yclientsServiceId))
+                .map((s) => (
+                  <option key={s.yclientsServiceId} value={s.yclientsServiceId}>
+                    {s.title} — {formatMoney(s.price)}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p className="text-sm font-medium">Состав для пациента и агента</p>
+        <p className="text-text-subtle mt-0.5 text-xs">Что входит и сколько стоит по отдельности. На засчитывание визитов не влияет — для этого список услуг выше.</p>
         <ul className="mt-2 flex flex-col gap-2">
           {form.items.map((it, idx) => (
             <li key={idx} className="flex flex-wrap items-center gap-2">
@@ -508,21 +893,6 @@ function Settings({ view, canEdit, onSaved }: { view: SchoolPromoView; canEdit: 
                   onChange={(e) => patch({ items: form.items.map((x, j) => (j === idx ? { ...x, price: num(e.target.value) } : x)) })}
                 />
               </div>
-              <select
-                aria-label="Строка YCLIENTS"
-                value={it.yclientsServiceId ?? ""}
-                onChange={(e) =>
-                  patch({ items: form.items.map((x, j) => (j === idx ? { ...x, yclientsServiceId: e.target.value ? Number(e.target.value) : null } : x)) })
-                }
-                className="border-border-input bg-surface max-w-[300px] rounded-md border px-2 py-2 text-xs"
-              >
-                <option value="">не связана с YCLIENTS</option>
-                {view.services.map((s) => (
-                  <option key={s.yclientsServiceId} value={s.yclientsServiceId}>
-                    {s.title} — {formatMoney(s.price)}
-                  </option>
-                ))}
-              </select>
               <button
                 type="button"
                 aria-label="Убрать позицию"
@@ -570,8 +940,14 @@ function Settings({ view, canEdit, onSaved }: { view: SchoolPromoView; canEdit: 
           <TextInput aria-label="по" type="date" value={form.endsOn} onChange={(e) => patch({ endsOn: e.target.value })} />
         </div>
       </Field>
-      <Field label="Бонус школе, ₽" hint="за пришедшего" htmlFor="sp-bonus">
+      <Field label="Бонус школе, ₽" hint="за пришедшего нового пациента" htmlFor="sp-bonus">
         <TextInput id="sp-bonus" inputMode="numeric" value={String(form.bonusAmount)} onChange={(e) => patch({ bonusAmount: num(e.target.value) })} />
+      </Field>
+      <Field label="Метка в ссылке" hint="ищется в сообщениях пациента" htmlFor="sp-marker">
+        <TextInput id="sp-marker" value={form.waMarker} onChange={(e) => patch({ waMarker: e.target.value })} />
+      </Field>
+      <Field label="WhatsApp клиники для ссылки" htmlFor="sp-wa">
+        <TextInput id="sp-wa" inputMode="tel" value={form.waPhone} onChange={(e) => patch({ waPhone: e.target.value })} />
       </Field>
       <Field label="Акция идёт">
         <Toggle checked={form.isActive} onChange={(v) => patch({ isActive: v })} label="Акция идёт" />
@@ -579,10 +955,48 @@ function Settings({ view, canEdit, onSaved }: { view: SchoolPromoView; canEdit: 
       <Field label="Агент рассказывает об акции" hint="только тому, кто спросил сам, и только записями ниже">
         <Toggle checked={form.agentEnabled} onChange={(v) => patch({ agentEnabled: v })} label="Агент рассказывает об акции" />
       </Field>
+      <Field
+        label="Разбор переписки, если метку стёрли"
+        hint="ночью, только новые пациенты с визитом акции; найденное — на проверку, не в бонус"
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <Toggle checked={form.aiReviewEnabled} onChange={(v) => patch({ aiReviewEnabled: v })} label="Разбор переписки" />
+          <button
+            type="button"
+            disabled={!view.aiReviewEnabled}
+            onClick={() =>
+              void run(async () => {
+                const r = await runPromoAiReview();
+                setAiNote(r);
+              })
+            }
+            className="border-border hover:bg-hover rounded-md border px-3 py-1.5 text-xs disabled:opacity-45"
+          >
+            Проверить сейчас
+          </button>
+          {aiNote ? <span className="text-text-muted text-xs">{aiNote}</span> : null}
+        </div>
+      </Field>
       <SaveBar
-        error={form.endsOn < form.startsOn ? "Конец акции раньше начала" : form.items.some((i) => !i.title.trim()) ? "У позиции нет названия" : null}
+        error={
+          form.endsOn < form.startsOn
+            ? "Конец акции раньше начала"
+            : form.items.some((i) => !i.title.trim())
+              ? "У позиции нет названия"
+              : form.waMarker.trim().length < 2
+                ? "Метка — хотя бы два знака"
+                : null
+        }
         onSave={async () => {
-          await saveSchoolPromo({ ...form, description: form.description || null });
+          await saveSchoolPromo({
+            ...form,
+            description: form.description || null,
+            waPhone: form.waPhone.trim() || null,
+            serviceKeywords: form.serviceKeywords
+              .split(",")
+              .map((k) => k.trim())
+              .filter((k) => k.length >= 3),
+          });
           onSaved();
         }}
       />

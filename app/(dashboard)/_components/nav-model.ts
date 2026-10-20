@@ -33,8 +33,8 @@ const NAV_COMMON: NavItem[] = [
   { label: "Курсы", href: "/courses" },
   // Рабочая очередь администратора: кому звонить и что предложить.
   { label: "Кому позвонить", href: "/queue" },
-  // Акция клиники одна — «Школьный check-up»: участники, школы, бонусы.
-  { label: "Школьный check-up", href: "/promos" },
+  // Акция клиники одна — «Школьный ресурс»: участники, школа, бонусы.
+  { label: "Школьный ресурс", href: "/promos" },
   { label: "Кабинеты", href: "/schedule" },
   { label: "Отчёты", href: "/analytics" },
 ];
@@ -58,4 +58,18 @@ export function isActive(pathname: string, href: string): boolean {
 
 export function initials(name: string): string {
   return name.split(/[\s.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("");
+}
+
+/**
+ * Значки пунктов меню: «ждут ответа» у Диалогов — из стора, «на проверке» у
+ * акции — с сервера (привязки по переписке ждут решения администратора).
+ */
+export function withBadges(nav: NavItem[], waiting: number, promoReview: number): NavItem[] {
+  return nav.map((item) =>
+    item.href === "/inbox" && waiting > 0
+      ? { ...item, badge: waiting }
+      : item.href === "/promos" && promoReview > 0
+        ? { ...item, badge: promoReview }
+        : item,
+  );
 }

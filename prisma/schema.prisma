@@ -328,6 +328,7 @@ model Company {
   partnerSchools           PartnerSchool[]
   partnerAttributions      PartnerAttribution[]
   partnerBonuses           PartnerBonus[]
+  aiAttributionChecks      AiAttributionCheck[]
 
   @@map("companies")
 }
@@ -2615,32 +2616,89 @@ enum PartnerBonusStatus {
   REVERSED
 }
 
+enum AttributionConfidence {
+  MARKER
+  AI_EVIDENCE
+  MANUAL
+}
+
+enum AttributionReview {
+  CONFIRMED
+  REVIEW
+  REJECTED
+}
+
+enum AiCheckResult {
+  ATTRIBUTED
+  NOT_FROM_SCHOOL
+  UNCLEAR
+  REJECTED_BY_VERIFIER
+  MODEL_ERROR
+}
+
+/// Разбор переписки моделью: откуда пациент пришёл. Журнал, а не привязка:
+/// привязку создаёт код после проверки цитаты, и только «на проверку».
+model AiAttributionCheck {
+  id                String        @id @default(cuid())
+  companyId         String
+  promoId           String
+  patientId         String
+  conversationId    String
+  /// Хэш того, что ушло модели: повтор — только если переписка изменилась.
+  inputHash         String
+  result            AiCheckResult
+  evidenceMessageId String?
+  evidenceQuote     String?
+  reason            String?
+  model             String
+  checkedAt         DateTime      @default(now()) @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  promo   Promo   @relation(fields: [promoId], references: [id], onDelete: Restrict)
+
+  @@index([promoId, patientId])
+  @@index([companyId, checkedAt])
+  @@map("ai_attribution_checks")
+}
+
 /// Акция клиники («Школьный check-up»). Цены — справочные: что стоит в записи,
 /// решает YCLIENTS, а засчитываются визиты по услугам из serviceIds.
 model Promo {
-  id           String   @id @default(cuid())
-  companyId    String
-  name         String
-  slug         String
-  description  String?
+  id                 String   @id @default(cuid())
+  companyId          String
+  name               String
+  slug               String
+  description        String?
   /// Цена акции и сумма услуг по отдельности — для экрана и справки агента.
-  priceTotal   Decimal  @db.Decimal(12, 2)
-  priceRegular Decimal  @db.Decimal(12, 2)
-  ageMin       Int?
-  ageMax       Int?
+  priceTotal         Decimal  @db.Decimal(12, 2)
+  priceRegular       Decimal  @db.Decimal(12, 2)
+  ageMin             Int?
+  ageMax             Int?
   /// Услуги YCLIENTS, визит по которым засчитывается в акцию.
-  serviceIds   Int[]
-  startsAt     DateTime @db.Timestamptz(3)
-  endsAt       DateTime @db.Timestamptz(3)
+  serviceIds         Int[]
+  startsAt           DateTime @db.Timestamptz(3)
+  endsAt             DateTime @db.Timestamptz(3)
   /// Бонус школе за пришедшего. В привязке замораживается на момент привязки.
-  bonusAmount  Decimal  @db.Decimal(12, 2)
-  isActive     Boolean  @default(true)
+  bonusAmount        Decimal  @db.Decimal(12, 2)
+  isActive           Boolean  @default(true)
   /// Знает ли об акции пациентский агент (волна 4). По умолчанию — нет.
-  agentEnabled Boolean  @default(false)
+  agentEnabled       Boolean  @default(false)
   /// Состав акции: [{ title, price, yclientsServiceId | null }]. Позиция может
   /// быть не заведена в YCLIENTS — тогда визит по ней сам не засчитается, и
   /// администратор отмечает «прошёл» руками.
-  items        Json     @default("[]")
+  items              Json     @default("[]")
+  /// Метка в ссылке на WhatsApp: сообщение пациента с ней привязывает его к школе.
+  waMarker           String   @default("[ШК]")
+  /// Номер WhatsApp клиники для ссылки (цифры, без «+»). Пусто — ссылку не собрать.
+  waPhone            String?
+  /// Начала названий услуг акции: «Школьн» ловит и «Школьный ресурс 6+», и его части.
+  serviceKeywords    String[] @default(["школьн"])
+  /// Услуги, пойманные по названию, которые администратор из акции исключил.
+  excludedServiceIds Int[]    @default([])
+  /// Названия выбранных услуг на момент выбора: переименование в YCLIENTS видно сразу.
+  serviceSnapshot    Json     @default("{}")
+  /// Разбор переписки моделью, если метку стёрли (только на подтверждение человеком).
+  aiReviewEnabled    Boolean  @default(false)
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -2649,6 +2707,7 @@ model Promo {
   schools      PartnerSchool[]
   attributions PartnerAttribution[]
   knowledge    KnowledgeEntry[]
+  aiChecks     AiAttributionCheck[]
 
   @@unique([companyId, slug])
   @@map("promos")
@@ -2667,6 +2726,8 @@ model PartnerSchool {
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now()) @db.Timestamptz(3)
   createdById  String?
+  /// Как ещё называют школу родители: по этим словам модель узнаёт упоминание.
+  aliases      String[] @default([])
 
   company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
   promo        Promo                @relation(fields: [promoId], references: [id], onDelete: Restrict)
@@ -2684,7 +2745,7 @@ model PartnerSchool {
 /// второму ребёнку той же семьи привязку завести было бы некуда. Второй и
 /// дальше (childNo > 1) ставит только администратор, явно (isExtraChild).
 model PartnerAttribution {
-  id                String        @id @default(cuid())
+  id                String                @id @default(cuid())
   companyId         String
   /// Школа необязательна: человек мог прийти по акции сам. Бонус — только школе.
   schoolId          String?
@@ -2693,20 +2754,31 @@ model PartnerAttribution {
   conversationId    String?
   source            PartnerSource
   /// Бонус на момент привязки: смена суммы в акции прошлое не переписывает.
-  bonusAmountFrozen Decimal       @db.Decimal(12, 2)
-  attributedAt      DateTime      @db.Timestamptz(3)
+  bonusAmountFrozen Decimal               @db.Decimal(12, 2)
+  attributedAt      DateTime              @db.Timestamptz(3)
   createdById       String?
-  isExtraChild      Boolean       @default(false)
-  childNo           Int           @default(1)
+  isExtraChild      Boolean               @default(false)
+  childNo           Int                   @default(1)
   note              String?
   /// Снята руками. Строка остаётся (физического удаления нет), бонус по ней
   /// снимается с причиной.
-  removedAt         DateTime?     @db.Timestamptz(3)
+  removedAt         DateTime?             @db.Timestamptz(3)
   removedById       String?
   /// «Прошёл всё» — отметка администратора руками. Сильнее автоматики.
-  completedAt       DateTime?     @db.Timestamptz(3)
+  completedAt       DateTime?             @db.Timestamptz(3)
   completedById     String?
-  updatedAt         DateTime      @updatedAt @db.Timestamptz(3)
+  /// Откуда привязка: метка в сообщении, улика в переписке (модель) или человек.
+  confidence        AttributionConfidence @default(MANUAL)
+  /// «На проверке» и отклонённая бонуса не получают.
+  reviewStatus      AttributionReview     @default(CONFIRMED)
+  /// Сообщение пациента, на котором держится привязка, и цитата из него.
+  evidenceMessageId String?
+  evidenceQuote     String?
+  reviewedById      String?
+  reviewedAt        DateTime?             @db.Timestamptz(3)
+  /// Пациент был у клиники до начала акции: привязка есть, бонуса нет.
+  returningPatient  Boolean               @default(false)
+  updatedAt         DateTime              @updatedAt @db.Timestamptz(3)
 
   company Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   school  PartnerSchool? @relation(fields: [schoolId], references: [id], onDelete: Restrict)
@@ -2731,6 +2803,8 @@ model PartnerBonus {
   status                   PartnerBonusStatus
   /// Визит-основание; пусто — бонус поставлен руками.
   triggeredByAppointmentId String?
+  /// Визит акции (группа записей с одним visit_id), который начислил бонус.
+  triggeredByVisitKey      String?
   /// Начислен или снят руками: пересчёт его не трогает (ручное не перетирается).
   manual                   Boolean            @default(false)
   setById                  String?

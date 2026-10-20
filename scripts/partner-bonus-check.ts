@@ -20,7 +20,7 @@ async function main() {
   for (const c of companies) {
     const promos = await prisma.promo.findMany({
       where: { companyId: c.id },
-      select: { id: true, name: true, serviceIds: true, endsAt: true, isActive: true, agentEnabled: true },
+      select: { id: true, name: true, serviceIds: true, serviceKeywords: true, endsAt: true, isActive: true, agentEnabled: true },
     });
     if (!promos.length) continue;
     console.log(`\n${c.name}`);
@@ -33,18 +33,23 @@ async function main() {
       console.log(
         `  «${p.name}» до ${p.endsAt.toISOString().slice(0, 10)}${p.isActive ? "" : " (выключена)"}, агент ${p.agentEnabled ? "знает" : "не знает"}`,
       );
-      console.log(`    услуг YCLIENTS: ${p.serviceIds.length || "НЕ ВЫБРАНЫ — бонус не начислится никому"}, школ: ${schools}`);
-      console.log(`    привязок: ${attributions.map((a) => `${a.source === "AGENT" ? "агент" : "администратор"} ${a._count}`).join(", ") || "0"}`);
+      console.log(`    выбрано услуг YCLIENTS: ${p.serviceIds.length} (плюс пойманные по названию «${p.serviceKeywords.join("», «")}»), школ: ${schools}`);
+      console.log(`    привязок: ${attributions.map((a) => `${a.source === "AGENT" ? "автоматически" : "администратор"} ${a._count}`).join(", ") || "0"}`);
       console.log(`    бонусы: ${bonuses.map((b) => `${b.status} ${b._count} на ${Number(b._sum.amount ?? 0)} ₽`).join(", ") || "0"}`);
     }
     const plan: BonusAction[] = [];
     const r = await recomputePartnerBonuses(c.id, new Date(), { dryRun: !APPLY, plan });
-    console.log(`  ${APPLY ? "Сделано" : "Пересчёт сделал бы"}: начислить ${r.earned}, снять ${r.reversed}`);
+    console.log(
+      `  ${APPLY ? "Сделано" : "Пересчёт сделал бы"}: начислить ${r.earned}, перенести на другой визит ${r.retargeted}, снять ${r.reversed}` +
+        (APPLY ? `, привязок по метке ${r.attached}` : " (привязки по метке в сухом прогоне не ставятся)"),
+    );
     for (const a of plan) {
       console.log(
         a.kind === "earn"
-          ? `    + привязка ${a.attributionId}: визит ${a.appointmentId}, ${a.amount} ₽`
-          : `    − бонус ${a.bonusId}: ${a.reason}`,
+          ? `    + привязка ${a.attributionId}: визит ${a.visitKey} (запись ${a.appointmentId}), ${a.amount} ₽`
+          : a.kind === "retarget"
+            ? `    → бонус ${a.bonusId}: теперь визит ${a.visitKey} (запись ${a.appointmentId})`
+            : `    − бонус ${a.bonusId}: ${a.reason}`,
       );
     }
   }

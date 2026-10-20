@@ -65,6 +65,7 @@ describe("бонус школе — один на привязку", () => {
         kind: "earn",
         attributionId: "a1",
         appointmentId: "v1",
+        visitKey: "r:v1",
         amount: 500,
         earnedAt: d("2026-10-10T09:00:00Z"),
       },
@@ -221,7 +222,7 @@ describe("снятие бонуса — с причиной", () => {
     });
   });
 
-  it("снятый бонус сам не возвращается и не начисляется заново", () => {
+  it("перенос: снятый автоматикой бонус начисляется заново той же строкой, когда пришёл новый визит", () => {
     const reversed = attr("a1", {
       bonus: { id: "b1", status: "REVERSED", triggeredByAppointmentId: "v1" },
     });
@@ -229,7 +230,20 @@ describe("снятие бонуса — с причиной", () => {
       visit("v1", "2026-10-10T09:00:00Z", [OSTEO], "CANCELLED"),
       visit("v2", "2026-10-20T09:00:00Z", [OSTEO]),
     ];
-    expect(bonusActions(promo, [reversed], visits)).toEqual([]);
+    expect(bonusActions(promo, [reversed], visits)).toEqual([
+      { kind: "earn", attributionId: "a1", appointmentId: "v2", visitKey: "r:v2", amount: 500, earnedAt: d("2026-10-20T09:00:00Z"), bonusId: "b1" },
+    ]);
+  });
+
+  it("визит основания отменили, а другой визит акции пришёл — бонус переходит, не снимается", () => {
+    const earned = attr("a1", { bonus: { id: "b1", status: "EARNED", triggeredByAppointmentId: "v1" } });
+    const visits = [
+      visit("v1", "2026-10-10T09:00:00Z", [OSTEO], "CANCELLED"),
+      visit("v2", "2026-10-12T09:00:00Z", [BOS]),
+    ];
+    expect(bonusActions(promo, [earned], visits)).toEqual([
+      { kind: "retarget", bonusId: "b1", attributionId: "a1", appointmentId: "v2", visitKey: "r:v2" },
+    ]);
   });
 });
 
@@ -254,6 +268,7 @@ describe("привязку сняли и поставили заново", () =>
         kind: "earn",
         attributionId: "a1",
         appointmentId: "v2",
+        visitKey: "r:v2",
         amount: 500,
         earnedAt: d("2026-10-22T09:00:00Z"),
         bonusId: "b1",
@@ -282,6 +297,7 @@ describe("двое детей одной семьи", () => {
         kind: "earn",
         attributionId: "a2",
         appointmentId: "v4",
+        visitKey: "r:v4",
         amount: 500,
         earnedAt: d("2026-10-15T09:00:00Z"),
       },
@@ -391,5 +407,67 @@ describe("ручное не перетирается", () => {
 
   it("«прошёл» отмечено руками — автоматика бонус не дублирует", () => {
     expect(bonusActions(p, [{ ...base, bonus: null, completed: true }], [v("v1")])).toEqual([]);
+  });
+});
+
+describe("визит из нескольких записей (составная услуга у трёх специалистов)", () => {
+  const part = (id: string, at: string, service: number, status = "ARRIVED") =>
+    visit(id, at, [service], status, { visitKey: "v:777" });
+
+  it("три записи одного визита — один визит акции, один бонус", () => {
+    const visits = [
+      part("r1", "2026-10-21T07:30:00Z", OSTEO),
+      part("r2", "2026-10-21T08:30:00Z", BOS),
+      part("r3", "2026-10-21T09:00:00Z", LAB),
+    ];
+    expect(bonusActions(promo, [attr("a1")], visits)).toEqual([
+      { kind: "earn", attributionId: "a1", appointmentId: "r1", visitKey: "v:777", amount: 500, earnedAt: d("2026-10-21T07:30:00Z") },
+    ]);
+    // Три части пакета — не трое детей: второй привязке той же карточки бонуса нет.
+    expect(bonusActions(promo, [attr("a1"), attr("a2", { childNo: 2 })], visits)).toHaveLength(1);
+  });
+
+  it("визит «пришёл», если пришёл хотя бы в одной записи; запись основания отменили — бонус остаётся на визите", () => {
+    const earned = attr("a1", { bonus: { id: "b1", status: "EARNED", triggeredByAppointmentId: "r1", triggeredByVisitKey: "v:777" } });
+    const visits = [part("r1", "2026-10-21T07:30:00Z", OSTEO, "CANCELLED"), part("r2", "2026-10-21T08:30:00Z", BOS)];
+    expect(bonusActions(promo, [earned], visits)).toEqual([
+      { kind: "retarget", bonusId: "b1", attributionId: "a1", appointmentId: "r2", visitKey: "v:777" },
+    ]);
+  });
+
+  it("все записи визита отменены — бонус снимается с причиной", () => {
+    const earned = attr("a1", { bonus: { id: "b1", status: "EARNED", triggeredByAppointmentId: "r1", triggeredByVisitKey: "v:777" } });
+    const visits = [part("r1", "2026-10-21T07:30:00Z", OSTEO, "CANCELLED"), part("r2", "2026-10-21T08:30:00Z", BOS, "CANCELLED")];
+    expect(bonusActions(promo, [earned], visits)).toEqual([{ kind: "reverse", bonusId: "b1", attributionId: "a1", reason: "визит отменён" }]);
+  });
+
+  it("визит с услугой акции и обычной услугой — визит акции", () => {
+    expect(bonusActions(promo, [attr("a1")], [visit("v1", "2026-10-10T09:00:00Z", [OTHER, OSTEO])])).toHaveLength(1);
+  });
+
+  it("повторный пересчёт после переноса бонуса ничего не делает", () => {
+    const moved = attr("a1", { bonus: { id: "b1", status: "EARNED", triggeredByAppointmentId: "r2", triggeredByVisitKey: "v:777" } });
+    const visits = [part("r1", "2026-10-21T07:30:00Z", OSTEO, "CANCELLED"), part("r2", "2026-10-21T08:30:00Z", BOS)];
+    expect(bonusActions(promo, [moved], visits)).toEqual([]);
+  });
+});
+
+describe("проверка привязки и повторный пациент", () => {
+  const v1 = visit("v1", "2026-10-10T09:00:00Z", [OSTEO]);
+
+  it("привязка на проверке или отклонённая — бонуса нет; подтвердили — есть", () => {
+    expect(bonusActions(promo, [attr("a1", { confirmed: false })], [v1])).toEqual([]);
+    expect(bonusActions(promo, [attr("a1", { confirmed: true })], [v1])).toHaveLength(1);
+  });
+
+  it("повторный пациент — привязка есть, бонуса нет; начисленный снимается с причиной", () => {
+    expect(bonusActions(promo, [attr("a1", { returning: true })], [v1])).toEqual([]);
+    const earned = attr("a1", { returning: true, bonus: { id: "b1", status: "EARNED", triggeredByAppointmentId: "v1" } });
+    expect(bonusActions(promo, [earned], [v1])).toEqual([{ kind: "reverse", bonusId: "b1", attributionId: "a1", reason: "повторный пациент" }]);
+  });
+
+  it("отклонили после начисления — бонус снимается", () => {
+    const earned = attr("a1", { confirmed: false, bonus: { id: "b1", status: "EARNED", triggeredByAppointmentId: "v1" } });
+    expect(bonusActions(promo, [earned], [v1])[0]).toMatchObject({ kind: "reverse", reason: "привязка не подтверждена" });
   });
 });

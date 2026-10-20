@@ -9,6 +9,8 @@ import { requireId } from "@/lib/server/require-id";
 import { writeAudit } from "@/lib/server/audit";
 import { clinicDayRange, startOfClinicDay } from "@/lib/clinic-time";
 import { looksMedical } from "@/lib/agent/gaps";
+import { snapshotOf } from "@/lib/metrics/promo-services";
+import { runPromoAiReview as runAiReview } from "@/lib/server/promo-ai";
 import {
   attachToSchool,
   detachFromSchool,
@@ -189,6 +191,8 @@ const SchoolInput = z.object({
   contactName: z.string().trim().max(120).nullable(),
   contactPhone: z.string().trim().max(40).nullable(),
   isActive: z.boolean(),
+  /** Как ещё называют школу родители — по этим словам модель узнаёт упоминание. */
+  aliases: z.array(z.string().trim().min(2).max(80)).max(20).optional(),
 });
 
 export async function saveSchool(
@@ -209,6 +213,7 @@ export async function saveSchool(
     contactName: s.contactName || null,
     contactPhone: s.contactPhone || null,
     isActive: s.isActive,
+    ...(s.aliases ? { aliases: [...new Set(s.aliases)] } : {}),
   };
   let id: string;
   if (s.id) {
@@ -480,6 +485,17 @@ const SettingsInput = z
     isActive: z.boolean(),
     agentEnabled: z.boolean(),
     items: z.array(ItemInput).max(20),
+    waMarker: z.string().trim().min(2, "метка — хотя бы два знака").max(20),
+    waPhone: z
+      .string()
+      .trim()
+      .max(20)
+      .nullable()
+      .refine((v) => !v || v.replace(/\D/g, "").length >= 10, "номер WhatsApp — не меньше 10 цифр"),
+    serviceIds: z.array(z.number().int().positive()).max(50),
+    serviceKeywords: z.array(z.string().trim().min(3, "ключевое слово — от трёх букв").max(40)).max(10),
+    excludedServiceIds: z.array(z.number().int().positive()).max(50),
+    aiReviewEnabled: z.boolean(),
   })
   .refine((p) => p.endsOn >= p.startsOn, "акция не может закончиться раньше, чем началась");
 
@@ -491,6 +507,12 @@ export async function saveSchoolPromo(form: z.input<typeof SettingsInput>): Prom
   if (!parsed.success) fail(parsed.error);
   const p = parsed.data;
   const id = await ensureSchoolPromo(session.companyId);
+  // Выбранные руками. Позиции состава — для пациента и агента, на засчитывание не влияют.
+  const chosen = [...new Set(p.serviceIds)];
+  const catalog = await prisma.service.findMany({
+    where: { companyId: session.companyId, yclientsServiceId: { in: chosen } },
+    select: { yclientsServiceId: true, title: true, isActive: true },
+  });
   await prisma.promo.update({
     where: { id },
     data: {
@@ -506,7 +528,13 @@ export async function saveSchoolPromo(form: z.input<typeof SettingsInput>): Prom
       isActive: p.isActive,
       agentEnabled: p.agentEnabled,
       items: p.items as unknown as object[],
-      serviceIds: [...new Set(p.items.flatMap((i) => (i.yclientsServiceId ? [i.yclientsServiceId] : [])))],
+      serviceIds: chosen,
+      serviceSnapshot: snapshotOf(chosen, catalog),
+      waMarker: p.waMarker,
+      waPhone: p.waPhone ? p.waPhone.replace(/\D/g, "") : null,
+      serviceKeywords: [...new Set(p.serviceKeywords.map((k) => k.toLowerCase()))],
+      excludedServiceIds: [...new Set(p.excludedServiceIds)],
+      aiReviewEnabled: p.aiReviewEnabled,
     },
   });
   await writeAudit({
@@ -515,7 +543,15 @@ export async function saveSchoolPromo(form: z.input<typeof SettingsInput>): Prom
     action: "SETTINGS_UPDATE",
     entityType: "promo",
     entityId: id,
-    meta: { items: p.items.length, agentEnabled: p.agentEnabled, isActive: p.isActive, endsOn: p.endsOn },
+    meta: {
+      items: p.items.length,
+      services: chosen.length,
+      keywords: p.serviceKeywords,
+      agentEnabled: p.agentEnabled,
+      aiReviewEnabled: p.aiReviewEnabled,
+      isActive: p.isActive,
+      endsOn: p.endsOn,
+    },
   });
   // Состав и сроки решают, какие визиты засчитываются, — бонусы пересчитываем сразу, а не через круг выгрузки.
   await recomputePartnerBonuses(session.companyId);
@@ -563,4 +599,59 @@ export async function revokePromoBonus(attributionId: string, reason: string | n
 
 export async function setPromoParticipantSchool(attributionId: string, schoolId: string | null): Promise<void> {
   await participantAction(attributionId, "set_school", (c, a) => setParticipantSchool(c, a, attributionId, schoolId));
+}
+
+/**
+ * Привязка «на проверке» (улика из переписки) — подтвердить или отклонить.
+ * Решает человек: администратор или владелец. Подтверждённая начисляет бонус по
+ * обычному правилу (визит «пришёл»); отклонённая — окончательно, модель этого
+ * пациента больше не проверяет. Подтвердить можно и после конца акции.
+ */
+export async function reviewPromoAttribution(attributionId: string, decision: "confirm" | "reject"): Promise<void> {
+  const session = await getSession();
+  await requirePermission(session, "MESSAGE_PATIENTS");
+  requireId(attributionId, "привязка");
+  if (session.role !== "ADMIN" && session.role !== "OWNER") {
+    throw new Error("Подтвердить или отклонить привязку может администратор или владелец.");
+  }
+  if (decision !== "confirm" && decision !== "reject") throw new Error("Неизвестное решение.");
+  const r = await prisma.partnerAttribution.updateMany({
+    where: { id: attributionId, companyId: session.companyId, reviewStatus: "REVIEW", removedAt: null },
+    data: {
+      reviewStatus: decision === "confirm" ? "CONFIRMED" : "REJECTED",
+      reviewedById: session.userId,
+      reviewedAt: new Date(),
+    },
+  });
+  if (!r.count) throw new Error("Привязка не найдена или уже разобрана.");
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "partner_attribution",
+    entityId: attributionId,
+    meta: { review: decision },
+  });
+  await recomputePartnerBonuses(session.companyId);
+  revalidatePath("/promos");
+}
+
+/** «Проверить сейчас»: тот же разбор, что ночью, одной порцией. Отвечает словами. */
+export async function runPromoAiReview(): Promise<string> {
+  const session = await getSession();
+  await requirePermission(session, "MESSAGE_PATIENTS");
+  if (session.role !== "ADMIN" && session.role !== "OWNER") throw new Error("Запустить разбор может администратор или владелец.");
+  const r = await runAiReview(session.companyId);
+  await writeAudit({
+    companyId: session.companyId,
+    actorId: session.userId,
+    action: "SETTINGS_UPDATE",
+    entityType: "promo",
+    entityId: null,
+    meta: { aiReview: { checked: r.checked, attributed: r.attributed } },
+  });
+  revalidatePath("/promos");
+  if (r.skipped) return `Не запущено: ${r.skipped}.`;
+  if (r.checked === 0) return r.candidates ? "Новых переписок для проверки нет." : "Проверять некого: нет новых пациентов с визитом акции без привязки.";
+  return `Проверено переписок: ${r.checked}; на проверку ушло: ${r.attributed}.`;
 }

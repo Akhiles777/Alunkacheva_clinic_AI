@@ -171,3 +171,38 @@ describe("видимость акции", () => {
     expect(promoVisible(promo, new Date(promo.endsAt.getTime() + 1))).toBe(false);
   });
 });
+
+describe("«Школьный ресурс» — метка и название в YCLIENTS (20 октября)", () => {
+  const now = new Date("2026-10-20T10:00:00Z");
+  const promo = {
+    id: "p1",
+    isActive: true,
+    agentEnabled: true,
+    startsAt: new Date("2026-10-01T00:00:00Z"),
+    endsAt: new Date("2026-11-15T20:59:59Z"),
+    ageMin: 6,
+    ageMax: 14,
+    waMarker: "[ШК]",
+    entries: [{ id: "k1" }],
+  };
+
+  it.each(["сколько стоит остеопат", "хочу капельницу", "какие часы работы", 'а инфузия "Био-Ресурс" сколько?', "Абсолютный ресурс — что это?"])(
+    "«%s» — акции нет",
+    (t) => expect(visiblePromos([promo], [t], now)).toEqual([]),
+  );
+
+  it.each(["что за школьный ресурс?", "видела акцию для школьников", "Хочу на ресурс 6+", "Здравствуйте! Хочу записать ребёнка [ШК]", "чек-ап для сына"])(
+    "«%s» — акция есть",
+    (t) => expect(visiblePromos([promo], [t], now)).toHaveLength(1),
+  );
+
+  it("после конца акции или без «агент знает» — акции нет даже по метке", () => {
+    expect(visiblePromos([promo], ["[ШК]"], new Date("2026-11-20T10:00:00Z"))).toEqual([]);
+    expect(visiblePromos([{ ...promo, agentEnabled: false }], ["что за школьный ресурс?"], now)).toEqual([]);
+  });
+
+  it("пришёл по ссылке с меткой — про школу не спрашиваем", () => {
+    expect(shouldAskSchool({ agentTexts: [], attributed: false, schools: 1, marked: true })).toBe(false);
+    expect(shouldAskSchool({ agentTexts: [], attributed: false, schools: 1, marked: false })).toBe(true);
+  });
+});

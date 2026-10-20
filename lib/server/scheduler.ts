@@ -16,6 +16,7 @@ import {
 import { answerUnanswered } from "@/lib/agent/unanswered";
 import { handBackAndRemind } from "@/lib/agent/handback";
 import { runQualityCheck } from "@/lib/server/agent-quality";
+import { runPromoAiReview } from "@/lib/server/promo-ai";
 import { deliverWeeklyDigest } from "@/lib/server/weekly-digest-delivery";
 import { CLINIC_TZ } from "@/lib/clinic-time";
 import { recomputePartnerBonuses } from "@/lib/server/promos";
@@ -512,6 +513,13 @@ export async function runNightCycle(force = false): Promise<SyncRunInfo> {
             return null;
           })
         : null;
+      // Разбор переписки школьной акции — тем же ночным окном и так же уступает выгрузке.
+      const promoAi = qualityDue
+        ? await runPromoAiReview(company.id).catch((e) => {
+            console.error("[scheduler] разбор переписки акции не удался:", (e as Error)?.message ?? e);
+            return null;
+          })
+        : null;
       const digest = digestDue
         ? await deliverWeeklyDigest(company.id).catch((e) => {
             console.error("[scheduler] сводка владельцу не собралась:", (e as Error)?.message ?? e);
@@ -520,7 +528,7 @@ export async function runNightCycle(force = false): Promise<SyncRunInfo> {
         : null;
       results.push({
         клиника: company.name,
-        ...(qualityDue ? { проверкаОтветов: quality } : {}),
+        ...(qualityDue ? { проверкаОтветов: quality, разборПерепискиАкции: promoAi } : {}),
         ...(digestDue ? { сводкаНедели: digest } : {}),
       });
     }

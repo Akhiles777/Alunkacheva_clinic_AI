@@ -16,6 +16,7 @@ import { VisitLogger } from "./_components/visit-logger";
 import { ViewportFit } from "./_components/viewport-fit";
 import { getCurrentUser } from "./_components/user-actions";
 import { getSessionOrNull } from "@/lib/server/session";
+import { prisma } from "@/lib/db";
 
 /**
  * Оболочка приложения: боковая навигация + рабочая область. Вход защищён —
@@ -28,11 +29,18 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   const session = await getSessionOrNull();
   if (!session) redirect("/login");
   const user = await getCurrentUser();
+  // Привязки акции на проверке — решают администратор и владелец, им и значок.
+  const promoReview =
+    session.role === "ADMIN" || session.role === "OWNER"
+      ? await prisma.partnerAttribution
+          .count({ where: { companyId: session.companyId, reviewStatus: "REVIEW", removedAt: null } })
+          .catch(() => 0)
+      : 0;
 
   return (
     <div className="app-shell flex h-dvh w-full overflow-hidden max-md:flex-col">
-      <MobileNav role={user.role} userName={user.name} canEditSettings={user.canEditSettings} />
-      <Sidebar role={user.role} userName={user.name} canEditSettings={user.canEditSettings} />
+      <MobileNav role={user.role} userName={user.name} canEditSettings={user.canEditSettings} promoReview={promoReview} />
+      <Sidebar role={user.role} userName={user.name} canEditSettings={user.canEditSettings} promoReview={promoReview} />
       {/* Запас снизу — «безопасная зона» под плавающими кнопками ассистента и
           уведомлений. Без него они перекрывали кнопку отправки в чате и в
           инбоксе, причём на десктопе тоже, а не только на телефоне. */}

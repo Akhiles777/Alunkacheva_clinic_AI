@@ -7,7 +7,7 @@ import { logoutUser } from "@/app/(auth)/actions";
 import { CLINIC_NAME, CLINIC_TAGLINE } from "@/lib/brand";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
 import { useDb } from "@/app/_data/store";
-import { initials, isActive, navForRole, waitingCount } from "./nav-model";
+import { initials, isActive, navForRole, waitingCount, withBadges } from "./nav-model";
 import { NotificationCenter } from "./notification-center";
 
 /**
@@ -23,10 +23,13 @@ export function MobileNav({
   role,
   userName,
   canEditSettings,
+  promoReview = 0,
 }: {
   role: AppRole;
   userName: string;
   canEditSettings: boolean;
+  /** Привязок школьной акции на проверке — значок у пункта меню. */
+  promoReview?: number;
 }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -35,9 +38,7 @@ export function MobileNav({
   // Значок «сколько ждёт ответа» — из общего стора, поэтому цифра живая и
   // меняется вместе с перепиской.
   const waiting = waitingCount(db.dialogs);
-  const nav = navForRole(role).map((item) =>
-    item.href === "/inbox" && waiting > 0 ? { ...item, badge: waiting } : item,
-  );
+  const nav = withBadges(navForRole(role), waiting, promoReview);
   // Переход закрывает панель: иначе она остаётся поверх новой страницы.
   const close = () => setOpen(false);
 
