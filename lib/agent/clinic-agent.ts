@@ -6191,6 +6191,27 @@ async function replyToQuestion(
         buttons: mainMenu(),
       });
     }
+    /**
+     * Вопрос о здоровье ребёнка закрыла запись школьной акции («Есть
+     * противопоказания, необходима консультация специалиста»). Дословный ответ
+     * клиники уходит, но решать, подходит ли акция именно этому ребёнку, должен
+     * специалист, — и администратора зовём на деле, а не только словами
+     * (прогон 20 октября: «У сына астма» получало приписку «я позову
+     * администратора», а эскалации не было).
+     */
+    const promoEntries = promo?.visible.flatMap((p) => p.entries) ?? [];
+    if (promoEntries.some((e) => e.id === match!.row.id)) {
+      // Подбор шёл с услугой из разговора («школьный ресурс»), и общая запись о
+      // составе перебивала запись о противопоказаниях: среди записей акции
+      // выбираем заново — по словам самого вопроса.
+      const own2 = matchKnowledge(own, promoEntries);
+      const row = own2 && own2.score > 0 ? own2.row : match!.row;
+      await escalate(ctx.companyId, conversation.id, "MEDICAL_QUESTION", "Школьная акция: вопрос о здоровье ребёнка").catch(() => {});
+      await logAgentRun({ companyId: ctx.companyId, conversationId: conversation.id, outcome: "OK", knowledgeEntryIds: knowledgeIdOf(row) });
+      return respond(ctx, conversation.id, {
+        text: `${row.answer.trim()}\n\nПередал(а) ваш вопрос администратору — специалист подскажет, подойдёт ли акция вашему ребёнку. Ответим здесь же.`,
+      });
+    }
     return respond(ctx, conversation.id, {
       text: `${match!.row.answer}\n\nЕсли есть особенности здоровья — уточните у специалиста, я позову администратора.`,
       buttons: mainMenu(),
