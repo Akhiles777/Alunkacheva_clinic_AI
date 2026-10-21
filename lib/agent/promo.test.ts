@@ -205,4 +205,17 @@ describe("«Школьный ресурс» — метка и название �
     expect(shouldAskSchool({ agentTexts: [], attributed: false, schools: 1, marked: true })).toBe(false);
     expect(shouldAskSchool({ agentTexts: [], attributed: false, schools: 1, marked: false })).toBe(true);
   });
+
+  it("чек-ап с опечатками и в падежах — тоже о ней (живой диалог 21 октября)", () => {
+    for (const t of [
+      "Подскажите пожалуйста, если девочке 16лет нам уже не подходит этот чека ап?",
+      "а чэк ап сколько стоит",
+      "хотим на чек апп",
+      "по чекапу вопрос",
+      "чек-апа для сына",
+    ])
+      expect(promoTriggered(t), t).toBe(true);
+    expect(promoTriggered("чек оплаты пришлите")).toBe(false);
+    expect(promoTriggered("апельсиновый чек")).toBe(false);
+  });
 });

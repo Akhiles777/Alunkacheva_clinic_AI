@@ -112,3 +112,48 @@ export function repeatDoctor(last: LastVisit, namedIds: string[]): { pick: LastV
   }
   return { pick: null, clash: among.length >= 2 ? among : [] };
 }
+
+/** Сколько дней после визита разговор о той же услуге считается продолжением. */
+export const CONTINUING_DAYS = 30;
+
+/**
+ * Пациент уже ходит на эту услугу: идёт курс, впереди запись или был на ней
+ * последние `CONTINUING_DAYS` дней. Тогда «на БОС-терапию на какой день можно
+ * записать мальчика?» — выбор дня, а не новая запись, и анкета не нужна (живой
+ * диалог 21 октября: мама, чей сын уже записан на курс БОС, получила просьбу
+ * прислать ФИО ребёнка, возраст и имя родителя).
+ *
+ * «Та же услуга» — тот же вид из справочника (`Service.kind`: курс БОС и сеанс
+ * БОС — одна услуга для пациента), а у вида «прочее» — та же строка прайса.
+ * Прошлые визиты дальше месяца сюда не идут: «детские визиты в карточке
+ * родителя» ещё не значат, что записывают того же ребёнка (6 октября).
+ */
+export async function continuingService(
+  companyId: string,
+  patientId: string | null,
+  serviceIds: string[],
+  now = new Date(),
+): Promise<{ title: string } | null> {
+  if (!patientId || serviceIds.length === 0) return null;
+  const named = await prisma.service.findMany({ where: { companyId, id: { in: serviceIds } }, select: { id: true, kind: true } });
+  const kinds = [...new Set(named.map((s) => s.kind).filter((k) => k !== "OTHER"))];
+  const sameService = { OR: [{ id: { in: serviceIds } }, ...(kinds.length ? [{ kind: { in: kinds } }] : [])] };
+  const course = await prisma.course.findFirst({
+    where: { companyId, patientId, status: "ACTIVE", service: sameService },
+    select: { service: { select: { title: true } } },
+  });
+  if (course) return { title: course.service.title };
+  const visit = await prisma.appointment.findFirst({
+    where: {
+      companyId,
+      patientId,
+      deletedAt: null,
+      status: { notIn: ["CANCELLED", "NO_SHOW"] },
+      startAt: { gte: new Date(now.getTime() - CONTINUING_DAYS * 86_400_000) },
+      services: { some: { service: sameService } },
+    },
+    orderBy: { startAt: "desc" },
+    select: { services: { select: { service: { select: { title: true } } }, take: 1 } },
+  });
+  return visit ? { title: visit.services[0]?.service.title ?? "" } : null;
+}

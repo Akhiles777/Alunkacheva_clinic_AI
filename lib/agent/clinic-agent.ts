@@ -155,7 +155,7 @@ import {
   withoutTimePreferenceQuestion,
 } from "./booking-flow";
 import { addressableName } from "./person-name";
-import { asksRepeatVisit, lastVisit, repeatDoctor, type LastVisit, type VisitedDoctor } from "./repeat-visit";
+import { asksRepeatVisit, continuingService, lastVisit, repeatDoctor, type LastVisit, type VisitedDoctor } from "./repeat-visit";
 import { doctorsWord, groupedOffer, mainKindOf } from "./offer-text";
 import { bookingStep, type BookingStep } from "./booking-flow";
 import {
@@ -3438,7 +3438,7 @@ async function bookingTail(
    * октября: «Детский» → агент спросил удобное время вместо данных). Себя
    * постоянный пациент записывает без анкеты, как прежде.
    */
-  const returning =
+  const returningPerson =
     input.booking && !input.dataDone && input.patientId && repeat
       ? true
       : input.booking && !input.dataDone && input.patientId && whom !== "child"
@@ -3481,6 +3481,16 @@ async function bookingTail(
     (await knowledgeServiceIn(companyId, newestFirst)) ??
     (newestFirst[0] ? await unknownServiceIn(companyId, newestFirst[0]) : null);
   const anyAge = byKnowledge ? [] : dedupeServices(patientServices(matchFor("unknown")));
+  /**
+   * Уже ходит на эту услугу — идёт курс, впереди запись или визит за последний
+   * месяц (`continuingService`): это выбор дня, а не новая запись, и анкету не
+   * просим, кого бы ни записывали (живой диалог 21 октября, курс БОС).
+   */
+  const continuing =
+    !returningPerson && input.booking && !input.dataDone && input.patientId && anyAge.length > 0
+      ? await continuingService(companyId, input.patientId, anyAge.map((s) => s.id)).catch(() => null)
+      : null;
+  const returning = returningPerson || continuing !== null;
   const forWhom = byKnowledge ? [] : whom === "unknown" ? anyAge : dedupeServices(patientServices(matchFor(whom)));
 
   /**
@@ -3649,8 +3659,14 @@ async function bookingTail(
        * одна не выбиралась, и цена не звучала вовсе.
        */
       const rowsNow = once(doctorRows.length > 0 ? doctorRows : forWhom.length > 0 ? forWhom : anyAge);
+      /**
+       * Уже ходит на эту услугу (`continuing`) и о цене не спрашивал — прайс
+       * лишний: мама, чей сын на курсе БОС, спросила день, а получила цены
+       * диагностики и сеанса (прогон живого диалога 21 октября).
+       */
+      const priceWanted = continuing === null || asksPrice(newestFirst[0] ?? "");
       const pricesNow =
-        !hasPrice(input.answer) && rowsNow.length > 0 && rowsNow.length <= 4
+        priceWanted && !hasPrice(input.answer) && rowsNow.length > 0 && rowsNow.length <= 4
           ? groupedOffer(
               rowsNow.map((r) => {
                 const names = ownersByRow.get(r.id) ?? [];
@@ -4129,7 +4145,7 @@ function intakeAsk(
   needsWeight = false,
   ageKnown = false,
   /** Несколько детей, двое разного возраста, родителя клиника знает — как в `bookingTail`. */
-  opts: { kids?: boolean; both?: boolean; parentKnown?: boolean } = {},
+  opts: { kids?: boolean; both?: boolean; parentKnown?: boolean; thanks?: boolean } = {},
 ): string {
   /**
    * Ребёнка записывают на имя родителя.
@@ -4153,7 +4169,44 @@ function intakeAsk(
    * «Да» на согласие и ни о чём администратора не просил. Ему ещё предстоит
    * прислать данные — с них и начинается работа администратора.
    */
-  return `Спасибо! Время подберёт администратор — он напишет здесь же. Чтобы не терять время, пришлите, пожалуйста, одним сообщением: ${who}.`;
+  /**
+   * «Спасибо!» — только в ответ на «Да» о согласии. Запасной путь, где модель
+   * лишь пообещала передать, благодарить не за что: «Здравствуйте! Спасибо!» на
+   * вопрос «на какой день можно записать?» читалось как автоответчик (21 октября).
+   */
+  const thanks = opts.thanks === false ? "" : "Спасибо! ";
+  return `${thanks}Время подберёт администратор — он напишет здесь же. Чтобы не терять время, пришлите, пожалуйста, одним сообщением: ${who}.`;
+}
+
+/**
+ * Запасной путь разговора о записи: модель ответила одним обещанием, ответ
+ * вырезан, а человек записывается.
+ *
+ * Прежде здесь сразу просили анкету — мимо всего, что `bookingTail` знает о
+ * человеке. Мама, чей сын уже ходит на курс БОС, спросила «на какой день можно
+ * записать мальчика?» и получила «пришлите ФИО ребёнка, возраст, имя родителя»
+ * (живой диалог 21 октября). Теперь: уже ходит на эту услугу — передаём выбор
+ * дня администратору; иначе анкета, без «имени родителя», если родителя
+ * клиника знает.
+ */
+async function bookingFallback(
+  ctx: AgentContext,
+  conversation: { id: string; patientId: string | null },
+  own: string,
+  said: Turn[],
+): Promise<string> {
+  const serviceId = await serviceInTalk(ctx.companyId, own, said).catch(() => null);
+  const continuing = serviceId
+    ? await continuingService(ctx.companyId, conversation.patientId, [serviceId]).catch(() => null)
+    : null;
+  if (continuing) {
+    return "Передал(а) администратору — он подберёт удобный день и напишет здесь же. Если записываете другого ребёнка — напишите его ФИО и возраст.";
+  }
+  const whom = whomInTalk(own, said);
+  return intakeAsk(whom, await osteopathyInTalk(ctx.companyId, own, said), ageStated(userNewestFirst(own, said), whom), {
+    parentKnown: whom === "child" && (await knownByClinic(ctx.companyId, conversation.id)),
+    thanks: false,
+  });
 }
 
 /**
@@ -7356,9 +7409,7 @@ async function replyToQuestion(
      * администратор», и данные ребёнка администратор потом собирал сам.
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
-      return respond(ctx, conversation.id, {
-        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said), ageStated(userNewestFirst(own, said), whomInTalk(own, said))),
-      });
+      return respond(ctx, conversation.id, { text: await bookingFallback(ctx, conversation, own, said) });
     }
     return respond(ctx, conversation.id, { text: HANDOVER_REPLY, buttons: mainMenu() });
   }
@@ -7670,9 +7721,7 @@ async function replyToQuestion(
      * сейчас, пока человек в переписке.
      */
     if (wantsToBook(own) && !inIntakeFlow(said)) {
-      return respond(ctx, conversation.id, {
-        text: intakeAsk(whomInTalk(own, said), await osteopathyInTalk(ctx.companyId, own, said), ageStated(userNewestFirst(own, said), whomInTalk(own, said))),
-      });
+      return respond(ctx, conversation.id, { text: await bookingFallback(ctx, conversation, own, said) });
     }
     return respond(ctx, conversation.id, {
       text: "Передал(а) администратору — он ответит здесь же.",
