@@ -1329,6 +1329,26 @@ function statusOf(a: {
   return "waiting";
 }
 
+/**
+ * Агент об акции молчит, и это должно быть видно на экране. Записи акции с
+ * анализами и противопоказаниями создаются выключенными до утверждения врачом
+ * или владельцем, а без включённых записей агент акции не видит вовсе: на
+ * «интересует школьный чек-ап» он отвечал «уточню у администратора» и путал её
+ * с чек-апами для капельниц (живой диалог 21 октября).
+ */
+function agentWarnings(
+  p: { agentEnabled: boolean },
+  knowledge: { isActive: boolean; needsDoctorApproval: boolean; approvedAt: Date | null }[],
+): string[] {
+  const usable = knowledge.filter((k) => k.isActive && (!k.needsDoctorApproval || k.approvedAt));
+  const waiting = knowledge.filter((k) => k.needsDoctorApproval && !k.approvedAt).length;
+  if (!p.agentEnabled) return ["Агент об акции не рассказывает: выключено «Агент рассказывает об акции» в условиях ниже."];
+  if (usable.length > 0) return [];
+  if (waiting > 0)
+    return [`Агент об акции молчит: ${waiting === 1 ? "запись ждёт" : `${waiting} записи ждут`} утверждения врачом или владельцем — «Утвердить текст как врач» в блоке «Что агент знает об акции».`];
+  return ["Агент об акции молчит: нет ни одной включённой записи в блоке «Что агент знает об акции»."];
+}
+
 /** Предупреждение о составе — словами, для экрана. */
 function warningText(w: PromoServiceWarning, titleOf: (id: number) => string): string {
   if (w.kind === "renamed") return `Услуга «${w.was}» переименована в YCLIENTS в «${w.now}» — проверьте, что она всё ещё про акцию.`;
@@ -1542,7 +1562,7 @@ export async function getSchoolPromoView(companyId: string, now = new Date()): P
       ...set.byKeyword.map((n) => serviceRow(n, "keyword")),
       ...set.excluded.map((n) => serviceRow(n, "excluded")),
     ],
-    serviceWarnings: set.warnings.map((w) => warningText(w, titleOf)),
+    serviceWarnings: [...set.warnings.map((w) => warningText(w, titleOf)), ...agentWarnings(p, knowledge)],
     items: items.map((i) => ({ ...i, serviceTitle: i.yclientsServiceId ? (byYc.get(i.yclientsServiceId) ?? null) : null })),
     services: services
       .filter((s) => s.isActive)

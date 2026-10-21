@@ -181,7 +181,7 @@ import { askSpecialist, medicalQueryPending, specialistNames, specialistQueryPen
 import { agentAskedSomething, nothingToAnswer } from "./unanswered-rule";
 import { amenOnly, collapseFormulas, courtesyFormulaWord } from "./courtesy-words";
 import { complexMedical, managementTopic } from "./specialist-rules";
-import { SCHOOL_QUESTION, ageOutside, askedSchool, matchSchool, promoTriggered, shouldAskSchool, statedChildAges, visiblePromos } from "./promo";
+import { PROMO_BOOK_QUESTION, SCHOOL_QUESTION, ageOutside, agreesToBook, askedSchool, matchSchool, offeredPromoBooking, promoTriggered, shouldAskSchool, statedChildAges, visiblePromos } from "./promo";
 import { familyAttributed, promosForAgent } from "@/lib/server/promos";
 import { hasMarker } from "@/lib/metrics/promo-marker";
 import { WEEKDAY_WHEN, daysAsked, sameSpecialty, lastNamedStaff, relativeDaysAsked, uniqueStaffAsked, whoWorks, withoutDays, wrongWorkday, daysAnswered } from "./workdays";
@@ -3288,7 +3288,13 @@ async function referenceAnswer(companyId: string, text: string): Promise<string 
  * без веса, хотя речь шла о двухмесячном ребёнке.
  */
 function whomInTalk(own: string, said: { role: string; content: string }[]): Whom {
-  return talkWhom([own, ...said.filter((t) => t.role === "user").map((t) => t.content)]);
+  const texts = [own, ...said.filter((t) => t.role === "user").map((t) => t.content)];
+  const whom = talkWhom(texts);
+  /**
+   * Школьная акция — программа для ребёнка: «интересует школьный чек-ап» →
+   * «Хорошо» → «Да» на согласие получало взрослую анкету «ФИО, возраст».
+   */
+  return whom === "unknown" && texts.some((t) => promoTriggered(t)) ? "child" : whom;
 }
 
 /** То же по готовому списку: текущая реплика, затем прошлые по порядку. */
@@ -5569,9 +5575,36 @@ async function promoTurn(
    * человеку на подтверждение; агент только благодарит.
    */
   const lastAgent = [...said].reverse().find((t) => t.role === "assistant")?.content ?? "";
-  if (askedSchool([lastAgent]) && !hasQuestion(own)) {
-    const m = matchSchool(withoutQuote(own), p.schools);
-    return { visible, reply: await respond(ctx, conversation.id, { text: m.kind === "declined" ? "Поняла, спасибо!" : "Спасибо, учту!" }) };
+  const schoolAnswer = askedSchool([lastAgent]) && !hasQuestion(own) ? matchSchool(withoutQuote(own), p.schools) : null;
+  /**
+   * «Школьный ресурс 6+» в ответ на вопрос про школу — это название программы,
+   * а не ответ про школу (живой диалог 21 октября): благодарить «учту!» не за
+   * что, разговор об акции идёт дальше обычным путём.
+   */
+  if (schoolAnswer && !(schoolAnswer.kind === "unknown" && promoTriggered(own))) {
+    const m = schoolAnswer;
+    // Вопрос про школу стоял вместо вопроса о записи — задаём его теперь (один вопрос за раз).
+    const thanks = m.kind === "declined" ? "Поняла, спасибо!" : "Спасибо, учту!";
+    return { visible, reply: await respond(ctx, conversation.id, { text: `${thanks} ${PROMO_BOOK_QUESTION}` }) };
+  }
+
+  /**
+   * «Да» на наше «Записать ребёнка на эту программу?» — оформляем: просим
+   * данные ребёнка. Согласие на обработку данных `respond` спросит сам, если
+   * его ещё нет (§7), а после «Да» на согласие анкета пойдёт обычным путём.
+   */
+  if (offeredPromoBooking(lastAgent) && agreesToBook(withoutQuote(own))) {
+    await escalate(ctx.companyId, conversation.id, "PATIENT_REQUEST", "Школьная акция: хотят записать ребёнка").catch(() => {});
+    return {
+      visible,
+      reply: await respond(ctx, conversation.id, {
+        text: intakeAsk("child", true, false, {
+          parentKnown: await knownByClinic(ctx.companyId, conversation.id),
+          thanks: false,
+        }),
+        bookingContext: true,
+      }),
+    };
   }
   return { visible };
 }
@@ -5607,8 +5640,18 @@ async function promoInfo(
     marked: Boolean(p.waMarker) && [own, ...history.filter((t) => t.role === "user").map((t) => t.content)].some((t) => hasMarker(t, p.waMarker!)),
   });
   await logAgentRun({ companyId: ctx.companyId, conversationId: conversation.id, outcome: "OK", knowledgeEntryIds: knowledgeIdOf(entry) });
+  /**
+   * Рассказ об акции кончается вопросом о записи, а не тишиной: «передам
+   * администратору» на «интересует чек-ап» оставляло маму без следующего шага
+   * (живой диалог 21 октября). Вопрос один: про школу — первым, о записи —
+   * после ответа на него. Тот же текст второй раз подряд не повторяем —
+   * человек его уже прочитал, остаётся спросить о записи.
+   */
+  const agentTexts = history.filter((t) => t.role === "assistant").slice(-3).map((t) => t.content);
+  const alreadyTold = agentTexts.some((t) => t.includes(entry.answer.trim().slice(0, 80)));
+  const ask = askSchool ? SCHOOL_QUESTION : PROMO_BOOK_QUESTION;
   return respond(ctx, conversation.id, {
-    text: askSchool ? `${entry.answer.trim()}\n\n${SCHOOL_QUESTION}` : entry.answer.trim(),
+    text: alreadyTold ? ask : `${entry.answer.trim()}\n\n${ask}`,
   });
 }
 

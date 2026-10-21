@@ -219,3 +219,12 @@ describe("«Школьный ресурс» — метка и название �
     expect(promoTriggered("апельсиновый чек")).toBe(false);
   });
 });
+
+describe("«Записать ребёнка на эту программу?» — согласие (живой диалог 21 октября)", () => {
+  it("короткое «да» после нашего вопроса — запись; вопрос и отказ — нет", async () => {
+    const { agreesToBook, offeredPromoBooking, PROMO_BOOK_QUESTION } = await import("./promo");
+    expect(offeredPromoBooking(`Описание акции.\n\n${PROMO_BOOK_QUESTION}`)).toBe(true);
+    for (const t of ["Хорошо", "Да", "да, давайте", "Хотим", "Запишите пожалуйста", "ок"]) expect(agreesToBook(t), t).toBe(true);
+    for (const t of ["А сколько длится?", "Нет, подумаю", "Позже", "Да, а противопоказания какие?"]) expect(agreesToBook(t), t).toBe(false);
+  });
+});

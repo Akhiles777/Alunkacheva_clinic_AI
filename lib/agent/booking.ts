@@ -1,5 +1,6 @@
 import { durationsFromKnowledge } from "./knowledge-duration";
 import { prisma } from "@/lib/db";
+import { titleMatches } from "@/lib/metrics/promo-services";
 import { Prisma } from "@/generated/prisma/client";
 
 /**
@@ -100,11 +101,23 @@ async function knowledgeDurations(
 }
 
 export async function getServices(companyId: string): Promise<ServiceInfo[]> {
-  const rows = await prisma.service.findMany({
-    where: { companyId, isActive: true },
-    orderBy: { title: "asc" },
-    select: { id: true, title: true, price: true, durationMin: true, kind: true },
-  });
+  const [all, promos] = await Promise.all([
+    prisma.service.findMany({
+      where: { companyId, isActive: true },
+      orderBy: { title: "asc" },
+      select: { id: true, title: true, price: true, durationMin: true, kind: true },
+    }),
+    prisma.promo.findMany({ where: { companyId }, select: { serviceKeywords: true } }).catch(() => []),
+  ]);
+  /**
+   * Услуги акции («Школьный ресурс 6+» и его части «Школьный ресурс» по 800,
+   * 2 290 и 3 210 ₽ у разных специалистов) — не строки общего прайса. Об акции
+   * агент говорит только её записями справочника (lib/agent/promo.ts): живой
+   * диалог 21 октября — на «интересует школьный чек-ап» модель перечислила все
+   * четыре строки и сказала «точного школьного чек-апа в прайсе нет».
+   */
+  const keywords = promos.flatMap((p) => p.serviceKeywords);
+  const rows = keywords.length ? all.filter((r) => !titleMatches(r.title, keywords)) : all;
   const priced = rows.map((r) => ({ id: r.id, title: r.title, price: Number(r.price) }));
   // Длительность, которую клиника называет в справке, сильнее длины слота в YCLIENTS.
   const fromKnowledge = await knowledgeDurations(companyId, priced).catch(() => new Map<string, number>());

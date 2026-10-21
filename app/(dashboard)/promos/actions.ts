@@ -449,7 +449,13 @@ export async function approvePromoKnowledge(id: string): Promise<void> {
   }
   const r = await prisma.knowledgeEntry.updateMany({
     where: { id, companyId: session.companyId, promoId: { not: null }, needsDoctorApproval: true },
-    data: { approvedAt: new Date(), approvedById: session.userId },
+    /**
+     * Утверждение и включает запись. Медицинская запись акции создаётся
+     * выключенной, и после «Утвердить» она оставалась выключенной — агент об
+     * акции молчал, хотя врач текст одобрил (21 октября). Выключить её потом
+     * можно той же кнопкой, что и прежде.
+     */
+    data: { approvedAt: new Date(), approvedById: session.userId, isActive: true },
   });
   if (!r.count) throw new Error("Запись не найдена или не требует утверждения.");
   await writeAudit({
